@@ -16,7 +16,8 @@ LDLIBS  := -lm
 # Los núcleos y el intérprete de tests/phase0/ppe-bench se prueban aquí: los
 # de ensamblador solo existen en PowerPC64 (qemu); el resto corre en todo host.
 TEST_SRCS := $(wildcard $(CURDIR)/*.c) $(ROOT)/tests/phase0/ppe-bench/kernels.c \
-             $(ROOT)/tests/phase0/ppe-bench/interp.c
+             $(ROOT)/tests/phase0/ppe-bench/interp.c \
+             $(wildcard $(ROOT)/src/gpu2d/*.c)
 OBJS      := $(patsubst $(ROOT)/%.c,$(OUT)/obj/%.o,$(TEST_SRCS))
 
 .PHONY: all run clean

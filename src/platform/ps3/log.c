@@ -64,9 +64,14 @@ void salsads_log_init_banner(const char *program, const char *banner)
 	log_mutex_ok = sysLwMutexCreate(&log_mutex, &attr) == 0;
 
 	char path[64];
-	mkdir(SALSADS_DATA_DIR, 0777);
+	/* La carpeta se crea si falta y se comprueba que quedó (stat), porque un
+	 * mkdir que falla en silencio deja sin log por FTP. */
+	const int mk = mkdir(SALSADS_DATA_DIR, 0777), mk_errno = errno;
+	struct stat dir_st;
+	const int dir_ok = stat(SALSADS_DATA_DIR, &dir_st) == 0 && S_ISDIR(dir_st.st_mode);
 	snprintf(path, sizeof path, SALSADS_DATA_DIR "/%s.log", log_tag);
 	log_file = fopen(path, "w");
+	const int file_errno = errno;
 
 	int ret = netInitialize(), sock = -1;
 	if (ret >= 0) {
@@ -81,6 +86,13 @@ void salsads_log_init_banner(const char *program, const char *banner)
 
 	if (banner)
 		salsads_log("%s", banner);
+	if (!dir_ok)
+		salsads_log("FALLO la carpeta " SALSADS_DATA_DIR " no existe y mkdir falló (errno %d): sin log por archivo",
+			    mk_errno);
+	else if (!log_file)
+		salsads_log("FALLO no pude abrir %s (errno %d)", path, file_errno);
+	else
+		salsads_log("carpeta " SALSADS_DATA_DIR ": %s; log en %s", mk == 0 ? "creada ahora" : "ya existía", path);
 	if (ret < 0)
 		salsads_log("red no disponible (netInitialize = %d): solo TTY y archivo", ret);
 	else if (sock < 0)

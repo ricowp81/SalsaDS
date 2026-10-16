@@ -12,6 +12,7 @@ int check_total, check_failed;
 
 void test_endian(void);
 void test_ppe_bench(void);
+void test_gpu2d(void);
 
 int main(void)
 {
@@ -21,6 +22,7 @@ int main(void)
 	printf("host: %s\n", order);
 	test_endian();
 	test_ppe_bench();
+	test_gpu2d();
 	printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);
 	return check_failed ? 1 : 0;
 }
