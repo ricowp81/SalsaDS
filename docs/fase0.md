@@ -170,10 +170,39 @@ guest son ramas del host):
 | (b) perezosas | se guardan `a`, `b'` (o `~b` en las restas) y el resultado (4 instrucciones); al consumir se calculan N, Z, C, V con operaciones lógicas (Z y N son 2 instrucciones, C y V ~6) |
 | (c) N/Z en CR | `cmpwi cr0,res,0` (N/Z), `cmplw cr1,…` (C) y V en `cr2` con `cmpwi`; los saltos usan los bits del CR (`blt cr0`, `bgt cr1`), `crxor` para N≠V. El consumidor conoce el tipo de la instrucción anterior (como un recompilador por bloques) |
 
+| (d) `add.`/`subfc.` + XER.CA (**exploratoria**) | Fuera de las reglas del plan: N/Z de cr0 con `addc.`/`subfc.` y C de XER.CA (`li` + `addze` solo cuando un salto lo necesita). Para que CA sea el acarreo de 32 bits del guest, los registros guest viven en la **mitad alta** de los de 64 bits (valor << 32); así N y Z salen del signo y el cero de los 64 bits y no hace falta `clrldi`. Se agregó por una afirmación de un informe externo (no leído por mí en el Handbook): en el PPE `add.`, `subf.`, `neg.` y las formas con acarreo **no** serían microcódigo. Solo la decisión con los números de la PS3 dice si vale |
+
 Se reporta ciclos por vuelta, por instrucción ARM y «sobre la cota». No se
 modela aquí la eliminación de banderas muertas (aplica por igual a todas: en
 este bucle la mitad de las instrucciones que escriben banderas las
 sobrescriben antes de leerlas).
+
+### 4. Costo de instrucciones sueltas, ramas y `mtctr`/`bctr`
+
+Para saber qué es microcódigo de verdad en el PPE, en vez de fiarse de
+documentos (la guía de Salsa64 daba las formas con punto como microcódigo; un
+informe externo dice que `add.`, `subf.`, `neg.` y las formas con acarreo no
+lo son, y que sí lo son las de lógica, rotación, desplazamiento, extensión,
+`cntlz`, multiplicación y división, y los accesos que cruzan un sector de
+32 bytes): throughput de 8 copias independientes de cada instrucción (neto
+del bucle de 8 nops; las de acarreo dependen entre sí por XER), y
+
+- **pares «instrucción + salto»** (`add`+`cmpwi`+`beq`, `add.`+`beq`,
+  `subf.`+`beq`, `addc.`+`beq`, y con dos nops de separación): cuánto cuesta
+  que el salto lea CR0 recién escrito;
+- **`mtctr` + `bctr`** con 0, 2, 4, 8 y 12 instrucciones en medio (contra un
+  salto directo): el informe dice que hacen falta ~10 ciclos de separación;
+- **cruces de sector de 32 B** en la memoria (sección 1): `lwz`/`lwbrx`/`stw`/
+  `stwbrx` a los offsets 30, 62, 94 y 126, `lhz`/`lhbrx` a 31, 63, 95 y 127, y
+  `lwz`/`lwbrx` no alineados dentro de un sector (1, 33, 65, 97) como control.
+  Importa para la memoria little-endian de la DS: los accesos guest alineados
+  nunca cruzan sector, pero los no alineados sí podrían.
+
+Las líneas son `DATO instr <grupo> <nombre> bruto … neto …`. Si `add.` y
+`subf.` salen cerca de `add` (≈ 1 ciclo) y `and.`/`rlwinm.`/`cntlzw.`
+cerca de 11+ ciclos, el informe tiene razón y la estrategia (d) es la
+candidata (N/Z de `cr0` gratis, C de `XER.CA` sin `mfcr`); si no, vale la
+guía de Salsa64 y se queda (c) o (b).
 
 ### 3. Despacho del intérprete
 
@@ -203,7 +232,11 @@ obligatorio.
    varios campos del CR podrían ser lentos si el PPE los trata como microcódigo.
 5. Intérprete: MIPS de los tres despachos (el de punteros a función paga el
    descriptor ELFv1).
-6. Repetir 2–3 veces si las medianas varían más de ±3 % (ruido de ventana
+6. Sección 4: qué formas con punto y de acarreo son microcódigo (≈ 11+ ciclos
+   por instrucción) y cuáles no; `add.`+`beq` contra `add`+`cmpwi`+`beq`; la
+   separación que necesita `mtctr`→`bctr`; y los cruces de sector de 32 B.
+7. Banderas: la estrategia (d) contra (a)–(c).
+8. Repetir 2–3 veces si las medianas varían más de ±3 % (ruido de ventana
    conocido del PPE).
 
 Tabla de resultados y decisión de memoria y banderas: **pendiente** de la

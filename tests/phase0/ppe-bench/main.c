@@ -244,6 +244,50 @@ static void bench_flags(void)
 	}
 }
 
+/* ---- 4. Costo de instrucciones sueltas, ramas y mtctr/bctr ------------------- */
+
+struct instr_ctx {
+	kinstr_fn fn;
+};
+
+static uint64_t run_instr(void *ctx, uint64_t iters)
+{
+	struct instr_ctx *c = ctx;
+	c->fn(iters);
+	return iters;
+}
+
+static void bench_instr(void)
+{
+	salsads_log("== 4. Costo de instrucciones (throughput de %d copias; las de acarreo dependen entre sí por XER)",
+		    KINSTR_UNROLL);
+	double base_med[2] = { 0, 0 }, base_min[2] = { 0, 0 };
+	kinstr_fn cur_base[2] = { 0, 0 };
+	uint64_t it;
+
+	for (int i = 0; i < kinstr_count; i++) {
+		const struct kinstr_desc *d = &kinstr_table[i];
+		kinstr_fn bf = d->base ? d->base : kinstr_base_nops;
+		int slot = d->base ? 1 : 0;
+		if (cur_base[slot] != bf) {
+			struct instr_ctx bc = { bf };
+			struct meas mb = { run_instr, &bc };
+			measure(&mb, &base_med[slot], &base_min[slot], &it);
+			cur_base[slot] = bf;
+			salsads_log("DATO instr referencia (%s): %u.%02u ciclos por vuelta", d->base ? "salto directo" : "8 nops + bdnz",
+				    F2(base_med[slot] * CPU_HZ));
+		}
+		struct instr_ctx ic = { d->fn };
+		struct meas m = { run_instr, &ic };
+		double med, min;
+		measure(&m, &med, &min, &it);
+		salsads_log("DATO instr %-8s %-38s bruto %u.%02u / %u.%02u  neto %u.%02u / %u.%02u ciclos por %s",
+			    d->group, d->name, F2(med * CPU_HZ / d->items), F2(min * CPU_HZ / d->items),
+			    F2((med - base_med[slot]) * CPU_HZ / d->items), F2((min - base_min[slot]) * CPU_HZ / d->items),
+			    d->items == 1 ? "secuencia" : d->items == KINSTR_UNROLL ? "instrucción" : "par");
+	}
+}
+
 /* ---- 3. Despacho ------------------------------------------------------------- */
 
 struct interp_ctx {
@@ -309,6 +353,7 @@ int main(void)
 
 	bench_memory();
 	bench_flags();
+	bench_instr();
 	bench_interp();
 
 	salsads_log("RESULTADO ppe-bench: %s", failures ? "FALLO" : "OK");

@@ -131,7 +131,48 @@ KFLAGS(kf_cr,
        SUBS_C(18, 18, 31)
        "bne 0,1b\n\t")
 
+/* --- KF_DOT (d): EXPLORATORIA, formas con punto y acarreo (ver kernels.h) ------
+ *
+ * Los registros guest viven en la mitad alta de los de 64 bits (valor << 32,
+ * mitad baja en cero): addc./subfc. dan N y Z en cr0 (signo y cero de los 64
+ * bits = los del guest) y el acarreo del bit 63 en XER.CA = el C de ARM. V
+ * con xor/and y cmpdi en cr2. El C solo se lee (li + addze) cuando un salto
+ * lo necesita (BHI). */
+#define SHL_GUEST                                                                \
+	"sldi 14,14,32\n\t sldi 15,15,32\n\t sldi 16,16,32\n\t sldi 17,17,32\n\t sldi 18,18,32\n\t" \
+	"sldi 19,19,32\n\t sldi 20,20,32\n\t sldi 21,21,32\n\t sldi 22,22,32\n\t sldi 31,31,32\n\t"
+#define SHR_GUEST                                                                \
+	"srdi 14,14,32\n\t srdi 15,15,32\n\t srdi 16,16,32\n\t srdi 17,17,32\n\t srdi 18,18,32\n\t" \
+	"srdi 19,19,32\n\t srdi 20,20,32\n\t srdi 21,21,32\n\t srdi 22,22,32\n\t"
+#define ADDS_DOT(rd, rn, rm)                                                     \
+	"addc. 26," #rn "," #rm "\n\t xor 27," #rn "," #rm "\n\t xor 29," #rn ",26\n\t andc 29,29,27\n\t" \
+	"cmpdi 2,29,0\n\t mr " #rd ",26\n\t"
+#define SUBS_DOT(rd, rn, rm)                                                     \
+	"subfc. 26," #rm "," #rn "\n\t xor 27," #rn "," #rm "\n\t xor 29," #rn ",26\n\t and 29,29,27\n\t" \
+	"cmpdi 2,29,0\n\t mr " #rd ",26\n\t"
+#define CMP_DOT(rn, rm) SUBS_DOT(30, rn, rm)
+
+static void kf_dot(struct kguest *g)
+{
+	__asm__ volatile(LOAD_GUEST SHL_GUEST "1:\n\t"
+			 ADDS_DOT(14, 14, 15)
+			 CMP_DOT(14, 16)
+			 "crxor 12,0,8\n\t blt 3,2f\n\t"
+			 ADDS_DOT(17, 17, 19)
+			 "2:\n\t"
+			 CMP_DOT(17, 22)
+			 /* BHI: C && !Z. El C sale de XER.CA solo si Z = 0 */
+			 "beq 0,4f\n\t li 27,0\n\t addze 27,27\n\t cmpwi 1,27,0\n\t bne 1,3f\n\t"
+			 "4:\n\t"
+			 ADDS_DOT(20, 20, 21)
+			 "3:\n\t"
+			 SUBS_DOT(18, 18, 31)
+			 "bne 0,1b\n\t" SHR_GUEST STORE_GUEST
+			 : : "b"(g) : CLOBBERS);
+}
+
 const char *const kflags_name[KF_COUNT] = {
 	"sin banderas (cota)", "(a) completas a cada instr.", "(b) perezosas", "(c) N/Z cr0, C cr1, V cr2",
+	"(d) add./subfc. + XER.CA (explor.)",
 };
-const kflags_fn kflags_table[KF_COUNT] = { kf_none, kf_eager, kf_lazy, kf_cr };
+const kflags_fn kflags_table[KF_COUNT] = { kf_none, kf_eager, kf_lazy, kf_cr, kf_dot };

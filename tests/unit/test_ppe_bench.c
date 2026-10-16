@@ -55,6 +55,12 @@ static void test_mem_kernels(void)
 	for (int i = 0; i < kmem_count; i++)
 		kmem_table[i].fn(buf, 1000);
 	kmem_base(buf, 1000);
+	for (int i = 0; i < kinstr_count; i++) {
+		kinstr_table[i].fn(1000);
+		if (kinstr_table[i].base)
+			kinstr_table[i].base(1000);
+	}
+	kinstr_base_nops(1000);
 	CHECK(1); /* llegaron sin caerse */
 
 	/* Los de latencia dan el índice que calcula C, en las seis variantes. */

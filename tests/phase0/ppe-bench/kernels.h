@@ -90,6 +90,12 @@ uint32_t kchase_fill(void *table, int bits, enum kmem_impl impl, uint64_t steps)
  *             saltos usan los bits del CR directamente (el consumidor conoce
  *             el tipo de la instrucción anterior, como en un recompilador por
  *             bloques).
+ *   KF_DOT    (d) EXPLORATORIA, fuera de las reglas del plan (usa formas con
+ *             punto y acarreo): add./subf. dejan N/Z en cr0 y addc/subfc el C
+ *             en XER.CA, con los registros guest en la mitad alta de los de
+ *             64 bits (así CA es el acarreo de 32 bits del guest). Se mide por
+ *             una afirmación de un informe externo (no microcódigo); la
+ *             decisión depende de los números de la PS3.
  * Todas dejan el mismo estado guest final.
  */
 struct kguest {
@@ -98,7 +104,7 @@ struct kguest {
 
 typedef void (*kflags_fn)(struct kguest *g);
 
-enum kflags_impl { KF_NONE, KF_EAGER, KF_LAZY, KF_CR, KF_COUNT };
+enum kflags_impl { KF_NONE, KF_EAGER, KF_LAZY, KF_CR, KF_DOT, KF_COUNT };
 extern const char *const kflags_name[KF_COUNT];
 extern const kflags_fn kflags_table[KF_COUNT];
 
@@ -107,5 +113,25 @@ void kflags_init(struct kguest *g, uint32_t iters);
 /* Referencia en C con la semántica de ARM; devuelve las instrucciones guest
  * ejecutadas. Deja en `g` el estado final. */
 uint64_t kflags_ref(struct kguest *g);
+
+/* ---- Costo de instrucciones sueltas, ramas y cruces de sector --------------------
+ *
+ * Cada núcleo repite KINSTR_UNROLL veces una instrucción con destinos
+ * distintos (throughput; las de acarreo dependen entre sí por XER), o `items`
+ * pares «instrucción + salto», o una secuencia mtctr/bctr. `base` es el
+ * bucle de referencia a restar (NULL: ocho nops).
+ */
+#define KINSTR_UNROLL 8
+typedef void (*kinstr_fn)(uint64_t iters);
+struct kinstr_desc {
+	const char *name;
+	const char *group;
+	int items; /* instrucciones, pares o secuencias por vuelta */
+	kinstr_fn fn;
+	kinstr_fn base;
+};
+extern const struct kinstr_desc kinstr_table[];
+extern const int kinstr_count;
+void kinstr_base_nops(uint64_t iters);
 
 #endif
