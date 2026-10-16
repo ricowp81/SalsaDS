@@ -50,3 +50,14 @@ licencia se fija con esa decisión.
 
 Código propio: `tests/roms/src/` (marco `sds`, `hola`, `cpu9` y su modelo de
 ARM, ARM7 mínimo, ícono) y `tools/melonds-run.py`.
+
+## Documentación consultada (sin código)
+
+| Fuente | Para qué | Notas |
+|---|---|---|
+| GBATEK (Martin Korth), secciones del 3D de la DS | `tests/phase0/spe-raster3d`: campos de TEXIMAGE_PARAM y PLTT_BASE, formatos de textura (directo A1BGR5, paletas de 16 y 256 con el índice 0 transparente), expansión de 5 a 6 bits, fórmulas de modulación y de mezcla alfa | Solo la descripción del hardware; no se copió código de ningún emulador |
+| Documentación del SPU (intrínsecos de spu-gcc en `spu_internals.h` del toolchain) | `r3d_vec.h`: `spu_re` es `fi(frest)`; recíproco con un paso de Newton | Parte del toolchain (ps3toolchain) |
+
+El rasterizador de `tests/phase0/spe-raster3d` (núcleo, referencia, escena y
+programa SPU) es código propio; usa `lib/spukit` como biblioteca.
+

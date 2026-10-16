@@ -257,6 +257,8 @@ En el SPE la pila baja desde `__stack` (arriba del local store) hacia `_end`; **
 - **El SPU redondea la simple precisión hacia cero**, no al más cercano: cualquier HLE que deba dar lo mismo en el PPE, el host y el SPE va en **enteros** (o doble). Las pruebas de coincidencia PPE contra SPE al arrancar («hash de texturas en el SPE: igual al del PPE») apagan la función si difieren (texturas.md, perf-log.md).
 - Mover trabajo a un SPE libera el hilo de emulación pero no acorta el tirón si el juego espera el resultado: cuenta la duración, no el hilo.
 - Las «bandas de líneas» para el rasterizador del plan de SalsaDS son **[diseño]**: Salsa64 no rasteriza en SPEs (el RDP va al RSX), así que no hay números de rasterizado en SPE.
+
+> **Nota (2026-10-16, SalsaDS 0.4).** El rasterizador por bandas ya existe en `tests/phase0/spe-raster3d` (`docs/fase0.md` §0.4), verificado en host y RPCS3 y pendiente de medir en la consola. Trampa encontrada: `spu_re()` de spu-gcc **ya es `fi(x, frest(x))`**; agregarle otro `si_fi` deja el recíproco en ~12 bits (en RPCS3 se vio como texturas con ruido). Recíproco de ~23 bits: `spu_re` más un paso de Newton.
 - Referencia de lo que sí se midió: el RSP de la N64 a bajo nivel en un SPE (intérprete) corre a **226–283 ns por instrucción del RSP (3,5–4,4 MIPS), 14–18× más lento que el RSP real [PS3]** (rsp-lle.md; estado.md); por eso el trabajo se movió a un recompilador de RSP a código SPU (§3.8).
 
 ### 3.7 Concurrencia SPE↔PPE: errores que costaron días

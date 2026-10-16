@@ -45,4 +45,4 @@ datos, búferes de DMA y pila; la holgura de la pila se mide al enlazar con
 
 | Programa | Código | Datos+búferes | Pila | Notas |
 |---|---|---|---|---|
-| (ninguno todavía) | | | | Fases 0.4 y 0.5 |
+| `spe-raster3d` (0.4) | 27,3 KB | 202,9 KB | 25,6 KB libres; usa 2,5 KB (holgura 23,1 KB, mínimo 8 KB) | Caché de texturas 112 KB, color 2 × 16 KB, profundidad 16 KB, cajas 16 KB, registros 12 KB; detalle en `tests/phase0/spe-raster3d/spu_main.c` |
