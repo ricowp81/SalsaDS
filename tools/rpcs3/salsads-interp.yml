@@ -1,0 +1,12 @@
+# Igual que salsads.yml, pero con el intérprete del PPU: ejecuta código
+# generado en tiempo de ejecución (el recompilador LLVM no). Para jit-ppe.
+Core:
+  PPU Decoder: Interpreter (dynamic)
+Video:
+  # rsx-triangle lee el framebuffer desde el PPE.
+  Write Color Buffers: true
+Net:
+  # Sockets reales del host: el logger UDP llega a tools/udplog.py.
+  Internet enabled: Connected
+Miscellaneous:
+  Exit RPCS3 when process finishes: true

@@ -1,0 +1,16 @@
+/* SPDX-License-Identifier: MIT */
+/* rsxkit — reducción en dos pasadas (rsxkit_post_reduce), la primera: a lo
+ * ancho. Cada píxel de la salida es el promedio de f texeles seguidos de
+ * una fila de la entrada; la lectura k cae a tx[k] texeles del principio
+ * del bloque con peso wx[k] (en la frontera entre dos texeles, el filtro
+ * bilineal promedia los dos) y en el centro de la fila, así que solo filtra
+ * a lo ancho. TEXCOORD1 = (esquina de la región, f). */
+void main(float4 pos : TEXCOORD0, float4 org : TEXCOORD1, uniform sampler2D src : TEXUNIT0, uniform float4 tx,
+	  uniform float4 wx, out float4 color : COLOR)
+{
+	float bx = org.x + floor(pos.x) * org.z;
+	float y = org.y + floor(pos.y) + 0.5;
+	float4 r = tex2D(src, float2(bx + tx.x, y)) * wx.x + tex2D(src, float2(bx + tx.y, y)) * wx.y +
+		   tex2D(src, float2(bx + tx.z, y)) * wx.z;
+	color = float4(r.rgb, 1.0);
+}

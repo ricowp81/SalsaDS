@@ -1,0 +1,14 @@
+/* SPDX-License-Identifier: MIT */
+/* rsxkit — reducción en dos pasadas (rsxkit_post_reduce), la segunda: a lo
+ * alto, sobre la tabla fp16 que dejó la primera (una columna por píxel de
+ * la salida, una fila por fila de la entrada). Como la primera, pero en
+ * vertical. TEXCOORD1 = (0, 0, f). */
+void main(float4 pos : TEXCOORD0, float4 org : TEXCOORD1, uniform sampler2D src : TEXUNIT0, uniform float4 tx,
+	  uniform float4 wx, out float4 color : COLOR)
+{
+	float x = floor(pos.x) + 0.5;
+	float by = floor(pos.y) * org.z;
+	float4 r = tex2D(src, float2(x, by + tx.x)) * wx.x + tex2D(src, float2(x, by + tx.y)) * wx.y +
+		   tex2D(src, float2(x, by + tx.z)) * wx.z;
+	color = float4(r.rgb, 1.0);
+}

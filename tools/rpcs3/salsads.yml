@@ -1,0 +1,13 @@
+# Configuración de RPCS3 para las pruebas de SalsaDS (se pasa con --config;
+# solo cambia estas claves, el resto queda como en la config global).
+Video:
+  # las pruebas de RSX leen el framebuffer desde el PPE.
+  Write Color Buffers: true
+Net:
+  # Sockets reales del host: el logger UDP llega a tools/udplog.py.
+  Internet enabled: Connected
+Miscellaneous:
+  Exit RPCS3 when process finishes: true
+Audio:
+  # Las pruebas automáticas no suenan por los altavoces de la Mac; cellAudio
+  Renderer: "Null"

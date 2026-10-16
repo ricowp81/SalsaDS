@@ -1,0 +1,7 @@
+/* SPDX-License-Identifier: MIT */
+/* rsxkit — fragment program del blit 2D: la textura con alfa 1. */
+void main(float2 texcoord : TEXCOORD0, uniform sampler2D texture : TEXUNIT0,
+          out float4 color : COLOR)
+{
+	color = float4(tex2D(texture, texcoord).rgb, 1.0);
+}
