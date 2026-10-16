@@ -4,6 +4,16 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-16 — ROMs de prueba (Fase 0.2)
+
+- `tests/roms`: marco de pruebas `sds` (resultado en RAM `0x02380000` y en
+  pantalla), ROMs `hola` y `cpu9` (65 187 comprobaciones del ARM9), construidas
+  con BlocksDS en Docker (`tools/build-roms.sh`) y validadas en melonDS 1.1
+  con su stub de GDB (`tools/melonds-run.py`).
+- ARM7 de las ROMs: uno propio vacío, para no enlazar DSWiFi/Maxmod/Mbed TLS.
+- Falta: pruebas del ARM7 (ARMv4T), DMA, timers, IPC, VRAM por bancos; y
+  copiar el aviso íntegro de picolibc antes de redistribuir los `.nds`.
+
 ## 2026-10-16 — Arranque: esqueleto (Fase 0.1)
 
 Hecho:
@@ -42,4 +52,5 @@ libretro, nombre del ejecutable.
 
 ## Qué existe hoy de DS en la PS3
 
-Pendiente de anotar con fuentes (se rellena en la Fase 0.2).
+No encontré ningún emulador de DS usable en PS3 (búsqueda del 2026-10-16;
+detalle y fuentes en `docs/fase0.md`, 0.2).

@@ -40,5 +40,13 @@ licencia se fija con esa decisión.
 
 ## ROMs de prueba y su toolchain
 
-Ver `docs/fase0.md` (0.2): toolchain ARM libre (BlocksDS), licencias
-verificadas y suites de pruebas de terceros.
+| Origen | Uso | Licencia | Notas |
+|---|---|---|---|
+| BlocksDS v1.24.0 (github.com/blocksds/sdk; imagen `skylyrac/blocksds` fijada por digest) | construir `tests/roms` | libnds y crt0 zlib; picolibc MIT/BSD; libgcc GPL-3.0 + excepción de runtime; ndstool GPL-3.0/MIT | Lo que acaba dentro de las ROMs y sus avisos: `tests/roms/homebrew/AVISOS.md` y `docs/fase0.md` (0.2) |
+| melonDS 1.1 (github.com/melonDS-emu/melonDS) | emulador de referencia, solo para comparar | GPL-3.0 | Instalado fuera del repositorio; `tools/melonds-run.py` solo lo lanza y lee su memoria por GDB. **No se copia código suyo** |
+| DeSmuME, NooDS | referencia posible | GPL-2.0, GPL-3.0 | Ni instalados ni consultados; no se copia código |
+| gba-suite (jsmolka) | modelo para pruebas de ARMv4T | MIT | No se copió nada |
+| RockWrestler, armwrestler-gba-fixed | — | sin licencia visible | **No se copian ni redistribuyen** |
+
+Código propio: `tests/roms/src/` (marco `sds`, `hola`, `cpu9` y su modelo de
+ARM, ARM7 mínimo, ícono) y `tools/melonds-run.py`.
