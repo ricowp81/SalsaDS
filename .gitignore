@@ -1,0 +1,24 @@
+# Compilación
+build/
+
+# Configuración local de la consola (IP)
+tools/ps3.conf
+
+# Nada de ROMs comerciales, BIOS, firmware ni claves de Nintendo
+*.nds
+*.srl
+*.dsi
+*.ids
+*.zip
+*.7z
+*.rar
+bios7.bin
+bios9.bin
+biosdsi7.bin
+biosdsi9.bin
+firmware.bin
+# salvo las ROMs de prueba libres, con su fuente
+!tests/roms/homebrew/**
+
+# macOS
+.DS_Store
