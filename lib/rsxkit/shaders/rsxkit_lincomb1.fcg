@@ -1,0 +1,8 @@
+/* SPDX-License-Identifier: MIT */
+/* rsxkit — combinación lineal con una textura: T0·X0 + T0.aaaa·X1 + X4. */
+void main(float4 uv : TEXCOORD0, float4 x0 : TEXCOORD1, float4 x1 : TEXCOORD2, float4 x4 : TEXCOORD5,
+	uniform sampler2D tex0 : TEXUNIT0, out float4 color : COLOR)
+{
+	float4 t0 = tex2D(tex0, uv.xy);
+	color = saturate(t0 * x0 + t0.aaaa * x1 + x4);
+}

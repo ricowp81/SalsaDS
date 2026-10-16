@@ -1,0 +1,8 @@
+/* SPDX-License-Identifier: MIT */
+/* rsxkit — vertex program del blit 2D: posición ya en espacio de recorte. */
+void main(float4 position : POSITION, float2 texcoord : TEXCOORD0,
+          out float4 oPosition : POSITION, out float2 oTexcoord : TEXCOORD0)
+{
+	oPosition = position;
+	oTexcoord = texcoord;
+}

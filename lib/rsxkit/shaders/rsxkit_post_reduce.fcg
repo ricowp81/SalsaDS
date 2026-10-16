@@ -1,0 +1,15 @@
+/* SPDX-License-Identifier: MIT */
+/* rsxkit — reducción con filtro de caja (rsxkit_post_reduce): cada píxel de
+ * la salida es el promedio de un bloque f × f de la entrada (coordenadas en
+ * texeles). En cada eje, la lectura k cae a tx[k] texeles de la esquina del
+ * bloque con peso wx[k]: en la frontera entre dos texeles, el filtro
+ * bilineal promedia los dos. TEXCOORD1 = (esquina de la región, f). */
+void main(float4 pos : TEXCOORD0, float4 org : TEXCOORD1, uniform sampler2D src : TEXUNIT0, uniform float4 tx,
+	  uniform float4 wx, out float4 color : COLOR)
+{
+	float2 b = org.xy + floor(pos.xy) * org.z;
+	float4 r0 = tex2D(src, b + tx.xx) * wx.x + tex2D(src, b + tx.yx) * wx.y + tex2D(src, b + tx.zx) * wx.z;
+	float4 r1 = tex2D(src, b + tx.xy) * wx.x + tex2D(src, b + tx.yy) * wx.y + tex2D(src, b + tx.zy) * wx.z;
+	float4 r2 = tex2D(src, b + tx.xz) * wx.x + tex2D(src, b + tx.yz) * wx.y + tex2D(src, b + tx.zz) * wx.z;
+	color = float4((r0 * wx.x + r1 * wx.y + r2 * wx.z).rgb, 1.0);
+}
