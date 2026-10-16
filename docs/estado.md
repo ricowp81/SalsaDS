@@ -4,6 +4,19 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-16 — Microbenchmarks del PPE (Fase 0.3)
+
+- `tests/phase0/ppe-bench` (SLDS00001 «SalsaDS bench»): memoria LE con
+  `lwbrx`/`stwbrx`/`lhbrx`/`sthbrx`, tres estrategias de banderas NZCV más una
+  cota, y tres despachos de un intérprete ARM mínimo. Verificado contra
+  referencias en C bajo qemu-ppc64 (`tools/build.sh test-host`) y arranca en
+  RPCS3.
+- **Pendiente: correrlo en la PS3 real** (quien tiene el permiso del FTP) y
+  llenar `docs/fase0.md` §0.3 y `perf-log.md`.
+- Descubierto al escribirlo: en PowerPC64, el CA de `addc`/`subfc` es el
+  acarreo del bit 63, no del 32; el C de ARM sale del bit 32 del resultado de
+  64 bits con los operandos extendidos con ceros.
+
 ## 2026-10-16 — ROMs de prueba (Fase 0.2)
 
 - `tests/roms`: marco de pruebas `sds` (resultado en RAM `0x02380000` y en

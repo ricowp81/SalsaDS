@@ -9,11 +9,14 @@ OUT  ?= $(ROOT)/build/host
 CC      ?= gcc
 SAN     ?= -fsanitize=address,undefined -fno-sanitize-recover=undefined
 CFLAGS  := -std=gnu11 -O2 -g -Wall -Wextra -Werror -ffp-contract=off -fno-math-errno \
-           -I$(ROOT)/src -I$(CURDIR) $(SAN) $(EXTRA_CFLAGS)
+           -I$(ROOT)/src -I$(CURDIR) -I$(ROOT)/tests/phase0/ppe-bench $(SAN) $(EXTRA_CFLAGS)
 LDFLAGS := $(SAN) $(EXTRA_LDFLAGS)
 LDLIBS  := -lm
 
-TEST_SRCS := $(wildcard $(CURDIR)/*.c)
+# Los núcleos y el intérprete de tests/phase0/ppe-bench se prueban aquí: los
+# de ensamblador solo existen en PowerPC64 (qemu); el resto corre en todo host.
+TEST_SRCS := $(wildcard $(CURDIR)/*.c) $(ROOT)/tests/phase0/ppe-bench/kernels.c \
+             $(ROOT)/tests/phase0/ppe-bench/interp.c
 OBJS      := $(patsubst $(ROOT)/%.c,$(OUT)/obj/%.o,$(TEST_SRCS))
 
 .PHONY: all run clean
