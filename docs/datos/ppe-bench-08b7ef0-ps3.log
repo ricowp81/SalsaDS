@@ -1,0 +1,88 @@
+[ppe-bench    0.376 #1] log UDP hacia 255.255.255.255:18195
+[ppe-bench    0.376 #2] ppe-bench 08b7ef0 (SalsaDS bench, SLDS00001)
+[ppe-bench    0.377 #3] timebase 79800000 Hz; reloj del PPE supuesto 3200 MHz (40 ciclos por tick)
+[ppe-bench    0.377 #4] calibración ≥ 60 ms por medición, 7 repeticiones; cifras: mediana / mínimo
+[ppe-bench    0.377 #5] == 1. Memoria little-endian en el PPE (L1 caliente, alineado)
+[ppe-bench    1.434 #6] DATO mem base bucle (4 nop + bdnz): 11.28 ciclos por vuelta (min 11.25)
+[ppe-bench    1.434 #7] DATO mem instrucciones                  tipo      bruto(ciclos/acc, mediana/min)  neto(restando bucle)
+[ppe-bench    2.389 #8] DATO mem lwz  (carga normal)            carga32   2.56 / 2.56   neto 0.00 / 0.00
+[ppe-bench    3.344 #9] DATO mem lwbrx                          carga32   2.56 / 2.55   neto 0.00 / 0.00
+[ppe-bench    4.167 #10] DATO mem lwz + rotaciones               carga32   4.46 / 4.43   neto 1.64 / 1.62
+[ppe-bench    5.125 #11] DATO mem lhz  (carga normal)            carga16   2.57 / 2.56   neto 0.00 / 0.00
+[ppe-bench    6.082 #12] DATO mem lhbrx                          carga16   2.57 / 2.56   neto 0.00 / 0.00
+[ppe-bench    6.758 #13] DATO mem lhz + rotaciones               carga16   3.63 / 3.60   neto 0.81 / 0.78
+[ppe-bench    7.766 #14] DATO mem stw  (almacenamiento normal)   almac32   2.69 / 2.69   neto 0.00 / 0.00
+[ppe-bench    8.773 #15] DATO mem stwbrx                         almac32   2.70 / 2.69   neto 0.00 / 0.00
+[ppe-bench    9.571 #16] DATO mem rotaciones + stw               almac32   4.32 / 4.31   neto 1.50 / 1.50
+[ppe-bench   10.577 #17] DATO mem sth  (almacenamiento normal)   almac16   2.70 / 2.69   neto 0.00 / 0.00
+[ppe-bench   11.582 #18] DATO mem sthbrx                         almac16   2.69 / 2.69   neto 0.00 / 0.00
+[ppe-bench   12.285 #19] DATO mem rotaciones + sth               almac16   3.82 / 3.80   neto 1.00 / 0.99
+[ppe-bench   12.991 #20] DATO mem lwz  cruza sector 32 B         carga32   60.23 / 60.08   neto 57.41 / 57.27
+[ppe-bench   13.696 #21] DATO mem lwbrx cruza sector 32 B        carga32   60.14 / 59.85   neto 57.32 / 57.04
+[ppe-bench   14.319 #22] DATO mem stw  cruza sector 32 B         almac32   52.75 / 52.46   neto 49.92 / 49.65
+[ppe-bench   14.937 #23] DATO mem stwbrx cruza sector 32 B       almac32   52.57 / 52.46   neto 49.75 / 49.65
+[ppe-bench   15.576 #24] DATO mem lhz  cruza sector 32 B         carga16   54.49 / 54.41   neto 51.67 / 51.59
+[ppe-bench   16.216 #25] DATO mem lhbrx cruza sector 32 B        carga16   54.44 / 54.34   neto 51.62 / 51.53
+[ppe-bench   17.175 #26] DATO mem lwz  no alineado, mismo sector carga32   2.57 / 2.57   neto 0.00 / 0.00
+[ppe-bench   18.135 #27] DATO mem lwbrx no alineado, mismo sector carga32   2.57 / 2.57   neto 0.00 / 0.00
+[ppe-bench   18.135 #28] DATO mem latencia: cadena dependiente (rlwinm + carga [+ 3 instr. de swap]) por paso
+[ppe-bench   18.808 #29] DATO lat lwz  (carga normal)            32 bits  7.16 ciclos/paso (min 7.14)
+[ppe-bench   19.481 #30] DATO lat lwbrx                          32 bits  7.17 ciclos/paso (min 7.15)
+[ppe-bench   20.104 #31] DATO lat lwz + rotaciones               32 bits  13.36 ciclos/paso (min 13.30)
+[ppe-bench   20.779 #32] DATO lat lhz  (carga normal)            16 bits  7.20 ciclos/paso (min 7.17)
+[ppe-bench   21.455 #33] DATO lat lhbrx                          16 bits  7.19 ciclos/paso (min 7.18)
+[ppe-bench   22.515 #34] DATO lat lhz + rotaciones               16 bits  11.31 ciclos/paso (min 11.30)
+[ppe-bench   22.516 #35] == 2. Banderas NZCV (bucle guest: ADDS, CMP, BLT, ADDS, CMP, BHI, ADDS, SUBS, BNE)
+[ppe-bench   22.516 #36] DATO flags guest: 7.55 instrucciones ARM por vuelta (referencia en C)
+[ppe-bench   23.107 #37] DATO flags sin banderas (cota)            25.17 ciclos/vuelta (min 25.11) = 3.33 ciclos por instr. ARM; sobre la cota: +0.00
+[ppe-bench   23.834 #38] DATO flags (a) completas a cada instr.    126.12 ciclos/vuelta (min 125.74) = 16.70 ciclos por instr. ARM; sobre la cota: +13.37
+[ppe-bench   24.898 #39] DATO flags (b) perezosas                  45.37 ciclos/vuelta (min 45.34) = 6.01 ciclos por instr. ARM; sobre la cota: +2.67
+[ppe-bench   25.568 #40] DATO flags (c) N/Z cr0, C cr1, V cr2      57.40 ciclos/vuelta (min 57.31) = 7.60 ciclos por instr. ARM; sobre la cota: +4.27
+[ppe-bench   26.145 #41] DATO flags (d) add./subfc. + XER.CA (explor.) 49.49 ciclos/vuelta (min 49.31) = 6.55 ciclos por instr. ARM; sobre la cota: +3.22
+[ppe-bench   26.145 #42] == 4. Costo de instrucciones (throughput de 8 copias; las de acarreo dependen entre sí por XER)
+[ppe-bench   26.904 #43] DATO instr referencia (8 nops + bdnz): 16.47 ciclos por vuelta
+[ppe-bench   27.474 #44] DATO instr aritm    add (sin punto)                        bruto 1.54 / 1.54  neto 0.00 / 0.00 ciclos por instrucción
+[ppe-bench   28.088 #45] DATO instr aritm    add.                                   bruto 1.67 / 1.66  neto 0.00 / 0.00 ciclos por instrucción
+[ppe-bench   28.658 #46] DATO instr aritm    subf.                                  bruto 1.55 / 1.54  neto 0.00 / 0.00 ciclos por instrucción
+[ppe-bench   29.275 #47] DATO instr aritm    neg.                                   bruto 1.67 / 1.67  neto 0.00 / 0.00 ciclos por instrucción
+[ppe-bench   29.843 #48] DATO instr acarreo  addc                                   bruto 1.54 / 1.53  neto 0.00 / 0.00 ciclos por instrucción
+[ppe-bench   30.412 #49] DATO instr acarreo  subfc                                  bruto 1.54 / 1.54  neto 0.00 / 0.00 ciclos por instrucción
+[ppe-bench   31.168 #50] DATO instr acarreo  adde (depende de XER)                  bruto 2.05 / 2.05  neto 0.00 / 0.00 ciclos por instrucción
+[ppe-bench   31.924 #51] DATO instr acarreo  subfe (depende de XER)                 bruto 2.05 / 2.05  neto 0.00 / 0.00 ciclos por instrucción
+[ppe-bench   32.683 #52] DATO instr acarreo  addze (depende de XER)                 bruto 2.05 / 2.05  neto 0.00 / 0.00 ciclos por instrucción
+[ppe-bench   33.249 #53] DATO instr acarreo  addc.                                  bruto 1.54 / 1.53  neto 0.00 / 0.00 ciclos por instrucción
+[ppe-bench   33.918 #54] DATO instr acarreo  subfc.                                 bruto 1.66 / 1.66  neto 0.00 / 0.00 ciclos por instrucción
+[ppe-bench   34.485 #55] DATO instr lógica  and (sin punto)                        bruto 1.54 / 1.53  neto 0.00 / 0.00 ciclos por instrucción
+[ppe-bench   35.154 #56] DATO instr lógica  and.                                   bruto 14.53 / 14.47  neto 12.47 / 12.42 ciclos por instrucción
+[ppe-bench   35.825 #57] DATO instr lógica  andi.                                  bruto 14.56 / 14.52  neto 12.50 / 12.46 ciclos por instrucción
+[ppe-bench   36.392 #58] DATO instr lógica  cntlzw (sin punto)                     bruto 1.54 / 1.53  neto 0.00 / 0.00 ciclos por instrucción
+[ppe-bench   37.063 #59] DATO instr lógica  cntlzw.                                bruto 14.56 / 14.54  neto 12.50 / 12.48 ciclos por instrucción
+[ppe-bench   37.630 #60] DATO instr rotación rlwinm (sin punto)                     bruto 1.54 / 1.53  neto 0.00 / 0.00 ciclos por instrucción
+[ppe-bench   38.302 #61] DATO instr rotación rlwinm.                                bruto 14.60 / 14.55  neto 12.54 / 12.50 ciclos por instrucción
+[ppe-bench   39.066 #62] DATO instr rotación slw (desplaz. por registro)            bruto 16.60 / 16.57  neto 14.54 / 14.51 ciclos por instrucción
+[ppe-bench   39.834 #63] DATO instr rotación sraw (por registro)                    bruto 16.65 / 16.62  neto 14.59 / 14.56 ciclos por instrucción
+[ppe-bench   40.403 #64] DATO instr otras    extsw                                  bruto 1.55 / 1.54  neto 0.00 / 0.00 ciclos por instrucción
+[ppe-bench   40.932 #65] DATO instr otras    mullw                                  bruto 11.48 / 11.45  neto 9.42 / 9.40 ciclos por instrucción
+[ppe-bench   41.502 #66] DATO instr CR       cmpw cr0                               bruto 1.55 / 1.54  neto 0.00 / 0.00 ciclos por instrucción
+[ppe-bench   42.119 #67] DATO instr CR       cmplw cr1                              bruto 1.67 / 1.67  neto 0.00 / 0.00 ciclos por instrucción
+[ppe-bench   42.688 #68] DATO instr CR       crxor                                  bruto 1.54 / 1.54  neto 0.00 / 0.00 ciclos por instrucción
+[ppe-bench   43.321 #69] DATO instr CR       mfcr                                   bruto 26.97 / 26.85  neto 24.91 / 24.79 ciclos por instrucción
+[ppe-bench   43.891 #70] DATO instr CR       mtocrf (un campo)                      bruto 1.55 / 1.54  neto 0.00 / 0.00 ciclos por instrucción
+[ppe-bench   44.846 #71] DATO instr CR       mtcrf 0xff (todos)                     bruto 20.72 / 20.66  neto 18.66 / 18.60 ciclos por instrucción
+[ppe-bench   45.606 #72] DATO instr par      add + cmpwi + beq                      bruto 4.12 / 4.11  neto 0.01 / 0.00 ciclos por par
+[ppe-bench   46.222 #73] DATO instr par      add. + beq                             bruto 3.33 / 3.33  neto 0.00 / 0.00 ciclos por par
+[ppe-bench   46.791 #74] DATO instr par      subf. + beq                            bruto 3.09 / 3.08  neto 0.00 / 0.00 ciclos por par
+[ppe-bench   47.408 #75] DATO instr par      addc. + beq                            bruto 3.35 / 3.34  neto 0.00 / 0.00 ciclos por par
+[ppe-bench   47.989 #76] DATO instr par      add + 2 nops + cmpwi + beq             bruto 6.19 / 6.17  neto 2.08 / 2.05 ciclos por par
+[ppe-bench   48.838 #77] DATO instr referencia (salto directo): 18.43 ciclos por vuelta
+[ppe-bench   49.688 #78] DATO instr bctr     mtctr + bctr (0 instr. entre medio)    bruto 18.44 / 18.44  neto 0.01 / 0.03 ciclos por secuencia
+[ppe-bench   50.443 #79] DATO instr bctr     mtctr + bctr (2 instr.)                bruto 16.39 / 16.35  neto 0.00 / 0.00 ciclos por secuencia
+[ppe-bench   51.292 #80] DATO instr bctr     mtctr + bctr (4 instr.)                bruto 18.40 / 18.38  neto 0.00 / 0.00 ciclos por secuencia
+[ppe-bench   52.284 #81] DATO instr bctr     mtctr + bctr (8 instr.)                bruto 21.53 / 21.52  neto 3.10 / 3.11 ciclos por secuencia
+[ppe-bench   52.960 #82] DATO instr bctr     mtctr + bctr (12 instr.)               bruto 28.81 / 28.74  neto 10.38 / 10.33 ciclos por secuencia
+[ppe-bench   52.960 #83] == 3. Despacho de un intérprete ARM mínimo (bucle de 9 instrucciones por elemento)
+[ppe-bench   57.536 #84] DATO interp switch                         60.48 ns/instr. = 16.53 MIPS guest = 193.55 ciclos/instr. (min 16.54 MIPS)
+[ppe-bench   62.111 #85] DATO interp tabla de punteros a función   60.52 ns/instr. = 16.52 MIPS guest = 193.66 ciclos/instr. (min 16.54 MIPS)
+[ppe-bench   66.336 #86] DATO interp goto calculado (enhebrado)     55.92 ns/instr. = 17.88 MIPS guest = 178.95 ciclos/instr. (min 17.91 MIPS)
+[ppe-bench   66.336 #87] DATO interp referencia: la DS pide ~100 MIPS (ARM9 67 + ARM7 33 MHz) para velocidad completa
+[ppe-bench   66.336 #88] RESULTADO ppe-bench: OK

@@ -11,8 +11,11 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
   cota, y tres despachos de un intérprete ARM mínimo. Verificado contra
   referencias en C bajo qemu-ppc64 (`tools/build.sh test-host`) y arranca en
   RPCS3.
-- **Pendiente: correrlo en la PS3 real** (quien tiene el permiso del FTP) y
-  llenar `docs/fase0.md` §0.3 y `perf-log.md`.
+- **Medido en la PS3 real** (paquete de `08b7ef0`, subido por quien
+  tiene el permiso del FTP): resultados, decisiones y log completo en
+  `docs/fase0.md` §0.3, `perf-log.md` y `docs/datos/`. Decididos: memoria LE
+  con `lwbrx` y compañía, banderas perezosas, y recompilador obligatorio
+  (intérprete 16,5–17,9 MIPS contra ~100 que pide la DS). **Fase 0.3 cerrada.**
 - Descubierto al escribirlo: en PowerPC64, el CA de `addc`/`subfc` es el
   acarreo del bit 63, no del 32; el C de ARM sale del bit 32 del resultado de
   64 bits con los operandos extendidos con ceros.

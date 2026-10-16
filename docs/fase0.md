@@ -8,7 +8,7 @@ vive en `tests/phase0/<nombre>`, su resultado va aquí y la medición, en
 |---|---|
 | 0.1 Esqueleto del repositorio | hecho (2026-10-16) |
 | 0.2 ROMs de prueba propias | hecho (2026-10-16) |
-| 0.3 Microbenchmarks del PPE | programa listo y verificado en el host y en RPCS3; **faltan los números de la PS3 real** |
+| 0.3 Microbenchmarks del PPE | hecho (2026-10-16): medido en la PS3 real, decisiones abajo |
 | 0.4 Rasterizador 3D en un SPE | pendiente |
 | 0.5 Composición 2D en un SPE | pendiente |
 | 0.6 Salida de dos pantallas | pendiente |
@@ -111,11 +111,10 @@ DeSmuME a PS3/Cell. Sin revisar: el foro de PSX-Place y repos de la escena.
 
 ## 0.3 Microbenchmarks del PPE (`tests/phase0/ppe-bench`)
 
-Estado: programa y paquete listos (`SalsaDS bench`, APPID `SLDS00001`);
-**sin números de la PS3 real todavía**: se subirá a la consola por quien
-tiene permiso del autor. Los números de RPCS3 no valen (solo comprobé que
-arranca, que las verificaciones internas pasan y que termina con
-`RESULTADO ppe-bench: OK`).
+Estado: **medido en la PS3 real** el 2026-10-16 con el paquete
+`SalsaDS bench` (APPID `SLDS00001`) compilado desde `08b7ef0`; el log completo
+(88 líneas, `RESULTADO ppe-bench: OK`) está en
+`docs/datos/ppe-bench-08b7ef0-ps3.log`. Los números de RPCS3 no valen.
 
 Todo se mide con el timebase (`mftb`, 79,8 MHz = 40 ciclos de 3,2 GHz por
 tick). Cada medición se calibra a ≥ 60 ms, se repite 7 veces y se reporta la
@@ -239,5 +238,128 @@ obligatorio.
 8. Repetir 2–3 veces si las medianas varían más de ±3 % (ruido de ventana
    conocido del PPE).
 
-Tabla de resultados y decisión de memoria y banderas: **pendiente** de la
-corrida en la consola.
+### Resultados (PS3 real, `08b7ef0`)
+
+Ciclos del PPE (3,2 GHz; timebase 79,8 MHz = 40 ciclos por tick); mediana de 7
+repeticiones, el mínimo difiere en menos de 1 % (±3 % de ruido de ventana no
+se alcanzó a ver).
+
+**Cómo leer las cifras.** Los bucles son cortos y cada vuelta cuesta de por sí
+~10 ciclos de salto (`bdnz`): un bucle de 4 accesos tarda 10–11 ciclos aunque
+los accesos sean gratis. Por eso el *throughput* de memoria no distingue
+diferencias menores de ~2,5 ciclos por acceso, y el «neto» de la sección 4 sale
+0,00 donde el bucle de referencia (ocho `ori 0,0,0`, 2,06 ciclos cada uno) es
+más lento que las propias instrucciones (1,54): ahí valen las cifras
+**brutas**. Lo que discrimina en memoria es la **latencia**.
+
+**1. Memoria little-endian** (ciclos por acceso; L1 caliente)
+
+| Acceso | Throughput | Latencia (cadena dependiente) |
+|---|---|---|
+| `lwz` (normal) | 2,56 | 7,16 |
+| `lwbrx` | 2,56 | **7,17** |
+| `lwz` + 3 rotaciones | 4,46 | 13,36 |
+| `lhz` (normal) | 2,57 | 7,20 |
+| `lhbrx` | 2,57 | **7,19** |
+| `lhz` + 2 rotaciones | 3,63 | 11,31 |
+| `stw` / `stwbrx` / rotaciones + `stw` | 2,69 / 2,70 / 4,32 | — |
+| `sth` / `sthbrx` / rotaciones + `sth` | 2,70 / 2,69 / 3,82 | — |
+
+`lwbrx`, `lhbrx`, `stwbrx` y `sthbrx` cuestan **lo mismo que las normales** (no
+son microcódigo). Las rotaciones suman 0,8–1,9 ciclos de throughput y 4–6 de
+latencia.
+
+**Cruces de sector de 32 B** (neto sobre el bucle): `lwz` 57,4; `lwbrx` 57,3;
+`stw` 49,9; `stwbrx` 49,8; `lhz` 51,7; `lhbrx` 51,6 ciclos por acceso: es
+microcódigo (confirma el informe externo). Un acceso **no alineado dentro de un
+sector** (offsets 1, 33, 65, 97) cuesta 2,57, como uno alineado.
+
+**2. Banderas NZCV** (bucle de 7,55 instrucciones ARM por vuelta)
+
+| Estrategia | Ciclos/vuelta | Ciclos por instr. ARM | Sobre la cota |
+|---|---|---|---|
+| sin banderas (cota) | 25,17 | 3,33 | — |
+| (a) completas a cada instrucción | 126,12 | 16,70 | +13,37 |
+| (b) perezosas | **45,37** | **6,01** | **+2,67** |
+| (c) N/Z `cr0`, C `cr1`, V `cr2` | 57,40 | 7,60 | +4,27 |
+| (d) `add.`/`subfc.` + XER.CA (exploratoria) | 49,49 | 6,55 | +3,22 |
+
+**4. Instrucciones** (ciclos por instrucción, **bruto**; add sin punto = 1,54)
+
+| Instrucción | Ciclos | ¿Microcódigo? |
+|---|---|---|
+| `add`, `add.`, `subf.`, `neg.` | 1,54 / 1,67 / 1,55 / 1,67 | no |
+| `addc`, `subfc`, `addc.`, `subfc.` | 1,54 / 1,54 / 1,54 / 1,66 | no |
+| `adde`, `subfe`, `addze` (dependen de XER) | 2,05 | no |
+| `and`, `cntlzw`, `rlwinm`, `extsw` (sin punto) | 1,54 | no |
+| `and.`, `andi.`, `cntlzw.`, `rlwinm.` | 14,5–14,6 (+12,5) | **sí** |
+| `slw`, `sraw` (desplazamiento por registro) | 16,6 (+14,5) | **sí** |
+| `mullw` | 11,48 (+9,4) | lento (no pipeline) |
+| `cmpw`, `cmplw`, `crxor`, `mtocrf` (un campo) | 1,54–1,67 | no |
+| `mfcr` | 26,97 (+24,9) | **sí** |
+| `mtcrf 0xff` (todos los campos) | 20,72 (+18,7) | **sí** |
+
+El informe externo acertó: las formas con punto de **aritmética** y las de
+acarreo son nativas; las de lógica, rotación y `cntlz`, microcódigo (~12,5
+ciclos de más, que cuadra con los «≥ 11» de la guía de Salsa64). La guía de
+Salsa64 (§1.2) las daba todas por microcódigo: ver la corrección en esa
+sección.
+
+Pares «instrucción + salto» (ciclos por par): `add`+`cmpwi`+`beq` 4,12;
+`add.`+`beq` 3,33; `subf.`+`beq` 3,09; `addc.`+`beq` 3,35; con dos nops entre
+`add` y `cmpwi` 6,19. Un salto que lee el CR0 recién escrito por una forma con
+punto **no** paga espera visible.
+
+`mtctr`+`bctr` (contra un salto directo, 18,43 ciclos): 0 instrucciones en
+medio 18,44; 2: 16,39; 4: 18,40; 8: 21,53; 12: 28,81. **No se ve penalización
+por poner `bctr` justo después de `mtctr`** (el informe dice que hacen falta
+~10 ciclos de separación; con este destino fijo y bien predicho no aparece;
+con destinos que cambian, como en un despacho de intérprete, puede aparecer
+como desvío mal predicho y habría que medirlo aparte).
+
+**3. Despacho del intérprete ARM mínimo**
+
+| Despacho | ns/instr. | MIPS guest | Ciclos/instr. |
+|---|---|---|---|
+| `switch` | 60,48 | 16,53 | 193,6 |
+| tabla de punteros a función | 60,52 | 16,52 | 193,7 |
+| `goto` calculado (enhebrado) | 55,92 | 17,88 | 179,0 |
+
+### Decisiones
+
+1. **Memoria de la DS en little-endian con `lwbrx`/`lhbrx`/`stwbrx`/`sthbrx`**
+   (capa `rd/wr 16/32 le`): mismo costo que una carga normal y casi la mitad
+   de latencia que carga + rotaciones (7,2 contra 13,4 ciclos en 32 bits). No
+   se guarda la memoria en big-endian.
+2. **Alineación de 32 bytes del host.** Un acceso que cruza un múltiplo de 32
+   cuesta 50–57 ciclos. Los accesos guest alineados (ARM los exige) nunca
+   cruzan; los no alineados (LDR con rotación, etc.) van por un camino lento,
+   y las estructuras del núcleo (registros, tablas) se alinean. Un acceso no
+   alineado que no cruza sector no cuesta de más.
+3. **Banderas: perezosas (b)** como mecanismo base del intérprete y del
+   recompilador. Ganó en este bucle (6,01 ciclos por instrucción ARM contra
+   6,55 de (d), 7,60 de (c) y 16,70 de (a)). (a) se descarta: serializa ~14
+   instrucciones dependientes. (d) no gana y exige registros guest en la mitad
+   alta (desplazamientos al cargar y guardar). Para el recompilador, además,
+   fusionar cuando se pueda la instrucción que fija banderas con el salto que
+   las consume en el mismo bloque (`cmpw` + `b`, que es la cota) y eliminar
+   banderas muertas. **Reserva:** el bucle tiene 3 consumidores por 7,55
+   instrucciones; en código con más consumos (c) y (d), que consumen gratis,
+   podrían acercarse: reevaluar en la Fase 4 con trazas de juegos reales.
+4. **Qué evitar en el camino caliente:** formas con punto de lógica, rotación y
+   `cntlz` (+12,5), desplazamientos por registro (+14,5), `mfcr` (+25),
+   `mtcrf` de varios campos (+18,7) y `mullw` fuera de los MUL de ARM (+9,4). Sí
+   se pueden usar `add.`, `subf.`, `neg.` y las formas con acarreo. `mtocrf` de
+   un campo es gratis.
+5. **El intérprete solo no alcanza:** 16,5–17,9 MIPS guest (≈ 180–194 ciclos
+   por instrucción) contra ~100 MIPS que pide la DS (ARM9 + ARM7). **El
+   recompilador ARM/Thumb → PPC64 es obligatorio** (como en Salsa64, donde el
+   intérprete también quedó en 8,8–21,2 MIPS). El despacho cambia poco
+   (`goto` calculado +8 %): no es la palanca; el costo está en el resto de la
+   ruta (banderas, estado en memoria y las 26 formas con punto que GCC dejó
+   en el intérprete: `andi.`, `andis.`, `rlwinm.`). Para la Fase 1 sirve
+   tabla de tipos + `goto` calculado.
+6. **Dónde corre el ARM7** (pregunta de la arquitectura): sin cambios por
+   ahora; con ~17 MIPS por intérprete no cabe en el PPE junto al ARM9, así que
+   depende del recompilador (Fase 4) y de 0.7. Se re-evalúa al cierre de la
+   Fase 0.
