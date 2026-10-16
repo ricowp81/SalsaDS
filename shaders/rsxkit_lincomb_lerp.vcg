@@ -1,0 +1,44 @@
+/* SPDX-License-Identifier: MIT */
+/*
+ * rsxkit — vertex program del dibujo 3D con posiciones interpoladas
+ * (rsxkit_vertices_prev, draw3d.c): el de rsxkit_lincomb.vcg con la
+ * posición prev + (position − prev)·lerp.x, prev en TEXCOORD1 (un float4
+ * por vértice en un arreglo aparte; las cuatro coordenadas, también la z: con
+ * la profundidad de position, dos superficies casi a la misma profundidad
+ * se cruzaban en los intermedios). Lo demás, igual que allá:
+ *
+ * position: coordenadas homogéneas en el espacio lógico del destino
+ * (x/w, y/w en píxeles lógicos con la y hacia abajo; z/w en [0, 1]).
+ * space = (2/ancho, 2/alto, 0, 0) lo lleva al espacio de recorte.
+ *
+ * Términos X_j = k[3j] + k[3j+1]·C + k[3j+2]·C.aaaa con C el color del
+ * vértice, en TEXCOORD(j + 1); con niebla (fog.a = 1) el color se escala
+ * por (1 − C.a) y fog.rgb·C.a se suma a los términos que marca fogsel
+ * (uno por componente: fogsel[0] = X0..X3, fogsel[1] = X4..X6). El color
+ * del vértice sale tal cual en COLOR0 para los programas generados.
+ * Coordenadas de textura: uv_i = st · xf[i].xy + xf[i].zw.
+ */
+void main(float4 position : POSITION, float2 st : TEXCOORD0, float4 color : COLOR0, float4 prev : TEXCOORD1,
+	uniform float4 space, uniform float4 xf[2], uniform float4 k[21], uniform float4 fog,
+	uniform float4 fogsel[2], uniform float4 lerp,
+	out float4 oPosition : POSITION, out float4 oColor : COLOR0, out float4 oUV : TEXCOORD0,
+	out float4 oX0 : TEXCOORD1, out float4 oX1 : TEXCOORD2, out float4 oX2 : TEXCOORD3,
+	out float4 oX3 : TEXCOORD4, out float4 oX4 : TEXCOORD5, out float4 oX5 : TEXCOORD6,
+	out float4 oX6 : TEXCOORD7)
+{
+	float4 p = prev + (position - prev) * lerp.x;
+	oPosition = float4(p.x * space.x - p.w, p.w - p.y * space.y, p.z * 2.0 - p.w, p.w);
+	oColor = color;
+	oUV = float4(st * xf[0].xy + xf[0].zw, st * xf[1].xy + xf[1].zw);
+	float4 ca = color.aaaa;
+	float f = fog.a * color.a;
+	float4 keep = float4(1.0 - f, 1.0 - f, 1.0 - f, 1.0);
+	float4 fa = float4(fog.rgb * f, 0.0);
+	oX0 = (k[0] + k[1] * color + k[2] * ca) * keep + fa * fogsel[0].x;
+	oX1 = (k[3] + k[4] * color + k[5] * ca) * keep + fa * fogsel[0].y;
+	oX2 = (k[6] + k[7] * color + k[8] * ca) * keep + fa * fogsel[0].z;
+	oX3 = (k[9] + k[10] * color + k[11] * ca) * keep + fa * fogsel[0].w;
+	oX4 = (k[12] + k[13] * color + k[14] * ca) * keep + fa * fogsel[1].x;
+	oX5 = (k[15] + k[16] * color + k[17] * ca) * keep + fa * fogsel[1].y;
+	oX6 = (k[18] + k[19] * color + k[20] * ca) * keep + fa * fogsel[1].z;
+}
