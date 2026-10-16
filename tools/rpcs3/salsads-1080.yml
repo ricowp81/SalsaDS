@@ -1,0 +1,12 @@
+# Como salsads.yml, pero con la resolución de la consola emulada en 1080p
+# (por omisión RPCS3 solo ofrece 720p): para probar las distribuciones de
+# dos pantallas a 1920×1080.
+Video:
+  Write Color Buffers: true
+  Resolution: 1920x1080
+Net:
+  Internet enabled: Connected
+Miscellaneous:
+  Exit RPCS3 when process finishes: true
+Audio:
+  Renderer: "Null"
