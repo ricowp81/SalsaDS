@@ -10,8 +10,8 @@ vive en `tests/phase0/<nombre>`, su resultado va aquí y la medición, en
 | 0.2 ROMs de prueba propias | hecho (2026-10-16) |
 | 0.3 Microbenchmarks del PPE | hecho (2026-10-16): medido en la PS3 real, decisiones abajo |
 | 0.4 Rasterizador 3D en un SPE | pendiente |
-| 0.5 Composición 2D en un SPE | pendiente |
-| 0.6 Salida de dos pantallas | pendiente |
+| 0.5 Composición 2D en un SPE | construido y verificado (host LE/BE, RPCS3, 2026-10-16); **ms por cuadro pendientes de la PS3 real** |
+| 0.6 Salida de dos pantallas | construido y verificado en RPCS3 a 720p y 1080p (2026-10-16); **60 Hz, sensación de los dos modos del puntero y 1080p pendientes de la PS3 real** |
 | 0.7 Prueba de JIT ARM → PPC | pendiente |
 
 ## 0.1 Esqueleto
@@ -363,3 +363,307 @@ como desvío mal predicho y habría que medirlo aparte).
    ahora; con ~17 MIPS por intérprete no cabe en el PPE junto al ARM9, así que
    depende del recompilador (Fase 4) y de 0.7. Se re-evalúa al cierre de la
    Fase 0.
+
+## 0.5 Composición 2D en un SPE (`tests/phase0/spe-gpu2d`)
+
+Criterio: < 4 ms por cuadro para las dos pantallas en un SPE, y la imagen
+igual a una referencia en C en el host (LE y BE). Estado: **imagen verificada
+en las tres escalas (host LE, host BE, RPCS3); el tiempo en la PS3 real queda
+pendiente** (paquete «SalsaDS 2D», APPID `SLDS00003`; sale `DATO gpu2d …` en
+el log). Los números de RPCS3 no valen para nada y no se usan.
+
+### Qué se implementó (y qué no)
+
+`src/gpu2d/` (código portable; el compositor corre en el SPE y, con kernels
+escalares, en el host):
+
+- 4 fondos en modo texto: 4 y 8 bits por píxel, los 4 tamaños (256², 512×256,
+  256×512, 512²), volteos horizontal y vertical, banco de paleta, base de
+  teselas y de mapa (con los desplazamientos de DISPCNT), desplazamiento.
+- 128 OBJ normales: mapeo de teselas en 1D (con la granularidad de DISPCNT) y
+  en 2D, las 12 formas y tamaños (8×8 … 64×64), volteos, 4 y 8 bits, banco de
+  paleta, prioridad, posición con signo y salto vertical a 256.
+- Prioridades 0–3 (el OBJ delante del fondo de su misma prioridad), color de
+  fondo, pantalla en blanco forzada.
+- **Registro de cambios por línea**: una lista ordenada de (línea, registro,
+  valor) que mueve DISPCNT, BGxCNT, BGxHOFS/VOFS y escribe entradas de la
+  paleta antes de dibujar una línea (los efectos de raster).
+- **No están**: ventanas, mezclas alfa, mosaico, brillo maestro, fondos afines
+  y de mapa de bits, paletas extendidas, OBJ afines, los modos de OBJ
+  semitransparente/ventana/bitmap (se saltan), la capa 3D y captura. El OAM y
+  la VRAM se leen como una foto al empezar el cuadro: las escrituras de VRAM u
+  OAM a mitad de cuadro necesitarán su propio registro de cambios y **no se
+  midieron**. Lo no implementado suma costo (sobre todo mezclas y ventanas, que
+  añaden trabajo por píxel): el criterio de 4 ms se debe volver a mirar cuando
+  existan.
+- Las direcciones de teselas de OBJ en 2D con 256 colores y la envoltura de los
+  bancos son mi lectura de GBATEK; **no las contrasté con melonDS ni con una DS**.
+  La prueba demuestra que el compositor del SPE y la referencia (escrita por
+  separado, ver abajo) dan la misma imagen con el mismo modelo, no que el modelo
+  sea exacto. Para esta fase cuenta el patrón de DMA y el costo, que no dependen
+  de ese detalle.
+
+### Diseño del compositor del SPE
+
+- **VRAM en memoria principal, vista ya resuelta**: fondos de A 512 KB, OBJ de A
+  256 KB, B 128 KB + 128 KB (el núcleo tendrá que resolver los bancos A–I a esa
+  vista por cuadro). Paletas (1 KB), OAM (1 KB) y registro de cambios se traen
+  enteros al arrancar la pantalla (hasta 3072 cambios caben en el local store).
+- **Tubería de dos etapas**: mientras se compone la línea `y`, ya se pidió por
+  DMA lo que necesita la `y + 1`. Es posible porque los registros de todo el
+  cuadro están en el registro de cambios. Etiquetas de DMA exactas (por fondo y
+  ranura, por paridad de línea para OBJ y para la salida) para no esperar de más.
+- **Caché de la fila de teselas de cada fondo**: el mapa (una fila de 64 B por
+  bloque de pantalla) y las 33 teselas de la línea (lista de DMA de 33
+  elementos de 32 o 64 B) solo se traen de nuevo cuando cambia algo que las
+  determina; sin efectos de raster, una vez cada 8 líneas. Dos ranuras por
+  fondo para que la etapa siguiente no pise la línea que se está componiendo.
+  Hay una única espera intermedia por línea nueva (el mapa tiene que llegar
+  antes de saber qué teselas pedir).
+- **OBJ**: por línea, la fila de teselas de cada OBJ que la cruza (≤ 512 B, un
+  `mfc_get`, con envoltura de la región si hace falta). Sin caché entre líneas:
+  la cuenta es una orden de DMA por OBJ-línea visible.
+- **Composición en el dominio del índice de paleta**: vectores de 8 píxeles de
+  16 bits (0–511 = fondos y OBJ, 0xFFFF = transparente). Por tesela: expandir
+  4 u 8 bits a 8 carriles con un `shuffle` y un desplazamiento por carril,
+  comparar con cero, sumar el banco; el desplazamiento fino y la colocación de
+  los OBJ en cualquier columna son `shuffle`s con patrones de una tabla; fundir
+  es un `cmpeq` y un `sel`. El color se resuelve al final, una vez por píxel
+  (paleta ya convertida a RGBA5551). Nada de bucles por píxel en las capas.
+- **Salida**: una línea de 512 B por DMA, doble búfer, RGBA5551 listo para
+  `rsxkit_fb_upload` o para una textura mapeada.
+- **Presupuesto del local store** (medido al enlazar): código 11 848 B, datos
+  800 B, `.bss` 187 024 B (el contexto `gpu2d_ctx` son 186 112 B: OBJ 128 KB,
+  teselas 17 KB, cambios 24 KB, el resto OAM, paletas, línea, mapas y listas);
+  ≈ 199,7 KB en total y **holgura de pila 60 976 B** (`tools/spu-stack.py`,
+  mínimo 4096). Cabe un SPE por pantalla doble; no cabe más trabajo en el mismo
+  SPE sin reducir los búferes de OBJ (128 KB: dos copias de 128 filas de 512 B).
+
+### Verificación
+
+1. **Referencia en C** (`gpu2d_ref.c`): píxel por píxel, sin compartir con el
+   compositor ni la decodificación del OAM ni el cálculo de direcciones.
+2. **Host, LE y BE** (`tools/build.sh test-host`, `tests/unit/test_gpu2d.c`): el
+   compositor con kernels escalares contra la referencia, en las tres escenas
+   fijas y en 60 escenas aleatorias por pantalla (configuración, OAM con afines,
+   desactivados, formas inválidas y modos que no se dibujan, y cambios al azar
+   incluidas la pantalla en blanco y la paleta); huellas FNV-1a de 64 bits de
+   las escenas fijas, **idénticas en LE y BE**; control negativo (un píxel
+   cambiado se detecta) y comprobación de que la imagen no es trivial. LE y BE:
+   0 fallos.
+3. **El SPE de verdad** (RPCS3, y la PS3 al probar): `spe-gpu2d` genera la escena
+   en el PPE, la dibuja con la referencia, manda el trabajo al SPE por spukit y
+   compara las dos pantallas píxel por píxel, otra vez tras repetir el trabajo N
+   veces, y con 6 (RPCS3) o 24 (PS3) escenas aleatorias. Resultado en RPCS3: **0
+   píxeles distintos en las tres escenas y en las 6 aleatorias**
+   (`RESULTADO spe-gpu2d: OK`). Los kernels SIMD solo se prueban aquí y en la PS3.
+
+### Escenas
+
+| Escena | Qué estresa |
+|---|---|
+| `tipica` | 4 fondos de 4 bits (tamaños 256², 512×256, 256², 512²), un efecto de raster en un fondo, 40 OBJ de tamaños variados |
+| `pesada` | los 4 fondos con raster en cada línea (2 de 8 bits), cambios de paleta del color de fondo en cada línea, 128 OBJ de tamaños variados, mezcla 4/8 bits |
+| `extrema` | el peor caso de DMA: la fila de teselas de los 4 fondos cambia **en cada línea** (VOFS y HOFS por línea), 128 OBJ de 64×64 y 8 bits, 2 cambios de paleta por línea |
+
+### Qué mirar en la PS3
+
+Líneas del log (`/dev_hdd0/salsads/spe-gpu2d.log` o UDP 18195):
+
+- `DATO gpu2d <escena> SPE por cuadro (A+B): mediana … ms, mín …, máx … [A …, B …]` y
+  `criterio < 4 ms: SÍ/NO`: es la duración medida por el propio SPE
+  (decrementador) de las dos pantallas juntas. El criterio es la mediana de
+  `tipica` y `pesada`; `extrema` es un peor caso adrede.
+- `contadores`: filas de teselas traídas, esperas por el mapa, filas de OBJ y
+  OBJ-línea dibujados, cambios aplicados (explican el costo).
+- `referencia en el PPE`: lo que tarda el PPE en la referencia píxel por píxel
+  (solo de curiosidad).
+- `RESULTADO spe-gpu2d: OK` solo exige que las imágenes coincidan, no el tiempo.
+
+Pendiente de la PS3: pegar aquí la tabla de medianas y decidir (si `extrema` pasa
+de 4 ms: qué hacer; palancas ya identificadas: caché de filas de OBJ entre
+líneas, una sola espera por línea juntando la del mapa de todos los fondos que
+cambian —ya lo hace— y resolver la paleta con vectores).
+
+### Estimación sin medir [est]
+
+Por conteo de instrucciones del ensamblador, un fondo cuesta del orden de 1100
+instrucciones por línea (33 teselas expandidas y 32 fusiones) y un OBJ ~35 por
+tesela: unos 0,5 ms de fondos y 0,8 ms de OBJ en la escena extrema para las dos
+pantallas, más la resolución de la paleta (~0,25 ms) y las esperas. Se espera
+que `tipica` y `pesada` queden bien por debajo de 4 ms y `extrema` cerca de la
+mitad del margen, pero **es una estimación: lo que manda es la PS3**.
+
+## 0.6 Salida de dos pantallas y entrada (`tests/phase0/dual-screen`)
+
+Criterio: 60 Hz estables en RPCS3 y en la PS3 real, con el tiempo de
+presentación en el log; DS3 → botones de la DS; puntero táctil. Estado:
+**construido, verificado en RPCS3 a 720p y a 1080p; falta la PS3 real**
+(paquete «SalsaDS pantallas», APPID `SLDS00004`).
+
+### Salida
+
+- Dos texturas RGBA5551 de 256×192 por cuadro en memoria principal mapeada al
+  RSX (`rsxkit_map_main`; dos juegos de dos texturas de 96 KB que se turnan
+  con una barrera `rsxkit_fence`), dibujadas como dos quads con
+  `rsxkit_draw_triangles` (color = textura × blanco). Las texturas se
+  rellenan en el PPE con patrones de prueba; en el emulador las escribirá el
+  compositor 2D del SPE (0.5) directamente.
+- Puntero y texto de ayuda: `rsxkit_ui` (cuadros con alfa) sobre las pantallas.
+- Distribuciones (`src/frontend/layout.c`, probadas en LE y BE): **lado a lado**,
+  **una sobre otra**, **grande arriba** y **grande abajo** (la chica a la derecha,
+  alineada por abajo). L2 las cambia. Escala **ajustada** (la mayor, no entera,
+  filtro lineal) o **entera** (múltiplo entero, filtro puntual):
+
+| Salida | Lado a lado | Una sobre otra | Grande + chica |
+|---|---|---|---|
+| 720p ajustada | 2,5× (640×480 cada una) | 1,875× (480×360) | 3,33× + 1,67× |
+| 720p entera | 2× (512×384) | 1× (256×192) | 3× + 2× |
+| 1080p ajustada | 3,75× (960×720) | 2,81× (720×540) | 5× + 2,5× |
+| 1080p entera | 3× (768×576) | 2× (512×384) | 5× + 2× |
+
+  (A 720p una sobre otra con escala entera solo cabe 1×: es la limitación de la
+  escala entera, no un error.)
+- Barrido automático al arrancar: resolución × distribución × escala (16
+  combinaciones, 180 cuadros cada una; 12 en RPCS3). Por combinación escribe
+  `DATO pantallas <res> <distribución> <escala>: intervalo mediana/p95/máx, >20
+  ms, vblanks saltados, espera del flip, trabajo del PPE por cuadro (mediana/p95),
+  60 Hz estable: SÍ/NO` (estable = mediana del intervalo entre 16,18 y 17,18 ms,
+  ningún vblank saltado y ningún cuadro de más de 25 ms). Tras el barrido, modo
+  interactivo.
+- El tiempo de presentación son tres cifras del log: el **intervalo** entre
+  `rsxkit_frame_begin` consecutivos (60 Hz = 16,68 ms), la **espera del flip** (lo
+  que `rsxkit_frame_begin` espera al vsync: el cuadro está listo mucho antes) y el
+  **trabajo del PPE** por cuadro (rellenar texturas + ordenar el dibujo + la
+  interfaz: la parte que no depende del vsync).
+
+### Resultados en RPCS3 (no son mediciones de rendimiento)
+
+- Ambas resoluciones: `tools/rpcs3-run.py dual-screen` (720p) y con
+  `--config tools/rpcs3/salsads-1080.yml` (1080p; RPCS3 solo ofrece una
+  resolución por configuración, por eso el barrido salta la otra con un aviso).
+- **8 combinaciones por resolución, todas con 60 Hz «estable»** por el criterio de
+  arriba (intervalo mediana 16,63–16,80 ms, ningún vblank saltado; trabajo del
+  PPE 0,6–0,8 ms por cuadro): el programa ordena un cuadro bien por debajo del
+  presupuesto. En la PS3 real el vsync y el PPE son otros: falta medir.
+- **Distribución verificada por píxeles**: en cada combinación se lee el búfer
+  trasero y se comprueba que la marca roja de la pantalla de arriba y la azul de
+  la táctil están donde dice la geometría y que la esquina libre es el color de
+  fondo (0 fallos en 16 combinaciones: 8 a 720p y 8 a 1080p).
+- La entrada sintética (el stick derecho da vueltas y R2 toca a ratos) recorre
+  mando → mapeo → puntero → toque → dibujo → pantalla y pinta cientos de píxeles
+  en la pantalla táctil; se ve en las capturas (`dual-screen-dump`, ver
+  `tools/raw-png.py`).
+
+### Entrada: DS3 → DS
+
+| DS3 | DS | | DS3 | DS |
+|---|---|---|---|---|
+| ○ | A | | L1 / R1 | L / R |
+| ✕ | B | | Start / Select | Start / Select |
+| △ | X | | cruceta | cruceta (arriba+abajo e izquierda+derecha se anulan) |
+| □ | Y | | L2 | cambia la distribución |
+| R2 | **botón de toque** | | L3 | recentra (inclinación) / puntero al centro (stick) |
+
+`src/frontend/dspad.{h,c}` no depende de PSL1GHT y se prueba en LE y BE
+(`tests/unit/test_dspad.c`, `test_layout.c`).
+
+### Táctil: puntero, botón de toque y modos
+
+Decidido con el autor (2026-10-16): un puntero visible que solo «toca» mientras
+se mantiene apretado el botón de toque; arrastrar es mover el puntero con el
+botón apretado y soltarlo es levantar el lápiz. Se dibuja una **mira hueca**
+cuando no toca y un **cuadro rojo lleno con aro blanco** cuando toca. El toque
+que llegaría a la DS (x 0–255, y 0–191) es el del puntero sobre la pantalla
+táctil, esté donde esté en la salida.
+
+**Configuración**: `/dev_hdd0/salsads/controles.cfg` (texto, estilo del de
+Salsa64). Si no existe, el programa lo crea con los valores por omisión y lo
+comprueba (`controles.cfg no existía: lo creé…` en el log) para poder bajarlo por
+FTP, editarlo y volver a subirlo; se lee al arrancar. Líneas (mayúsculas o
+minúsculas, `#` comenta):
+
+```
+TOQUE = R2            # botón de toque; cualquier botón del DS3 (R3, L3, CRUZ…), hasta dos
+RECENTRAR = L3
+DISPOSICION = L2
+A = CIRCULO           # los 12 botones de la DS se pueden remapear igual
+PUNTERO = STICK       # o INCLINACION
+```
+
+- **Cambiar el botón de toque a R3**: `TOQUE = R3`. (Nombres del DS3: CRUZ CIRCULO
+  CUADRADO TRIANGULO L1 R1 L2 R2 L3 R3 START SELECT ARRIBA ABAJO IZQUIERDA DERECHA NADA.)
+- **Modo del puntero**: `PUNTERO = STICK` o `PUNTERO = INCLINACION`. En la prueba,
+  además, L1 + R1 con ✕ lo alterna en caliente (sin guardar).
+
+**(a) Stick derecho** (`PUNTERO = STICK`): velocidad proporcional a la inclinación
+del stick con zona muerta radial. `zona_muerta = 12` (% del recorrido),
+`velocidad = 200` (px/s a fondo), `curva = 1.0` (1 = proporcional; > 1, más fino
+cerca del centro). La zona muerta se descuenta (no hay salto al salir de ella).
+
+**(b) Inclinación** (`PUNTERO = INCLINACION`): lee los acelerómetros del Sixaxis
+(`ioPadSetSensorMode`; `SENSOR_X/Y/Z`, 10 bits, centro nominal 512). Inclinar a
+los lados mueve en horizontal y cabecear, en vertical, con los ángulos sacados de
+la **dirección de la gravedad** (no dependen de la escala de los sensores ni de
+cómo se sostenga el control): a los lados = `atan2(lateral, √(gravedad² +
+adelante²))`, cabeceo = `atan2(adelante, |gravedad|)`. La primera postura es el
+centro y **L3 recentra** (la postura actual pasa a ser el centro y el puntero
+vuelve al centro de la pantalla). Filtro paso bajo exponencial sobre los ángulos
+(`filtro_ms = 120`), zona muerta en grados (`zona_muerta_inclinacion = 1.0`),
+`sensibilidad_x/y = 4.0` px por grado, `invertir_x/y`. **El stick derecho sigue
+moviendo el puntero** en este modo: su desplazamiento se suma a la posición dada
+por la inclinación y no se acumula contra el borde. `giroscopio = 0` (apagado):
+si se pone un valor, integra el giro sobre el eje vertical (`SENSOR_G`) con fuga
+de 2 s; es un experimento, el acelerómetro no puede dar el giro de la mano en el
+plano horizontal. Sin sensores (o sin el mando) el modo cae al del stick y la
+interfaz lo dice.
+
+**Suposición de los ejes del Sixaxis, sin verificar**: `eje_lateral = X` (a los
+lados) y `eje_gravedad = Y` (el que lee la gravedad con el control plano,
+suposición mía, ni contrastada con documentación ni con la consola); el
+tercero (Z) es adelante. Si el puntero se mueve por el eje equivocado o al
+revés, se arregla en `controles.cfg` (`eje_lateral`, `eje_gravedad`,
+`invertir_x`, `invertir_y`) sin recompilar. Cada segundo el log trae los
+rangos crudos de los tres ejes y del giro y los ángulos (`sixaxis: …`).
+
+### Cómo se siente cada modo en la consola — **pendiente**
+
+Esto solo se puede decidir con el mando en la mano y no lo pude probar (sin la
+consola a mano). La tabla se llena en la PS3 real; el programa deja los datos para
+no depender solo de la impresión:
+
+| | Stick derecho | Inclinación |
+|---|---|---|
+| Precisión (¿se llega a un píxel de la DS?) | por probar | por probar |
+| Temblor | no aplica | `temblor σ = (x, y) px` del log con el control quieto sobre la mesa |
+| Latencia | un cuadro (16,7 ms) | un cuadro + retardo del filtro |
+| Ajustes que dieron el mejor resultado | | |
+
+- **Temblor**: con el control quieto sobre la mesa y el stick en reposo, el log
+  imprime cada segundo la desviación típica de la posición del puntero
+  (`temblor σ = (x, y) px`); una cifra de σ en píxeles de la DS que se pueda
+  comparar entre ajustes de `filtro_ms` y `zona_muerta_inclinacion`. También hay
+  una línea `sixaxis:` con el rango crudo (min…max) de cada eje, que es el ruido
+  del sensor.
+- **Latencia**: el pad se lee justo después del vsync y el cuadro sale en el
+  siguiente: de la lectura a la pantalla hay un cuadro (16,7 ms) más la salida de
+  video de la tele. El filtro de la inclinación añade su constante de tiempo
+  (`filtro_ms`, 120 ms por omisión: el puntero alcanza el 63 % de un cambio brusco
+  en 120 ms y el 95 % en ~360 ms; 0 lo apaga): es el compromiso temblor/retardo y
+  el primer ajuste que hay que probar. El stick no tiene filtro.
+- **Precisión**: la mejor prueba es el dibujo de la pantalla táctil (lo que un
+  juego recibiría): con el botón de toque apretado se pinta cada (x, y) y se unen
+  con líneas; trazar un círculo o escribir una letra muestra el temblor y la
+  resolución de cada modo. L1 + R1 + □ borra.
+- Qué ajustar si no gusta: `sensibilidad_x/y` (más alto = menos inclinación para
+  cruzar la pantalla; 4 px/grado cruza en ±32°), `filtro_ms`, `zona_muerta_inclinacion`,
+  `invertir_*`, `eje_*`, y `velocidad`/`curva`/`zona_muerta` del stick.
+
+### Qué mirar en la PS3
+
+`/dev_hdd0/salsads/dual-screen.log`: línea de banner con `SLDS00004`; `controles
+…`; `ioPadSetSensorMode(ON) = 0; modo actual 1` (si el modo no pasa a 1, la
+consola no da sensores); `salida WxH`; las 16 líneas `DATO pantallas`;
+`barrido: N combinaciones, M con 60 Hz estable`; después, en el modo interactivo,
+una línea `sixaxis:` por segundo con el puntero en modo inclinación.
+`rsxkit_video_reconfigure(1080p) = -2` significa que la tele no da 1080p.

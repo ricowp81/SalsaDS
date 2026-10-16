@@ -50,3 +50,11 @@ licencia se fija con esa decisión.
 
 Código propio: `tests/roms/src/` (marco `sds`, `hola`, `cpu9` y su modelo de
 ARM, ARM7 mínimo, ícono) y `tools/melonds-run.py`.
+
+Código propio de la Fase 0.5 y 0.6, escrito desde GBATEK (documentación, sin
+copiar código de ningún emulador) y desde las bibliotecas MIT del proyecto:
+`src/gpu2d/` (referencia, compositor SPE/host y escenas sintéticas),
+`src/frontend/{dspad,layout}.{h,c}` (entrada y geometría de las pantallas),
+`tests/phase0/spe-gpu2d` y `tests/phase0/dual-screen`, `tools/raw-png.py`. El
+texto en pantalla usa la fuente 8x13 de X11 (dominio público) que ya trae
+`lib/rsxkit`.

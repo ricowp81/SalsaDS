@@ -33,7 +33,7 @@ Cifras en MB. **Previsto** = estimación de diseño (todavía no hay núcleo);
 | Uso | Previsto | Medido | Notas |
 |---|---|---|---|
 | Framebuffers de pantalla + profundidad | 24 | | A 1080p (`docs/cell-desde-salsa64.md` §4.1) |
-| Dos pantallas de la DS (texturas) | 1 | | 2 × 256×192×4 y sus copias |
+| Dos pantallas de la DS (texturas) | 1 | | 2 × 256×192×4 y sus copias. En la Fase 0.6 viven en memoria principal mapeada (RGBA5551, 2 juegos × 2 × 96 KB = 384 KB), no en GDDR3 |
 | Destinos del 3D a escala interna 2×–4× | por decidir | | Se acota con el tope total de destinos (Salsa64 usa 112 MiB) |
 | Posprocesado / filtros | por decidir | | |
 
@@ -45,4 +45,5 @@ datos, búferes de DMA y pila; la holgura de la pila se mide al enlazar con
 
 | Programa | Código | Datos+búferes | Pila | Notas |
 |---|---|---|---|---|
-| (ninguno todavía) | | | | Fases 0.4 y 0.5 |
+| `spu_gpu2d` (composición 2D de 2 pantallas, Fase 0.5) | 11,8 KB | 187 KB (contexto 186 KB: OBJ 2 × 128 × 512 B = 128 KB, teselas 17 KB, cambios 24 KB, resto 12 KB) | holgura 60 976 B | medido al enlazar (`spu-size`, `tools/spu-stack.py`); ≈ 199,7 KB |
+| (rasterizador 3D, Fase 0.4) | | | | pendiente |

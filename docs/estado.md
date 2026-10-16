@@ -4,6 +4,29 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-16 — Composición 2D en un SPE y salida de dos pantallas (Fases 0.5 y 0.6)
+
+- **0.5** (`tests/phase0/spe-gpu2d`, «SalsaDS 2D», SLDS00003): compositor 2D
+  por líneas en un SPE (4 fondos de texto, 128 OBJ, VRAM por DMA, registro de
+  cambios por línea) y una referencia píxel por píxel. Imágenes idénticas en el
+  host (LE y BE) y en RPCS3 (SPE de verdad); el **tiempo (< 4 ms) falta medirlo
+  en la PS3 real**. Detalle, límites del modelo y la estimación en `fase0.md` 0.5.
+- **0.6** (`tests/phase0/dual-screen`, «SalsaDS pantallas», SLDS00004): dos
+  texturas por cuadro con rsxkit en cuatro distribuciones a 720p y 1080p con
+  escala entera y ajustada (distribución comprobada por píxeles en RPCS3), DS3 →
+  botones de la DS y el puntero táctil (botón de toque mapeable, stick derecho o
+  inclinación del Sixaxis). **Pendiente en la PS3 real**: los 60 Hz, 1080p, y
+  cómo se sienten los dos modos del puntero (precisión, temblor, latencia); los
+  ejes del Sixaxis son una suposición que se corrige en `controles.cfg`.
+- Código nuevo reutilizable: `src/gpu2d/` (referencia, compositor, escenas),
+  `src/frontend/{dspad,layout}.c` (entrada y geometría, sin PSL1GHT),
+  `tools/raw-png.py` (volcados a PNG), `tools/rpcs3/salsads-1080.yml` (RPCS3 a
+  1080p). El logger comprueba ahora que `/dev_hdd0/salsads` existe y lo dice.
+- **APPID duplicado**: `tests/phase0/udplog` ya usaba SLDS00003. Los paquetes de
+  0.5 y 0.6 siguen la asignación pedida (SLDS00003 y SLDS00004); si udplog y
+  spe-gpu2d se instalan en la misma consola, el segundo reemplaza al primero.
+  La Fase 0.4 debe tomar otro (p. ej. SLDS00005).
+
 ## 2026-10-16 — Microbenchmarks del PPE (Fase 0.3)
 
 - `tests/phase0/ppe-bench` (SLDS00001 «SalsaDS bench»): memoria LE con
@@ -60,7 +83,8 @@ APPIDs de SalsaDS: rango `SLDS`, distinto del `SLSA` de Salsa64.
 |---|---|
 | SLDS00001 | `tests/phase0/ppe-bench` («SalsaDS bench») |
 | SLDS00002 | `tests/phase0/empty` |
-| SLDS00003 | `tests/phase0/udplog` |
+| SLDS00003 | `tests/phase0/udplog` (y también `tests/phase0/spe-gpu2d`, «SalsaDS 2D»: ver el aviso de arriba) |
+| SLDS00004 | `tests/phase0/dual-screen` («SalsaDS pantallas») |
 
 Pendiente (preguntas abiertas del plan, de la decisión del autor):
 licencia del proyecto, juegos objetivo, aplicación independiente o núcleo
