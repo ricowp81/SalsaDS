@@ -263,7 +263,7 @@ static void test_tilt(void)
 	struct sds_keys k;
 	int x, y, down;
 	sds_padcfg_default(&c);
-	const char *txt = "PUNTERO = INCLINACION\nzona_muerta_inclinacion = 1\nfiltro_ms = 100\n";
+	const char *txt = "PUNTERO = INCLINACION\nzona_muerta_inclinacion = 1\nfiltro_ms = 100\ninvertir_y = 0\n";
 	CHECK_EQ(sds_padcfg_parse(&c, txt, strlen(txt), NULL, 0), 0);
 	sds_input_init(&in);
 	struct sds_ds3 p = neutral();
@@ -362,8 +362,59 @@ static void test_tilt(void)
 	NEAR(in.x, 128 + 100, 1.5f);
 }
 
+static void test_gyro(void)
+{
+	struct sds_padcfg c;
+	struct sds_input in;
+	struct sds_keys k;
+	sds_padcfg_default(&c);
+	CHECK_EQ(c.invert_y, 1);  /* medido en la PS3 */
+	const char *txt = "PUNTERO = GIRO\ninvertir_y = 0\ngiro_sensibilidad = 2\nfiltro_ms = 0\n";
+	CHECK_EQ(sds_padcfg_parse(&c, txt, strlen(txt), NULL, 0), 0);
+	CHECK_EQ(c.pointer, SDS_POINTER_GYRO);
+	sds_input_init(&in);
+	struct sds_ds3 p = neutral();
+	p.gyro = 520;  /* sesgo de 8 unidades: se calibra y no mueve */
+	settle(&c, &in, &p, 120);
+	NEAR(in.gyro_bias, 520, 0.5f);
+	NEAR(in.x, 128, 0.5f);
+	NEAR(in.y, 96, 0.5f);
+	/* Giro: 50 unidades sobre el sesgo durante 1 s → (50 − 2) × 2 = 96 px. */
+	p.gyro = 570;
+	settle(&c, &in, &p, 60);
+	NEAR(in.x, 128 + 96, 1.5f);
+	/* El cabeceo se mueve por diferencia y el puntero se queda donde llegó. */
+	sds_input_init(&in);
+	p = neutral();
+	settle(&c, &in, &p, 60);
+	set_tilt(&p, 0, 5);
+	settle(&c, &in, &p, 5);
+	set_tilt(&p, 0, 10);
+	settle(&c, &in, &p, 60);
+	NEAR(in.y, 96 + 40, 3.0f);  /* de 0° (control en reposo sin gravedad) a 10°: 10 × 4 px */
+	/* Trinquete: sin el botón apretado no se mueve; al apretarlo sí. */
+	const char *cl = "TRINQUETE = R1\n";
+	sds_padcfg_parse(&c, cl, strlen(cl), NULL, 0);
+	sds_input_init(&in);
+	p = neutral();
+	settle(&c, &in, &p, 60);
+	p.gyro = 570;
+	settle(&c, &in, &p, 30);
+	NEAR(in.x, 128, 0.5f);
+	p.buttons = 1u << SDS_DS3_R1;
+	settle(&c, &in, &p, 30);
+	CHECK(in.x > 128 + 40);
+	/* L3 recentra. */
+	p.buttons = 1u << SDS_DS3_L3;
+	p.gyro = in.gyro_bias > 0 ? 512 : 512;
+	sds_pad_map(&c, &in, &p, &k);
+	sds_pointer_update(&c, &in, &p, 1.0f / 60.0f, &k);
+	NEAR(in.x, 128, 1.0f);
+}
+
 void test_dspad(void)
 {
+	test_gyro();
 	test_mapping();
 	test_config();
 	test_touch_semantics();

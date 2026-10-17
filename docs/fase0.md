@@ -633,7 +633,7 @@ TOQUE = R2            # botón de toque; cualquier botón del DS3 (R3, L3, CRUZ�
 RECENTRAR = L3
 DISPOSICION = L2
 A = CIRCULO           # los 12 botones de la DS se pueden remapear igual
-PUNTERO = STICK       # o INCLINACION
+PUNTERO = STICK       # o INCLINACION o GIRO
 ```
 
 - **Cambiar el botón de toque a R3**: `TOQUE = R3`. (Nombres del DS3: CRUZ CIRCULO
@@ -662,6 +662,31 @@ si se pone un valor, integra el giro sobre el eje vertical (`SENSOR_G`) con fuga
 de 2 s; es un experimento, el acelerómetro no puede dar el giro de la mano en el
 plano horizontal. Sin sensores (o sin el mando) el modo cae al del stick y la
 interfaz lo dice.
+
+**Medido en la consola (2026-10-16)**: con `PUNTERO = INCLINACION` el eje vertical
+salía **invertido**; por eso `invertir_y = 1` es ahora el valor por omisión (el
+horizontal estaba bien con `invertir_x = 0`).
+
+**(c) Giro** (`PUNTERO = GIRO`, nuevo, relativo como un ratón o el giroscopio de
+la Switch/DualSense): rotar el control mueve el puntero; STICK e INCLINACION
+siguen. El DS3 solo tiene **un** giroscopio, de guiñada (`SENSOR_G` en `padData`
+de PSL1GHT, 16 bits con rango 0–0x3FF y centro nominal 512, según su cabecera;
+la escala en °/s no la conozco). Por eso: (1) **horizontal** = guiñada integrada
+(`(g − sesgo) × giro_sensibilidad` px/s con `giro_zona_muerta`), con el sesgo
+calibrado al arrancar (promedio de ~0,75 s: **dejar el control quieto al abrir
+el programa o al cambiar de modo**) y recalibrado (media móvil de 1 s) mientras
+está quieto (giroscopio a ±4 del sesgo y acelerómetro sin cambios); (2)
+**vertical** = *cambio* del cabeceo del acelerómetro entre cuadros, filtrado
+(`filtro_ms`) y con `sensibilidad_y`/`invertir_y`; (3) **trinquete** opcional
+`TRINQUETE = R1`: el puntero solo se mueve mientras se mantiene ese botón (como
+levantar el ratón; `NADA` = siempre); L3 recentra; el stick derecho también
+suma. El signo y la escala de la guiñada no están medidos: `invertir_x` y
+`giro_sensibilidad`. **Datos del log** cada 10 s en este modo: sesgo
+calibrado, media y σ del giroscopio, y la **deriva horizontal** en px; con el
+control quieto el log dice `giroscopio UTIL` (σ ≤ 3 unidades y deriva ≤ 40 px en
+10 s) o `INSERVIBLE (… quedarse con INCLINACION)`; si el control se movió, dice
+que la deriva no vale. L1 + R1 + ✕ cicla stick → inclinación → giro. Sin medir
+en la consola.
 
 **Suposición de los ejes del Sixaxis, sin verificar**: `eje_lateral = X` (a los
 lados) y `eje_gravedad = Y` (el que lee la gravedad con el control plano,

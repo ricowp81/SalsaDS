@@ -348,7 +348,10 @@ static void draw_ui(const struct sds_rect r[2], int out_w, int out_h, const osd_
 	rsxkit_ui_text(12, 32, line, 1.5f, 0xC0FFC0FF, 0);
 	sds_padcfg_summary(&cfg, line, sizeof line);
 	rsxkit_ui_text(12, 54, line, 1.2f, 0xC0D0FFFF, 0);
-	if (cfg.pointer == SDS_POINTER_TILT)
+	if (cfg.pointer == SDS_POINTER_GYRO)
+		snprintf(line, sizeof line, "giro: %s  sesgo %d  (calibra %d/%d)", pad_present && ds3.sensors_ok ? "sensores" : "SIN SENSORES",
+			 (int)input.gyro_bias, input.gyro_cal_n, SDS_GYRO_CAL_FRAMES);
+	else if (cfg.pointer == SDS_POINTER_TILT)
 		snprintf(line, sizeof line, "inclinacion: %s  roll %d pitch %d (grados, filtrado)",
 			 pad_present && ds3.sensors_ok ? "sensores" : "SIN SENSORES", (int)(input.f_roll - input.c_roll),
 			 (int)(input.f_pitch - input.c_pitch));
@@ -399,6 +402,13 @@ static struct {
 	int still_ok;
 	int amin[3], amax[3];
 	int gmin, gmax;
+	/* modo GIRO: ventana de 10 s */
+	uint64_t t10;
+	double g_sum, g_sum2;
+	uint32_t g_n;
+	int still10;
+	int a10min[3], a10max[3];
+	float drift0;
 } jit;
 
 static void jitter_reset(void)
@@ -412,6 +422,13 @@ static void jitter_reset(void)
 	}
 	jit.gmin = 1024;
 	jit.gmax = -1;
+	jit.t10 = jit.t0;
+	jit.still10 = 1;
+	jit.drift0 = input.gyro_dx_net;
+	for (int i = 0; i < 3; i++) {
+		jit.a10min[i] = 1024;
+		jit.a10max[i] = -1;
+	}
 }
 
 static void jitter_sample(void)
@@ -436,6 +453,43 @@ static void jitter_sample(void)
 		jit.gmin = ds3.gyro;
 	if ((int)ds3.gyro > jit.gmax)
 		jit.gmax = ds3.gyro;
+	if (cfg.pointer == SDS_POINTER_GYRO && pad_present && ds3.sensors_ok) {
+		/* Ruido y deriva del giroscopio con el control quieto (10 s). */
+		if (abs((int)ds3.rx - 128) > 20 || abs((int)ds3.ry - 128) > 20 || input.gyro_cal_n < SDS_GYRO_CAL_FRAMES)
+			jit.still10 = 0;
+		for (int i = 0; i < 3; i++) {
+			if ((int)ds3.accel[i] < jit.a10min[i])
+				jit.a10min[i] = ds3.accel[i];
+			if ((int)ds3.accel[i] > jit.a10max[i])
+				jit.a10max[i] = ds3.accel[i];
+		}
+		jit.g_n++;
+		jit.g_sum += ds3.gyro;
+		jit.g_sum2 += (double)ds3.gyro * ds3.gyro;
+		if (now_us() - jit.t10 >= 10000000 && jit.g_n > 100) {
+			const double m = jit.g_sum / jit.g_n, v = jit.g_sum2 / jit.g_n - m * m, sd = sqrt(v > 0 ? v : 0);
+			int moved = 0;
+			for (int i = 0; i < 3; i++)
+				if (jit.a10max[i] - jit.a10min[i] > 8)
+					moved = 1;
+			const float drift = input.gyro_dx_net - jit.drift0;
+			const int quiet = jit.still10 && !moved;
+			salsads_log("giroscopio (10 s): sesgo calibrado %d.%02d, media %d.%02d, σ %u.%02u unidades, deriva horizontal %d px; "
+				    "%s%s", (int)input.gyro_bias, (int)(fabsf(input.gyro_bias) * 100) % 100, (int)m,
+				    (int)(fabs(m) * 100) % 100, (unsigned)sd, (unsigned)(sd * 100) % 100, (int)drift,
+				    quiet ? "control quieto: " : "el control se movió, la deriva no vale: ",
+				    quiet ? (fabsf(drift) <= 40.0f && sd <= 3.0 ? "giroscopio UTIL" : "giroscopio INSERVIBLE (ruido o deriva: quedarse con INCLINACION)") : "repetir quieto");
+			jit.t10 = now_us();
+			jit.g_n = 0;
+			jit.g_sum = jit.g_sum2 = 0;
+			jit.still10 = 1;
+			jit.drift0 = input.gyro_dx_net;
+			for (int i = 0; i < 3; i++) {
+				jit.a10min[i] = 1024;
+				jit.a10max[i] = -1;
+			}
+		}
+	}
 	if (now_us() - jit.t0 >= 1000000 && jit.n > 10) {
 		const double mx = jit.sx / jit.n, my = jit.sy / jit.n;
 		const double vx = jit.sxx / jit.n - mx * mx, vy = jit.syy / jit.n - my * my;
@@ -446,7 +500,7 @@ static void jitter_sample(void)
 			    jit.amin[0], jit.amax[0], jit.amin[1], jit.amax[1], jit.amin[2], jit.amax[2], jit.gmin, jit.gmax,
 			    (int)input.raw_roll, (int)input.raw_pitch, (int)input.f_roll, (int)input.f_pitch, (int)input.x,
 			    (int)input.y, (unsigned)sdx, (unsigned)(sdx * 100) % 100, (unsigned)sdy, (unsigned)(sdy * 100) % 100,
-			    jit.n, cfg.pointer != SDS_POINTER_TILT ? " (modo stick: el temblor no aplica)" : jit.still_ok ? " (stick quieto: con el control sobre la mesa, mide el ruido)" : "");
+			    jit.n, cfg.pointer == SDS_POINTER_STICK ? " (modo stick: el temblor no aplica)" : jit.still_ok ? " (stick quieto: con el control sobre la mesa, mide el ruido)" : "");
 		jitter_reset();
 	}
 }
@@ -852,8 +906,11 @@ int main(void)
 			frame_times ft;
 			const uint32_t cmd = render_frame("interactivo", &ft, 0);
 			if (cmd & 1u) {
-				cfg.pointer = cfg.pointer == SDS_POINTER_TILT ? SDS_POINTER_STICK : SDS_POINTER_TILT;
-				salsads_log("modo del puntero: %s", cfg.pointer == SDS_POINTER_TILT ? "inclinación" : "stick");
+				cfg.pointer = (uint8_t)((cfg.pointer + 1) % 3);
+				input.gyro_cal_n = 0;
+				input.gyro_cal_sum = 0;
+				input.tilt_init = 0;
+				salsads_log("modo del puntero: %s", cfg.pointer == SDS_POINTER_GYRO ? "giro" : cfg.pointer == SDS_POINTER_TILT ? "inclinación" : "stick");
 				jitter_reset();
 			}
 			if (cmd & 2u)

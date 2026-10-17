@@ -36,7 +36,13 @@
  *   sensibilidad_y = 4.0  píxeles por grado, cabeceo
  *   invertir_x = 0   invertir_y = 0
  *   eje_lateral = X  eje_gravedad = Y   ejes del Sixaxis (X, Y o Z)
- *   giroscopio = 0.0  píxeles por grado de giro sobre el eje vertical (0 = no se usa)
+ *   giroscopio = 0.0  modo inclinación: px por (unidad cruda · s) de guiñada (0 = no se usa)
+ *   PUNTERO = GIRO    rotar el control mueve el puntero, relativo (como un ratón):
+ *     horizontal = guiñada del giroscopio integrada (sesgo calibrado al arrancar y
+ *     recalibrado con el control quieto), vertical = cambio del cabeceo entre cuadros
+ *   giro_sensibilidad = 1.0   px por (unidad cruda · s) de guiñada
+ *   giro_zona_muerta = 2      unidades crudas alrededor del sesgo que se ignoran
+ *   TRINQUETE = R1    (modo GIRO) el puntero solo se mueve mientras se mantiene; NADA = siempre
  *
  * Nombres del DS3: CRUZ CIRCULO CUADRADO TRIANGULO L1 R1 L2 R2 L3 R3 START
  * SELECT ARRIBA ABAJO IZQUIERDA DERECHA NADA. Mayúsculas o minúsculas da igual.
@@ -47,6 +53,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define SDS_GYRO_CAL_FRAMES 45  /* ~0,75 s quieto al arrancar para medir el sesgo */
 #define SDS_TOUCH_W 256
 #define SDS_TOUCH_H 192
 
@@ -82,11 +89,11 @@ enum sds_key {
 enum sds_in_id {
 	SDS_IN_A, SDS_IN_B, SDS_IN_X, SDS_IN_Y, SDS_IN_L, SDS_IN_R,
 	SDS_IN_START, SDS_IN_SELECT, SDS_IN_UP, SDS_IN_DOWN, SDS_IN_LEFT, SDS_IN_RIGHT,
-	SDS_IN_TOUCH, SDS_IN_RECENTER, SDS_IN_LAYOUT,
+	SDS_IN_TOUCH, SDS_IN_RECENTER, SDS_IN_LAYOUT, SDS_IN_CLUTCH,
 	SDS_IN_COUNT,
 };
 
-enum sds_pointer_mode { SDS_POINTER_STICK, SDS_POINTER_TILT };
+enum sds_pointer_mode { SDS_POINTER_STICK, SDS_POINTER_TILT, SDS_POINTER_GYRO };
 enum sds_axis { SDS_AXIS_X, SDS_AXIS_Y, SDS_AXIS_Z };
 
 struct sds_padcfg {
@@ -101,7 +108,9 @@ struct sds_padcfg {
 	float filter_ms;
 	float tilt_deadzone;            /* grados */
 	float sens_x, sens_y;           /* px por grado */
-	float gyro_gain;                /* px por grado de giro (0 = apagado) */
+	float gyro_gain;                /* modo inclinación: px por (unidad cruda · s) del giroscopio (0 = apagado) */
+	float gyro_sens;                /* modo GIRO: px por (unidad cruda · s) de guiñada */
+	float gyro_dz;                  /* modo GIRO: unidades crudas que se ignoran alrededor del sesgo */
 };
 
 void sds_padcfg_default(struct sds_padcfg *cfg);
@@ -119,6 +128,7 @@ const char *sds_ds3_button_name(unsigned button);
 struct sds_keys {
 	uint16_t keys;
 	uint8_t touch_held;     /* el botón de toque está apretado */
+	uint8_t clutch_held;    /* trinquete apretado (1 siempre si no hay botón asignado) */
 	uint8_t recenter, layout;  /* flancos: 1 solo en el cuadro en que se aprieta */
 };
 
@@ -136,6 +146,14 @@ struct sds_input {
 	int tilt_init;
 	/* últimos ángulos crudos, para el log */
 	float raw_roll, raw_pitch;
+	/* modo GIRO */
+	float gyro_bias;        /* sesgo del giroscopio (unidades crudas) */
+	float gyro_cal_sum;
+	int gyro_cal_n;         /* muestras de la calibración inicial (hasta SDS_GYRO_CAL_FRAMES) */
+	int still_frames;       /* cuadros seguidos con el control quieto */
+	float prev_f_pitch;
+	uint16_t prev_accel[3];
+	float gyro_dx_net;      /* desplazamiento horizontal neto causado por el giroscopio, px (diagnóstico) */
 };
 
 void sds_input_init(struct sds_input *in);

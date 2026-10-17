@@ -18,7 +18,7 @@ static const char *const ds3_names[SDS_DS3_NBUTTONS] = {
 
 static const char *const input_names[SDS_IN_COUNT] = {
 	"A", "B", "X", "Y", "L", "R", "START", "SELECT", "ARRIBA", "ABAJO", "IZQUIERDA", "DERECHA",
-	"TOQUE", "RECENTRAR", "DISPOSICION",
+	"TOQUE", "RECENTRAR", "DISPOSICION", "TRINQUETE",
 };
 
 static const char *const axis_names[3] = { "X", "Y", "Z" };
@@ -38,13 +38,14 @@ void sds_padcfg_default(struct sds_padcfg *c)
 		[SDS_IN_UP] = SDS_DS3_UP, [SDS_IN_DOWN] = SDS_DS3_DOWN,
 		[SDS_IN_LEFT] = SDS_DS3_LEFT, [SDS_IN_RIGHT] = SDS_DS3_RIGHT,
 		[SDS_IN_TOUCH] = SDS_DS3_R2, [SDS_IN_RECENTER] = SDS_DS3_L3,
-		[SDS_IN_LAYOUT] = SDS_DS3_L2,
+		[SDS_IN_LAYOUT] = SDS_DS3_L2, [SDS_IN_CLUTCH] = SDS_DS3_NONE,
 	};
 	memcpy(c->source, def, sizeof def);
 	memset(c->source2, SDS_DS3_NONE, sizeof c->source2);
 	c->pointer = SDS_POINTER_STICK;
 	c->deadzone = 12;
-	c->invert_x = c->invert_y = 0;
+	c->invert_x = 0;
+	c->invert_y = 1;  /* medido en la PS3: con la inclinación el eje vertical sale invertido */
 	c->axis_lateral = SDS_AXIS_X;
 	c->axis_gravity = SDS_AXIS_Y;
 	c->speed = 200.0f;
@@ -54,6 +55,8 @@ void sds_padcfg_default(struct sds_padcfg *c)
 	c->sens_x = 4.0f;
 	c->sens_y = 4.0f;
 	c->gyro_gain = 0.0f;
+	c->gyro_sens = 1.0f;
+	c->gyro_dz = 2.0f;
 }
 
 /* ---- Texto ------------------------------------------------------------- */
@@ -192,6 +195,9 @@ int sds_padcfg_parse(struct sds_padcfg *c, const char *text, size_t len, char *e
 			} else if (same_word(val, vlen, "INCLINACION")) {
 				c->pointer = SDS_POINTER_TILT;
 				ok = 1;
+			} else if (same_word(val, vlen, "GIRO")) {
+				c->pointer = SDS_POINTER_GYRO;
+				ok = 1;
 			}
 		} else if (same_word(key, klen, "EJE_LATERAL") || same_word(key, klen, "EJE_GRAVEDAD")) {
 			const int ax = find_name(val, vlen, axis_names, 3);
@@ -224,6 +230,10 @@ int sds_padcfg_parse(struct sds_padcfg *c, const char *text, size_t len, char *e
 					c->invert_x = f != 0.0f;
 				else if (same_word(key, klen, "INVERTIR_Y"))
 					c->invert_y = f != 0.0f;
+				else if (same_word(key, klen, "GIRO_SENSIBILIDAD"))
+					c->gyro_sens = clampf(f, 0.01f, 100.0f);
+				else if (same_word(key, klen, "GIRO_ZONA_MUERTA"))
+					c->gyro_dz = clampf(f, 0.0f, 50.0f);
 				else if (same_word(key, klen, "GIROSCOPIO"))
 					c->gyro_gain = clampf(f, -10.0f, 10.0f);
 				else
@@ -283,10 +293,12 @@ int sds_padcfg_format(const struct sds_padcfg *c, char *buf, size_t size)
 			PUT("    # la postura actual pasa a ser el centro (y el puntero vuelve al centro)");
 		else if (k == SDS_IN_LAYOUT)
 			PUT("    # cambia la distribución de las pantallas");
+		else if (k == SDS_IN_CLUTCH)
+			PUT("    # modo GIRO: el puntero solo se mueve mientras se mantiene (NADA = siempre)");
 		PUT("\n");
 	}
-	PUT("PUNTERO = %s    # STICK (stick derecho) o INCLINACION (Sixaxis; el stick derecho también mueve)\n",
-	    c->pointer == SDS_POINTER_TILT ? "INCLINACION" : "STICK");
+	PUT("PUNTERO = %s    # STICK (stick derecho), INCLINACION (Sixaxis, absoluto) o GIRO (rotar mueve, relativo)\n",
+	    c->pointer == SDS_POINTER_GYRO ? "GIRO" : c->pointer == SDS_POINTER_TILT ? "INCLINACION" : "STICK");
 	PUT("zona_muerta = %u    # stick derecho: %% del recorrido que se ignora\n", c->deadzone);
 	PUTF("velocidad", c->speed, 0, "stick derecho: píxeles por segundo a fondo");
 	PUTF("curva", c->curve, 2, "1 = proporcional; mayor = más fino cerca del centro");
@@ -298,7 +310,9 @@ int sds_padcfg_format(const struct sds_padcfg *c, char *buf, size_t size)
 	PUT("eje_lateral = %s    # eje del Sixaxis que mide la inclinación a los lados (X, Y o Z)\n",
 	    axis_names[c->axis_lateral]);
 	PUT("eje_gravedad = %s    # eje que lee la gravedad con el control plano\n", axis_names[c->axis_gravity]);
-	PUTF("giroscopio", c->gyro_gain, 2, "píxeles por (unidad cruda · s) del giroscopio; 0 = no se usa");
+	PUTF("giroscopio", c->gyro_gain, 2, "modo inclinación: px por (unidad cruda · s) de guiñada; 0 = no se usa");
+	PUTF("giro_sensibilidad", c->gyro_sens, 2, "modo GIRO: px por (unidad cruda · s) de guiñada");
+	PUTF("giro_zona_muerta", c->gyro_dz, 1, "modo GIRO: unidades crudas alrededor del sesgo que se ignoran");
 #undef PUT
 #undef PUTF
 	return (int)used;
@@ -311,7 +325,7 @@ int sds_padcfg_summary(const struct sds_padcfg *c, char *buf, size_t size)
 			c->source2[SDS_IN_TOUCH] < SDS_DS3_NBUTTONS ? "+" : "",
 			c->source2[SDS_IN_TOUCH] < SDS_DS3_NBUTTONS ? sds_ds3_button_name(c->source2[SDS_IN_TOUCH]) : "",
 			sds_ds3_button_name(c->source[SDS_IN_RECENTER]), sds_ds3_button_name(c->source[SDS_IN_LAYOUT]),
-			c->pointer == SDS_POINTER_TILT ? "inclinacion" : "stick");
+			c->pointer == SDS_POINTER_GYRO ? "giro" : c->pointer == SDS_POINTER_TILT ? "inclinacion" : "stick");
 }
 
 /* ---- Botones ----------------------------------------------------------- */
@@ -354,6 +368,8 @@ void sds_pad_map(const struct sds_padcfg *c, struct sds_input *in, const struct 
 		keys &= (uint16_t) ~((1u << SDS_KEY_LEFT) | (1u << SDS_KEY_RIGHT));
 	out->keys = keys;
 	out->touch_held = (now >> SDS_IN_TOUCH) & 1u;
+	out->clutch_held = c->source[SDS_IN_CLUTCH] == SDS_DS3_NONE && c->source2[SDS_IN_CLUTCH] == SDS_DS3_NONE
+				   ? 1u : (uint8_t)((now >> SDS_IN_CLUTCH) & 1u);
 	out->recenter = (uint8_t)(((now & ~in->prev_inputs) >> SDS_IN_RECENTER) & 1u);
 	out->layout = (uint8_t)(((now & ~in->prev_inputs) >> SDS_IN_LAYOUT) & 1u);
 	in->prev_inputs = now;
@@ -456,6 +472,57 @@ void sds_pointer_update(const struct sds_padcfg *c, struct sds_input *in, const 
 		in->off_y += step_limited(base_y + in->off_y, dy, maxy);
 		in->x = clampf(base_x + in->off_x, 0.0f, maxx);
 		in->y = clampf(base_y + in->off_y, 0.0f, maxy);
+	} else if (c->pointer == SDS_POINTER_GYRO && pad->sensors_ok) {
+		/* Relativo, como un ratón: guiñada integrada (horizontal) y cambio del
+		 * cabeceo entre cuadros (vertical). */
+		float roll, pitch;
+		tilt_angles(c, pad, &roll, &pitch);
+		in->raw_roll = roll;
+		in->raw_pitch = pitch;
+		if (!in->tilt_init) {
+			in->f_roll = roll;
+			in->f_pitch = in->prev_f_pitch = pitch;
+			in->tilt_init = 1;
+			memcpy(in->prev_accel, pad->accel, sizeof in->prev_accel);
+		}
+		const float alpha = c->filter_ms <= 0.0f ? 1.0f : 1.0f - expf(-dt * 1000.0f / c->filter_ms);
+		in->f_pitch += alpha * (pitch - in->f_pitch);
+		const float g = (float)pad->gyro;
+		float gx = 0.0f, gy = 0.0f;
+		if (in->gyro_cal_n < SDS_GYRO_CAL_FRAMES) {
+			/* Calibración inicial: el sesgo es el promedio con el control quieto. */
+			in->gyro_cal_sum += g;
+			in->gyro_cal_n++;
+			in->gyro_bias = in->gyro_cal_sum / (float)in->gyro_cal_n;
+		} else {
+			/* Quieto: giroscopio dentro de ±4 del sesgo y acelerómetro sin cambios. */
+			int still = fabsf(g - in->gyro_bias) <= 4.0f;
+			for (int i = 0; i < 3; i++)
+				if (abs((int)pad->accel[i] - (int)in->prev_accel[i]) > 3)
+					still = 0;
+			in->still_frames = still ? in->still_frames + 1 : 0;
+			if (in->still_frames >= 10)
+				in->gyro_bias += (1.0f - expf(-dt / 1.0f)) * (g - in->gyro_bias);
+			const float w = dead(g - in->gyro_bias, c->gyro_dz);
+			gx = w * c->gyro_sens * dt;
+			gy = dead(in->f_pitch - in->prev_f_pitch, 0.02f) * c->sens_y;
+			if (c->invert_x)
+				gx = -gx;
+			if (c->invert_y)
+				gy = -gy;
+			in->gyro_dx_net += gx;
+			if (!keys->clutch_held)
+				gx = gy = 0.0f;  /* trinquete: «con el ratón levantado» */
+		}
+		memcpy(in->prev_accel, pad->accel, sizeof in->prev_accel);
+		in->prev_f_pitch = in->f_pitch;
+		if (keys->recenter) {
+			in->x = SDS_TOUCH_W / 2.0f;
+			in->y = SDS_TOUCH_H / 2.0f;
+			in->gyro_dx_net = 0.0f;
+		}
+		in->x = clampf(in->x + gx + dx, 0.0f, maxx);
+		in->y = clampf(in->y + gy + dy, 0.0f, maxy);
 	} else {
 		if (keys->recenter) {
 			in->x = SDS_TOUCH_W / 2.0f;
