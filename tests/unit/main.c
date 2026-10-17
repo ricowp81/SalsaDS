@@ -15,6 +15,8 @@ void test_ppe_bench(void);
 void test_gpu2d(void);
 void test_dspad(void);
 void test_layout(void);
+void test_r3d(void);
+void test_r3d_selftest(void);
 
 int main(void)
 {
@@ -27,6 +29,8 @@ int main(void)
 	test_gpu2d();
 	test_dspad();
 	test_layout();
+	test_r3d_selftest();
+	test_r3d();
 	printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);
 	return check_failed ? 1 : 0;
 }

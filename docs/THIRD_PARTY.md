@@ -58,3 +58,13 @@ copiar código de ningún emulador) y desde las bibliotecas MIT del proyecto:
 `tests/phase0/spe-gpu2d` y `tests/phase0/dual-screen`, `tools/raw-png.py`. El
 texto en pantalla usa la fuente 8x13 de X11 (dominio público) que ya trae
 `lib/rsxkit`.
+## Documentación consultada (sin código)
+
+| Fuente | Para qué | Notas |
+|---|---|---|
+| GBATEK (Martin Korth), secciones del 3D de la DS | `tests/phase0/spe-raster3d`: campos de TEXIMAGE_PARAM y PLTT_BASE, formatos de textura (directo A1BGR5, paletas de 16 y 256 con el índice 0 transparente), expansión de 5 a 6 bits, fórmulas de modulación y de mezcla alfa | Solo la descripción del hardware; no se copió código de ningún emulador |
+| Documentación del SPU (intrínsecos de spu-gcc en `spu_internals.h` del toolchain) | `r3d_vec.h`: `spu_re` es `fi(frest)`; recíproco con un paso de Newton | Parte del toolchain (ps3toolchain) |
+
+El rasterizador de `tests/phase0/spe-raster3d` (núcleo, referencia, escena y
+programa SPU) es código propio; usa `lib/spukit` como biblioteca.
+

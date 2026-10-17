@@ -9,7 +9,7 @@ vive en `tests/phase0/<nombre>`, su resultado va aquí y la medición, en
 | 0.1 Esqueleto del repositorio | hecho (2026-10-16) |
 | 0.2 ROMs de prueba propias | hecho (2026-10-16) |
 | 0.3 Microbenchmarks del PPE | hecho (2026-10-16): medido en la PS3 real, decisiones abajo |
-| 0.4 Rasterizador 3D en un SPE | pendiente |
+| 0.4 Rasterizador 3D en un SPE | hecho (2026-10-16): medido en la PS3 real, **criterio cumplido** (4,19 ms), decisión abajo |
 | 0.5 Composición 2D en un SPE | medido en la PS3 real (2026-10-16): imagen correcta, **criterio < 4 ms NO cumplido** con las dos pantallas en un SPE (4,31 / 5,59 / 8,46 ms); salidas anotadas abajo |
 | 0.6 Salida de dos pantallas | **60 Hz estables en la PS3 real** a 720p y 1080p (16/16 combinaciones); sensación de los modos del puntero pendiente |
 | 0.7 Prueba de JIT ARM → PPC | pendiente |
@@ -364,6 +364,328 @@ como desvío mal predicho y habría que medirlo aparte).
    depende del recompilador (Fase 4) y de 0.7. Se re-evalúa al cierre de la
    Fase 0.
 
+## 0.4 Rasterizador 3D en SPEs (`tests/phase0/spe-raster3d`)
+
+Estado: **medido en la PS3 real** el 2026-10-16 con el paquete `SalsaDS raster`
+(APPID `SLDS00002`, el mismo de `tests/phase0/empty`, que solo se corrió en
+RPCS3) compilado desde `255b0d2`; log completo (166 líneas,
+`RESULTADO spe-raster3d: OK`) en `docs/datos/spe-raster3d-255b0d2-ps3.log`.
+Los tiempos de RPCS3 no valen. **Criterio cumplido: 4,19 ms a 1× con 2048
+triángulos en 2 SPEs (objetivo < 8 ms).**
+
+Criterio del plan: ms por cuadro en la PS3 real con N = 500, 1000 y 2048
+triángulos, con 1 y 2 SPEs, a 1×, 2× y 4×; objetivo **< 8 ms a 1× con 2048
+triángulos en 2 SPEs** (si no, RSX para el 3D y SPEs solo para el 2D).
+
+### Qué dibuja
+
+Una escena sintética (`r3d_scene.c`, solo enteros: la misma en la Mac, en
+qemu y en la PS3) de N triángulos ya transformados, con textura y color de
+vértice, a 256×192 y a 2× (512×384) y 4× (1024×768) de resolución interna:
+
+- área media 3·256·192/N px²: la escena cubre la pantalla 3,6–4 veces sea cual
+  sea N (más que una escena típica de la DS); con N = 500 los triángulos son
+  grandes y con 2048, chicos (~90 px²);
+- w entre 1 y 6 por vértice (perspectiva), z de 24 bits, 25 % translúcidos
+  (alfa 6–26; uno de cada 8 escribe profundidad), vértices hasta 32 px fuera
+  de la pantalla;
+- 12 texturas de la DS en la VRAM, little-endian como en la DS (directas
+  A1BGR5, de paleta de 256 y de 16 colores; 32×32, 64×64 y 64×32; con texeles
+  transparentes, repetidas o recortadas por eje, offsets alineados a 8 y no a
+  16), 25 KB de VRAM y 88 KB ya decodificadas. Variante con 24 texturas
+  (176 KB decodificadas) para ver la caché desbordada;
+- cada triángulo en su propia capa de z (permutación al azar, poca
+  pendiente): no hay cruces ni empates de profundidad, así que qué triángulo
+  se ve en cada píxel no depende del redondeo y se puede comparar exacto.
+
+### Diseño elegido y por qué
+
+**Entrada por lotes.** El PPE publica **un trabajo de spukit por SPE y por
+cuadro** (`struct r3d_job`, 88 bytes: dónde están la lista, la VRAM, el
+cuadro y un área de trabajo del SPE; escala, unidad y reparto). La lista es un
+arreglo de `struct r3d_tri` de 64 bytes (lo que daría el motor de geometría
+de la DS: x/y en 12.4, z de 24 bits, w en 20.12, s/t en 1.11.4, color BGR555,
+alfa, TEXIMAGE_PARAM y PLTT_BASE) en orden de dibujo. El SPE la trae en lotes
+de 32 triángulos (2 KB) con doble búfer. Nada por triángulo pasa por el PPE.
+
+**Setup en el SPE, no en el PPE.** El PPE es el recurso escaso de la
+arquitectura (las dos CPUs de la DS no caben en el intérprete: 0.3). La
+pasada 1 del SPE calcula, para cada triángulo que toca alguna de sus
+unidades, las tres funciones de borde en enteros y los planos de 7 atributos
+en flotante (un recíproco de 4 carriles para 1/w de los tres vértices y
+1/área), y deja el registro de 192 bytes en memoria principal (área propia de
+cada SPE: 384 KB) y la caja del triángulo en unidades en el local store (4 ×
+2 bytes). Con 2 SPEs cada uno hace el setup de todo lo que toca sus unidades
+(con bandas alternas, casi todo): se duplica a cambio de no sincronizar SPEs.
+
+**Recorrido por unidades de 4096 píxeles.** La unidad es una **banda de
+líneas** a lo ancho (256×16 a 1×, 512×8 a 2×, 1024×4 a 4×) o un **tile** de
+256×16. Color (32 bits) y profundidad (24 bits en 32) de la unidad viven en
+el local store mientras se dibuja; **la profundidad nunca va a memoria
+principal** y el color sale con un solo DMA de 16 KB (o una lista de 16 filas
+en un tile), con doble búfer. Por unidad: limpiar, armar la lista de
+triángulos que la tocan en orden de dibujo (comparando 8 cajas por vez),
+traer sus registros con listas de DMA en lotes de 32 (doble búfer), dibujar,
+sacar. Reparto entre 2 SPEs **por filas de unidades** (bandas de líneas):
+alternas (equilibra la carga sin conocer la escena) o mitades (menos setup
+duplicado). Se miden las dos, y bandas contra tiles a 2× y 4× (a 4× la banda
+de 4 líneas hace que cada triángulo caiga en ~3 veces más unidades:
+unidad·triángulo 31 649 contra 11 018 con N = 2048).
+
+**Qué es entero y qué es flotante.** Lo que decide qué píxel se dibuja va en
+enteros: bordes con 4 bits de subpíxel y la regla de arriba-izquierda,
+recortes, caja. La cobertura es exacta en el SPE, el PPE y el host. Los
+atributos (z, q = 1/w, s·q, t·q y (color+1)·q) van en **flotante de 4
+carriles**, un grupo de 4 píxeles alineado por vector, con un recíproco por
+grupo para la corrección de perspectiva: el SPU hace 4 fma por ciclo y su
+entero de 32 bits no tiene multiplicación (son 5 instrucciones); el flotante
+del SPU redondea hacia cero, pero eso solo mueve el color en un texel de
+borde. Las líneas se acotan con la intersección de sus tres bordes (con un
+píxel de margen) y se recorren de a **dos grupos por vuelta** (dos cadenas
+independientes, para llenar los dos tubos del SPU con latencias de 6–7
+ciclos). Direccionamiento sin desplazamientos por píxel: s se interpola como
+(s + 2048)·4 y t como (t + 2048)·4·ancho, y el desplazamiento del texel en
+bytes sale con dos `and` y un `or`. Los atributos se evalúan desde una base
+que depende solo del triángulo: cualquier reparto (1 o 2 SPEs, bandas o
+tiles) da los mismos bits.
+
+**Caché de texturas.** Texturas enteras **ya decodificadas a 32 bits por
+texel** ((r6+1), (g6+1), (b6+1), (a5+1): la modulación y la mezcla salen con
+`shufb` y `mpyu`, sin decodificar por píxel) en 28 páginas de 4 KB (112 KB);
+clave = offset, tamaño, formato y transparencia del índice 0 (más la paleta);
+reemplazo de la corrida de páginas usada hace más tiempo. Se trae por DMA en
+trozos de 2 KB desde cualquier alineación y se decodifica al llegar (formatos
+directo, paleta de 16 y de 256; los demás, sin soporte todavía, salen
+blancos y se cuentan). Se vacía al empezar cada cuadro (un emulador llevaría
+versión por banco de VRAM; así la medida incluye la carga de todas las
+texturas en cada cuadro). Con 12 texturas cada SPE trae cada una una vez por
+cuadro; con 24, como cada unidad vuelve a recorrer la lista en orden de
+dibujo, el LRU se desborda en cada unidad (1178 fallos y 2,9 MB de VRAM por
+cuadro a 1× en un SPE): ver «Riesgos».
+
+**Presupuesto del local store** (cabecera de `spu_main.c`, medido al
+enlazar): código 27,3 KB, datos 0,8 KB, bss 202,1 KB (caché de texturas
+112, color 2 × 16, profundidad 16, cajas 16, registros 2 × 6, triángulos 2 ×
+2, lista 4 KB…), pila con 25,6 KB libres; la cadena más honda (`_start →
+main → r3d_frame → setup`) usa 2,5 KB: **holgura 23,1 KB** (el enlace falla
+por debajo de 8 KB, `raster_STACK_MIN`). spu-gcc integra `spukit_run` y el
+manejador, así que no hay llamadas por puntero que declarar.
+
+**Instrucciones por vuelta del bucle interno** (2 grupos = 8 píxeles,
+`spu-objdump` del binario; par = tubo par, impar = cargas, `shufb`, saltos):
+
+| Variante | Instrucciones | Par | Impar |
+|---|---|---|---|
+| opaco, textura repetida | 196 | 119 | 65 |
+| opaco, «clamp» en algún eje | 214 | 135 | 66 |
+| translúcido, repetida | 248 | 160 | 77 |
+| translúcido, «clamp» | 266 | 174 | 78 |
+
+Por grupo de 4 píxeles opaco: 7 fma de atributos, recíproco (frest + fi + 1
+paso de Newton), 5 fm, 6 conversiones, 4 lecturas de texel (lqx + rotqby y
+ensamblado), modulación con 4 `mpyu`, prueba de z, `selb` y 2 `stqx`. Cota
+de tubo par: ~60 ciclos por grupo, ~15 por píxel.
+
+### Fidelidad con la DS (qué se aproxima)
+
+Lo que se respeta porque cambia el costo: textura con corrección de
+perspectiva, color de vértice, modulación de la DS
+(((texel+1)·(vértice+1)−1)/64 en 6 bits), alfa por polígono por alfa del
+texel, alfa 0 no se dibuja, mezcla de translúcidos ((fuente·(a+1) +
+destino·(31−a))/32, sin mezclar sobre alfa 0, alfa = máximo), translúcidos
+después de los opacos, z-buffer de 24 bits con prueba «menor que»,
+translúcidos que no escriben profundidad salvo con su bandera, texturas de la
+VRAM en su formato y orden de bytes.
+
+Lo que se aproxima o falta (Fase 3): la regla de cobertura y la
+interpolación exactas de la DS (la DS usa coordenadas enteras de pantalla y
+su propia precisión para la perspectiva; aquí hay subpíxel y flotante), el
+orden de los translúcidos por Y (aquí, el orden de la lista), w-buffer (costaría
+lo mismo: w ya se calcula por píxel), espejado de texturas, los formatos
+A3I5, A5I3, 4 colores y comprimido, niebla, toon/highlight, edge marking,
+antialias, polígonos de sombra, reglas de id de polígono en translúcidos,
+imagen de fondo y el límite de polígonos por línea.
+
+### Verificación
+
+- **Referencia en C** (`r3d_ref.c`): escrita para leerse, no para correr;
+  recorre la caja de cada triángulo píxel a píxel con bordes en enteros de 64
+  bits, atributos baricéntricos en doble y cada texel leído directo de la
+  VRAM (sin caché ni decodificación previa). Misma semántica que el núcleo.
+- **Prueba unitaria** (`tests/unit/test_r3d.c`, LE en la Mac con ASan/UBSan y
+  BE en qemu-ppc64): el mismo núcleo que corre en el SPE, con una E/S de
+  memcpy que copia cada DMA recién al esperarlo (si el núcleo leyera un búfer
+  antes de esperar o lo reescribiera antes de que salga, la imagen saldría
+  mal) y cuenta alineaciones y tamaños inválidos. Escenas 1× N = 500 y 2048,
+  1× con 24 texturas (desalojos), 2× N = 1000 y 4× N = 500; repartos de 1, 2
+  y 3 «SPEs», alternas y mitades, bandas y tiles. Resultado en LE y en BE:
+  **modo id idéntico a la referencia** (bordes, regla de arriba-izquierda,
+  z-buffer, orden, recortes, reparto y DMA); **color**: 99,96 % de píxeles
+  idénticos, 0,02–0,04 % «lejos» (un texel vecino por redondeo en el borde
+  entre texeles; tope de la prueba 0,1 %); **todos los repartos dan los
+  mismos bits**; con 12 texturas, una carga por textura y SPE.
+- **Autoprueba de `r3d_vec.h`**: las funciones con intrínsecos del SPU
+  (recíproco, `mpyu`/`mpyh`, `shufb`, `gb`, comparaciones) no se ejercitan en
+  el host; el programa las corre en cada SPE y las compara con las genéricas
+  del PPE (enteros iguales; recíproco con error relativo ≤ 1e-6). La puso ahí
+  un error real: `spu_re` de spu-gcc **ya es `fi(frest(x))`**, y un `si_fi`
+  de más dejaba el recíproco en ~12 bits: en RPCS3, texturas con ruido (47 %
+  de píxeles lejos) y capas de z invertidas en 17 píxeles. Con el arreglo:
+  0,89e-7.
+- **RPCS3** (`tools/rpcs3-run.py spe-raster3d`, con el candado compartido con
+  Salsa64): `RESULTADO spe-raster3d: OK`; las 45 configuraciones y las 4 de
+  la caché desbordada con el modo id idéntico a la referencia del PPE, color
+  99,95–99,96 % idéntico (0,03–0,04 % lejos) y el mismo hash en todos los
+  repartos de cada escena. Deja la imagen de 1× N = 2048 en
+  `/dev_hdd0/salsads/spe-raster3d-1x-2048.ppm`.
+
+### Estimación antes de medir **[diseño]** (contra lo medido)
+
+Los conteos (grupos, líneas, unidad·triángulo) son exactos y salieron iguales
+en el host, RPCS3 y la PS3; los ciclos por vuelta eran una suposición (~160 por
+par de grupos, ~500 por setup). N = 2048, ms por cuadro:
+
+| Escala | 1 SPE estimado | 1 SPE medido | 2 SPEs estimado | 2 SPEs medido |
+|---|---|---|---|---|
+| 1× banda | ~3,5 | 6,76 | ~2 | **4,19** (alternas) / 4,25 (mitades) |
+| 2× banda / tile | ~8 | 15,17 / 14,33 | ~4,5 | 8,38 / 7,96 |
+| 4× banda / tile | ~27 / ~24 | 42,82 / 37,64 | ~14 / ~13 | 22,20 / 19,61 |
+
+La estimación se quedó corta ×1,6–2: **lo medido cuesta el doble.** Del
+desglose por SPE (1×, N = 2048): el dibujo costó 4,42 ms con 93 188 grupos →
+152 ciclos por grupo de 4 píxeles (304 por vuelta de 2 grupos, contra 160
+supuestos; el bucle de 196 instrucciones no llena los dos tubos y hay esperas
+por las cadenas de latencia y las cargas del texel), y el setup 1,20 ms con
+1969 triángulos → ~1950 ciclos por triángulo (contra 500: la división, la
+conversión de 7 atributos y los DMA de salida pesan más de lo supuesto). Aun
+así el criterio se cumple con casi el doble de margen.
+
+### Resultados (PS3 real, `255b0d2`)
+
+ms por cuadro, mediana de 9 tras 2 de calentamiento (mínimo y máximo difieren
+< 1 %, salvo un máximo de 4,52 en 1× N = 2048 alternas). Autoprueba de los dos
+SPEs: enteros iguales al PPE, recíproco 0,89e-7 (igual que en RPCS3). Escena
+de 12 texturas.
+
+| Escala | N | 1 SPE banda | 2 SPEs banda alternas | 2 SPEs banda mitades | 1 SPE tile | 2 SPEs tile alternas | 2 SPEs tile mitades |
+|---|---|---|---|---|---|---|---|
+| 1× | 500 | 3,63 | 2,15 | 2,20 | — | — | — |
+| 1× | 1000 | 4,64 | 2,80 | 2,82 | — | — | — |
+| 1× | 2048 | 6,76 | **4,19** | 4,25 | — | — | — |
+| 2× | 500 | 9,53 | 5,09 | 5,29 | 9,26 | 4,96 | 5,16 |
+| 2× | 1000 | 11,20 | 6,08 | 6,18 | 10,69 | 5,83 | 5,91 |
+| 2× | 2048 | 15,17 | 8,38 | 8,59 | 14,33 | 7,96 | 8,15 |
+| 4× | 500 | 30,26 | 15,45 | 16,10 | 28,38 | 14,53 | 15,04 |
+| 4× | 1000 | 33,36 | 17,16 | 17,51 | 30,10 | 15,54 | 15,82 |
+| 4× | 2048 | 42,82 | 22,20 | 22,81 | 37,64 | 19,61 | 20,09 |
+
+(A 1× el tile de 256 es la banda.) Con 24 texturas (caché desbordada), N =
+2048: 1× 42,22 (1 SPE) y **22,65** (2 SPEs alternas) contra 4,19 con 12; 2×
+101,84 y **52,36** contra 8,38. El mismo núcleo escalar en el PPE (1× N =
+2048): 50,46 ms, 7,5× más lento que 2 SPEs; la referencia de `r3d_ref.c`
+tarda 237 ms por cuadro a 1× y 930 a 2×.
+
+Desglose por SPE, 1× N = 2048 (ms): 1 SPE, total 6,75 = setup 1,20 + listas
+0,08 + dma 0,02 + texturas 0,33 + dibujo 4,42 + salida 0,02; 2 SPEs
+alternas, total 4,18 = setup 1,20 + listas 0,04 + dma 0,01 + texturas 0,33 +
+dibujo 2,24 + salida 0,01. 4× N = 2048 tile alternas: 19,60 = setup 1,21 +
+listas 0,53 + dma 0,11 + texturas 0,33 + dibujo 16,17 + salida 0,17. Con 24
+texturas a 1× (1 SPE): texturas **35,40** de 42,22 ms (1178 fallos, 2913 KB
+de VRAM por cuadro).
+
+Lectura:
+
+1. **A 1× sobra margen:** 4,19 ms con 2048 triángulos y 2,15 con 500.
+2. **A 2× va al límite con 2 SPEs** (7,96–8,38 ms con N = 2048): sirve a 60 Hz
+   solo si el 3D se queda con casi todo el cuadro. **A 4× no cabe en 2
+   SPEs** (19,6–22,2 ms, más que los 16,7 ms de un cuadro): harían falta ~3
+   SPEs o un bucle interno más rápido.
+3. **Escala casi lineal con los SPEs:** 2 SPEs dan ×1,6 a 1× (el setup,
+   1,20 ms, se duplica: 29 % del tiempo) y ×1,8–1,9 a 2× y 4×.
+4. **Alternas gana a mitades** por 1–4 % (mejor equilibrio; el setup que
+   ahorran las mitades no se nota).
+5. **Tile gana a banda** a 2× (−5 %) y a 4× (−12 %): la banda de 4 líneas a 4×
+   mete cada triángulo en ~3 veces más unidades (unidad·triángulo 31 649
+   contra 11 018) y las listas pesan (0,53 ms).
+6. **El costo es el dibujo** (66–82 %), no el DMA (< 3 %) ni las listas; con
+   el doble búfer las esperas de DMA son despreciables.
+
+**Imagen de la consola** (`spe-raster3d-1x-2048.ppm`): contra la de RPCS3 del
+mismo programa, 49 145 de 49 152 píxeles idénticos, 1 cerca y 6 lejos (texel
+vecino por redondeo del SPU real contra el de RPCS3); contra la del host,
+49 115 idénticos, 9 cerca y 28 lejos (0,06 %, dentro de la tolerancia de
+0,5 %). La imagen es la esperada.
+
+### Decisión
+
+1. **El 3D en SPEs es viable:** 4,19 ms contra el objetivo de 8 a 1× con 2048
+   triángulos en 2 SPEs. A 1× no hace falta el RSX para el 3D; la alternativa
+   del RSX queda solo para resoluciones internas de 4× (o 2× si el 2D y el
+   audio comparten los SPEs), a decidir en la Fase 5.
+2. **Reparto:** bandas alternas a 1×; tiles de 256 de ancho, alternos por
+   filas de unidades, a 2× y 4×.
+3. **Primera decisión de la Fase 3: la caché de texturas desbordada.** Con 24
+   texturas el tiempo se multiplica ×5,4 a 1× (22,65 contra 4,19 ms) y ×6,2 a
+   2×; el 84 % del tiempo de 1 SPE son texturas que se vuelven a traer y
+   decodificar (1178 fallos por cuadro). Es el riesgo que más amenaza el
+   objetivo con juegos reales (cientos de KB de texturas). Opciones, por
+   medir antes de escribir el motor 3D: (a) guardar la textura en su formato
+   original con la paleta decodificada aparte (2–8× menos local store, un
+   `lqx` más por texel); (b) agrupar por textura o usar unidades más altas
+   para recorrer menos veces la lista; (c) decodificación vectorizada de 4
+   texeles por instrucción; (d) precarga de la siguiente textura mientras se
+   dibuja (hoy el DMA y la decodificación son síncronos).
+4. **Palancas del bucle interno** si hace falta 2× o 4×: el dibujo cuesta 152
+   ciclos por grupo, con una cota del tubo par de ~60. Candidatas: cargas del
+   texel (4 `lqx` + `rotqby`), un recíproco cada dos grupos, la conversión de z
+   y el setup duplicado (29 % a 1×).
+
+### Qué mirar al correrlo en la PS3
+
+1. La primera línea del log (`/dev_hdd0/salsads/spe-raster3d.log`, o UDP
+   18195): `spe-raster3d <versión> (SalsaDS raster, SLDS00002)`, y la
+   segunda: la carpeta `/dev_hdd0/salsads` existe y el log se escribe.
+2. `DATO autoprueba SPE0/SPE1`: enteros iguales al PPE y el error del
+   recíproco en el hardware real (en RPCS3, 0,89e-7).
+3. `RESULTADO spe-raster3d: OK`. Si hay `FALLO`, la línea dice qué escena,
+   qué reparto y cuántos píxeles: en modo id es un error de verdad (cobertura,
+   z, DMA, reparto); en color, ver si el porcentaje lejos supera el 0,5 %.
+4. **El criterio**: `DATO r3d 1x N=2048 12tex 2spe banda alternas` (y
+   `mitades`): ms por cuadro, mediana de 9 tras 2 de calentamiento. Objetivo
+   < 8 ms.
+5. Las demás `DATO r3d …` (1×, 2× y 4×; banda y tile; 1 y 2 SPEs) y, por SPE,
+   el reparto `setup + listas + dma + texturas + dibujo + salida`: si el
+   setup duplicado pesa (alternas contra mitades), si la banda de 4 líneas a
+   4× pierde contra el tile, si hay esperas de DMA (`dma`) o de texturas.
+6. `DATO r3d 1x N=2048 PPE`: el mismo núcleo en el PPE (sin AltiVec), para
+   comparar.
+7. La caché desbordada (24 texturas): cuánto suman los fallos.
+8. Bajar también `spe-raster3d-1x-2048.ppm` y compararla con la del host.
+
+### Si no se alcanza el objetivo
+
+La alternativa del plan: el 3D en el RSX (con `rsxkit_draw_triangles` y
+fragment programs de `fpgen` para la modulación y la mezcla de la DS) y los
+SPEs solo para el 2D, aceptando perder exactitud (las reglas de cobertura, el
+z/w-buffer de 24 bits, el orden de translúcidos y el edge marking de la DS no
+se reproducen bit a bit en el RSX) y pagando la lectura de vuelta para la
+captura de pantalla (`DISPCAPCNT`). Antes de llegar ahí, por orden de
+palanca: más SPEs para el 3D (hay 6; el 2D y el audio piden uno cada uno),
+z en flotante (sin `cfltu` por píxel), saltar grupos sin cobertura, setup sin
+duplicar (dividido entre SPEs) y el w-buffer.
+
+### Riesgos que deja
+
+- **Texturas que no caben en la caché.** Con texeles de 32 bits caben 28 K
+  texeles (112 KB). Una escena de la DS con 200 KB de VRAM de texturas en 4 y
+  8 bits son 0,5–1,6 MB decodificados. Con la lista recorrida en orden por
+  cada unidad, un LRU desbordado vuelve a traer todo en cada unidad. Opciones
+  para la Fase 3: guardar el formato original con la paleta (2–8 veces menos
+  local store, a cambio de un segundo `lqx` por texel), unidades más altas
+  para recorrer menos veces la lista, o decodificar vectorizado.
+- La exactitud de la DS (regla de cobertura, precisión de la perspectiva, z y
+  w de 24 bits) sube el costo por píxel; el flotante del SPU sirve de
+  estimación inicial para una división entera exacta, pero falta medirlo.
 ## 0.5 Composición 2D en un SPE (`tests/phase0/spe-gpu2d`)
 
 Criterio: < 4 ms por cuadro para las dos pantallas en un SPE, y la imagen
@@ -575,6 +897,14 @@ Paquete «SalsaDS pantallas» (`06ab2d0`), log del autor: `ioPadSetSensorMode(ON
 mediana 16,66–16,67 ms, p95 ≤ 16,84, máx ≤ 16,86, 0 cuadros de más de 20 ms, 0
 vblanks saltados, espera del flip ~15,6 ms y trabajo del PPE 1,05–1,07 ms por
 cuadro. Criterio de 60 Hz cumplido.
+
+**Medido con «SalsaDS pantallas giro» (2026-10-16)**: con la inclinación el eje
+vertical está bien con `invertir_y = 1` (ahora el valor por omisión), σ del puntero
+0,20–0,34 px con el control quieto y el giroscopio quieto entre 510 y 514 alrededor
+de 512. El modo GIRO todavía no se probó en la consola (el log solo registró el
+cambio a inclinación). **Un DualSense conectado a la PS3**: funcionan los botones
+pero **no los sensores** (el sistema no se los pasa al homebrew por libpad; leerlos
+exigiría USB crudo, sin verificar): los modos de inclinación y giro son del DS3.
 
 El log de esa corrida terminó en «modo interactivo» sin líneas `sixaxis:`: el
 `PUNTERO` era `STICK` (el valor por omisión) y esas líneas solo se escribían en

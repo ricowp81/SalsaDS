@@ -4,6 +4,26 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-16 — Rasterizador 3D en SPEs (Fase 0.4)
+
+- `tests/phase0/spe-raster3d` («SalsaDS raster», SLDS00002): escena sintética
+  de 500, 1000 y 2048 triángulos con textura de la VRAM (por DMA) y color de
+  vértice, z-buffer de 24 bits, dibujada por 1 o 2 SPEs a 1×, 2× y 4×, por
+  bandas de líneas o tiles. Diseño, verificación y qué mirar en
+  `docs/fase0.md` §0.4.
+- Verificado: el mismo núcleo en el host (LE y BE) contra una referencia en C
+  (modo id idéntico; color 99,96 % idéntico; todos los repartos con los mismos
+  bits) y en RPCS3 (`RESULTADO … OK`).
+- **Medido en la PS3 real (paquete de `255b0d2`): criterio cumplido.** 1× N =
+  2048 en 2 SPEs: 4,19 ms (< 8); 2×: 7,96 ms; 4×: 19,61 ms (no cabe en 2
+  SPEs). Medida ×1,6–2 sobre la estimación. Caché de texturas desbordada: ×5,4
+  más lenta, primera decisión de la Fase 3. Detalle en `docs/fase0.md` §0.4,
+  `perf-log.md` y `docs/datos/`. **Fase 0.4 cerrada.**
+- Encontrado: `spu_re` de spu-gcc ya incluye el `fi`; uno más arruina el
+  recíproco. El programa ahora autoprueba en cada SPE las funciones con
+  intrínsecos contra el PPE.
+- Queda como riesgo para la Fase 3: texturas que no caben decodificadas en el
+  local store (con 24 texturas, la caché se vacía en cada unidad).
 ## 2026-10-16 — Composición 2D en un SPE y salida de dos pantallas (Fases 0.5 y 0.6)
 
 - **0.5** (`tests/phase0/spe-gpu2d`, «SalsaDS 2D», SLDS00003): compositor 2D
@@ -25,7 +45,7 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 - **APPID duplicado**: `tests/phase0/udplog` ya usaba SLDS00003. Los paquetes de
   0.5 y 0.6 siguen la asignación pedida (SLDS00003 y SLDS00004); si udplog y
   spe-gpu2d se instalan en la misma consola, el segundo reemplaza al primero.
-  La Fase 0.4 debe tomar otro (p. ej. SLDS00005).
+  La Fase 0.4 (spe-raster3d) usa SLDS00002, que también tiene `empty`; el siguiente libre es SLDS00005 (pantallas giro usó SLDS00006).
 
 ## 2026-10-16 — Microbenchmarks del PPE (Fase 0.3)
 
@@ -82,9 +102,11 @@ APPIDs de SalsaDS: rango `SLDS`, distinto del `SLSA` de Salsa64.
 | APPID | Programa |
 |---|---|
 | SLDS00001 | `tests/phase0/ppe-bench` («SalsaDS bench») |
-| SLDS00002 | `tests/phase0/empty` |
+| SLDS00002 | `tests/phase0/spe-raster3d` («SalsaDS raster»); también `tests/phase0/empty`, que solo se corre en RPCS3 |
 | SLDS00003 | `tests/phase0/udplog` (y también `tests/phase0/spe-gpu2d`, «SalsaDS 2D»: ver el aviso de arriba) |
 | SLDS00004 | `tests/phase0/dual-screen` («SalsaDS pantallas») |
+| SLDS00006 | `dual-screen` con otro nombre («SalsaDS pantallas giro», modo GIRO) |
+| SLDS00007 | `tests/phase0/jit-arm` (0.7) |
 
 Pendiente (preguntas abiertas del plan, de la decisión del autor):
 licencia del proyecto, juegos objetivo, aplicación independiente o núcleo
