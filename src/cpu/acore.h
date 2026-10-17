@@ -152,6 +152,9 @@ void acore_set_irq(struct acore *c, int level);
 void acore_set_fiq(struct acore *c, int level);
 /* Pone la CPU en HALT (SWI Halt de la ARM7, espera de interrupción de CP15 en la ARM9). */
 void acore_halt(struct acore *c);
+/* Despierta la CPU de HALT sin levantar la línea de IRQ: en la DS el HALT termina cuando IE & IF != 0
+ * aunque IME o el bit I del CPSR enmascaren la interrupción; la línea (acore_set_irq) es IME & IE & IF. */
+void acore_wake(struct acore *c);
 
 /* Dirección de la próxima instrucción. */
 static inline uint32_t acore_pc(const struct acore *c)

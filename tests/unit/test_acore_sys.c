@@ -309,6 +309,15 @@ static void test_halt_and_time(enum acore_kind kind)
 	CHECK_EQ(T.c.halted, 0);
 	CHECK_EQ(R(0), 1);
 	CHECK_EQ(T.c.cpsr & 0x1F, ACORE_MODE_SYS);
+	/* acore_wake despierta sin IRQ: la instrucción siguiente se ejecuta */
+	tm_soft(&T);
+	acore_halt(&T.c);
+	acore_run(&T.c, 50);
+	CHECK_EQ(R(0), 0);
+	acore_wake(&T.c);
+	acore_run(&T.c, 52);
+	CHECK(R(0) >= 1);
+	CHECK_EQ(T.c.halted, 0);
 	/* con la IRQ desenmascarada, despierta y entra */
 	tm_soft(&T);
 	T.c.cpsr &= ~ACORE_I;

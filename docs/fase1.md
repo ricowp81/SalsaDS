@@ -64,6 +64,9 @@ Interfaz pensada para el recompilador de la Fase 4 (`acore.h`):
   `c->cycles += n`. `acore_run(c, hasta)` ejecuta hasta ese ciclo; `acore_step` una
   instrucción. No es exacto en ciclos (no-objetivo del plan); la Fase 1.2 lo afina con
   el mapa de memoria.
+- Interrupciones: `acore_set_irq` / `acore_set_fiq` ponen la línea (en la DS, IME & IE & IF);
+  `acore_halt` / `acore_wake` ponen y quitan el HALT (que termina con IE & IF != 0 aunque
+  IME o el bit I enmascaren la IRQ: el mapa de la 1.2 llama a `acore_wake` en ese caso).
 - HLE de la BIOS: `swi_hook(c, comentario)`; si devuelve distinto de cero, la SWI se da
   por atendida y no se toma la excepción (el comentario de la SWI es `insn & 0xFFFFFF`
   en ARM y `insn & 0xFF` en Thumb; la función de la BIOS es `>> 16` en ARM).

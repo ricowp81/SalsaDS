@@ -200,6 +200,12 @@ void acore_halt(struct acore *c)
 	update_attn(c);
 }
 
+void acore_wake(struct acore *c)
+{
+	c->halted = 0;
+	update_attn(c);
+}
+
 /* ---- ejecución ----------------------------------------------------------------- */
 
 ALWAYS_INLINE void step_one(struct acore *c)
