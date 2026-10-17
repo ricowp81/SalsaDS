@@ -15,6 +15,7 @@ Cifras en MB. **Previsto** = estimación de diseño (todavía no hay núcleo);
 | RAM principal de la DS | 4 | | Una copia, little-endian |
 | WRAM compartida + WRAM del ARM7 + ITCM/DTCM | 0,2 | | 32 KB + 64 KB + 32 KB + 16 KB |
 | VRAM (9 bancos A–I) | 0,7 | | ~656 KB |
+| Intérpretes de CPU (`src/cpu`): 2 × `struct acore` (520 B) + tablas de despacho (80 KB) + memoria de ITCM y DTCM (48 KB) | 0,15 | | Fase 1.1; código ≈ 68 KB en el segmento de texto |
 | Tablas de páginas de punteros (sin fastmem) | 0,5 | | Por regiones; VRAM por bancos de 16 KB o más |
 | Cartucho (ROM) | 128 | | Hasta 512 MB de ROM física; tope práctico por decidir. Fuera del heap de newlib, en páginas de 1 MB (`docs/cell-desde-salsa64.md` §5) |
 | Caché del recompilador ARM → PPC64 | 32 | | Techo útil: `bl` alcanza ±32 MB (Fase 4). La prueba de la Fase 0.7 usa 4 MB (cola NOBITS del segmento de texto: se descuenta de la memoria de usuario) |

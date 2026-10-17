@@ -51,6 +51,8 @@ licencia se fija con esa decisión.
 Código propio: `tests/roms/src/` (marco `sds`, `hola`, `cpu9` y su modelo de
 ARM, ARM7 mínimo, ícono) y `tools/melonds-run.py`.
 
+Código propio de la Fase 1.1: `src/cpu/` (intérpretes ARM7/ARM9), `src/host/` (corredor de ROMs, máquina mínima y banco de los intérpretes), `tests/unit/test_acore_*.c` y `acore_tm.h`, `tests/roms/src/cpuarm/` y `tests/roms/src/common/sds7.c`; `tools/cpurun.sh`. Los grupos de `tests/roms/src/cpu9/` se movieron a `groups.h` para compartirlos con `cpuarm`. Sin código de melonDS, NooDS ni DeSmuME: melonDS se usa solo como emulador de referencia (se lanza y se lee su memoria por GDB con `tools/melonds-run.py`).
+
 Código propio de la Fase 0.5 y 0.6, escrito desde GBATEK (documentación, sin
 copiar código de ningún emulador) y desde las bibliotecas MIT del proyecto:
 `src/gpu2d/` (referencia, compositor SPE/host y escenas sintéticas),
@@ -62,6 +64,8 @@ texto en pantalla usa la fuente 8x13 de X11 (dominio público) que ya trae
 
 | Fuente | Para qué | Notas |
 |---|---|---|
+| GBATEK (Martin Korth): reglas de alineación de la CPU ARM, LDM/STM, multiplicación, excepciones, transferencia de un solo dato (LDR/STR/PLD), PSR (MRS/MSR), CP15 (ID, registro de control, TCM) | `src/cpu/` (Fase 1.1): comportamiento por versión (ARMv4T / ARMv5TE), vectores y LR de cada excepción, registro de control y regiones de TCM | Leído el 2026-10-17 en las páginas por tema de problemkaputt.de; solo se tomaron hechos de hardware, nada de texto ni código |
+| ARM Architecture Reference Manual (DDI 0100I), ARM7TDMI y ARM946E-S TRM | `src/cpu/`: semántica de las instrucciones ARM y Thumb, modelo de abortos, Q y saturación, multiplicaciones de 16 bits | Referencia de la semántica; la codificación y los casos de borde se escribieron de memoria del manual y se contrastaron con la ROM `cpuarm` en melonDS. No se copió texto |
 | GBATEK (Martin Korth), secciones del 3D de la DS | `tests/phase0/spe-raster3d`: campos de TEXIMAGE_PARAM y PLTT_BASE, formatos de textura (directo A1BGR5, paletas de 16 y 256 con el índice 0 transparente), expansión de 5 a 6 bits, fórmulas de modulación y de mezcla alfa | Solo la descripción del hardware; no se copió código de ningún emulador |
 | Documentación del SPU (intrínsecos de spu-gcc en `spu_internals.h` del toolchain) | `r3d_vec.h`: `spu_re` es `fi(frest)`; recíproco con un paso de Newton | Parte del toolchain (ps3toolchain) |
 

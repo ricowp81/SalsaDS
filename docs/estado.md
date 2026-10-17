@@ -4,6 +4,35 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-17 — Intérpretes de CPU (Fase 1.1)
+
+- `src/cpu/`: un núcleo (`struct acore`) para el **ARM9 (ARMv5TE)** y el **ARM7 (ARMv4T)**,
+  ARM y Thumb, modos con banco, excepciones, HALT, líneas de IRQ/FIQ, memoria por
+  callbacks con direcciones alineadas, un gancho de SWI para la HLE de la BIOS y, en la
+  ARM9, CP15 mínimo con ITCM/DTCM (base, tamaño, espejo, modo de carga). Detalle,
+  reglas por versión y plan de la 1.2 en `docs/fase1.md`.
+- Pruebas: ≈ 8,0 M de comprobaciones unitarias en LE y BE (con mutaciones que las ponen a
+  prueba) y las ROMs `hola`, `cpu9` y la nueva `cpuarm` (ARM9 y ARM7, ARM y Thumb,
+  excepciones y TCM) corridas en los intérpretes (LE y BE) y en **melonDS 1.1: OK**.
+  `tools/build.sh test-host` lo corre todo; `tools/cpurun.sh` corre una ROM en la Mac
+  sin Docker; `tools/melonds-run.py --arm7` muestra también el bloque del ARM7, el
+  registro de fallos y las divergencias.
+- melonDS **diverge de la documentación** en varios casos de borde (LDRH/LDRSH impares del
+  ARM7, listas vacías de LDM/STM, STM con la base en la lista, bit Q del ARM7, BKPT, modo de
+  carga de las TCM): la ROM los anota aparte (no son fallos) y los intérpretes siguen
+  GBATEK; ninguno está contrastado en una DS real (lista en `docs/fase1.md`).
+- Rendimiento del intérprete en el **host**: 125–198 MIPS (Mac y contenedor); ≈ 1,5×
+  más lento que el mínimo de la 0.3. En la PS3 sin medir (≈ 12 MIPS por escala [est]).
+- Corredor `salsads-cpurun` + `src/host/ndsmin.c`: arranque directo con una máquina
+  mínima (no es el mapa de la 1.2) que llega al `main` de las ROMs de BlocksDS con su
+  `crt0` y libnds reales.
+- Marco de pruebas de las ROMs: registro de los primeros 16 fallos, registro de
+  divergencias, marcador de avance y variante para el ARM7 (`sds7.c`). `hola` y `cpu9`
+  se reconstruyeron (hashes nuevos en `SHA256SUMS`; la construcción es reproducible).
+- Pendiente para la 1.2: mapa de memoria con VRAM por bancos, planificador, IRQ,
+  temporizadores, DMA, IPC FIFO, cartucho, SPI/firmware, BIOS en HLE, arranque directo y
+  la primera imagen. Y probar el intérprete en el PPE real.
+
 ## 2026-10-17 — Prueba mínima del JIT ARM → PPC (Fase 0.7) y cierre de la Fase 0
 
 - `tests/phase0/jit-arm` («SalsaDS JIT», SLDS00007) + `src/jit/`: traductor de un
