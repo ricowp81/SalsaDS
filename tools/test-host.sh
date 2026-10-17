@@ -68,6 +68,48 @@ check_demo() { # orden log
 		fail=1
 	fi
 }
+# La ROM save (chip de guardado por AUXSPI) con un archivo de cada tamaño: el tipo que detecta tiene que ser el
+# del tamaño (1 = EEPROM de 0,5 KB, 2 = EEPROM de 16 bits, 3 = FRAM, 4 = Flash) y todo debe dar OK.
+SAVE_SIZES="512:1 8192:2 32768:3 65536:2 262144:4 524288:4 1048576:4"
+check_save() { # orden tamaño tipo log
+	t=$(printf '0x%08x' "$3")
+	s=$(printf '0x%08x' "$2")
+	if grep -q "^OK save" "$4" && grep -q "^peek 0x02380034 = $t\$" "$4" && grep -q "^peek 0x02380038 = $s\$" "$4"; then
+		printf '%-4s OK     save %s bytes: tipo %s\n' "$1" "$2" "$3"
+	else
+		printf '%-4s FALLO  save %s bytes (ver %s)\n' "$1" "$2" "$4"
+		tail -n 6 "$4"
+		fail=1
+	fi
+}
+# La ROM carga (las dos CPUs ocupadas sin parar) repite iteraciones que se comparan con valores calculados en el host:
+# ninguna iteración debe dar otra cosa y las dos CPUs tienen que haber avanzado.
+check_carga() { # orden log
+	if grep -q "^peek 0x023a0000 = 0x47524143" "$2" && grep -q "^peek 0x023a0008 = 0x00000000" "$2" &&
+		grep -q "^peek 0x023a0010 = 0x00000000" "$2" && [ $((0x$(sed -n 's/^peek 0x023a0004 = 0x//p' "$2"))) -ge 100 ] &&
+		[ $((0x$(sed -n 's/^peek 0x023a000c = 0x//p' "$2"))) -ge 50 ]; then
+		printf '%-4s OK     carga: %d iteraciones del ARM9 y %d del ARM7, sin errores\n' "$1" \
+			$((0x$(sed -n 's/^peek 0x023a0004 = 0x//p' "$2"))) $((0x$(sed -n 's/^peek 0x023a000c = 0x//p' "$2")))
+	else
+		printf '%-4s FALLO  carga (ver %s)\n' "$1" "$2"
+		tail -n 9 "$2"
+		fail=1
+	fi
+}
+CARGA_ARGS="--frames 120 --peek 0x023A0000 --peek 0x023A0004 --peek 0x023A0008 --peek 0x023A000C --peek 0x023A0010"
+# Un cuadro ocioso (las dos CPUs en HALT): sin pasos finos, el planificador salta de un evento al siguiente; el ARM9 y
+# el ARM7 ejecutan decenas de instrucciones por cuadro y el planificador corre menos de 20 tramos por cuadro.
+check_ocio() { # orden log
+	i9=$(sed -n 's/.* ARM9 \([0-9]*\) instr\..*/\1/p' "$2" | head -1)
+	sl=$(sed -n 's/^planificador: \([0-9]*\)\..*/\1/p' "$2" | head -1)
+	if [ -n "$i9" ] && [ "$i9" -lt 200000 ] && [ -n "$sl" ] && [ "$sl" -lt 20 ]; then
+		printf '%-4s OK     ocio: ARM9 %s instr. en 600 cuadros, %s tramos por cuadro\n' "$1" "$i9" "$sl"
+	else
+		printf '%-4s FALLO  ocio (ver %s)\n' "$1" "$2"
+		tail -n 4 "$2"
+		fail=1
+	fi
+}
 if tools/build.sh -C src/host >build/logs/build-host-run.log 2>&1; then
 	for rom in $ROMS; do
 		tools/build.sh --sh "build/host-run/salsads-cpurun tests/roms/homebrew/$rom.nds" >"build/logs/rom-$rom-le.log" 2>&1
@@ -81,12 +123,26 @@ if tools/build.sh -C src/host >build/logs/build-host-run.log 2>&1; then
 	done
 	tools/build.sh --sh "build/host-run/salsads-cpurun --frames 120 --peek 0x023A0000 --peek 0x023A0004 tests/roms/homebrew/demo.nds" >build/logs/rom-demo-le.log 2>&1
 	check_demo LE build/logs/rom-demo-le.log
+	for sz in $SAVE_SIZES; do
+		tools/build.sh --sh "build/host-run/salsads-cpurun --save-size ${sz%%:*} --peek 0x02380034 --peek 0x02380038 tests/roms/homebrew/save.nds" >"build/logs/rom-save-${sz%%:*}-le.log" 2>&1
+		check_save LE "${sz%%:*}" "${sz##*:}" "build/logs/rom-save-${sz%%:*}-le.log"
+	done
+	tools/build.sh --sh "build/host-run/salsads-cpurun $CARGA_ARGS tests/roms/homebrew/carga.nds" >build/logs/rom-carga-le.log 2>&1
+	check_carga LE build/logs/rom-carga-le.log
+	tools/build.sh --sh "build/host-run/salsads-cpurun --frames 600 --stats tests/roms/homebrew/ocio.nds" >build/logs/rom-ocio-le.log 2>&1
+	check_ocio LE build/logs/rom-ocio-le.log
 	# las ROMs otra vez con ASan y UBSan (errores de memoria en el mapa, la VRAM por bancos o la E/S)
 	if tools/build.sh --sh "gcc -std=gnu11 -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -Wall -Wextra -Isrc src/host/cpurun.c src/core/*.c src/bios/*.c src/cpu/*.c -o build/host-run/cpurun-san" >build/logs/build-cpurun-san.log 2>&1; then
 		for rom in $ROMS; do
 			tools/build.sh --sh "build/host-run/cpurun-san tests/roms/homebrew/$rom.nds" >"build/logs/rom-$rom-san.log" 2>&1
 			check_rom "SAN" "$rom" "build/logs/rom-$rom-san.log"
 		done
+		for sz in $SAVE_SIZES; do
+			tools/build.sh --sh "build/host-run/cpurun-san --save-size ${sz%%:*} --peek 0x02380034 --peek 0x02380038 tests/roms/homebrew/save.nds" >"build/logs/rom-save-${sz%%:*}-san.log" 2>&1
+			check_save SAN "${sz%%:*}" "${sz##*:}" "build/logs/rom-save-${sz%%:*}-san.log"
+		done
+		tools/build.sh --sh "build/host-run/cpurun-san $CARGA_ARGS tests/roms/homebrew/carga.nds" >build/logs/rom-carga-san.log 2>&1
+		check_carga SAN build/logs/rom-carga-san.log
 		tools/build.sh --sh "build/host-run/cpurun-san --frames 200 --touch 100,50 --keys 0x0510 --peek 0x023A0000 --peek 0x023A0004 tests/roms/homebrew/demo.nds" >build/logs/rom-demo-san.log 2>&1
 		check_demo SAN build/logs/rom-demo-san.log
 	else
@@ -104,6 +160,14 @@ if tools/build-ppc64.sh host >build/logs/build-ppc64-run.log 2>&1; then
 	done
 	tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --frames 120 --peek 0x023A0000 --peek 0x023A0004 tests/roms/homebrew/demo.nds >build/logs/rom-demo-be.log 2>&1
 	check_demo BE build/logs/rom-demo-be.log
+	for sz in $SAVE_SIZES; do
+		tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --save-size "${sz%%:*}" --peek 0x02380034 --peek 0x02380038 tests/roms/homebrew/save.nds >"build/logs/rom-save-${sz%%:*}-be.log" 2>&1
+		check_save BE "${sz%%:*}" "${sz##*:}" "build/logs/rom-save-${sz%%:*}-be.log"
+	done
+	tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun $CARGA_ARGS tests/roms/homebrew/carga.nds >build/logs/rom-carga-be.log 2>&1
+	check_carga BE build/logs/rom-carga-be.log
+	tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --frames 600 --stats tests/roms/homebrew/ocio.nds >build/logs/rom-ocio-be.log 2>&1
+	check_ocio BE build/logs/rom-ocio-be.log
 else
 	echo "BE   FALLO  la compilación ppc64 de src/host (build/logs/build-ppc64-run.log)"
 	fail=1

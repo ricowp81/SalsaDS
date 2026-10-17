@@ -14,6 +14,9 @@ aquí ROMs comerciales, BIOS, firmware ni claves de Nintendo.
 | `ipc` | IPCSYNC y las FIFO desde las dos CPUs (el ARM9 dirige, el ARM7 obedece por el buzón) |
 | `bios` | SWI de la BIOS llamadas a mano (Div, Sqrt, GetCRC16, CpuSet/CpuFastSet, LZ77, RLE, Huffman, BitUnPack, diferencias) con datos de `tools/gen-bios-vectors.py`, y la conservación de registros |
 | `periph` | División y raíz por hardware, cartucho (B7/B8, sondeo y DMA), SPI (firmware, táctil, energía), RTC, EXTKEYIN y el arranque |
+| `save` | El chip de guardado por AUXSPI (EEPROM de 0,5 KB, de 8 y 64 KB, FRAM de 32 KB y Flash): lo detecta con RDSR, RDID y los espejos de direcciones y comprueba registro de estado, WREN/WRDI, escritura sin WREN, lectura de vuelta, páginas que dan la vuelta, vuelta al final de la memoria y, en Flash, borrar página y sector, programar y escribir página. El emulador pone el chip con un archivo de guardado del tamaño correspondiente (`salsads-cpurun --save-size N`); el tipo y el tamaño detectados quedan en `+0x34` y `+0x38` del bloque de resultados |
+| `ocio` | Las dos CPUs esperando el VBlank con IntrWait y nada más (decenas de instrucciones por cuadro): mide cuánto cuesta un cuadro ocioso del planificador |
+| `carga` | Trabajo continuo en las dos CPUs, sin HALT: una mezcla de operaciones de datos, copias de bloques, bytes, multiplicaciones y una ordenación en Thumb (`src/carga/kernel.h`), repetida sin fin y comparada en cada vuelta con valores calculados en el host (`tools/carga-gold.sh`). Los contadores quedan en `0x023A0000` (`shared.h`); es la ROM que embebe «SalsaDS núcleo» para medir los MIPS del intérprete |
 | `demo` | Demostración animada sin veredicto (la embebe «SalsaDS núcleo»): cuadrado que rebota, teclas, táctil y fondo del motor B |
 | `cpu9` | ~65 000 comprobaciones de CPU del ARM9 (ARMv5TE): las 16 operaciones de datos con 4 combinaciones de banderas, el desplazador, las 14 condiciones (ARM y Thumb), multiplicaciones, CLZ, saturación (Q), multiplicaciones de 16 bits, LDR/STR no alineados, LDM/STM, SWP, cambio ARM/Thumb y las instrucciones de datos de Thumb. El modelo en C (`src/cpu9/model.h`) sale del manual de ARM y se validó contra melonDS |
 
@@ -68,6 +71,11 @@ ROM como el arranque directo y lee el mismo bloque de resultados. Opciones útil
 busca veredicto), `--screens f.ppm` (las dos pantallas), `--keys HEX` y `--touch X,Y` (entrada fija), `--quantum N`
 (tramo del planificador), `--peek ADDR`, `--regs`, `--arm7`, `--stats`. `tools/build.sh test-host` las corre todas en
 little-endian y en big-endian (qemu-ppc64), repite algunas con tramos de 1 a 20 000 ciclos y corre la demostración.
+
+La ROM `save` con melonDS: este elige el chip de guardado por el código de juego de la cabecera, no por el archivo, así
+que se le da el de un juego conocido: `tools/melonds-run.py --gamecode A2DE build/roms/save.nds` (EEPROM de 8 KB) o
+`--gamecode AMCE` (Flash de 256 KB; la ROM, al ver ese código, no pregunta el RDID, que melonDS no contesta). melonDS
+corre siempre sobre una copia en una carpeta temporal (así su `.sav` no cae junto a la ROM original).
 
 La imagen se compara con melonDS así: `tools/melonds-run.py ROM.nds --vram melon.ppm --regs` y `salsads-cpurun --screens
 sds.ppm --regs ROM.nds`, luego `tools/compare-image.py sds.ppm melon.ppm` (la pantalla de arriba contra el banco A) y

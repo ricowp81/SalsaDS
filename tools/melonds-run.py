@@ -22,10 +22,12 @@ import argparse
 import os
 import pathlib
 import re
+import shutil
 import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 
 SDS_ADDR = 0x02380000
@@ -205,6 +207,12 @@ def main() -> int:
     ap.add_argument("--keep", action="store_true", help="dejar melonDS abierto al terminar")
     ap.add_argument("--arm7", action="store_true",
                     help="al terminar (o al agotar el tiempo) mostrar también el bloque de resultados del ARM7")
+    ap.add_argument("--sav-size", type=int, metavar="N",
+                    help="dejar junto a la ROM un archivo de guardado de N bytes en 0xFF (melonDS elige el chip por su "
+                    "tamaño); la ROM se corre siempre sobre una copia en una carpeta temporal")
+    ap.add_argument("--gamecode", metavar="XXXX",
+                    help="cambiar el código de juego de la cabecera de la copia (melonDS elige el chip de guardado por "
+                    "él: p. ej. A2DE da EEPROM de 8 KB y AMCE Flash de 256 KB; sirve para la ROM `save`)")
     ap.add_argument("--regs", action="store_true",
                     help="al terminar, imprimir los registros que deciden la imagen (mismo formato que "
                     "`salsads-cpurun --regs`) leídos por el stub de GDB")
@@ -213,9 +221,19 @@ def main() -> int:
                     "de prueba, en modo de visualización directa), leído por el stub de GDB")
     args = ap.parse_args()
 
-    rom = pathlib.Path(args.rom).resolve()
-    if not rom.exists():
-        sys.exit(f"no existe {rom}")
+    src = pathlib.Path(args.rom).resolve()
+    if not src.exists():
+        sys.exit(f"no existe {src}")
+    # melonDS escribe el .sav junto a la ROM: se corre sobre una copia en una carpeta temporal
+    tmpdir = tempfile.mkdtemp(prefix="melonds-run-")
+    rom = pathlib.Path(tmpdir) / src.name
+    shutil.copyfile(src, rom)
+    if args.gamecode:
+        hdr = bytearray(rom.read_bytes())
+        hdr[0x0C:0x10] = args.gamecode.encode("ascii")[:4].ljust(4, b"#")
+        rom.write_bytes(bytes(hdr))
+    if args.sav_size:
+        rom.with_suffix(".sav").write_bytes(b"\xff" * args.sav_size)
     saved = write_config()
     proc = subprocess.Popen([find_melonds(), str(rom)],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -283,6 +301,7 @@ def main() -> int:
                 proc.wait()
         time.sleep(0.5)  # melonDS reescribe su configuración al salir
         restore_config(*saved)
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
     if result is None:
         print(f"SIN VEREDICTO {rom.name}")

@@ -1,6 +1,6 @@
 /*
  * SalsaDS — ROM periph, lado ARM9: división y raíz cuadrada por hardware, el cartucho (cabecera, identificador,
- * bloques por sondeo y por DMA, IRQ de fin, AUXSPI sin chip), puertos varios y el estado de arranque.
+ * bloques por sondeo y por DMA, IRQ de fin), puertos varios y el estado de arranque.
  */
 #include <nds.h>
 #include <string.h>
@@ -238,14 +238,7 @@ static void group_cart(void)
 	SDS_CHECK(WAIT_UNTIL(!(REG32(R_ROMCTRL) & ROMCTRL_BUSY), 4000000), 1);
 	MEM32(R_DMA(3, 2)) = 0;
 	SDS_CHECK(memcmp(buf, pat, 0x200), 0);
-	/* AUXSPI sin chip de guardado: lee 0xFF o 0x00 (informativo) */
-	REG16(R_AUXSPICNT) = 0xA040; /* SPI, habilitado, retener */
-	REG16(R_AUXSPIDATA) = 0x05;
-	WAIT_UNTIL(!(REG16(R_AUXSPICNT) & 0x80), 100000);
-	REG16(R_AUXSPICNT) = 0xA000;
-	REG16(R_AUXSPIDATA) = 0;
-	WAIT_UNTIL(!(REG16(R_AUXSPICNT) & 0x80), 100000);
-	SDS_DIVERGE(REG16(R_AUXSPIDATA), 0xFF);
+	/* AUXSPI: el chip de guardado se prueba aparte (ROM save) */
 	REG16(R_AUXSPICNT) = 0x8000;
 }
 
