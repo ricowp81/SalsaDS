@@ -7,14 +7,21 @@
  * del motor A y el color de fondo del motor B.
  *
  * ROM: /dev_hdd0/salsads/rom.nds si existe (un respaldo del autor, ya desencriptado, o una ROM propia); si no,
- * la ROM de demostración propia (tests/roms/src/demo), embebida en el ejecutable.
+ * la ROM de carga propia (tests/roms/src/carga: las dos CPUs ocupadas sin parar, con sus resultados comprobados),
+ * embebida en el ejecutable. Para ver la demostración, copiar tests/roms/homebrew/demo.nds como rom.nds.
+ *
+ * Guardado: el chip de guardado del cartucho (AUXSPI) se guarda en /dev_hdd0/salsads/saves/<código de juego>.sav
+ * (uno por juego); se carga al arrancar si existe y se escribe a los pocos segundos de que el juego escriba y al salir.
  *
  * Entrada (src/frontend/dspad.h, /dev_hdd0/salsads/controles.cfg): el DS3 a los botones de la DS; el puntero del
  * táctil con el stick derecho (R2 toca); L2 cambia la distribución de las pantallas; L3 + R3 muestra u oculta la
  * línea de estado. Se emula un cuadro de la DS por cada cuadro del RSX (60 Hz).
  *
  * Log: /dev_hdd0/salsads/nucleo.log, con la versión (commit) y el APPID en la primera línea. Cada ~2 s escribe
- * una línea DATO con el tiempo de emulación por cuadro y las instrucciones por cuadro de cada CPU.
+ * tres líneas DATO: el tiempo de emulación por cuadro y las instrucciones por cuadro de cada CPU; el desglose del
+ * cuadro (ARM9, ARM7, eventos, planificador, pantallas, conversión, dibujo, esperas del RSX) y los MIPS de cada CPU.
+ * Los cuadros pares se miden sin reloj de perfil dentro del planificador y los impares con él (timebase), así el
+ * tiempo de emulación «limpio» no lleva el costo de medirlo.
  *
  * Con el archivo de prueba automática (RPCS3) corre 150 cuadros con entrada sintética, comprueba que los dos
  * procesadores corrieron y que la imagen de la demostración es la esperada, y sale.
@@ -42,8 +49,8 @@
 #include "rsxkit/text.h"
 #include "rsxkit/ui.h"
 
-#include "demo_bin.h"
-#include "../../roms/src/demo/shared.h"
+#include "carga_bin.h"
+#include "../../roms/src/carga/shared.h"
 #include "util/endian.h"
 
 #ifndef NUCLEO_VERSION
@@ -65,6 +72,8 @@ SYS_PROCESS_PARAM(1001, 0x100000);
 #define CLEAR_RGB 0x101010u
 #define AUTOTEST_FRAMES 150
 #define STATS_FRAMES 120
+#define SAVE_DIR SALSADS_DATA_DIR "/saves"
+#define SAVE_FLUSH_FRAMES 120
 
 static volatile int quit;
 static int autotest, failures;
@@ -147,16 +156,16 @@ static int load_rom(void)
 			}
 			free(rom_buf);
 			rom_buf = NULL;
-			salsads_log("no pude leer %s (%ld bytes): uso la ROM de demostración", ROM_PATH, n);
+			salsads_log("no pude leer %s (%ld bytes): uso la ROM de carga", ROM_PATH, n);
 		} else {
-			salsads_log("%s no parece una ROM de la DS (%ld bytes): uso la demostración", ROM_PATH, n);
+			salsads_log("%s no parece una ROM de la DS (%ld bytes): uso la ROM de carga", ROM_PATH, n);
 		}
 		fclose(f);
 	}
-	rom_buf = (uint8_t *)demo_bin;
-	rom_len = demo_bin_size;
-	rom_name = "demostración embebida";
-	salsads_log("ROM de demostración propia embebida: %u bytes", (unsigned)rom_len);
+	rom_buf = (uint8_t *)carga_bin;
+	rom_len = carga_bin_size;
+	rom_name = "carga embebida";
+	salsads_log("ROM de carga propia embebida: %u bytes", (unsigned)rom_len);
 	return 0;
 }
 
@@ -393,12 +402,116 @@ static uint32_t poll_input(float dt, unsigned *tx, unsigned *ty)
 	return k;
 }
 
+/* ---- guardado ----------------------------------------------------------------------------------------------- */
+
+static char save_path[96];
+static uint32_t save_last_frame;
+
+static void save_name(void)
+{
+	char code[5];
+
+	for (int i = 0; i < 4; i++) {
+		const uint8_t c = rom_buf[0x0C + i];
+
+		code[i] = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ? (char)c : '_';
+	}
+	code[4] = 0;
+	snprintf(save_path, sizeof save_path, "%s/%s.sav", SAVE_DIR, code);
+}
+
+/* Carga el archivo de guardado del juego, si existe (su tamaño dice qué chip es). */
+static void save_load(void)
+{
+	FILE *f;
+
+	save_name();
+	mkdir(SALSADS_DATA_DIR, 0777);
+	mkdir(SAVE_DIR, 0777);
+	f = fopen(save_path, "rb");
+	if (f) {
+		static uint8_t buf[NDS_SAVE_MAX];
+		const size_t n = fread(buf, 1, sizeof buf, f);
+
+		fclose(f);
+		if (nds_save_attach(nds, buf, n) == 0)
+			salsads_log("guardado: %s, %u bytes (chip tipo %u)", save_path, (unsigned)n, (unsigned)nds->save.type);
+		else
+			salsads_log("guardado: %s tiene %u bytes, que no es el tamaño de ningún chip: se ignora", save_path, (unsigned)n);
+	} else {
+		salsads_log("guardado: sin %s; chip por omisión tipo %u de %u bytes (se crea cuando el juego escriba)", save_path,
+			    (unsigned)nds->save.type, (unsigned)nds->save.size);
+	}
+}
+
+/* Escribe el guardado si el juego lo cambió; con `force` también antes de que pasen SAVE_FLUSH_FRAMES. */
+static void save_flush(int force)
+{
+	size_t len;
+	const uint8_t *d;
+	char tmp[100];
+	FILE *f;
+
+	if (!nds->save.dirty || (!force && frame_no - save_last_frame < SAVE_FLUSH_FRAMES))
+		return;
+	save_last_frame = frame_no;
+	d = nds_save_data(nds, &len);
+	snprintf(tmp, sizeof tmp, "%s.tmp", save_path);
+	f = fopen(tmp, "wb");
+	if (f && fwrite(d, 1, len, f) == len && fclose(f) == 0) {
+		remove(save_path);
+		if (rename(tmp, save_path) == 0) {
+			nds->save.dirty = 0;
+			salsads_log("guardado escrito: %s, %u bytes", save_path, (unsigned)len);
+			return;
+		}
+	} else if (f) {
+		fclose(f);
+	}
+	salsads_log("no pude escribir el guardado en %s", save_path);
+}
+
 /* ---- un cuadro ------------------------------------------------------------------------------------------------ */
 
-static uint32_t buf_emu[STATS_FRAMES], buf_iv[STATS_FRAMES];
+/* Reloj de perfil del planificador: el timebase (79,8 MHz en la PS3). */
+static uint64_t tb_clock(void)
+{
+	uint64_t t;
+
+	__asm__ volatile("mftb %0" : "=r"(t));
+	return t;
+}
+
+static uint64_t tb_hz;
+
+static inline uint32_t tb_us(uint64_t ticks)
+{
+	return (uint32_t)(ticks * 1000000u / tb_hz);
+}
+
+/* Muestras por cuadro. Los cuadros pares se miden sin reloj de perfil en el planificador; los impares con él. */
+enum {
+	M_EMU,    /* nds_run_frame en los cuadros pares: sin reloj de perfil, el tiempo «limpio» */
+	M_EMU_P,  /* nds_run_frame en los impares: con el reloj de perfil */
+	M_A9,     /* tiempo dentro del ARM9 (solo cuadros impares) */
+	M_A7,     /* ídem ARM7 */
+	M_EV,     /* ídem eventos */
+	M_SCR,    /* nds_screens */
+	M_CONV,   /* espera de la textura anterior + conversión RGB555 → RGBA5551 */
+	M_DRAW,   /* distribución, vértices, dibujo de las dos pantallas y de la interfaz */
+	M_INPUT,  /* lectura del DS3 y entrada a la DS */
+	M_BEGIN,  /* rsxkit_frame_begin: espera del vsync y del RSX */
+	M_END,    /* rsxkit_frame_end */
+	M_IV,     /* intervalo entre cuadros */
+	M_COUNT
+};
+static uint32_t buf[M_COUNT][STATS_FRAMES];
+static uint32_t nbuf[M_COUNT];
 static uint32_t stat_n;
 static uint64_t last_begin_us;
 static struct stats cur_stats;
+static uint64_t acc_slices, acc_jumps, acc_events, acc_i9, acc_i7, acc_emu_ticks, acc_a9_ticks, acc_a7_ticks, acc_prof_n;
+static uint64_t acc_i9p, acc_i7p; /* instrucciones de los cuadros con perfil (para los MIPS dentro de cada CPU) */
 
 static void sort_u32(uint32_t *a, uint32_t n)
 {
@@ -414,49 +527,96 @@ static void sort_u32(uint32_t *a, uint32_t n)
 	}
 }
 
+static void put(int m, uint32_t v)
+{
+	if (nbuf[m] < STATS_FRAMES)
+		buf[m][nbuf[m]++] = v;
+}
+
+/* Percentil p (0-100) de una serie en µs ya ordenada; 0 si está vacía. */
+static uint32_t pct(int m, unsigned p)
+{
+	return nbuf[m] ? buf[m][(nbuf[m] - 1) * p / 100] : 0;
+}
+
+#define MS(v) (unsigned)((v) / 1000), (unsigned)((v) % 1000 / 10)
+
 static void log_stats(void)
 {
 	uint32_t over20 = 0;
 	static uint64_t prev_i9, prev_i7;
 	const uint64_t i9 = nds->a9.icount, i7 = nds->a7.icount;
+	const uint32_t n = stat_n;
+	uint32_t sched;
+	double mips9_cpu = 0, mips7_cpu = 0, mips9_tot = 0, mips7_tot = 0;
+	const double secs_a9 = acc_prof_n ? (double)acc_a9_ticks / (double)tb_hz : 0;
+	const double secs_a7 = acc_prof_n ? (double)acc_a7_ticks / (double)tb_hz : 0;
 
-	for (uint32_t i = 0; i < stat_n; i++)
-		over20 += buf_iv[i] > 20000;
-	sort_u32(buf_emu, stat_n);
-	sort_u32(buf_iv, stat_n);
-	salsads_log("DATO nucleo: %u cuadros; emulación de un cuadro: mediana %u.%02u ms, p95 %u.%02u, máx %u.%02u; "
-		    "intervalo del RSX: mediana %u.%02u ms, p95 %u.%02u; cuadros de más de 20 ms: %u; instrucciones por cuadro: "
-		    "ARM9 %u, ARM7 %u; cuadros de la DS %u",
-		    stat_n, buf_emu[stat_n / 2] / 1000, buf_emu[stat_n / 2] % 1000 / 10, buf_emu[stat_n * 95 / 100] / 1000,
-		    buf_emu[stat_n * 95 / 100] % 1000 / 10, buf_emu[stat_n - 1] / 1000, buf_emu[stat_n - 1] % 1000 / 10,
-		    buf_iv[stat_n / 2] / 1000, buf_iv[stat_n / 2] % 1000 / 10, buf_iv[stat_n * 95 / 100] / 1000,
-		    buf_iv[stat_n * 95 / 100] % 1000 / 10, over20, (unsigned)((i9 - prev_i9) / stat_n),
-		    (unsigned)((i7 - prev_i7) / stat_n), (unsigned)nds->frames);
+	for (uint32_t i = 0; i < nbuf[M_IV]; i++)
+		over20 += buf[M_IV][i] > 20000;
+	for (int m = 0; m < M_COUNT; m++)
+		sort_u32(buf[m], nbuf[m]);
+	salsads_log("DATO nucleo: %u cuadros; emulación de un cuadro (sin reloj de perfil): mediana %u.%02u ms, p95 %u.%02u, "
+		    "máx %u.%02u; intervalo del RSX: mediana %u.%02u ms, p95 %u.%02u; cuadros de más de 20 ms: %u; "
+		    "instrucciones por cuadro: ARM9 %u, ARM7 %u; cuadros de la DS %u",
+		    n, MS(pct(M_EMU, 50)), MS(pct(M_EMU, 95)), MS(pct(M_EMU, 100)), MS(pct(M_IV, 50)), MS(pct(M_IV, 95)),
+		    over20, (unsigned)((i9 - prev_i9) / n), (unsigned)((i7 - prev_i7) / n), (unsigned)nds->frames);
+	/* Desglose: el tiempo de emulación con el reloj de perfil se reparte entre el ARM9, el ARM7, los eventos y el
+	 * resto (el planificador: elegir el tramo, comprobar eventos y HALT, saltos ociosos). Medianas de cuadros
+	 * impares; el resto es lo que no cae en ninguna de las cuatro. */
+	{
+		/* la suma de las medianas no es la mediana de la suma: el planificador sale de la resta de totales */
+		const uint32_t emu_p = pct(M_EMU_P, 50), a9 = pct(M_A9, 50), a7 = pct(M_A7, 50), ev = pct(M_EV, 50);
+
+		sched = emu_p > a9 + a7 + ev ? emu_p - a9 - a7 - ev : 0;
+		salsads_log("DATO desglose: por cuadro, mediana en ms (cuadros con reloj de perfil): emulación %u.%02u = ARM9 %u.%02u + "
+			    "ARM7 %u.%02u + eventos %u.%02u + planificador %u.%02u; resto del cuadro: entrada %u.%02u, pantallas %u.%02u, "
+			    "conversión %u.%02u, dibujo %u.%02u, frame_begin %u.%02u, frame_end %u.%02u; por cuadro (promedio): %u tramos, "
+			    "%u saltos ociosos, %u eventos",
+			    MS(emu_p), MS(a9), MS(a7), MS(ev), MS(sched), MS(pct(M_INPUT, 50)), MS(pct(M_SCR, 50)), MS(pct(M_CONV, 50)),
+			    MS(pct(M_DRAW, 50)), MS(pct(M_BEGIN, 50)), MS(pct(M_END, 50)), (unsigned)(acc_slices / n),
+			    (unsigned)(acc_jumps / n), (unsigned)(acc_events / n));
+	}
+	if (secs_a9 > 0)
+		mips9_cpu = (double)acc_i9p / secs_a9 / 1e6;
+	if (secs_a7 > 0)
+		mips7_cpu = (double)acc_i7p / secs_a7 / 1e6;
+	if (acc_emu_ticks) {
+		mips9_tot = (double)acc_i9 / ((double)acc_emu_ticks / (double)tb_hz) / 1e6;
+		mips7_tot = (double)acc_i7 / ((double)acc_emu_ticks / (double)tb_hz) / 1e6;
+	}
+	salsads_log("DATO MIPS: ARM9 %.2f, ARM7 %.2f (instrucciones entre el tiempo dentro de cada CPU: %u cuadros con perfil); "
+		    "sobre el tiempo total de emulación: ARM9 %.2f, ARM7 %.2f, juntas %.2f",
+		    mips9_cpu, mips7_cpu, (unsigned)acc_prof_n, mips9_tot, mips7_tot, mips9_tot + mips7_tot);
 	prev_i9 = i9;
 	prev_i7 = i7;
 	stat_n = 0;
+	for (int m = 0; m < M_COUNT; m++)
+		nbuf[m] = 0;
+	acc_slices = acc_jumps = acc_events = acc_i9 = acc_i7 = acc_emu_ticks = acc_a9_ticks = acc_a7_ticks = acc_prof_n = 0;
+	acc_i9p = acc_i7p = 0;
 }
 
 static void render_frame(void)
 {
-	const uint64_t t0 = now_us();
 	unsigned tx, ty;
 	uint32_t k;
 	const int set = (int)(frame_no & 1u);
+	const int profiled = (int)(frame_no & 1u);
 	struct sds_rect r[2];
-	uint64_t i9a, i7a;
-	uint64_t t1, t2;
+	uint64_t i9a, i7a, tb0, tb1, tb2, tb3, tb4, tb5, tb6, tb7;
 
 	sysUtilCheckCallback();
+	tb0 = tb_clock();
 	rsxkit_frame_begin(CLEAR_RGB);
+	tb1 = tb_clock();
 	{
 		const uint64_t t = now_us();
 		const uint32_t iv = last_begin_us ? (uint32_t)(t - last_begin_us) : 16667;
 
 		last_begin_us = t;
 		cur_stats.frame_us = iv;
-		if (stat_n < STATS_FRAMES)
-			buf_iv[stat_n] = iv;
+		put(M_IV, iv);
 	}
 	{
 		float dt = cur_stats.frame_us ? (float)cur_stats.frame_us / 1e6f : 1.0f / 60.0f;
@@ -470,51 +630,92 @@ static void render_frame(void)
 	nds_set_input(nds, k, tx, ty);
 	i9a = nds->a9.icount;
 	i7a = nds->a7.icount;
-	t1 = now_us();
-	nds_run_frame(nds);
-	t2 = now_us();
-	cur_stats.emu_us = (uint32_t)(t2 - t1);
+	{
+		const uint64_t s0 = nds->st.slices, j0 = nds->st.jumps, e0 = nds->st.events;
+		const uint64_t pa9 = nds->st.prof_a9, pa7 = nds->st.prof_a7, pev = nds->st.prof_ev;
+
+		nds->prof_clock = profiled ? tb_clock : NULL;
+		tb2 = tb_clock();
+		nds_run_frame(nds);
+		tb3 = tb_clock();
+		nds->prof_clock = NULL;
+		acc_slices += nds->st.slices - s0;
+		acc_jumps += nds->st.jumps - j0;
+		acc_events += nds->st.events - e0;
+		put(profiled ? M_EMU_P : M_EMU, tb_us(tb3 - tb2));
+		if (profiled) {
+			put(M_A9, tb_us(nds->st.prof_a9 - pa9));
+			put(M_A7, tb_us(nds->st.prof_a7 - pa7));
+			put(M_EV, tb_us(nds->st.prof_ev - pev));
+			acc_a9_ticks += nds->st.prof_a9 - pa9;
+			acc_a7_ticks += nds->st.prof_a7 - pa7;
+			acc_i9p += nds->a9.icount - i9a;
+			acc_i7p += nds->a7.icount - i7a;
+			acc_prof_n++;
+		}
+	}
+	cur_stats.emu_us = tb_us(tb3 - tb2);
 	cur_stats.mips9 = (double)(nds->a9.icount - i9a) / (double)(cur_stats.emu_us ? cur_stats.emu_us : 1);
 	cur_stats.mips7 = (double)(nds->a7.icount - i7a) / (double)(cur_stats.emu_us ? cur_stats.emu_us : 1);
-	if (stat_n < STATS_FRAMES)
-		buf_emu[stat_n] = cur_stats.emu_us;
+	acc_i9 += nds->a9.icount - i9a;
+	acc_i7 += nds->a7.icount - i7a;
+	acc_emu_ticks += tb3 - tb2;
+	tb4 = tb_clock();
 	nds_screens(nds, top555, bot555);
+	tb5 = tb_clock();
 	if (set_used[set])
 		rsxkit_fence_wait(set_fence[set]);
 	convert(tex_px(set, 0), top555);
 	convert(tex_px(set, 1), bot555);
+	tb6 = tb_clock();
 	sds_layout_compute(layout, SDS_SCALE_FIT, cur_w, cur_h, r);
 	draw_screens(set, r);
 	draw_ui(r, &cur_stats);
 	set_fence[set] = rsxkit_fence();
 	set_used[set] = 1;
+	tb7 = tb_clock();
 	rsxkit_frame_end();
+	put(M_BEGIN, tb_us(tb1 - tb0));
+	put(M_INPUT, tb_us(tb2 - tb1));
+	put(M_SCR, tb_us(tb5 - tb4));
+	put(M_CONV, tb_us(tb6 - tb5));
+	put(M_DRAW, tb_us(tb7 - tb6));
+	put(M_END, tb_us(tb_clock() - tb7));
 	frame_no++;
+	save_flush(0);
 	if (++stat_n >= STATS_FRAMES)
 		log_stats();
-	(void)t0;
 }
 
-/* Prueba automática: la demostración tiene que estar viva. */
+/* Prueba automática: la ROM de carga tiene que estar viva en las dos CPUs, sin errores. */
 static void autotest_check(void)
 {
-	uint32_t magic;
+	const uint32_t magic = nds_peek32(nds, NDS_CPU9, 0x023A0000u);
+	const uint32_t i9 = nds_peek32(nds, NDS_CPU9, 0x023A0004u), b9 = nds_peek32(nds, NDS_CPU9, 0x023A0008u);
+	const uint32_t i7 = nds_peek32(nds, NDS_CPU9, 0x023A000Cu), b7 = nds_peek32(nds, NDS_CPU9, 0x023A0010u);
 
-	magic = nds_peek32(nds, NDS_CPU9, 0x023A0000u);
-	if (magic != DEMO_MAGIC)
-		fail("el ARM7 no dejó su marca en la RAM compartida");
-	if (nds_peek32(nds, NDS_CPU9, 0x023A0004u) < 100)
-		fail("el ARM7 no contó cuadros");
-	/* la raya blanca de la demostración (y = 132) y el fondo de la pantalla de arriba */
-	if (top555[132 * TEX_W + 10] != 0xFFFF)
-		fail("la raya blanca de la demostración no está en la pantalla de arriba");
-	if (top555[190 * TEX_W + 3] != (uint16_t)(0x8000 | (8 << 10) | (2 << 5) | 2) && top555[190 * TEX_W + 3] != 0xFFFF)
-		fail("el fondo de la demostración no es el esperado");
+	if (magic != CARGA_MAGIC)
+		fail("el ARM9 de la ROM de carga no dejó su marca");
+	if (i9 < 10)
+		fail("el ARM9 no completó iteraciones de la ROM de carga");
+	if (i7 < 5)
+		fail("el ARM7 no completó iteraciones de la ROM de carga");
+	if (b9 || b7)
+		fail("alguna iteración de la ROM de carga dio un resultado distinto del esperado");
 	if (nds->frames < AUTOTEST_FRAMES - 2)
 		fail("la DS no corrió todos los cuadros");
-	/* el toque sintético tiñó la pantalla de abajo (motor B): su fondo cambia con la posición */
-	salsads_log("autoprueba: cuadros de la DS %u, fondo abajo 0x%04x, marca ARM7 0x%08x", (unsigned)nds->frames, bot555[0],
-		    magic);
+	/* la pantalla de arriba no es lisa (el texto y la barra de la ROM de carga) */
+	{
+		int distinct = 0;
+
+		for (int i = 1; i < TEX_W * TEX_H && distinct < 3; i++)
+			if (top555[i] != top555[0])
+				distinct++;
+		if (distinct < 3)
+			fail("la pantalla de arriba de la ROM de carga está lisa");
+	}
+	salsads_log("autoprueba: cuadros de la DS %u, iteraciones ARM9 %u (errores %u), ARM7 %u (errores %u)", (unsigned)nds->frames,
+		    (unsigned)i9, (unsigned)b9, (unsigned)i7, (unsigned)b7);
 }
 
 int main(void)
@@ -541,11 +742,13 @@ int main(void)
 	memset(nds, 0, sizeof *nds);
 	nds->log = core_log;
 	nds_init(nds);
+	tb_hz = (uint64_t)sysGetTimebaseFrequency();
 	if (nds_load_rom(nds, rom_buf, rom_len) != 0 || nds_boot_direct(nds) != 0) {
 		salsads_log("RESULTADO nucleo: FALLO la ROM no es válida (cabecera o binarios)");
 		salsads_log_shutdown();
 		return 1;
 	}
+	save_load();
 	salsads_log("ROM: %s; entrada ARM9 0x%08x, ARM7 0x%08x; cuántos bytes ocupa el núcleo: %u", rom_name,
 		    (unsigned)rd32le(rom_buf + 0x24), (unsigned)rd32le(rom_buf + 0x34), (unsigned)sizeof *nds);
 
@@ -581,6 +784,7 @@ int main(void)
 			break;
 		}
 	}
+	save_flush(1);
 	salsads_log("RESULTADO nucleo: %s", failures ? "FALLO" : "OK");
 	if (!rsxkit_lost()) {
 		rsxkit_finish();
