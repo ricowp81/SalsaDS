@@ -1195,3 +1195,44 @@ si el JIT alcanza los 67 MHz del ARM9; qué forma de banderas se lleva a la
 Fase 4; y cómo espera el hilo del ARM7 (la elección de la dirección del ARM7:
 PPE hilo 1 o un SPE sigue abierta hasta tener estos números, ver «Decisiones» de
 0.3 punto 6).
+
+### Veredicto de viabilidad (0.7) — **pendiente de la PS3 real**
+
+La pregunta que decide el proyecto con el JIT: ¿cabe el ARM9 a 67 MHz en el hilo 0
+del PPE con el código traducido, con cuánta holgura, y cuánto le quita el ARM7 en el
+hilo 1 (girando contra durmiendo)? **Todavía no hay número de la consola**, así que
+no hay veredicto; lo que sí está fijado de antemano es la regla, para que los
+números de la PS3 la apliquen sin discusión (la calcula
+`tools/jit-veredicto.py <jit-arm.log>` a partir de las líneas `DATO jit …` y
+`DATO hilos …`; el script se probó con un log sintético solo para el analizador y
+no se usó ninguno de sus números aquí):
+
+- **El ARM9 cabe** si el **peor** de los 4 bucles, con la mejor forma de banderas,
+  da **≥ 67 MIPS** (1 ciclo por instrucción guest; el modelo con +2 ciclos por salto
+  tomado es el segundo dato). **Holgura = MIPS / 67**, y se exige **≥ 1,5×**, para
+  dejar sitio a lo que estos bucles no tienen: la tabla de páginas de punteros de
+  la memoria (cada acceso suma su costo), IRQ, temporizadores, DMA, E/S y la
+  sincronía con el ARM7.
+- **El ARM7 en el hilo 1**: se toma la pérdida porcentual del ARM9 de cada forma de
+  esperar (`DATO hilos …`, contra el ARM9 sin hilo del ARM7), se aplica al MIPS del
+  peor bucle, y la forma de esperar es viable si el ARM9 sigue ≥ 67 MIPS. Se reporta
+  también la latencia de despertarlo (mediana y p99): si supera lo que tolera la
+  sincronía entre las dos CPUs (porciones de ~decenas de µs), girar o fragmentar el
+  ARM7 en pasos más largos.
+- **Si no cabe**: el script dice cuánto falta (MIPS y ×), y las palancas ya
+  identificadas, en orden: banderas fusionadas y eliminación de banderas muertas
+  entre bloques, enlace directo de bloques (el prototipo sale al encabezado en cada
+  salto), registros guest fijos entre bloques y menos almacenamientos al estado.
+
+**Estimación previa [est]**, sin medir, solo para saber qué esperar: el código
+traducido de los bucles emite ~2,2 instrucciones del PPE por instrucción guest en
+el cuerpo (20 por 9 en `mezcla` con banderas perezosas). A los 1,5–2,6 ciclos por
+instrucción que midió 0.3 para operaciones simples y cargas, más la penalización de
+los saltos mal predichos en `ramas`, eso da del orden de 3–6 ciclos del PPE por
+instrucción guest, es decir **~500–1000 MIPS**, 7–15 veces los 67 MHz. Si la
+consola lo confirma, el ARM9 cabe con holgura grande y la pregunta real pasa a ser el
+costo de la memoria con tabla de páginas y el del ARM7 en el hilo 1; si no, el
+script da el déficit. **No es una medición**: el intérprete de 0.3 midió 17 MIPS
+contra una estimación de ~50 en su día, y la composición 2D salió ~3× más lenta que
+la estimación de esta misma fase.
+
