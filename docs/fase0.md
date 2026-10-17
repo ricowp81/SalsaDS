@@ -2,7 +2,7 @@
 
 Resultados de las pruebas de factibilidad del plan del proyecto. Cada prueba
 vive en `tests/phase0/<nombre>`, su resultado va aquí y la medición, en
-`perf-log.md`. Hasta cerrar la fase no se escribe el núcleo.
+`perf-log.md`. Hasta cerrar la fase no se escribe el núcleo. **La Fase 0 está cerrada** (ver «Cierre de la Fase 0» al final).
 
 | Prueba | Estado |
 |---|---|
@@ -12,7 +12,7 @@ vive en `tests/phase0/<nombre>`, su resultado va aquí y la medición, en
 | 0.4 Rasterizador 3D en un SPE | hecho (2026-10-16): medido en la PS3 real, **criterio cumplido** (4,19 ms), decisión abajo |
 | 0.5 Composición 2D en un SPE | medido en la PS3 real (2026-10-16): imagen correcta, **criterio < 4 ms NO cumplido** con las dos pantallas en un SPE (4,31 / 5,59 / 8,46 ms); salidas anotadas abajo |
 | 0.6 Salida de dos pantallas | **60 Hz estables en la PS3 real** a 720p y 1080p (16/16 combinaciones); sensación de los modos del puntero pendiente |
-| 0.7 Prueba de JIT ARM → PPC | construido y verificado (host y qemu-ppc64, 2026-10-16); **MHz, banderas y hilos pendientes de la PS3 real** |
+| 0.7 Prueba de JIT ARM → PPC | hecho (2026-10-17): medido en la PS3 real, **el ARM9 cabe con 8× de holgura** (534,8 MIPS el peor bucle contra 67), ARM7 en el hilo 1 durmiendo en un semáforo de lv2 |
 
 ## 0.1 Esqueleto
 
@@ -1074,9 +1074,10 @@ Criterio del plan: mismo resultado y ganancia medida contra el intérprete de 0.
 si en CFW se cuelga, el respaldo al intérprete funciona. Se agregó lo acordado
 con el autor: (a) cuántos MHz de ARM9 saca el código traducido en bucles reales
 contra el intérprete de 0.3 y contra la meta de 67 MHz; (b) cómo salen las
-banderas NZCV en el PPE; (c) el ARM7 en el hilo 1 del PPE. Estado: **construido
-y verificado en el host y en qemu-ppc64; falta medirlo en la PS3 real** (paquete
-«SalsaDS JIT», APPID `SLDS00007`, log `/dev_hdd0/salsads/jit-arm.log`).
+banderas NZCV en el PPE; (c) el ARM7 en el hilo 1 del PPE. Estado: **medido en la
+PS3 real el 2026-10-17** (paquete «SalsaDS JIT», APPID `SLDS00007`, commit
+`df3153a`; log completo en `docs/datos/jit-arm-df3153a-ps3.log`) y verificado antes
+en el host y en qemu-ppc64. Veredicto y números abajo.
 
 ### Qué es
 
@@ -1187,52 +1188,145 @@ y 100 µs), más el costo de publicar en el hilo del ARM9 (`sysSemPost`,
 `sysEventPortSend`). Salsa64 midió ~0,13 ms de emulación perdidos por ms de
 trabajo del hilo 1; esta prueba mide lo que cuesta además **esperar**.
 
-### Pendiente
+### Resultados en la PS3 real (2026-10-17)
 
-Pegar aquí las medianas de la PS3 (MHz por bucle y modo, ganancia contra 0.3,
-costo de las banderas, pérdida del ARM9 y latencia por forma de esperar) y decidir:
-si el JIT alcanza los 67 MHz del ARM9; qué forma de banderas se lleva a la
-Fase 4; y cómo espera el hilo del ARM7 (la elección de la dirección del ARM7:
-PPE hilo 1 o un SPE sigue abierta hasta tener estos números, ver «Decisiones» de
-0.3 punto 6).
+`jit: la caché de código de 4 MB funciona` (prueba de 905 µs, sin marca previa: el
+JIT corrió). Las 12 traducciones verificadas contra el intérprete de referencia
+(`RESULTADO jit-arm: OK`). Traducir un bucle cuesta 3,6–5,2 µs y vaciar su
+caché de instrucciones 0,23–0,26 µs; el código emitido son 8,5–11,8 instrucciones del
+PPE por instrucción guest contando el prólogo y la salida (~2,2 en el cuerpo de
+los bucles).
 
-### Veredicto de viabilidad (0.7) — **pendiente de la PS3 real**
+**(a) MIPS de ARM9** (1 ciclo por instrucción guest; los ciclos del PPE por
+instrucción guest salen de dividir 3200 entre los MIPS):
 
-La pregunta que decide el proyecto con el JIT: ¿cabe el ARM9 a 67 MHz en el hilo 0
-del PPE con el código traducido, con cuánta holgura, y cuánto le quita el ARM7 en el
-hilo 1 (girando contra durmiendo)? **Todavía no hay número de la consola**, así que
-no hay veredicto; lo que sí está fijado de antemano es la regla, para que los
-números de la PS3 la apliquen sin discusión (la calcula
-`tools/jit-veredicto.py <jit-arm.log>` a partir de las líneas `DATO jit …` y
-`DATO hilos …`; el script se probó con un log sintético solo para el analizador y
-no se usó ninguno de sus números aquí):
+| Bucle | Referencia | Intérprete de 0.3 | JIT perezosas | JIT CR por instrucción | JIT fusionadas |
+|---|---|---|---|---|---|
+| mezcla | 22,1 | 18,1 | 792,8 | **840,2** | 866,0 |
+| suma64 | 20,5 | — | 508,2 | 534,8 | **535,9** |
+| ramas | 20,8 | — | 587,3 | 644,2 | **715,1** |
+| bytes | 21,8 | — | 789,8 | **836,3** | 505,6 |
 
-- **El ARM9 cabe** si el **peor** de los 4 bucles, con la mejor forma de banderas,
-  da **≥ 67 MIPS** (1 ciclo por instrucción guest; el modelo con +2 ciclos por salto
-  tomado es el segundo dato). **Holgura = MIPS / 67**, y se exige **≥ 1,5×**, para
-  dejar sitio a lo que estos bucles no tienen: la tabla de páginas de punteros de
-  la memoria (cada acceso suma su costo), IRQ, temporizadores, DMA, E/S y la
-  sincronía con el ARM7.
-- **El ARM7 en el hilo 1**: se toma la pérdida porcentual del ARM9 de cada forma de
-  esperar (`DATO hilos …`, contra el ARM9 sin hilo del ARM7), se aplica al MIPS del
-  peor bucle, y la forma de esperar es viable si el ARM9 sigue ≥ 67 MIPS. Se reporta
-  también la latencia de despertarlo (mediana y p99): si supera lo que tolera la
-  sincronía entre las dos CPUs (porciones de ~decenas de µs), girar o fragmentar el
-  ARM7 en pasos más largos.
-- **Si no cabe**: el script dice cuánto falta (MIPS y ×), y las palancas ya
-  identificadas, en orden: banderas fusionadas y eliminación de banderas muertas
-  entre bloques, enlace directo de bloques (el prototipo sale al encabezado en cada
-  salto), registros guest fijos entre bloques y menos almacenamientos al estado.
+El peor bucle con la mejor forma de banderas (CR por instrucción) da **534,8 MIPS**
+(`suma64`, 6,0 ciclos del PPE por instrucción guest). Contra el intérprete de 0.3
+(18,1 MIPS en `mezcla`, el mismo programa) el JIT es **×43,9–×47,9**; contra el de
+referencia, ×25–×39. Con el modelo de +2 ciclos por salto tomado los MHz
+equivalentes suben a 618–1058.
 
-**Estimación previa [est]**, sin medir, solo para saber qué esperar: el código
-traducido de los bucles emite ~2,2 instrucciones del PPE por instrucción guest en
-el cuerpo (20 por 9 en `mezcla` con banderas perezosas). A los 1,5–2,6 ciclos por
-instrucción que midió 0.3 para operaciones simples y cargas, más la penalización de
-los saltos mal predichos en `ramas`, eso da del orden de 3–6 ciclos del PPE por
-instrucción guest, es decir **~500–1000 MIPS**, 7–15 veces los 67 MHz. Si la
-consola lo confirma, el ARM9 cabe con holgura grande y la pregunta real pasa a ser el
-costo de la memoria con tabla de páginas y el del ARM7 en el hilo 1; si no, el
-script da el déficit. **No es una medición**: el intérprete de 0.3 midió 17 MIPS
-contra una estimación de ~50 en su día, y la composición 2D salió ~3× más lenta que
-la estimación de esta misma fase.
+**(b) Banderas.** Ganó **CR por instrucción** contra las perezosas en los cuatro
+bucles (+5,2 % a +9,7 %), y las fusionadas ganaron a las perezosas en tres (+5,5 % a
++21,8 %) pero perdieron **−36 %** en `bytes` (505,6 contra 789,8, con código casi
+idéntico: **no investigué la causa**; la sospecha es de predicción de saltos o
+alineación, sin probar). Por qué CR no pagó el `mfcr` (~27 ciclos) medido en 0.3:
+**el traductor nunca lo necesita.** `cmpw`/`cmplw` dejan el resultado en `cr0`/`cr1`
+(1,5 ciclos cada una, sin microcódigo) y el `bc` del salto lee ese campo
+directamente; `mfcr` solo haría falta para pasar NZCV a un registro (al salir del
+bloque, entre bloques, o para MI, PL, VS y VC), que este subconjunto no ejercita.
+Las perezosas pagan más: 2 `mr` por comparación y volver a comparar al consumir. En
+la prueba de 0.3 (c) perdía porque calculaba V y N≠V con `crxor` por instrucción;
+aquí las condiciones con signo salen exactas del `cmpw` tras una resta. **La
+ventaja de CR es válida solo mientras las banderas se consuman en el mismo bloque
+con condiciones que `cmpw`/`cmplw` expresan**; el código real (MI/PL/VS/VC, banderas
+vivas entre bloques, ADC tras otro bloque) tendrá que materializar banderas, y ahí
+vuelve a contar el `mfcr` y la elección perezosa de 0.3. Decisión para la Fase 4:
+**CR por instrucción como base del recompilador** (sin guardar operandos), con
+banderas perezosas solo como respaldo para lo que cruce bloques; la fusión cmp+salto
+es una optimización a retomar cuando se entienda la caída de `bytes`.
 
+**(c) El ARM7 en el hilo 1** (ARM9 `suma64` JIT sin hilo del ARM7: 526,9 MIPS):
+
+| Cómo espera el hilo del ARM7 | Despertar cada | ARM9 | Pérdida | Latencia de despertar (mediana / p99 / máx) |
+|---|---|---|---|---|
+| gira | 100 µs | 358,8 | **−31,9 %** | 0 / 30,4 / 137 µs |
+| gira, prioridad baja de SMT | 100 µs | 377,9 | −28,3 % | 0 / 32,4 / 112 µs |
+| `sysUsleep(50)` | 100 µs | 495,4 | −6,0 % | 29,4 / 69,5 / 141 µs |
+| **semáforo de lv2** | 1000 µs | 523,4 | **−0,7 %** | 9,0 / 44,4 / 240 µs |
+| semáforo de lv2 | 100 µs | 480,2 | −8,9 % | 8,8 / 71,8 / 127 µs |
+| semáforo de lv2 | 33 µs | 391,9 | −25,6 % | 8,8 / 36,1 / 78 µs |
+| cola de eventos de lv2 | 1000 µs | 521,7 | −1,0 % | 9,8 / 26,5 / 115 µs |
+| cola de eventos de lv2 | 100 µs | 476,5 | −9,6 % | 9,5 / 68,1 / 118 µs |
+
+Costo de avisar en el hilo del ARM9: `sysSemPost` 3,4–3,8 µs de media (máx. hasta 146
+µs), `sysEventPortSend` 4,3–4,6 µs. **Girar le quita casi un tercio al ARM9**
+(el hilo de hardware gemelo roba unidades de ejecución aunque gire con prioridad
+baja: −28 %); dormir en una primitiva de lv2 le quita casi nada si el ARM7 despierta
+cada ≥ 1 ms (−0,7 %) y ~9 % cada 100 µs. A 33 µs entre despertares el costo es el de
+girar (−26 %): **el costo es de la frecuencia de despertares, no de esperar**.
+
+### Veredicto de viabilidad (0.7)
+
+**El ARM9 a 67 MHz cabe en el hilo 0 del PPE con código traducido, con 8× de
+holgura**: el peor bucle da 534,8 MIPS, 7,98 veces los 67 de la meta (468 MIPS
+libres) y 5,3 veces el mínimo que se exigió (67 × 1,5 = 100,5 MIPS). Con el ARM7 en
+el hilo 1 el ARM9 conserva, en el peor bucle (aplicando la pérdida medida de
+`suma64`):
+
+| ARM7 en el hilo 1 | ARM9 queda en | Holgura sobre 67 | Sobre 100,5 |
+|---|---|---|---|
+| durmiendo en el semáforo, despertar cada 1 ms | 531 MIPS | 7,9× | 5,3× |
+| durmiendo en el semáforo, cada 100 µs | 487 MIPS | 7,3× | 4,8× |
+| cola de eventos, cada 100 µs | 484 MIPS | 7,2× | 4,8× |
+| semáforo, cada 33 µs | 398 MIPS | 5,9× | 4,0× |
+| **girando** | 364 MIPS | 5,4× | 3,6× |
+
+**Cabe aun girando**, pero dormir con una primitiva de lv2 cuesta de 3,5 a 45 veces menos
+al ARM9 (−0,7 % a −9 % contra −32 %) y deja el hilo de hardware libre para el
+resto del emulador (presentación, entrada, E/S): es la forma elegida. Costo a
+pagar: la latencia de despertar es de ~9 µs de mediana pero de **36–72 µs en el
+p99** (y hasta 240 µs de máximo), y `sysUsleep(50)` despierta a los 29 µs: la
+sincronía entre el ARM9 y el ARM7 se hace en porciones de decenas de µs, no por
+instrucción (como en los emuladores de escritorio), y el ARM7 solo se despierta
+cuando hay un evento que atender, con un tiempo mínimo entre despertares.
+
+**Esto es un techo, no la velocidad del emulador.** Lo medido es un subconjunto
+de ARM (sin MUL, LDM/STM, desplazamiento por registro, MI/PL/VS/VC), con una
+**memoria plana de 16 KB enmascarada** (sin tabla de páginas de punteros ni
+regiones, sin ITCM/DTCM/VRAM/MMIO), **sin E/S, interrupciones, temporizadores ni
+DMA**, sin enlace de bloques ni invalidación por escritura de código, y con bucles
+que caben en la caché de instrucciones (el costo de código real lo manda la huella,
+`docs/cell-desde-salsa64.md` §1.4). El código emitido aquí es ~2,2 instrucciones del
+PPE por instrucción guest en el cuerpo; el recompilador de Salsa64 emitía ~13–21.
+**Cuánto puede perder el núcleo real y aún cabe**: el peor bucle da 534,8 MIPS y se
+exige ≥ 100,5, así que el núcleo real puede ser hasta **5,3 veces más lento** que
+este prototipo (retener el 19 %) antes de bajar de la holgura de 1,5×, o **8×** antes
+de bajar de los 67 MIPS desnudos; con el ARM7 durmiendo en un semáforo a 100 µs
+(−9 %) quedan **4,8×** y **7,3×**. Tres cosas que pesan más que ese factor y que
+hay que medir en la Fase 1–4: el costo del acceso a memoria con tabla de páginas
+(cada carga y almacenamiento suma una búsqueda), la huella de código del
+recompilador real y el trabajo del ARM7 cuando no está en HALT (33 MHz más
+encima: en el hilo 1, con ~½ del rendimiento del hilo 0 por SMT, un ARM7 despierto
+al 100 % pediría del orden de 33 de los ~250 MIPS que le quedarían; [est]).
+
+## Cierre de la Fase 0
+
+Todas las pruebas están hechas (0.4–0.7 medidas en la PS3 real el 2026-10-16/17).
+**La arquitectura del plan queda confirmada, con dos correcciones** (el 2D no cabe
+en un SPE y el ARM7 no se queda girando):
+
+| Decisión | Resultado | Dónde |
+|---|---|---|
+| Memoria de la DS en little-endian | `lwbrx`/`stwbrx` cuestan lo de una carga normal; alineación de 32 B del host | 0.3 |
+| Intérprete solo | 17–22 MIPS contra ~100 que pide la DS: **el recompilador es obligatorio** | 0.3, 0.7 |
+| **ARM9 en el hilo 0 con JIT** | **cabe: 534,8 MIPS el peor bucle contra 67 (8×)**; techo, no la velocidad final | 0.7 |
+| Banderas del JIT | **CR por instrucción** (`cmpw`/`cmplw` a `cr0`/`cr1`, sin `mfcr`), perezosas como respaldo; fusión por retomar | 0.7 (corrige 0.3) |
+| **ARM7 en el hilo 1, durmiendo en una primitiva de lv2** | semáforo (o cola de eventos), despertares espaciados ≥ 100 µs (−0,7 % a −9 % al ARM9); **no girar** (−32 %); latencia de despertar ~9 µs (p99 36–72) | 0.7 |
+| **3D en SPEs** | 4,19 ms a 1× con 2048 triángulos en 2 SPEs (< 8 ms); 2×: 7,96; 4×: 19,6 (no cabe). **Opción B (3D en el RSX con `rsxkit_draw_triangles` y fragment programs de `fpgen`)** queda solo para ≥ 2× de resolución interna o si la exactitud de los SPEs no alcanza, con sus costos anotados (pérdida de exactitud, lectura de vuelta) | 0.4 |
+| **2D en SPEs** | **un SPE para las dos pantallas NO cumple los 4 ms** (4,31 / 5,59 / 8,46 ms); **un SPE por pantalla** (~2,2 / 2,8 / 4,3 ms) o esconder el DMA del mapa con doble búfer | 0.5 |
+| Reparto de SPEs (6) | 3D: 2; 2D: 2 (uno por pantalla); audio: 1; 1 libre (filtros/escalado) | 0.4, 0.5 |
+| Salida de dos pantallas | rsxkit, 2 texturas de 256×192, 4 distribuciones, 720p y 1080p, escala entera y ajustada: **60 Hz estables en las 16 combinaciones**, PPE ~1,06 ms por cuadro | 0.6 |
+| Entrada | DS3 → DS; puntero táctil con botón de toque mapeable; stick e inclinación (con `invertir_y = 1`) probados, **GIRO sin probar**; un DualSense no entrega sensores a libpad | 0.6 |
+| JIT en CFW | prueba de la caché con plazo y respaldo al intérprete implementados; **no verificados en un CFW real** (solo HEN) | 0.7 |
+
+**Riesgos que pasan a la Fase 1**
+1. Costo de la memoria con tabla de páginas en el código traducido (no medido).
+2. Sincronía ARM9/ARM7 por porciones: latencia de despertar p99 de 36–72 µs; algunos
+   juegos dependen de tiempos finos entre las dos CPUs.
+3. Caché de texturas del 3D desbordada (×5,4 más lenta con 24 texturas).
+4. El 2D medido es un subconjunto (sin ventanas, mezclas, mosaico, afines, paletas
+   extendidas) y la VRAM/OAM se toman como foto por cuadro; su semántica de
+   direcciones no se contrastó con melonDS ni con una DS.
+5. Huella de código y banderas entre bloques del recompilador real (el `mfcr` vuelve a
+   contar).
+6. JIT con CFW sin verificar; la prueba de la caché y el respaldo existen.
+
+Pendiente aquí: la sensación del puntero por inclinación y por giro en la consola.

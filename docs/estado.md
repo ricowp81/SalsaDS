@@ -4,14 +4,18 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
-## 2026-10-16 — Prueba mínima del JIT ARM → PPC (Fase 0.7)
+## 2026-10-17 — Prueba mínima del JIT ARM → PPC (Fase 0.7) y cierre de la Fase 0
 
 - `tests/phase0/jit-arm` («SalsaDS JIT», SLDS00007) + `src/jit/`: traductor de un
   subconjunto de ARM (datos con S, ADC, LDR/STR/LDRB/STRB, B<cond>) a PowerPC64 con
   tres formas de banderas (perezosas, CR por instrucción, cmp+salto fusionados), un
   intérprete de referencia y cuatro bucles (el de la 0.3, suma64 con acarreo,
   ramas, bytes). **qemu-ppc64 ejecuta el código traducido** y da lo mismo que la
-  referencia (registros, memoria, instrucciones); falta medir en la PS3 real.
+  referencia (registros, memoria, instrucciones).
+- **Medido en la PS3 real (2026-10-17): el ARM9 cabe.** El peor bucle da 534,8 MIPS
+  con CR por instrucción (8× los 67 MHz; intérprete de 0.3: 18,1 MIPS). ARM7 en el
+  hilo 1: girar −31,9 %, dormir en un semáforo de lv2 −0,7 % a −9 %. **Fase 0
+  cerrada**: arquitectura confirmada en `fase0.md` («Cierre de la Fase 0»).
 - Caché de código: cola NOBITS de 4 MB en el texto (`mk/rec-cache.ld`), hilo de
   prueba con plazo de 2 s y marca en disco; si falla o cuelga (CFW), respaldo a los
   intérpretes. En RPCS3 el JIT no se intenta (solo lectura).
