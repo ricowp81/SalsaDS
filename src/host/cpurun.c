@@ -258,7 +258,8 @@ int main(int argc, char **argv)
 				nds_peek32(&M, 0, a + 12));
 		}
 		if (w[0] != SDS_MAGIC || w[2] != 1) {
-			printf("SIN VEREDICTO %s\n", name);
+			printf("SIN VEREDICTO %s (ARM9 pc 0x%08x, ARM7 pc 0x%08x, marca %u)\n", name, acore_pc(&M.a9),
+			       acore_pc(&M.a7), nds_peek32(&M, 0, SDS_ADDR + 0x30));
 			return 2;
 		}
 		if (w[10] == 1 && w[4] == 0) {

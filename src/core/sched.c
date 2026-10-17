@@ -143,9 +143,11 @@ static inline unsigned tm_sh(const struct nds_timer *t)
 	return 1u + tm_shift[t->ctl & 3u]; /* en ciclos del ARM9 */
 }
 
+/* El bit de cuenta ascendente del temporizador 0 no tiene a quién seguir: no cuenta nunca (como en melonDS). */
 static inline int tm_cascade(const struct nds_timer *t, int i)
 {
-	return i > 0 && (t->ctl & 4u);
+	(void)i;
+	return (t->ctl & 4u) != 0;
 }
 
 static uint32_t tm_value(const struct nds_timer *t, int i, uint64_t now)
