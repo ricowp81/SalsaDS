@@ -4,6 +4,7 @@ BitUnPack y los filtros de diferencias) con compresores escritos aquí desde la 
 resultados esperados salen del dato original, no de ningún emulador.
 
     tools/gen-bios-vectors.py > tests/roms/src/bios/vectors.h
+    tools/gen-bios-vectors.py --pattern > tests/roms/src/periph/pattern.h   (20 KB de bytes conocidos para leer el cartucho)
 """
 import heapq
 import struct
@@ -182,7 +183,20 @@ def arr(name: str, b: bytes) -> str:
     return "static const uint8_t %s[%d] __attribute__((aligned(4))) = {\n%s\n};\n" % (name, len(b), "\n".join(lines))
 
 
+def pattern(n: int) -> bytes:
+    x, out = 0x1234567, bytearray()
+    for _ in range(n):
+        x = (x * 1103515245 + 12345) & 0xFFFFFFFF
+        out.append((x >> 16) & 0xFF)
+    return bytes(out)
+
+
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "--pattern":
+        sys.stdout.write("/* Generado por tools/gen-bios-vectors.py --pattern: no editar a mano. */\n#ifndef PATTERN_H\n#define PATTERN_H\n\n#include <stdint.h>\n\n")
+        sys.stdout.write(arr("v_pattern", pattern(0x5000)))
+        sys.stdout.write("\n#endif\n")
+        return
     d = plain_text()
     bu_src = bytes([0x1B, 0xE4, 0x00, 0xFF, 0x39, 0xC6, 0x55, 0xAA])
     sys.stdout.write("/* Generado por tools/gen-bios-vectors.py: no editar a mano. */\n#ifndef VECTORS_H\n#define VECTORS_H\n\n#include <stdint.h>\n\n")

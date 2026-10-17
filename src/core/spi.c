@@ -196,8 +196,10 @@ static void dev_deselect(struct nds_spi *s, unsigned dev)
 	if (dev == 0) {
 		s->pm_state = 0;
 	} else if (dev == 1) {
+		/* WEL lo apagan WRDI y el final de una escritura o borrado, no soltar el chip select */
+		if (s->fw_state == 3 && (s->fw_cmd == 0x0A || s->fw_cmd == 0x02 || s->fw_cmd == 0xDB || s->fw_cmd == 0xD8))
+			s->fw_wel = 0;
 		s->fw_state = 0;
-		s->fw_wel = 0;
 	} else {
 		s->tsc_qn = 0;
 	}
