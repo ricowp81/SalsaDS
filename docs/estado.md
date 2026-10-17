@@ -13,8 +13,12 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
   `docs/fase0.md` §0.4.
 - Verificado: el mismo núcleo en el host (LE y BE) contra una referencia en C
   (modo id idéntico; color 99,96 % idéntico; todos los repartos con los mismos
-  bits) y en RPCS3 (`RESULTADO … OK`). **Falta medir en la PS3 real** (el
-  criterio: < 8 ms a 1× con 2048 triángulos en 2 SPEs).
+  bits) y en RPCS3 (`RESULTADO … OK`).
+- **Medido en la PS3 real (paquete de `255b0d2`): criterio cumplido.** 1× N =
+  2048 en 2 SPEs: 4,19 ms (< 8); 2×: 7,96 ms; 4×: 19,61 ms (no cabe en 2
+  SPEs). Medida ×1,6–2 sobre la estimación. Caché de texturas desbordada: ×5,4
+  más lenta, primera decisión de la Fase 3. Detalle en `docs/fase0.md` §0.4,
+  `perf-log.md` y `docs/datos/`. **Fase 0.4 cerrada.**
 - Encontrado: `spu_re` de spu-gcc ya incluye el `fi`; uno más arruina el
   recíproco. El programa ahora autoprueba en cada SPE las funciones con
   intrínsecos contra el PPE.

@@ -9,7 +9,7 @@ vive en `tests/phase0/<nombre>`, su resultado va aquí y la medición, en
 | 0.1 Esqueleto del repositorio | hecho (2026-10-16) |
 | 0.2 ROMs de prueba propias | hecho (2026-10-16) |
 | 0.3 Microbenchmarks del PPE | hecho (2026-10-16): medido en la PS3 real, decisiones abajo |
-| 0.4 Rasterizador 3D en un SPE | construido y verificado en host y RPCS3 (2026-10-16); falta medir en la PS3 real |
+| 0.4 Rasterizador 3D en un SPE | hecho (2026-10-16): medido en la PS3 real, **criterio cumplido** (4,19 ms), decisión abajo |
 | 0.5 Composición 2D en un SPE | pendiente |
 | 0.6 Salida de dos pantallas | pendiente |
 | 0.7 Prueba de JIT ARM → PPC | pendiente |
@@ -366,10 +366,12 @@ como desvío mal predicho y habría que medirlo aparte).
 
 ## 0.4 Rasterizador 3D en SPEs (`tests/phase0/spe-raster3d`)
 
-Estado: construido y verificado en el host (LE y BE) y en RPCS3; **pendiente
-de medir en la PS3 real** con el paquete `SalsaDS raster` (APPID
-`SLDS00002`, el mismo de `tests/phase0/empty`, que solo se corrió en RPCS3).
-Los tiempos de RPCS3 no valen.
+Estado: **medido en la PS3 real** el 2026-10-16 con el paquete `SalsaDS raster`
+(APPID `SLDS00002`, el mismo de `tests/phase0/empty`, que solo se corrió en
+RPCS3) compilado desde `255b0d2`; log completo (166 líneas,
+`RESULTADO spe-raster3d: OK`) en `docs/datos/spe-raster3d-255b0d2-ps3.log`.
+Los tiempos de RPCS3 no valen. **Criterio cumplido: 4,19 ms a 1× con 2048
+triángulos en 2 SPEs (objetivo < 8 ms).**
 
 Criterio del plan: ms por cuadro en la PS3 real con N = 500, 1000 y 2048
 triángulos, con 1 y 2 SPEs, a 1×, 2× y 4×; objetivo **< 8 ms a 1× con 2048
@@ -537,21 +539,106 @@ imagen de fondo y el límite de polígonos por línea.
   repartos de cada escena. Deja la imagen de 1× N = 2048 en
   `/dev_hdd0/salsads/spe-raster3d-1x-2048.ppm`.
 
-### Estimación antes de medir **[diseño]**
+### Estimación antes de medir **[diseño]** (contra lo medido)
 
-Solo para saber qué esperar y detectar cifras absurdas: los conteos son
-exactos (los mismos en el host, RPCS3 y la PS3), los ciclos por vuelta son
-una suposición (~160 por par de grupos: 119 del tubo par más esperas; ~60 por
-línea; ~300 por triángulo y unidad; ~500 por setup).
+Los conteos (grupos, líneas, unidad·triángulo) son exactos y salieron iguales
+en el host, RPCS3 y la PS3; los ciclos por vuelta eran una suposición (~160 por
+par de grupos, ~500 por setup). N = 2048, ms por cuadro:
 
-| Escala, N = 2048 | Grupos | Líneas | Unidad·tri | 1 SPE (est.) | 2 SPEs (est.) |
-|---|---|---|---|---|---|
-| 1× | 93 188 | 29 426 | 3 596 | ~3,5 ms | ~2 ms |
-| 2× banda / tile | 270 568 / 271 570 | 58 706 / 60 090 | 9 149 / 5 799 | ~8 ms | ~4,5 ms |
-| 4× banda / tile | 867 184 / 871 962 | 117 224 / 125 729 | 31 649 / 11 018 | ~27 / ~24 ms | ~14 / ~13 ms |
+| Escala | 1 SPE estimado | 1 SPE medido | 2 SPEs estimado | 2 SPEs medido |
+|---|---|---|---|---|
+| 1× banda | ~3,5 | 6,76 | ~2 | **4,19** (alternas) / 4,25 (mitades) |
+| 2× banda / tile | ~8 | 15,17 / 14,33 | ~4,5 | 8,38 / 7,96 |
+| 4× banda / tile | ~27 / ~24 | 42,82 / 37,64 | ~14 / ~13 | 22,20 / 19,61 |
 
-Si la consola da algo de ese orden, el objetivo a 1× se cumple con margen y
-4× no cabe en 2 SPEs a 60 Hz (haría falta 3–4, o más trabajo en el bucle).
+La estimación se quedó corta ×1,6–2: **lo medido cuesta el doble.** Del
+desglose por SPE (1×, N = 2048): el dibujo costó 4,42 ms con 93 188 grupos →
+152 ciclos por grupo de 4 píxeles (304 por vuelta de 2 grupos, contra 160
+supuestos; el bucle de 196 instrucciones no llena los dos tubos y hay esperas
+por las cadenas de latencia y las cargas del texel), y el setup 1,20 ms con
+1969 triángulos → ~1950 ciclos por triángulo (contra 500: la división, la
+conversión de 7 atributos y los DMA de salida pesan más de lo supuesto). Aun
+así el criterio se cumple con casi el doble de margen.
+
+### Resultados (PS3 real, `255b0d2`)
+
+ms por cuadro, mediana de 9 tras 2 de calentamiento (mínimo y máximo difieren
+< 1 %, salvo un máximo de 4,52 en 1× N = 2048 alternas). Autoprueba de los dos
+SPEs: enteros iguales al PPE, recíproco 0,89e-7 (igual que en RPCS3). Escena
+de 12 texturas.
+
+| Escala | N | 1 SPE banda | 2 SPEs banda alternas | 2 SPEs banda mitades | 1 SPE tile | 2 SPEs tile alternas | 2 SPEs tile mitades |
+|---|---|---|---|---|---|---|---|
+| 1× | 500 | 3,63 | 2,15 | 2,20 | — | — | — |
+| 1× | 1000 | 4,64 | 2,80 | 2,82 | — | — | — |
+| 1× | 2048 | 6,76 | **4,19** | 4,25 | — | — | — |
+| 2× | 500 | 9,53 | 5,09 | 5,29 | 9,26 | 4,96 | 5,16 |
+| 2× | 1000 | 11,20 | 6,08 | 6,18 | 10,69 | 5,83 | 5,91 |
+| 2× | 2048 | 15,17 | 8,38 | 8,59 | 14,33 | 7,96 | 8,15 |
+| 4× | 500 | 30,26 | 15,45 | 16,10 | 28,38 | 14,53 | 15,04 |
+| 4× | 1000 | 33,36 | 17,16 | 17,51 | 30,10 | 15,54 | 15,82 |
+| 4× | 2048 | 42,82 | 22,20 | 22,81 | 37,64 | 19,61 | 20,09 |
+
+(A 1× el tile de 256 es la banda.) Con 24 texturas (caché desbordada), N =
+2048: 1× 42,22 (1 SPE) y **22,65** (2 SPEs alternas) contra 4,19 con 12; 2×
+101,84 y **52,36** contra 8,38. El mismo núcleo escalar en el PPE (1× N =
+2048): 50,46 ms, 7,5× más lento que 2 SPEs; la referencia de `r3d_ref.c`
+tarda 237 ms por cuadro a 1× y 930 a 2×.
+
+Desglose por SPE, 1× N = 2048 (ms): 1 SPE, total 6,75 = setup 1,20 + listas
+0,08 + dma 0,02 + texturas 0,33 + dibujo 4,42 + salida 0,02; 2 SPEs
+alternas, total 4,18 = setup 1,20 + listas 0,04 + dma 0,01 + texturas 0,33 +
+dibujo 2,24 + salida 0,01. 4× N = 2048 tile alternas: 19,60 = setup 1,21 +
+listas 0,53 + dma 0,11 + texturas 0,33 + dibujo 16,17 + salida 0,17. Con 24
+texturas a 1× (1 SPE): texturas **35,40** de 42,22 ms (1178 fallos, 2913 KB
+de VRAM por cuadro).
+
+Lectura:
+
+1. **A 1× sobra margen:** 4,19 ms con 2048 triángulos y 2,15 con 500.
+2. **A 2× va al límite con 2 SPEs** (7,96–8,38 ms con N = 2048): sirve a 60 Hz
+   solo si el 3D se queda con casi todo el cuadro. **A 4× no cabe en 2
+   SPEs** (19,6–22,2 ms, más que los 16,7 ms de un cuadro): harían falta ~3
+   SPEs o un bucle interno más rápido.
+3. **Escala casi lineal con los SPEs:** 2 SPEs dan ×1,6 a 1× (el setup,
+   1,20 ms, se duplica: 29 % del tiempo) y ×1,8–1,9 a 2× y 4×.
+4. **Alternas gana a mitades** por 1–4 % (mejor equilibrio; el setup que
+   ahorran las mitades no se nota).
+5. **Tile gana a banda** a 2× (−5 %) y a 4× (−12 %): la banda de 4 líneas a 4×
+   mete cada triángulo en ~3 veces más unidades (unidad·triángulo 31 649
+   contra 11 018) y las listas pesan (0,53 ms).
+6. **El costo es el dibujo** (66–82 %), no el DMA (< 3 %) ni las listas; con
+   el doble búfer las esperas de DMA son despreciables.
+
+**Imagen de la consola** (`spe-raster3d-1x-2048.ppm`): contra la de RPCS3 del
+mismo programa, 49 145 de 49 152 píxeles idénticos, 1 cerca y 6 lejos (texel
+vecino por redondeo del SPU real contra el de RPCS3); contra la del host,
+49 115 idénticos, 9 cerca y 28 lejos (0,06 %, dentro de la tolerancia de
+0,5 %). La imagen es la esperada.
+
+### Decisión
+
+1. **El 3D en SPEs es viable:** 4,19 ms contra el objetivo de 8 a 1× con 2048
+   triángulos en 2 SPEs. A 1× no hace falta el RSX para el 3D; la alternativa
+   del RSX queda solo para resoluciones internas de 4× (o 2× si el 2D y el
+   audio comparten los SPEs), a decidir en la Fase 5.
+2. **Reparto:** bandas alternas a 1×; tiles de 256 de ancho, alternos por
+   filas de unidades, a 2× y 4×.
+3. **Primera decisión de la Fase 3: la caché de texturas desbordada.** Con 24
+   texturas el tiempo se multiplica ×5,4 a 1× (22,65 contra 4,19 ms) y ×6,2 a
+   2×; el 84 % del tiempo de 1 SPE son texturas que se vuelven a traer y
+   decodificar (1178 fallos por cuadro). Es el riesgo que más amenaza el
+   objetivo con juegos reales (cientos de KB de texturas). Opciones, por
+   medir antes de escribir el motor 3D: (a) guardar la textura en su formato
+   original con la paleta decodificada aparte (2–8× menos local store, un
+   `lqx` más por texel); (b) agrupar por textura o usar unidades más altas
+   para recorrer menos veces la lista; (c) decodificación vectorizada de 4
+   texeles por instrucción; (d) precarga de la siguiente textura mientras se
+   dibuja (hoy el DMA y la decodificación son síncronos).
+4. **Palancas del bucle interno** si hace falta 2× o 4×: el dibujo cuesta 152
+   ciclos por grupo, con una cota del tubo par de ~60. Candidatas: cargas del
+   texel (4 `lqx` + `rotqby`), un recíproco cada dos grupos, la conversión de z
+   y el setup duplicado (29 % a 1×).
 
 ### Qué mirar al correrlo en la PS3
 
@@ -599,7 +686,3 @@ duplicar (dividido entre SPEs) y el w-buffer.
 - La exactitud de la DS (regla de cobertura, precisión de la perspectiva, z y
   w de 24 bits) sube el costo por píxel; el flotante del SPU sirve de
   estimación inicial para una división entera exacta, pero falta medirlo.
-
-### Resultados (PS3 real)
-
-Pendiente de correr en la consola. Las cifras van aquí y en `perf-log.md`.
