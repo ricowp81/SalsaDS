@@ -17,11 +17,14 @@ ARM7_FLAGS := -marm -mcpu=arm7tdmi -O2 -Wall -Wextra -ffunction-sections -fdata-
               -D__NDS__ -D__BLOCKSDS__ -DARM7 -specs=$(BLOCKSDS)/sys/crts/ds_arm7.specs
 ARM7_LIBS  := -L$(BLOCKSDS)/libs/libnds/lib -Wl,--start-group -lnds7 -lc -Wl,--end-group
 
-ROMS := hola cpu9
+ROMS := hola cpu9 cpuarm
 SRCS_hola := src/common/sds.c src/hola/main.c
 SRCS_cpu9 := src/common/sds.c $(wildcard src/cpu9/*.c) $(wildcard src/cpu9/*.S)
+SRCS_cpuarm := src/common/sds.c src/cpuarm/arm9.c src/cpuarm/helpers.S src/cpu9/thumb.S
+SRCS7_cpuarm := src/common/sds7.c src/cpuarm/arm7.c src/cpuarm/helpers.S src/cpu9/thumb.S
 TITLE_hola := SalsaDS hola;prueba de VRAM;SalsaDS
 TITLE_cpu9 := SalsaDS cpu9;pruebas de CPU ARM9;SalsaDS
+TITLE_cpuarm := SalsaDS cpuarm;pruebas de CPU ARM9 y ARM7;SalsaDS
 
 .PHONY: all install clean $(ROMS)
 all: $(addprefix $(OUT)/,$(addsuffix .nds,$(ROMS)))
@@ -33,16 +36,28 @@ $(OUT)/arm7min.elf: src/arm7min/main.c
 	@echo "  ARM7    $@"
 	@$(CC) $(ARM7_FLAGS) $< -o $@ $(ARM7_LIBS)
 
+# ARM7 de cada ROM: el propio (SRCS7_<rom>) o, si no tiene, el mínimo que no hace nada
+ARM7_OF = $(if $(SRCS7_$(1)),$(1)7,arm7min)
+HDRS := $(wildcard src/common/*.h src/cpu9/*.h src/cpuarm/*.h)
+
 define ROM_RULES
-$$(OUT)/$(1).elf: $$(SRCS_$(1)) $$(wildcard src/common/*.h src/cpu9/*.h)
+$$(OUT)/$(1).elf: $$(SRCS_$(1)) $$(HDRS)
 	@mkdir -p $$(@D)
 	@echo "  ARM9    $$@"
 	@$$(CC) $$(ARM9_FLAGS) -Wl,-Map,$$(OUT)/$(1).map -Wl,--gc-sections $$(SRCS_$(1)) -o $$@ $$(ARM9_LIBS)
-$$(OUT)/$(1).nds: $$(OUT)/$(1).elf $$(OUT)/arm7min.elf $$(ICON)
+$$(OUT)/$(1).nds: $$(OUT)/$(1).elf $$(OUT)/$(call ARM7_OF,$(1)).elf $$(ICON)
 	@echo "  NDSTOOL $$@"
-	@$$(NDSTOOL) -c $$@ -7 $$(OUT)/arm7min.elf -9 $$(OUT)/$(1).elf -b $$(ICON) "$$(TITLE_$(1))" >/dev/null
+	@$$(NDSTOOL) -c $$@ -7 $$(OUT)/$(call ARM7_OF,$(1)).elf -9 $$(OUT)/$(1).elf -b $$(ICON) "$$(TITLE_$(1))" >/dev/null
 endef
 $(foreach r,$(ROMS),$(eval $(call ROM_RULES,$(r))))
+
+define ROM7_RULES
+$$(OUT)/$(1)7.elf: $$(SRCS7_$(1)) $$(HDRS)
+	@mkdir -p $$(@D)
+	@echo "  ARM7    $$@"
+	@$$(CC) $$(ARM7_FLAGS) -Wl,-Map,$$(OUT)/$(1)7.map -Wl,--gc-sections $$(SRCS7_$(1)) -o $$@ $$(ARM7_LIBS)
+endef
+$(foreach r,$(ROMS),$(if $(SRCS7_$(r)),$(eval $(call ROM7_RULES,$(r)))))
 
 install: all
 	cp $(addprefix $(OUT)/,$(addsuffix .nds,$(ROMS))) homebrew/

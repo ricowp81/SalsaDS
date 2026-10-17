@@ -144,16 +144,18 @@ static struct sds_results *const R = (struct sds_results *)SDS_RESULTS_ADDR;
 static const char *group_name;
 static uint32_t group_checks, group_failed, group_row = ROW_FIRST_GROUP;
 
+static struct sds_fail *const FAILLOG = (struct sds_fail *)(SDS_RESULTS_ADDR + SDS_FAILLOG_OFFSET);
+
 static void publish(void)
 {
-	flush_range(R, sizeof *R);
+	flush_range(R, SDS_DIVERGE_OFFSET + SDS_DIVERGE_MAX * sizeof(struct sds_fail));
 }
 
 void sds_init(const char *title)
 {
 	volatile uint32_t *w = (volatile uint32_t *)R;
 
-	for (unsigned i = 0; i < sizeof *R / 4; i++)
+	for (unsigned i = 0; i < (SDS_DIVERGE_OFFSET + SDS_DIVERGE_MAX * sizeof(struct sds_fail)) / 4; i++)
 		w[i] = 0;
 	R->magic = SDS_MAGIC;
 	R->version = 1;
@@ -213,6 +215,12 @@ void sds_check(uint32_t got, uint32_t want, uint32_t id)
 	R->total++;
 	group_checks++;
 	if (got != want) {
+		if (R->failed < SDS_FAILLOG_MAX) {
+			FAILLOG[R->failed].group = R->groups + 1;
+			FAILLOG[R->failed].id = id;
+			FAILLOG[R->failed].got = got;
+			FAILLOG[R->failed].want = want;
+		}
 		R->failed++;
 		group_failed++;
 		if (!R->first_fail_group) {
@@ -234,6 +242,26 @@ void sds_check(uint32_t got, uint32_t want, uint32_t id)
 			draw_text(ROW_FAIL + 1, 12, num, C_BAD, C_BG);
 		}
 	}
+}
+
+void sds_diverge(uint32_t got, uint32_t want, uint32_t id)
+{
+	struct sds_fail *log = (struct sds_fail *)(SDS_RESULTS_ADDR + SDS_DIVERGE_OFFSET);
+
+	if (got == want)
+		return;
+	if (R->diverge < SDS_DIVERGE_MAX) {
+		log[R->diverge].group = R->groups + 1;
+		log[R->diverge].id = id;
+		log[R->diverge].got = got;
+		log[R->diverge].want = want;
+	}
+	R->diverge++;
+}
+
+void sds_mark(uint32_t n)
+{
+	R->mark = n;
 }
 
 void sds_print_row(int row, const char *text)

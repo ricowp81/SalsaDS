@@ -1,5 +1,6 @@
 /*
- * SalsaDS — marco de pruebas para las ROMs homebrew de la DS (ARM9).
+ * SalsaDS — marco de pruebas para las ROMs homebrew de la DS (ARM9, y ARM7
+ * con sds7.c: sin pantalla, su bloque de resultados va aparte).
  *
  * Cada ROM de prueba reporta OK/FALLO por dos vías que un emulador puede
  * leer sin ayuda humana:
@@ -20,7 +21,15 @@
 
 #include <stdint.h>
 
-#define SDS_RESULTS_ADDR 0x02380000u
+#define SDS_ARM9_RESULTS_ADDR 0x02380000u
+#define SDS_IPC_OK 0xAu  /* el ARM7 avisa al ARM9 por IPCSYNC (bits 8-11 de su lado) de cómo terminó */
+#define SDS_IPC_FAIL 0xBu
+#define SDS_ARM7_RESULTS_ADDR 0x02390000u /* el ARM7 deja el suyo aquí; el ARM9 lo añade al veredicto */
+#ifdef ARM7
+#define SDS_RESULTS_ADDR SDS_ARM7_RESULTS_ADDR
+#else
+#define SDS_RESULTS_ADDR SDS_ARM9_RESULTS_ADDR
+#endif
 #define SDS_MAGIC 0x52534453u /* "SDSR" en little-endian */
 #define SDS_VERDICT_OK 1u
 #define SDS_VERDICT_FAIL 2u
@@ -37,8 +46,30 @@ struct sds_results {
 	uint32_t first_fail_got;   /* 0x20 */
 	uint32_t first_fail_want;  /* 0x24 */
 	uint32_t verdict;          /* 0x28 SDS_VERDICT_* (solo con state == 1) */
-	uint32_t reserved[5];      /* 0x2C */
+	uint32_t diverge;          /* 0x2C comprobaciones informativas que no coincidieron (no cuentan como fallo) */
+	uint32_t mark;             /* 0x30 marcador de avance para depurar (sds_mark) */
+	uint32_t reserved[3];      /* 0x34 */
 };
+
+/* Registro de fallos, a continuación del bloque (SDS_RESULTS_ADDR + 0x40): los primeros SDS_FAILLOG_MAX fallos
+ * con el grupo, el identificador, lo obtenido y lo esperado. Sirve para ver de un vistazo todo lo que falla. */
+#define SDS_FAILLOG_OFFSET 0x40u
+#define SDS_FAILLOG_MAX 16u
+struct sds_fail {
+	uint32_t group; /* índice del grupo (desde 1) */
+	uint32_t id;
+	uint32_t got;
+	uint32_t want;
+};
+
+/* Divergencias: el comportamiento esperado sale de GBATEK o del manual de ARM pero un emulador de referencia
+ * (melonDS 1.1) hace otra cosa. Se anotan aparte (SDS_DIVERGE_OFFSET, hasta SDS_DIVERGE_MAX) y no cambian el
+ * veredicto: sirven para ver, con cualquier emulador, en qué casos de borde se separa de lo documentado. */
+#define SDS_DIVERGE_OFFSET 0x140u
+#define SDS_DIVERGE_MAX 32u
+
+/* Deja un número en el bloque de resultados: dice hasta dónde llegó la ROM si se cuelga. */
+void sds_mark(uint32_t n);
 
 void sds_init(const char *title);
 /* Empieza un grupo de pruebas (cierra el anterior y escribe su línea). */
@@ -51,5 +82,10 @@ void sds_finish(void) __attribute__((noreturn));
 void sds_print_row(int row, const char *text);
 
 #define SDS_CHECK(got, want) sds_check((uint32_t)(got), (uint32_t)(want), __LINE__)
+/* Informativa: no falla, solo se registra si difiere. */
+void sds_diverge(uint32_t got, uint32_t want, uint32_t id);
+#define SDS_DIVERGE(got, want) sds_diverge((uint32_t)(got), (uint32_t)(want), __LINE__)
+#define SDS_DIVERGE_ID(got, want, id) sds_diverge((uint32_t)(got), (uint32_t)(want), (id))
+#define SDS_CHECK_ID(got, want, id) sds_check((uint32_t)(got), (uint32_t)(want), (id))
 
 #endif

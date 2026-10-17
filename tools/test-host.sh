@@ -41,4 +41,36 @@ else
 	echo "BE   FALLO  la compilación ppc64 (build/logs/build-ppc64.log)"
 	fail=1
 fi
+
+# --- ROMs de prueba de CPU en los intérpretes de src/cpu -----------------------
+# Las ROMs de tests/roms/homebrew (hola, cpu9 y cpuarm, ARM9 y ARM7) corren con
+# arranque directo en los intérpretes, en little-endian (gcc del contenedor) y en
+# big-endian (qemu-ppc64), y deben dar OK como con melonDS (tools/melonds-run.py).
+check_rom() { # orden rom log
+	if grep -q "^OK " "$3"; then
+		printf '%-4s OK     %s\n' "$1" "$(grep '^OK ' "$3")"
+	else
+		printf '%-4s FALLO  (ver %s)\n' "$1" "$3"
+		tail -n 10 "$3"
+		fail=1
+	fi
+}
+if tools/build.sh -C src/host >build/logs/build-host-run.log 2>&1; then
+	for rom in hola cpu9 cpuarm; do
+		tools/build.sh --sh "build/host-run/salsads-cpurun tests/roms/homebrew/$rom.nds" >"build/logs/rom-$rom-le.log" 2>&1
+		check_rom "LE" "$rom" "build/logs/rom-$rom-le.log"
+	done
+else
+	echo "LE   FALLO  la compilación de src/host (build/logs/build-host-run.log)"
+	fail=1
+fi
+if tools/build-ppc64.sh host >build/logs/build-ppc64-run.log 2>&1; then
+	for rom in hola cpu9 cpuarm; do
+		tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun tests/roms/homebrew/$rom.nds >"build/logs/rom-$rom-be.log" 2>&1
+		check_rom "BE" "$rom" "build/logs/rom-$rom-be.log"
+	done
+else
+	echo "BE   FALLO  la compilación ppc64 de src/host (build/logs/build-ppc64-run.log)"
+	fail=1
+fi
 exit $fail

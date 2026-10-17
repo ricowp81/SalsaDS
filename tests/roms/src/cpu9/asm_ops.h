@@ -203,6 +203,7 @@ LMUL(op_smull, "smull")
 LMUL(op_umlal, "umlal")
 LMUL(op_smlal, "smlal")
 
+#ifdef ARM9
 /* ---- ARMv5TE: CLZ, saturación (Q) y multiplicaciones de 16 bits ------------- */
 static uint32_t op_clz(uint32_t a)
 {
@@ -262,6 +263,7 @@ LMUL(op_smlalbb, "smlalbb")
 LMUL(op_smlalbt, "smlalbt")
 LMUL(op_smlaltb, "smlaltb")
 LMUL(op_smlaltt, "smlaltt")
+#endif /* ARM9 */
 
 /* ---- memoria ---------------------------------------------------------------- */
 #define LD1(name, insn)                                                          \
@@ -286,6 +288,7 @@ ST1(op_str, "str")
 ST1(op_strb, "strb")
 ST1(op_strh, "strh")
 
+#ifdef ARM9
 static void op_ldrd(const void *p, uint32_t *lo, uint32_t *hi)
 {
 	uint32_t l, h;
@@ -299,6 +302,7 @@ static void op_strd(void *p, uint32_t lo, uint32_t hi)
 	__asm__ volatile("mov r2, %[l]\n\t mov r3, %[h]\n\t strd r2, r3, [%[p]]"
 			 : : [l] "r"(lo), [h] "r"(hi), [p] "r"(p) : "r2", "r3", "memory");
 }
+#endif /* ARM9 */
 static uint32_t op_swp(void *p, uint32_t v)
 {
 	uint32_t r;
@@ -357,11 +361,19 @@ TH(th_bhi); TH(th_bls); TH(th_bge); TH(th_blt); TH(th_bgt); TH(th_ble);
 static void call_thumb(thumb_fn fn, uint32_t a, uint32_t b, uint32_t fin, uint32_t *res, uint32_t *fout)
 {
 	uint32_t r, f;
+#ifdef ARM9
 	__asm__ volatile("msr cpsr_f, %[fi]\n\t mov r0, %[a]\n\t mov r1, %[b]\n\t blx %[fn]\n\t"
 			 "mrs %[f], cpsr\n\t mov %[r], r0"
 			 : [r] "=&r"(r), [f] "=&r"(f)
 			 : [fi] "r"(fin << 28), [a] "r"(a), [b] "r"(b), [fn] "r"(fn)
 			 : "r0", "r1", "r2", "r3", "lr", "cc", "memory");
+#else
+	__asm__ volatile("msr cpsr_f, %[fi]\n\t mov r0, %[a]\n\t mov r1, %[b]\n\t adr lr, 1f\n\t bx %[fn]\n\t"
+			 "1: mrs %[f], cpsr\n\t mov %[r], r0"
+			 : [r] "=&r"(r), [f] "=&r"(f)
+			 : [fi] "r"(fin << 28), [a] "r"(a), [b] "r"(b), [fn] "r"(fn)
+			 : "r0", "r1", "r2", "r3", "lr", "cc", "memory");
+#endif
 	*res = r;
 	*fout = f >> 28;
 }

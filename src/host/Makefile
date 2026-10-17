@@ -18,10 +18,10 @@ $(OUT)/salsads-cpurun: cpurun.c ndsmin.c $(CPU_SRCS) ndsmin.h
 	@echo "  CC      salsads-cpurun"
 	@$(CC) $(CFLAGS) cpurun.c ndsmin.c $(CPU_SRCS) -o $@
 
-$(OUT)/armbench: armbench.c $(CPU_SRCS)
+$(OUT)/armbench: armbench.c $(CPU_SRCS) $(ROOT)/src/jit/loops.c
 	@mkdir -p $(OUT)
 	@echo "  CC      armbench"
-	@$(CC) $(CFLAGS) armbench.c $(CPU_SRCS) -o $@
+	@$(CC) $(CFLAGS) armbench.c $(CPU_SRCS) $(ROOT)/src/jit/loops.c -o $@
 
 clean:
 	rm -rf $(OUT)

@@ -16,7 +16,7 @@
 #include "util/endian.h"
 
 #define SDS_ADDR 0x02380000u
-#define SDS_ARM7_ADDR 0x02380100u
+#define SDS_ARM7_ADDR 0x02390000u
 #define SDS_MAGIC 0x52534453u
 
 static struct ndsmin M;
@@ -71,7 +71,7 @@ int main(int argc, char **argv)
 {
 	uint64_t max_cycles = 4000000000ull;
 	const char *rom_path = NULL, *vram_path = NULL;
-	int stats = 0;
+	int stats = 0, show_arm7 = 0;
 	uint64_t trace_n = 0;
 	int trace_cpu = 0;
 	size_t len;
@@ -83,6 +83,8 @@ int main(int argc, char **argv)
 			max_cycles = strtoull(argv[++i], NULL, 0);
 		else if (!strcmp(argv[i], "--stats"))
 			stats = 1;
+		else if (!strcmp(argv[i], "--arm7"))
+			show_arm7 = 1;
 		else if (!strcmp(argv[i], "--io"))
 			M.trace_io = 1;
 		else if (!strcmp(argv[i], "--trace") && i + 1 < argc)
@@ -167,6 +169,41 @@ int main(int argc, char **argv)
 		}
 		if (vram_path)
 			save_ppm(vram_path);
+		if (show_arm7 && ndsmin_peek32(&M, 0, SDS_ARM7_ADDR) == SDS_MAGIC) {
+			uint32_t w7[12];
+
+			for (int i = 0; i < 12; i++)
+				w7[i] = ndsmin_peek32(&M, 0, SDS_ARM7_ADDR + 4 * (uint32_t)i);
+			fprintf(stderr, "  ARM7: estado %u, %u grupos, %u comprobaciones, %u fallos, %u divergencias\n", w7[2], w7[5],
+				w7[3], w7[4], w7[11]);
+			for (uint32_t i = 0; i < w7[4] && i < 16; i++) {
+				const uint32_t a = SDS_ARM7_ADDR + 0x40 + 16 * i;
+
+				fprintf(stderr, "  ARM7 fallo: grupo %u, id %u, obtuvo 0x%08x, esperaba 0x%08x\n",
+					ndsmin_peek32(&M, 0, a), ndsmin_peek32(&M, 0, a + 4), ndsmin_peek32(&M, 0, a + 8),
+					ndsmin_peek32(&M, 0, a + 12));
+			}
+			for (uint32_t i = 0; i < w7[11] && i < 32; i++) {
+				const uint32_t a = SDS_ARM7_ADDR + 0x140 + 16 * i;
+
+				fprintf(stderr, "  ARM7 divergencia: grupo %u, id %u, obtuvo 0x%08x, documentado 0x%08x\n",
+					ndsmin_peek32(&M, 0, a), ndsmin_peek32(&M, 0, a + 4), ndsmin_peek32(&M, 0, a + 8),
+					ndsmin_peek32(&M, 0, a + 12));
+			}
+		}
+		for (uint32_t i = 0; i < w[4] && i < 16; i++) {
+			const uint32_t a = SDS_ADDR + 0x40 + 16 * i;
+
+			fprintf(stderr, "  fallo: grupo %u, id %u, obtuvo 0x%08x, esperaba 0x%08x\n", ndsmin_peek32(&M, 0, a),
+				ndsmin_peek32(&M, 0, a + 4), ndsmin_peek32(&M, 0, a + 8), ndsmin_peek32(&M, 0, a + 12));
+		}
+		for (uint32_t i = 0; i < w[11] && i < 32; i++) {
+			const uint32_t a = SDS_ADDR + 0x140 + 16 * i;
+
+			fprintf(stderr, "  divergencia: grupo %u, id %u, obtuvo 0x%08x, documentado 0x%08x\n",
+				ndsmin_peek32(&M, 0, a), ndsmin_peek32(&M, 0, a + 4), ndsmin_peek32(&M, 0, a + 8),
+				ndsmin_peek32(&M, 0, a + 12));
+		}
 		if (w[0] != SDS_MAGIC || w[2] != 1) {
 			printf("SIN VEREDICTO %s\n", name);
 			return 2;

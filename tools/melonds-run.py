@@ -30,8 +30,12 @@ import time
 
 SDS_ADDR = 0x02380000
 SDS_LEN = 0x30
+SDS_FAILLOG = 0x40  # registro de fallos tras el bloque: hasta 16 entradas (grupo, id, obtenido, esperado)
+SDS_DIVERGE = 0x140  # divergencias respecto de la documentación (informativas): hasta 32 entradas
+SDS_TOTAL = 0x340
 SDS_MAGIC = 0x52534453
 PORT = 3333
+SDS_ARM7_ADDR = 0x02390000  # bloque de resultados del ARM7 en las ROMs que corren pruebas en las dos CPUs (cpuarm)
 
 
 def find_melonds() -> str:
@@ -101,18 +105,23 @@ class Rsp:
         self.packets(0.1)
         return out
 
-    def snapshot(self, addr: int, length: int) -> bytes:
-        """Detiene la CPU (Ctrl-C), lee memoria y la deja seguir."""
+    def snapshot(self, addr: int, length: int, chunk: int = 0x100) -> bytes:
+        """Detiene la CPU (Ctrl-C), lee memoria en trozos y la deja seguir."""
         self.sock.sendall(b"\x03")
         self.packets(0.4)
-        self.send(f"m{addr:x},{length:x}")
-        replies = self.packets(1.0, want=1)
-        self.send("c")
-        self.packets(0.1)
-        for r in replies:
-            if len(r) == 2 * length:
-                return bytes.fromhex(r)
-        raise OSError(f"respuesta inesperada del stub: {replies}")
+        out = b""
+        try:
+            for off in range(0, length, chunk):
+                n = min(chunk, length - off)
+                self.send(f"m{addr + off:x},{n:x}")
+                replies = [r for r in self.packets(1.0, want=1) if len(r) == 2 * n]
+                if not replies:
+                    raise OSError(f"respuesta inesperada del stub en 0x{addr + off:x}")
+                out += bytes.fromhex(replies[0])
+        finally:
+            self.send("c")
+            self.packets(0.1)
+        return out
 
 
 CONFIG = pathlib.Path.home() / "Library/Preferences/melonDS/melonDS.toml"
@@ -154,11 +163,33 @@ def save_ppm(path: str, raw: bytes) -> None:
         f.write(b"P6\n256 192\n255\n" + bytes(px))
 
 
+def print_arm7(arm7) -> None:
+    if not arm7:
+        return
+    w7, log7, div7 = arm7
+    print(f"  ARM7: estado {w7[2]}, {w7[5]} grupos, {w7[3]} comprobaciones, {w7[4]} fallos, {w7[11]} divergencias",
+          file=sys.stderr)
+    for group, ident, got, want in log7:
+        print(f"  ARM7 fallo: grupo {group}, id {ident}, obtuvo 0x{got:08x}, esperaba 0x{want:08x}", file=sys.stderr)
+    for group, ident, got, want in div7:
+        print(f"  ARM7 divergencia: grupo {group}, id {ident}, obtuvo 0x{got:08x}, documentado 0x{want:08x}",
+              file=sys.stderr)
+
+
+def print_log(log, div=()) -> None:
+    for group, ident, got, want in log:
+        print(f"  fallo: grupo {group}, id {ident}, obtuvo 0x{got:08x}, esperaba 0x{want:08x}", file=sys.stderr)
+    for group, ident, got, want in div:
+        print(f"  divergencia: grupo {group}, id {ident}, obtuvo 0x{got:08x}, documentado 0x{want:08x}", file=sys.stderr)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("rom")
     ap.add_argument("--timeout", type=float, default=30)
     ap.add_argument("--keep", action="store_true", help="dejar melonDS abierto al terminar")
+    ap.add_argument("--arm7", action="store_true",
+                    help="al terminar (o al agotar el tiempo) mostrar también el bloque de resultados del ARM7")
     ap.add_argument("--vram", metavar="FILE.ppm",
                     help="guardar como imagen PPM el banco A de VRAM (la pantalla de arriba de las ROMs "
                     "de prueba, en modo de visualización directa), leído por el stub de GDB")
@@ -172,6 +203,10 @@ def main() -> int:
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     rsp = None
     result = None
+    log = []
+    div = []
+    arm7 = None
+    last = None  # última lectura del bloque de resultados, aunque la ROM no haya terminado
     try:
         deadline = time.monotonic() + args.timeout
         while time.monotonic() < deadline and result is None:
@@ -181,7 +216,18 @@ def main() -> int:
             try:
                 if rsp is None:
                     rsp = Rsp(socket.create_connection(("127.0.0.1", PORT), timeout=1))
-                words = struct.unpack("<12I", rsp.snapshot(SDS_ADDR, SDS_LEN))
+                raw = rsp.snapshot(SDS_ADDR, SDS_TOTAL)
+                words = struct.unpack("<13I", raw[:SDS_LEN + 4])
+                if words[0] == SDS_MAGIC:
+                    last = words
+                    log = list(struct.iter_unpack("<4I", raw[SDS_FAILLOG:SDS_DIVERGE]))[:min(words[4], 16)]
+                    div = list(struct.iter_unpack("<4I", raw[SDS_DIVERGE:SDS_TOTAL]))[:min(words[11], 32)]
+                if args.arm7 and words[0] == SDS_MAGIC:
+                    raw7 = rsp.snapshot(SDS_ARM7_ADDR, SDS_TOTAL)
+                    w7 = struct.unpack("<12I", raw7[:SDS_LEN])
+                    if w7[0] == SDS_MAGIC:
+                        arm7 = (w7, list(struct.iter_unpack("<4I", raw7[SDS_FAILLOG:SDS_DIVERGE]))[:min(w7[4], 16)],
+                                list(struct.iter_unpack("<4I", raw7[SDS_DIVERGE:SDS_TOTAL]))[:min(w7[11], 32)])
                 if words[0] == SDS_MAGIC and words[2] == 1:
                     result = words
                     if args.vram:
@@ -210,9 +256,17 @@ def main() -> int:
 
     if result is None:
         print(f"SIN VEREDICTO {rom.name}")
+        if last:
+            print_log(log, div)
+            print_arm7(arm7)
+            print(f"  progreso: {last[5]} grupos, {last[3]} comprobaciones, {last[4]} fallos, marca {last[12]}"
+                  + (f"; primero en el grupo {last[6]}, id {last[7]}, obtuvo 0x{last[8]:08x}, esperaba 0x{last[9]:08x}"
+                     if last[4] else ""), file=sys.stderr)
         return 2
     _, version, _, total, failed, groups, fg, fid, fgot, fwant, verdict, *_ = result
     name = rom.name
+    print_log(log, div)
+    print_arm7(arm7)
     if verdict == 1 and failed == 0:
         print(f"OK {name}: {total} comprobaciones en {groups} grupos")
         return 0
