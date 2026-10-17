@@ -51,6 +51,8 @@ licencia se fija con esa decisión.
 Código propio: `tests/roms/src/` (marco `sds`, `hola`, `cpu9` y su modelo de
 ARM, ARM7 mínimo, ícono) y `tools/melonds-run.py`.
 
+Código propio de la Fase 1.3: `src/core/save.c`, `tests/roms/src/{ocio,carga,save}/`, `tools/{carga-gold.sh,melonds-dump.py}` y los cambios de `sched.c`, `spi.c` y `tests/phase1/nucleo/`; escrito desde GBATEK, sin código de melonDS, NooDS ni DeSmuME.
+
 Código propio de la Fase 1.2: `src/core/` (máquina de la DS), `src/bios/` (BIOS en HLE y arranque directo), `src/host/cpurun.c`,
 `tests/roms/src/{mem,irq,dma,ipc,bios,periph,demo}/` y `common/hw.h`, `tests/phase1/nucleo/`, `tools/{gen-bios-vectors,compare-image}.py`.
 Escrito desde GBATEK; melonDS solo se lanza y se lee su memoria por GDB; sin código de melonDS, NooDS ni DeSmuME. Los
@@ -72,6 +74,9 @@ texto en pantalla usa la fuente 8x13 de X11 (dominio público) que ya trae
 | Fuente | Para qué | Notas |
 |---|---|---|
 | GBATEK (Martin Korth), páginas por tema de problemkaputt.de: mapas de memoria, control de WRAM y VRAM, interrupciones, temporizadores, DMA, IPC, teclado (EXTKEYIN), SPI, firmware (cabecera y datos de usuario), pantalla táctil, gestión de energía, RTC, cartucho (puertos, protocolo y cabecera), funciones de la BIOS (resumen, Halt, aritméticas, copia de memoria, descompresión, varias), matemáticas, control de energía, memoria del cartucho y RAM principal, modos de video y captura | `src/core` y `src/bios` (Fase 1.2): comportamiento de cada periférico, formatos de los descompresores y datos de usuario del firmware | Leído el 2026-10-17; solo hechos de hardware, nada de texto ni código. Lo que GBATEK no dice y se decidió de otra manera (valores iniciales, cola de respuesta del táctil, calibración generada) está en el encabezado del archivo que lo decide |
+| GBATEK (Martin Korth), «DS Cartridge Backup» (problemkaputt.de) | `src/core/save.c` (Fase 1.3): tipos y tamaños de EEPROM, FRAM y Flash, órdenes y bytes de dirección de cada uno, registro de estado (WIP, WEL, WP, SRWD), tamaños de página, qué contestan RDSR y RDID y cómo se infieren el ancho de dirección y el tamaño | Leído el 2026-10-17; solo hechos de hardware (y los nombres de los juegos de ejemplo para la tabla de tres códigos), nada de texto ni código |
+| melonDS 1.1 (GPLv3), usado como emulador de referencia | Fase 1.3: qué valores deja en la RAM compartida del arranque (segunda copia del identificador del chip, CRC16 de la cabecera y del área segura, 5835h), el tamaño del archivo de guardado que crea para New Super Mario Bros. (8192 bytes) y Mario Kart DS (262144), y sus divergencias con GBATEK en el chip de guardado (tabla de `docs/fase1.md`) | Solo se lanzó y se leyó su memoria y sus registros por el stub de GDB; sin código de melonDS |
+| Fragmentos de código de los respaldos del autor (unas decenas de instrucciones del ARM9 y del ARM7 de New Super Mario Bros., volcadas de la RAM de la emulación y desensambladas con objdump) | Entender, a mano, por qué dos juegos se detenían (la rutina de apagado y la espera sobre un indicador); la causa real se confirmó con el chip de guardado y las escrituras del firmware | Solo para diagnosticar: no se guardó ni se copió nada, y lo descubierto se describe por el comportamiento del hardware que faltaba |
 | Desensamblado del `crt0` de BlocksDS y de los símbolos de libnds (objdump de la imagen de Docker; ambos son zlib/MPL-2.0) | Entender el apretón de manos por IPCSYNC del arranque, dónde pone libnds su manejador de IRQ y sus banderas de IntrWait, y los registros de las SWI | Es la herramienta de las ROMs de prueba, no material de Nintendo; no se copió ni se guarda su desensamblado |
 
 | Fuente | Para qué | Notas |

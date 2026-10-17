@@ -9,7 +9,8 @@ modo de framebuffer.
 | Paso | Estado |
 |---|---|
 | 1.1 Intérpretes de CPU (ARM9 ARMv5TE, ARM7 ARMv4T) | **hecho (2026-10-17)**, probado en el host y contra melonDS; sin tocar la PS3 |
-| 1.2 Mapa de memoria, IRQ, temporizadores, DMA, IPC, cartucho, SPI, SWI en HLE, arranque directo y primera imagen | **hecho (2026-10-17) en el host, qemu-ppc64 (BE) y RPCS3**; probado contra melonDS; **falta la PS3 real** (paquete «SalsaDS núcleo», SLDS00008) |
+| 1.2 Mapa de memoria, IRQ, temporizadores, DMA, IPC, cartucho, SPI, SWI en HLE, arranque directo y primera imagen | **hecho (2026-10-17) en el host, qemu-ppc64 (BE) y RPCS3**; probado contra melonDS; medido en la PS3 real (la demostración a 60 Hz; ver 1.3) |
+| 1.3 Cierre: cuadro ocioso barato, por qué se detenían New Super Mario Bros. y Mario Kart DS, guardado AUXSPI, ROM de carga y paquete nuevo | **hecho (2026-10-17) en el host, qemu-ppc64 (BE) y RPCS3**; probado contra melonDS; **falta medir el paquete nuevo en la PS3** (SLDS00008, commit 9f2a177) |
 
 ## 1.1 Intérpretes de CPU
 
@@ -286,8 +287,8 @@ temporizadores y el SPI) y los avisos entre CPUs llevan marca de tiempo. **Prueb
 | Temporizadores | 4 por CPU, prescalers 1/64/256/1024, cuenta ascendente encadenada, IRQ de desborde, recarga al arrancar, 32 bits como recarga + control. El bit de cuenta ascendente del timer 0 hace que no cuente nunca (como melonDS) |
 | DMA | 4 canales por CPU; inicio inmediato, VBlank, HBlank (solo líneas visibles), «inicio de pantalla» (una transferencia por línea visible), cartucho (una palabra por aviso), repetir, destino con recarga, relleno por DMAFILL, IRQ de fin, cuenta de 21 bits (ARM9) o 14/16 (ARM7). No ven las TCM. Sin modo de memoria principal ni de FIFO de geometría |
 | IPC | IPCSYNC con su IRQ, FIFO de 16 palabras por sentido con error, vaciado, lectura con la FIFO apagada y las IRQ de «envío vacío» y «recepción no vacía» por flanco (también al habilitarlas con la condición cierta) |
-| Cartucho | ROM ya desencriptada: ROMCTRL, ROMCMD, ROMDATA por sondeo o por DMA, bloques de 4 bytes a 16 KB, IRQ de fin, B7 (lectura; por debajo de 0x8000 se lee 0x8000 + (dir & 0x1FF); da la vuelta en la página de 4 KB; se espeja más allá de la capacidad), B8 y 90h (identificador), 00h (cabecera), AUXSPI sin chip (contesta 0xFF). Sin KEY1/KEY2. **Sin guardados todavía** |
-| SPI | Firmware de 256 KB generado (cabecera con la dirección de los datos de usuario, dos copias con CRC16, JEDEC, WEL), pantalla táctil (X, Y, Z1, Z2, 12 y 8 bits, cola de respuesta de 2 bytes; sin tocar: X = 0, Y = 0xFFF) con calibración exacta (ADC = 0x120 + 14·x; 0x0B8 + 19·y), gestión de energía (registros 0–4), IRQ de fin de byte. El RTC es el del puerto 0x04000138 con el protocolo bit a bit, fecha por BCD y 24 horas |
+| Cartucho | ROM ya desencriptada: ROMCTRL, ROMCMD, ROMDATA por sondeo o por DMA, bloques de 4 bytes a 16 KB, IRQ de fin, B7 (lectura; por debajo de 0x8000 se lee 0x8000 + (dir & 0x1FF); da la vuelta en la página de 4 KB; se espeja más allá de la capacidad), B8 y 90h (identificador), 00h (cabecera), AUXSPI con el chip de guardado de la 1.3 (`save.c`). Sin KEY1/KEY2 |
+| SPI | Firmware de 256 KB generado (cabecera con la dirección de los datos de usuario, dos copias con CRC16, JEDEC, WEL; desde la 1.3 también se escribe y se borra, en memoria), pantalla táctil (X, Y, Z1, Z2, 12 y 8 bits, cola de respuesta de 2 bytes; sin tocar: X = 0, Y = 0xFFF) con calibración exacta (ADC = 0x120 + 14·x; 0x0B8 + 19·y), gestión de energía (registros 0–4), IRQ de fin de byte. El RTC es el del puerto 0x04000138 con el protocolo bit a bit, fecha por BCD y 24 horas |
 | Matemáticas | DIVCNT (tres modos, entre cero, -MAX / -1), SQRTCNT (32 y 64 bits), bandera de ocupado por tiempo; el resultado está listo al escribir |
 | Varios | POSTFLG, HALTCNT, POWCNT1/2, EXMEMCNT/EXMEMSTAT, WRAMCNT/WRAMSTAT, VRAMCNT/VRAMSTAT. Los registros de los motores 2D, el 3D, el sonido, SIO y la captura solo se guardan y se leen de vuelta |
 
@@ -408,7 +409,7 @@ verlas con `docs/memory-budget.md`). Línea de estado con L3 + R3. Log en
 En RPCS3 (`tools/rpcs3-run.py nucleo`, prueba automática): 150 cuadros con entrada sintética, las dos CPUs de la
 demostración vivas y su imagen la esperada: **RESULTADO nucleo: OK** (no mide rendimiento).
 
-### Qué falta para cerrar la Fase 1
+### Qué faltaba al cerrar la 1.2 (resuelto o reubicado en la 1.3; la lista vigente está al final del documento)
 
 1. **Probarlo en la PS3 real**: que el paquete arranque, los MIPS del intérprete en el PPE (la estimación es ≈ 12), los
    60 Hz con la demostración, el DS3 y el puntero del táctil, y una ROM por `rom.nds`.
@@ -420,3 +421,154 @@ demostración vivas y su imagen la esperada: **RESULTADO nucleo: OK** (no mide r
 4. Del plan que quedó fuera: DMA en modo de memoria principal y de FIFO de geometría, captura de pantalla, modo 3 de
    visualización (memoria principal), permisos y cachés del ARM9 (de la 1.1), esperas de memoria y ciclos exactos.
 5. Contrastar en una DS real las divergencias de las dos tablas (la de la 1.1 y la de arriba).
+
+## 1.3 Cierre de la Fase 1
+
+Cinco cosas: el cuadro ocioso, por qué se detenían dos juegos, el guardado del cartucho, una ROM que mide los MIPS y un
+paquete nuevo. Todo con ROMs propias; los respaldos del autor solo se usaron a mano para diagnosticar (nada de ellos
+entra en el repositorio, ni capturas ni volcados).
+
+### Cuadro ocioso barato
+
+**Medido en la PS3 real** (paquete de 400ca88, `DATO nucleo` de la demostración): un cuadro casi ocioso (4,2 k
+instrucciones del ARM9 y 114 del ARM7 por cuadro) costaba **2,73 ms** de emulación, y los de 28–39 k instrucciones,
+8,4 ms; con New Super Mario Bros. como `rom.nds`, 114,5 ms con 539 k + 240 k instrucciones. Una recta por esas ventanas da
+**≈ 2,1 ms fijos por cuadro + 0,16 µs por instrucción** (≈ 6,2 MIPS): 2,1 + 0,16 × 4,2 k = 2,8 ms y 2,1 + 0,16 × 39 k =
+8,4 ms. El costo fijo no era de las CPUs.
+
+**Causa.** El planificador cortaba el tiempo en tramos de 128 ciclos del ARM9 aunque las dos CPUs estuvieran en HALT o
+IntrWait: un cuadro son 1 120 380 ciclos, **8753 tramos**, y cada uno recorría dos veces los 18 eventos, llamaba dos
+veces al intérprete (que solo adelantaba el reloj) y comprobaba el HALT del ARM7. En el host eso son 177 µs por cuadro
+ocioso; en el PPE, ≈ 0,24 µs por tramo (≈ 750 ciclos), es decir los ~2,1 ms.
+
+**Corrección** (`sched.c`): con las dos CPUs sin interrupción pendiente el tiempo salta de una vez al siguiente evento (no
+hay pasos finos); con una sola ociosa, esa solo adelanta su reloj sin llamar al intérprete; el mínimo de los eventos se
+guarda en una caché en lugar de recorrerlos en cada tramo. Los resultados son idénticos (mismas instrucciones por cuadro
+e imágenes iguales a las del binario anterior en `demo`, `irq`, `dma`, `ipc` y `periph`; las nueve ROMs de prueba y los
+tramos de 1 a 20 000 ciclos siguen dando OK).
+
+| Mac, clang -O2, host (no vale para la PS3) | Antes (400ca88) | Después | |
+|---|---|---|---|
+| `ocio` (las dos CPUs en IntrWait), 600 cuadros | 0,106 s = 177 µs por cuadro; 8753 tramos por cuadro | 0,0145 s = **24 µs por cuadro**; 13,5 tramos, 525 saltos ociosos y 526 eventos | ×7,3 |
+| `demo` (≈ 4,7 k instrucciones por cuadro), 600 cuadros | 0,132 s = 220 µs por cuadro | 0,040 s = **67 µs** | ×3,3 |
+| `carga` (las dos CPUs ocupadas), 120 cuadros | 146–148 MIPS | 145–146 MIPS | sin cambio |
+
+Lo que queda por cuadro ocioso son los ~525 eventos de video (263 líneas y 263 HBlank): ≈ 24 µs en la Mac, **[est] ≈ 0,3 ms en
+el PPE por escala**. Si el `DATO desglose` de la PS3 muestra que pesa, el siguiente paso es agendar los eventos de línea y de
+HBlank solo cuando algo los usa (IRQ de HBlank/VCOUNT, DMA armado en esos modos) y dejar solo el de VBlank.
+
+**Desglose en el log de la PS3** (`nucleo.log`, cada 120 cuadros, tres líneas): `DATO nucleo` (tiempo de emulación limpio, intervalo
+del RSX, instrucciones por cuadro); `DATO desglose` (por cuadro, mediana en ms: emulación = ARM9 + ARM7 + eventos +
+planificador; y aparte entrada, pantallas, conversión RGB555 → RGBA5551, dibujo, `frame_begin` y `frame_end`; más tramos,
+saltos ociosos y eventos por cuadro) y `DATO MIPS` (instrucciones entre el tiempo dentro de cada CPU, y entre el tiempo
+total de emulación). Los cuadros impares llevan un reloj de perfil dentro del planificador (el timebase: dos lecturas
+por tramo) y los pares no, para que el tiempo «limpio» no incluya el costo de medir.
+
+### Por qué se detenían New Super Mario Bros. y Mario Kart DS
+
+Método: traza de instrucciones y de entradas y salidas por CPU en el corredor del host (`--trace`, `--break7/9` con anillo
+de las últimas instrucciones y pila, `--watch7/9`, `--dbg` para SPI, IPC, IRQ y cartucho), y comparación con melonDS 1.1
+leyendo su memoria y sus registros por el stub de GDB (`tools/melonds-dump.py`). Sirvió más comparar el estado final
+(DISPCNT de los dos motores, VRAMCNT y el archivo de guardado) que buscar una primera instrucción distinta: las dos
+máquinas no avanzan al mismo ritmo.
+
+**New Super Mario Bros.** Ya configuraba el video (a los 250 cuadros: DISPCNT del motor A = C821103D, VRAMCNT igual que en
+melonDS) y 5 cuadros después las dos CPUs dejaban de correr: el ARM9, desde una máquina de estados del propio juego, mandaba
+un mensaje por la FIFO de IPC y esperaba una respuesta, y las dos quedaban en un bucle de HALT con las IRQ enmascaradas (la
+rutina de apagado del programa). Lo que lo disparó fue el **chip de guardado**: desde el arranque el ARM7 lee el registro de
+estado del chip por AUXSPI cada 5 ms (orden 05h) y SalsaDS contestaba FFh para siempre (sin chip: WIP puesto), lo que el juego
+toma por un cartucho fallado. (La causa se confirmó añadiendo el chip: no se desensambló más allá de lo necesario para llegar ahí.)
+Con una EEPROM de 8 KB el juego pasa de ahí y queda **idéntico a melonDS**: a los 900 cuadros DISPCNT_A = C8211F3D,
+DISPCNT_B = 00011400 y VRAMCNT = 82 83 8B 81 83 85 8C 03 81 82, los mismos valores que melonDS a los 15 s, y el archivo de
+guardado de 8192 bytes que el juego escribe es **byte a byte el que escribe melonDS**.
+
+**Mario Kart DS.** El ARM7 leía el firmware «sin parar» y el video no se configuraba: lo que hacía era leer 1028 bytes del
+firmware en 0x3FA00 (la zona de la configuración de Wi-Fi), activar WREN, escribir la página con la orden 0Ah, esperar con
+RDSR y leerla de vuelta para verificarla, y repetirlo para siempre porque el firmware de SalsaDS aceptaba las escrituras
+y las ignoraba. Con escrituras (WREN, 0Ah, 02h, DBh y D8h) que se ven al leer de vuelta, el juego configura el video como
+melonDS: a los 100 cuadros DISPCNT_A = 00010600, DISPCNT_B = 00010305 y VRAMCNT = 81 00 84 82 ..., iguales; a los 900,
+DISPCNT_A = 40011E10, DISPCNT_B = 40011C10 y VRAMCNT = 83 81 84 82 84 82 8A 03 82 82, iguales a los de melonDS a los 16 s.
+
+**Super Mario 64 DS** (que no cambió con esta fase) llega al mismo punto que melonDS: el ARM9 espera en la misma dirección que en melonDS
+a los 3 y a los 6 s, y DISPCNT de los dos motores y VRAMCNT son iguales. Lo que le falta de ahí es la geometría (la FIFO de comandos
+del 3D, Fase 3).
+
+De paso se igualó con melonDS la RAM compartida del arranque (la segunda copia del identificador del chip, los CRC16 de la cabecera
+y del área segura y 5835h en 0x027FFC10): no era la causa de nada, pero son valores que dejan los cargadores y un juego puede mirarlos.
+
+### Guardado del cartucho (AUXSPI)
+
+`src/core/save.c`: EEPROM de 0,5 KB (dirección de 8+1 bits, órdenes 03h/0Bh/02h/0Ah), EEPROM de 8 y 64 KB y FRAM de 32 KB (16
+bits), EEPROM de 128 KB (24 bits) y Flash de 256 KB, 512 KB y 1 MB (24 bits: lectura 03h y rápida 0Bh, escribir página 0Ah,
+programar 02h, borrar página DBh y sector D8h, RDID), con WREN/WRDI, WRSR, el registro de estado (WIP siempre 0, WEL, WP, SRWD;
+en la EEPROM de 0,5 KB los bits 4–7 en uno), páginas que dan la vuelta (16, 32 o 128 bytes en EEPROM; 256 en Flash; sin páginas
+en FRAM) y vuelta al final de la memoria. La conversación sigue el bit de retener de AUXSPICNT y el bit de ocupado sale por tiempo
+según la velocidad (4, 2, 1 MHz y 512 kHz). Fuente: GBATEK, «DS Cartridge Backup»; código propio.
+
+El tipo se decide así: (1) el tamaño del archivo de guardado, si hay uno (512 B; 8 KB y 64 KB como EEPROM; 32 KB como FRAM; 128 KB
+como EEPROM de 24 bits; 256 KB, 512 KB y 1 MB como Flash); (2) una tabla de tres entradas por código de juego (los tres
+respaldos del autor; solo datos, tomados de GBATEK y del archivo que crea melonDS); (3) si no, EEPROM de 64 KB. El RDID de un
+chip de Flash contesta 20h 40h y 12h/13h/14h (ST M45PE) según el tamaño. Por detectar «por el comportamiento» solo hay lo que
+GBATEK describe (RDSR/RDID y bytes de dirección): una SDK declara el tipo y no lo pregunta, así que sin archivo ni tabla un
+juego con otro chip verá uno equivocado hasta que haya archivo; es la limitación principal. Tope de 1 MB (la Flash de 8 MB
+de un solo juego queda fuera). Escrituras y borrados terminan al instante y la protección por bloques se guarda sin aplicarse.
+
+`nds_save_attach` carga un archivo, `nds_save_data` y `nds_save_take_dirty` dejan al frontend escribirlo. En «SalsaDS núcleo»: archivo por
+juego en `/dev_hdd0/salsads/saves/<código de juego>.sav`, que se carga al arrancar y se escribe (por un archivo temporal)
+unos segundos después de que el juego escriba y al salir. En el host: `salsads-cpurun --save FILE` y `--save-size N`.
+
+**Prueba.** ROM propia `save`: detecta el chip con RDSR, RDID y los espejos de dirección y comprueba, según el tipo, estado,
+WREN/WRDI, escritura sin WREN, lectura de vuelta, páginas, vuelta de la memoria y la Flash (borrado, programar y escribir página).
+Pasa en los siete tamaños en little endian, big endian (qemu-ppc64) y con sanitizadores. Contra melonDS 1.1, con el código de
+juego de New Super Mario Bros. (EEPROM de 8 KB) y de Mario Kart DS (Flash de 256 KB) puesto en la cabecera de una copia
+(`tools/melonds-run.py --gamecode`), pasa con estas divergencias, anotadas en la ROM:
+
+| Caso | GBATEK / SalsaDS | melonDS 1.1 |
+|---|---|---|
+| Escritura que cruza el fin de una página (EEPROM y Flash) | da la vuelta dentro de la página | sigue en la página siguiente |
+| Borrar página (DBh) o sector (D8h) de Flash | deja FFh | deja 00h |
+| Programar página (02h) de Flash sobre un byte con bits en 1 | solo baja bits (Y de lo que había) | deja 00h |
+| RDID (9Fh) de una Flash | 20h 40h 12h (ST) | FFh FFh FFh |
+| Escribir o borrar Flash | WIP siempre 0 (al instante) | WIP puesto un tiempo largo; las lecturas durante él devuelven 00h |
+
+### ROM de carga y MIPS del intérprete
+
+`tests/roms/src/carga`: las dos CPUs ocupadas sin entrar nunca en HALT con una mezcla de operaciones de datos con desplazamientos, copias y
+sumas de bloques de palabras (LDM/STM), recorridos de bytes, multiplicaciones (MLA y producto largo) y una ordenación de mitades
+compilada en Thumb (`kernel.h`), repetida sin fin; cada vuelta se compara con el valor esperado, calculado en el host con el
+mismo `kernel.h` (`tools/carga-gold.sh`). Una iteración son ≈ 300 000 instrucciones del ARM9 y del ARM7 (con las semillas
+distintas por vuelta); los contadores quedan en la RAM compartida. Da lo mismo en little y big endian: en 120 cuadros, 273
+iteraciones del ARM9 y 174 del ARM7, sin errores.
+
+**Host** (no vale para la PS3): 145–146 MIPS en la Mac (clang -O2) y 134–139 en el contenedor (gcc -O2), ARM9 y ARM7 juntos. Con
+las dos CPUs ocupadas el ARM9 consume el reloj completo (1 120 380 instrucciones por cuadro) y el ARM7 la mitad.
+
+**PS3: sin medir.** Referencia con lo ya medido (demostración y New Super Mario Bros. del 400ca88): ≈ 6–7 MIPS en total (ARM9 4,7 y
+ARM7 2,1 con New Super Mario Bros.), por debajo de los ~12 que daba la escala del host. A ≈ 6,5 MIPS, un cuadro de `carga`
+(1,68 M de instrucciones) costaría ≈ 260 ms; el `DATO MIPS` del paquete da el número real.
+
+### Paquete de PS3 «SalsaDS núcleo» (SLDS00008, 1.3)
+
+Mismo título y mismo APPID que el de la 1.2, construido desde el commit 9f2a177 (árbol limpio): `build/salsads-nucleo/salsads-nucleo.pkg`
+(copia: `build/salsads-nucleo-9f2a177.pkg`), SHA-256 `8da0871ecb4e16e97569e3250055f0f4aef3d7ca8722e568dc627662408f92a4`. Lee
+`/dev_hdd0/salsads/rom.nds` si existe; si no, corre la ROM de carga embebida. En RPCS3 (no mide rendimiento): `RESULTADO nucleo: OK`
+(cuadros de la DS, iteraciones de las dos CPUs sin errores).
+
+**Qué medir en la PS3**, con el log `/dev_hdd0/salsads/nucleo.log` (bajarlo por FTP al terminar):
+
+1. **Carga embebida** (sin `rom.nds`): `DATO MIPS` (ARM9, ARM7 y juntas, dentro de cada CPU y sobre el tiempo total), `DATO desglose` (reparto del cuadro) y que los cuadros duren 16,7 ms o cuántos ms de más. Es el número que sustituye a la estimación de 12 MIPS.
+2. **Cuadro ocioso**: con la demostración (`demo.nds` como `rom.nds`) la emulación de un cuadro debe bajar de 2,7 ms a unos 0,3–0,7 ms (el costo por instrucción sigue igual) y el desglose debe mostrar ~13 tramos, ~525 saltos y ~526 eventos por cuadro.
+3. **New Super Mario Bros. y Mario Kart DS** como `rom.nds` (los respaldos del autor): deben dejar de apagarse (NSMB) y de quedarse leyendo el firmware (MKDS); en el log, que el guardado diga `guardado: ... chip tipo ...` y que aparezca `guardado escrito: ... .sav` unos segundos después de que el juego guarde. Sin capas 2D no hay imagen de juego todavía: se ve el color de fondo y los brillos.
+4. Que el DS3 y el puntero táctil sigan igual que en la 1.2.
+
+### Qué queda pendiente al cerrar la Fase 1
+
+1. **Medir el paquete nuevo en la PS3** (lista de arriba).
+2. SWI 1Ah–1Ch de la BIOS (tablas de seno, de tono y de volumen del ARM7): New Super Mario Bros. las llama al arrancar y hoy se ignoran (para el sonido de la Fase 2).
+3. Super Mario 64 DS escribe a la FIFO de geometría, que aún no existe (Fase 3); hasta ahí coincide con melonDS.
+4. Guardado: detección sin archivo ni tabla (hoy EEPROM de 64 KB), Flash de 8 MB, escritura con tiempo (WIP) y protección por bloques; ampliar la tabla de códigos de juego cuando haya más respaldos.
+5. Eventos de video perezosos (arriba) si el desglose de la PS3 lo pide.
+6. Del plan de la 1.2 que sigue fuera: DMA en modo de memoria principal y de FIFO de geometría, captura de pantalla, modo 3 de visualización (memoria principal), permisos y cachés del ARM9 (de la 1.1), esperas de memoria y ciclos exactos.
+7. Contrastar en una DS real las divergencias de las tablas de la 1.1, la 1.2 y la de arriba (ninguna está verificada en hardware).
+8. El intérprete en el PPE es lento (≈ 150 ns por instrucción en la PS3, del orden de 470 ciclos): el recompilador (Fase 4) sigue siendo obligatorio; mientras tanto, la ruta de memoria por llamadas a funciones es el sospechoso principal (a verificar con el perfil, no se ha tocado).
+

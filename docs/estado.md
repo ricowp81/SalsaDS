@@ -4,6 +4,32 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-17 — Cierre de la Fase 1 (1.3)
+
+- **Cuadro ocioso**: el planificador cortaba el tiempo en 8753 tramos por cuadro aunque las dos CPUs estuvieran en HALT; eso eran los
+  ≈ 2,1 ms fijos por cuadro medidos en la PS3 (2,73 ms de emulación con la demostración, 8,4 con 28–39 k instrucciones por cuadro:
+  2,1 ms + 0,16 µs por instrucción). Ahora el tiempo salta al siguiente evento: en la Mac un cuadro ocioso baja de 177 a 24 µs
+  (×7,3) y la demostración de 220 a 67 µs; la carga (ocupadas las dos CPUs) no cambia. Quedan ~525 eventos de video por cuadro.
+  El paquete escribe `DATO desglose` y `DATO MIPS` en `nucleo.log` para repartirlo en la consola.
+- **New Super Mario Bros. y Mario Kart DS**: no era la CPU ni el IPC. NSMB se apagaba porque no había chip de guardado (el ARM7 lee su estado
+  por AUXSPI cada 5 ms y contestábamos FFh para siempre); MKDS repetía sin fin una escritura de la configuración de Wi-Fi en el firmware
+  porque el firmware ignoraba las escrituras. Con las dos cosas, los dos configuran el video **igual que melonDS** (DISPCNT de los dos motores y
+  VRAMCNT idénticos, y el guardado de NSMB, 8 KB, byte a byte igual al de melonDS). Super Mario 64 DS llega al mismo punto que melonDS.
+- **Guardado del cartucho (AUXSPI)**: EEPROM de 0,5 KB, 8 KB, 64 KB y 128 KB, FRAM de 32 KB y Flash de 256 KB a 1 MB; el tipo sale del
+  tamaño del archivo de guardado, de una tabla de tres códigos de juego o, si no, EEPROM de 64 KB. ROM propia `save` (siete tamaños,
+  little y big endian y sanitizadores; contra melonDS con divergencias anotadas). El firmware de la consola también se puede escribir.
+- **ROM de carga** (`carga`) y **ROM ociosa** (`ocio`): dos nuevas, propias, en `tests/roms/homebrew/`. `carga` mantiene las dos CPUs
+  ocupadas con trabajo variado y comprueba sus resultados (145 MIPS en la Mac).
+- Paquete **«SalsaDS núcleo» (SLDS00008)** del commit 9f2a177: `build/salsads-nucleo/salsads-nucleo.pkg`, SHA-256
+  `8da0871ecb4e16e97569e3250055f0f4aef3d7ca8722e568dc627662408f92a4`. Lleva la ROM de carga embebida (o `rom.nds`), guardado por
+  juego en `/dev_hdd0/salsads/saves/` y el desglose por cuadro. En RPCS3: OK. **Falta medirlo en la PS3.**
+- Herramientas de diagnóstico nuevas en el host: trazas por `--dbg`, `--break7/9` con anillo y pila, `--watch7/9`, `--dump`,
+  `tools/melonds-dump.py` (memoria y registros de melonDS por GDB). `tools/melonds-run.py` corre sobre una copia temporal.
+- Higiene: cinco volcados de memoria de qemu (`*.core`, ≈ 40 MB) se habían colado en un commit anterior; se quitaron del árbol y se ignoran,
+  pero siguen en la historia (si el repositorio se publica, conviene reescribirla antes).
+- Pendiente (detalle en `docs/fase1.md`): medir en la PS3, SWI 1Ah–1Ch (sonido), FIFO de geometría (Fase 3), detección del chip de guardado
+  sin archivo ni tabla, eventos de video perezosos si el desglose lo pide.
+
 ## 2026-10-17 — Máquina de la DS y primera imagen (Fase 1.2)
 
 - `src/core` + `src/bios`: mapa de memoria de las dos CPUs (RAM, WRAM con WRAMCNT, VRAM por bancos con VRAMCNT,
