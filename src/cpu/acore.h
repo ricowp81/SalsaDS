@@ -180,4 +180,17 @@ static inline void acore_signal_abort(struct acore *c, uint32_t kind)
 /* Entrada a una excepción (la usan el núcleo y los ganchos de HLE). `lr` es el valor para r14 del modo nuevo. */
 void acore_exception(struct acore *c, enum acore_exc e, uint32_t lr);
 
+/* Accesos del programa (ven las TCM, como una instrucción de carga/almacenamiento): para la HLE de la BIOS y
+ * para quien necesite leer la memoria como la CPU. Direcciones alineadas al tamaño. */
+uint32_t acore_rd8(struct acore *c, uint32_t a);
+uint32_t acore_rd16(struct acore *c, uint32_t a);
+uint32_t acore_rd32(struct acore *c, uint32_t a);
+void acore_wr8(struct acore *c, uint32_t a, uint32_t v);
+void acore_wr16(struct acore *c, uint32_t a, uint32_t v);
+void acore_wr32(struct acore *c, uint32_t a, uint32_t v);
+
+/* Estado de CP15 del ARM9 (registro de control y regiones de ITCM/DTCM) y recálculo de las TCM: lo usa el
+ * arranque directo para dejar el estado que deja la BIOS. */
+void acore_set_tcm_state(struct acore *c, uint32_t ctrl, uint32_t itcm_reg, uint32_t dtcm_reg);
+
 #endif

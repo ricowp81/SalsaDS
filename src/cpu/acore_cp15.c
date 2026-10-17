@@ -59,6 +59,14 @@ static void update_tcm(struct acore *c)
 	}
 }
 
+void acore_set_tcm_state(struct acore *c, uint32_t ctrl, uint32_t itcm_reg, uint32_t dtcm_reg)
+{
+	c->cp15_ctrl = (ctrl & CTRL_WRITABLE) | CTRL_FIXED | (ctrl & 0x2000u);
+	c->cp15_itcm_reg = itcm_reg;
+	c->cp15_dtcm_reg = dtcm_reg;
+	update_tcm(c);
+}
+
 void acore_cp15_reset(struct acore *c)
 {
 	memset(c->cp15_misc, 0, sizeof c->cp15_misc);

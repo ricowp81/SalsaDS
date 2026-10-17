@@ -283,3 +283,35 @@ void acore_step(struct acore *c)
 		return;
 	step_one(c);
 }
+
+/* ---- accesos del programa (con TCM) ------------------------------------------- */
+
+uint32_t acore_rd8(struct acore *c, uint32_t a)
+{
+	return mem_rd8(c, a);
+}
+
+uint32_t acore_rd16(struct acore *c, uint32_t a)
+{
+	return mem_rd16(c, a);
+}
+
+uint32_t acore_rd32(struct acore *c, uint32_t a)
+{
+	return mem_rd32(c, a);
+}
+
+void acore_wr8(struct acore *c, uint32_t a, uint32_t v)
+{
+	mem_wr8(c, a, v);
+}
+
+void acore_wr16(struct acore *c, uint32_t a, uint32_t v)
+{
+	mem_wr16(c, a, v);
+}
+
+void acore_wr32(struct acore *c, uint32_t a, uint32_t v)
+{
+	mem_wr32(c, a, v);
+}
