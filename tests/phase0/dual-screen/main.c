@@ -416,8 +416,8 @@ static void jitter_reset(void)
 
 static void jitter_sample(void)
 {
-	if (cfg.pointer != SDS_POINTER_TILT || !pad_present)
-		return;
+	if (!pad_present)
+		return;  /* los rangos de los sensores se registran en cualquier modo; el temblor solo vale en INCLINACION */
 	/* Solo cuenta con el stick derecho quieto. */
 	if (abs((int)ds3.rx - 128) > 20 || abs((int)ds3.ry - 128) > 20)
 		jit.still_ok = 0;
@@ -446,7 +446,7 @@ static void jitter_sample(void)
 			    jit.amin[0], jit.amax[0], jit.amin[1], jit.amax[1], jit.amin[2], jit.amax[2], jit.gmin, jit.gmax,
 			    (int)input.raw_roll, (int)input.raw_pitch, (int)input.f_roll, (int)input.f_pitch, (int)input.x,
 			    (int)input.y, (unsigned)sdx, (unsigned)(sdx * 100) % 100, (unsigned)sdy, (unsigned)(sdy * 100) % 100,
-			    jit.n, jit.still_ok ? " (stick quieto: con el control sobre la mesa, mide el ruido)" : "");
+			    jit.n, cfg.pointer != SDS_POINTER_TILT ? " (modo stick: el temblor no aplica)" : jit.still_ok ? " (stick quieto: con el control sobre la mesa, mide el ruido)" : "");
 		jitter_reset();
 	}
 }

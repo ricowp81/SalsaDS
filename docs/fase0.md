@@ -10,8 +10,8 @@ vive en `tests/phase0/<nombre>`, su resultado va aquí y la medición, en
 | 0.2 ROMs de prueba propias | hecho (2026-10-16) |
 | 0.3 Microbenchmarks del PPE | hecho (2026-10-16): medido en la PS3 real, decisiones abajo |
 | 0.4 Rasterizador 3D en un SPE | pendiente |
-| 0.5 Composición 2D en un SPE | construido y verificado (host LE/BE, RPCS3, 2026-10-16); **ms por cuadro pendientes de la PS3 real** |
-| 0.6 Salida de dos pantallas | construido y verificado en RPCS3 a 720p y 1080p (2026-10-16); **60 Hz, sensación de los dos modos del puntero y 1080p pendientes de la PS3 real** |
+| 0.5 Composición 2D en un SPE | medido en la PS3 real (2026-10-16): imagen correcta, **criterio < 4 ms NO cumplido** con las dos pantallas en un SPE (4,31 / 5,59 / 8,46 ms); salidas anotadas abajo |
+| 0.6 Salida de dos pantallas | **60 Hz estables en la PS3 real** a 720p y 1080p (16/16 combinaciones); sensación de los modos del puntero pendiente |
 | 0.7 Prueba de JIT ARM → PPC | pendiente |
 
 ## 0.1 Esqueleto
@@ -480,12 +480,42 @@ Líneas del log (`/dev_hdd0/salsads/spe-gpu2d.log` o UDP 18195):
   (solo de curiosidad).
 - `RESULTADO spe-gpu2d: OK` solo exige que las imágenes coincidan, no el tiempo.
 
-Pendiente de la PS3: pegar aquí la tabla de medianas y decidir (si `extrema` pasa
-de 4 ms: qué hacer; palancas ya identificadas: caché de filas de OBJ entre
+Palancas ya identificadas: caché de filas de OBJ entre
 líneas, una sola espera por línea juntando la del mapa de todos los fondos que
 cambian —ya lo hace— y resolver la paleta con vectores).
 
-### Estimación sin medir [est]
+### Resultados en la PS3 real (2026-10-16)
+
+Paquete «SalsaDS 2D» (`06ab2d0`); log del autor, 120 cuadros por escena,
+`RESULTADO spe-gpu2d: OK` y 24 escenas aleatorias sin diferencias contra la
+referencia. Duración medida por el propio SPE, mediana (mín = máx):
+
+| Escena | A+B | A | B | Referencia en el PPE | < 4 ms |
+|---|---|---|---|---|---|
+| típica | **4,31 ms** | 2,19 | 2,12 | 22,7 ms | NO (por poco) |
+| pesada | **5,59 ms** | 2,77 | 2,81 | 34,9 ms | NO |
+| extrema | **8,46 ms** | 4,32 | 4,14 | 38,2 ms | NO |
+
+Contadores (típica, A): 108 filas de teselas, 73 esperas por el mapa, 940
+OBJ-línea; (extrema, A): 768 filas, 192 esperas, 5454 OBJ-línea.
+
+Lectura: el criterio **no se cumple** con las dos pantallas en un SPE; con una
+pantalla por SPE serían ~2,2 / 2,8 / 4,3 ms (la típica y la pesada caben en 4
+ms, la extrema no por poco). La estimación [est] de abajo resultó ~3× optimista.
+La latencia del DMA del mapa no se esconde: cada fila nueva de teselas espera
+el mapa (73–192 esperas por pantalla) antes de poder pedir las teselas.
+
+**Salidas anotadas (no implementadas):**
+1. **Un SPE por pantalla** (A en uno, B en otro): el costo por SPE baja a ~2,2
+   ms (típica), 2,8 (pesada) y 4,3 (extrema). Cuesta un SPE más (de los 6) y
+   es lo más barato de hacer: el compositor ya es por pantalla (`engines` en el
+   trabajo).
+2. **Esconder el DMA del mapa con doble búfer**: pedir el mapa de la línea
+   y + 2 (o de toda la fila de teselas siguiente) mientras se compone la y, para
+   que las teselas se pidan sin esperar al mapa; quita la espera intermedia de
+   `plan_line`. Combinable con la 1.
+
+### Estimación previa a la medición [est] (errada)
 
 Por conteo de instrucciones del ensamblador, un fondo cuesta del orden de 1100
 instrucciones por línea (33 teselas expandidas y 32 fusiones) y un OBJ ~35 por
@@ -536,6 +566,21 @@ presentación en el log; DS3 → botones de la DS; puntero táctil. Estado:
   que `rsxkit_frame_begin` espera al vsync: el cuadro está listo mucho antes) y el
   **trabajo del PPE** por cuadro (rellenar texturas + ordenar el dibujo + la
   interfaz: la parte que no depende del vsync).
+
+### Resultados en la PS3 real (2026-10-16)
+
+Paquete «SalsaDS pantallas» (`06ab2d0`), log del autor: `ioPadSetSensorMode(ON)
+= 0`, `controles.cfg` creado por omisión y **las 16 combinaciones (720p y 1080p,
+4 distribuciones, escala ajustada y entera) con 60 Hz estable**: intervalo
+mediana 16,66–16,67 ms, p95 ≤ 16,84, máx ≤ 16,86, 0 cuadros de más de 20 ms, 0
+vblanks saltados, espera del flip ~15,6 ms y trabajo del PPE 1,05–1,07 ms por
+cuadro. Criterio de 60 Hz cumplido.
+
+El log de esa corrida terminó en «modo interactivo» sin líneas `sixaxis:`: el
+`PUNTERO` era `STICK` (el valor por omisión) y esas líneas solo se escribían en
+`INCLINACION`. Corregido: ahora los rangos crudos de los sensores se registran
+en cualquier modo (el temblor solo vale en `INCLINACION`). La sensación de los
+dos modos sigue pendiente.
 
 ### Resultados en RPCS3 (no son mediciones de rendimiento)
 
