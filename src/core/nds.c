@@ -21,16 +21,33 @@ void nds_logf(struct nds *n, const char *fmt, ...)
 	n->log(n->log_ctx, buf);
 }
 
+void nds_tracef(struct nds *n, const char *fmt, ...)
+{
+	char buf[160];
+	int k;
+	va_list ap;
+
+	if (!n->log)
+		return;
+	k = snprintf(buf, sizeof buf, "t=%llu ", (unsigned long long)n->time);
+	va_start(ap, fmt);
+	vsnprintf(buf + k, sizeof buf - (size_t)k, fmt, ap);
+	va_end(ap);
+	n->log(n->log_ctx, buf);
+}
+
 void nds_init(struct nds *n)
 {
 	void (*log)(void *, const char *) = n->log;
 	void *log_ctx = n->log_ctx;
 	const uint32_t quantum = n->quantum;
+	const uint32_t dbg = n->dbg;
 
 	memset(n, 0, sizeof *n);
 	n->log = log;
 	n->log_ctx = log_ctx;
 	n->quantum = quantum;
+	n->dbg = dbg;
 	acore_init(&n->a9, ACORE_ARM9, &nds_bus9, n);
 	acore_attach_tcm(&n->a9, n->itcm, n->dtcm);
 	acore_init(&n->a7, ACORE_ARM7, &nds_bus7, n);
@@ -66,6 +83,7 @@ int nds_load_rom(struct nds *n, const uint8_t *rom, size_t len)
 	n->cart.capacity = shift <= 14 ? 0x20000u << shift : 0;
 	if (n->cart.capacity && n->cart.capacity < len)
 		n->cart.capacity = 0; /* cabecera incoherente: sin espejo */
+	nds_save_default(n);
 	return 0;
 }
 

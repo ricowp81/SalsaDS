@@ -9,9 +9,11 @@
  *     cartucho al arrancar) y libnds la lee de ahí.
  *   - Datos de usuario (0x70 bytes) en 0x027FFC80: GBATEK, «DS Firmware User Settings» (se espejan en esa
  *     dirección). Se copia la copia más nueva del firmware generado por el emulador (nds_fw_make).
- *   - Identificador del chip del cartucho en 0x027FF800 y 0x027FFC00, e indicador de arranque normal en
- *     0x027FFC40: convención de los cargadores directos (no verificada en GBATEK; solo la consultan juegos
- *     que miran el chip).
+ *   - Identificador del chip del cartucho (dos copias) en 0x027FF800/04 y 0x027FFC00/04, CRC16 de la cabecera
+ *     (campo 0x15E) y del área segura (0x06C) en +8 y +A de cada una, 5835h (el CRC16 de la BIOS del ARM7) en
+ *     0x027FF850 y 0x027FFC10 e indicador de arranque normal en 0x027FFC40: convención de los cargadores
+ *     directos, tomada de lo que se ve en la RAM de un emulador de referencia (no verificada en GBATEK; solo
+ *     la consultan juegos que miran el chip).
  *   - Estado del ARM9: modo sistema con I y F puestos, r12 = lr = pc = punto de entrada, CP15 con la ITCM de
  *     32 KB (región virtual de 32 MB, para que el espejo en 0x01000000 que usa libnds funcione) y la DTCM de
  *     16 KB en 0x00800000, ambas habilitadas, vectores altos (GBATEK, mapa de memoria y CP15). Pilas
@@ -95,7 +97,15 @@ int nds_boot_direct(struct nds *n)
 	memcpy(ram + (0x027FFE00u & (NDS_RAM_SIZE - 1)), rom, 0x170);
 	memcpy(ram + (0x027FFC80u & (NDS_RAM_SIZE - 1)), user, 0x70);
 	wr32le(ram + (0x027FF800u & (NDS_RAM_SIZE - 1)), id);
+	wr32le(ram + (0x027FF804u & (NDS_RAM_SIZE - 1)), id);
 	wr32le(ram + (0x027FFC00u & (NDS_RAM_SIZE - 1)), id);
+	wr32le(ram + (0x027FFC04u & (NDS_RAM_SIZE - 1)), id);
+	wr16le(ram + (0x027FF808u & (NDS_RAM_SIZE - 1)), rd16le(rom + 0x15E));
+	wr16le(ram + (0x027FF80Au & (NDS_RAM_SIZE - 1)), rd16le(rom + 0x06C));
+	wr16le(ram + (0x027FFC08u & (NDS_RAM_SIZE - 1)), rd16le(rom + 0x15E));
+	wr16le(ram + (0x027FFC0Au & (NDS_RAM_SIZE - 1)), rd16le(rom + 0x06C));
+	wr16le(ram + (0x027FFC10u & (NDS_RAM_SIZE - 1)), 0x5835);
+	wr16le(ram + (0x027FF850u & (NDS_RAM_SIZE - 1)), 0x5835);
 	wr16le(ram + (0x027FFC40u & (NDS_RAM_SIZE - 1)), 1);
 
 	n->io[NDS_CPU9].postflg = 1;

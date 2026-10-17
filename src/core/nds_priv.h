@@ -73,6 +73,11 @@ uint32_t nds_cart_data(struct nds *n, int cpu); /* 0x04100010 */
 void nds_cart_event(struct nds *n);
 uint32_t nds_cart_chipid(const struct nds_cart *c);
 
+/* save.c */
+void nds_save_default(struct nds *n);
+uint8_t nds_save_xfer(struct nds *n, uint8_t in);
+void nds_save_deselect(struct nds *n);
+
 /* spi.c */
 void nds_spi_init(struct nds *n);
 uint32_t nds_spi_read(struct nds *n, uint32_t off, int sz);

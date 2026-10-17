@@ -40,6 +40,7 @@ void nds_irq_update(struct nds *n, int cpu)
 
 void nds_irq_raise(struct nds *n, int cpu, uint32_t mask)
 {
+	NDS_TRACE(n, NDS_DBG_IRQ, "IRQ%d +%08x (IE %08x IME %u)", cpu ? 7 : 9, mask, n->io[cpu].ie, n->io[cpu].ime & 1u);
 	n->io[cpu].ifl |= mask;
 	nds_irq_update(n, cpu);
 }
@@ -64,6 +65,8 @@ void nds_halt_check(struct nds *n)
 void nds_event_set(struct nds *n, int ev, uint64_t when)
 {
 	n->ev[ev] = when;
+	if (when < n->ev_min)
+		n->ev_min = when;
 }
 
 /* ---- video: DISPSTAT, VCOUNT --------------------------------------------------------------------------- */
@@ -166,7 +169,7 @@ static void tm_schedule(struct nds *n, int cpu, int i)
 		n->ev[ev] = NDS_NEVER;
 		return;
 	}
-	n->ev[ev] = t->t0 + ((uint64_t)(0x10000u - (t->cnt & 0xFFFFu)) << tm_sh(t));
+	nds_event_set(n, ev, t->t0 + ((uint64_t)(0x10000u - (t->cnt & 0xFFFFu)) << tm_sh(t)));
 }
 
 static void tm_overflow(struct nds *n, int cpu, int i, uint64_t when)
@@ -383,8 +386,19 @@ void nds_sched_init(struct nds *n)
 	n->line = 0;
 	n->ev[EV_HBLANK] = NDS_HBLANK_CYCLES;
 	n->ev[EV_LINE] = NDS_LINE_CYCLES;
+	n->ev_min = NDS_HBLANK_CYCLES;
 	if (!n->quantum)
 		n->quantum = 128;
+}
+
+static uint64_t ev_scan(const struct nds *n)
+{
+	uint64_t ev = NDS_NEVER;
+
+	for (int i = 0; i < EV_COUNT; i++)
+		if (n->ev[i] < ev)
+			ev = n->ev[i];
+	return ev;
 }
 
 static void run_events(struct nds *n)
@@ -399,7 +413,8 @@ static void run_events(struct nds *n)
 				best = i;
 			}
 		if (best < 0)
-			return;
+			break;
+		n->st.events++;
 		switch (best) {
 		case EV_LINE:
 			ev_line(n, bt);
@@ -424,27 +439,83 @@ static void run_events(struct nds *n)
 		}
 		}
 	}
+	n->ev_min = ev_scan(n);
 }
 
+/* Una CPU en HALT sin línea de interrupción no ejecuta nada hasta que algo la despierte: su reloj solo avanza. */
+static inline int cpu_idle(const struct acore *c)
+{
+	return c->halted && !(c->irq | c->fiq);
+}
+
+static inline void idle_to(struct acore *c, uint64_t t)
+{
+	if (c->cycles < t)
+		c->cycles = t;
+}
+
+/* Corre las dos CPUs en tramos de `quantum` ciclos del ARM9 acotados por el siguiente evento. Si las dos están
+ * ociosas (HALT / IntrWait sin interrupción) no hay nada que correr: el tiempo salta de una vez al siguiente
+ * evento, sin pasos finos. Con una sola ociosa, esa solo adelanta su reloj (sin llamar al intérprete). */
 void nds_sched_run(struct nds *n, uint64_t until)
 {
+	uint64_t (*const clk)(void) = n->prof_clock;
+
 	n->stop = 0;
 	while (n->time < until && !n->stop) {
-		uint64_t next = n->time + n->quantum, ev = NDS_NEVER;
+		uint64_t next = n->ev_min;
+		const int idle9 = cpu_idle(&n->a9), idle7 = cpu_idle(&n->a7);
 
-		for (int i = 0; i < EV_COUNT; i++)
-			if (n->ev[i] < ev)
-				ev = n->ev[i];
-		if (ev < next)
-			next = ev;
-		if (next > until)
-			next = until;
-		if (next > n->time) {
-			acore_run(&n->a9, next);
-			acore_run(&n->a7, (next + 1) >> 1);
-			n->time = next;
+		if (idle9 && idle7) {
+			if (next > until)
+				next = until;
+			if (next > n->time) {
+				idle_to(&n->a9, next);
+				idle_to(&n->a7, (next + 1) >> 1);
+				n->time = next;
+				n->st.jumps++;
+			}
+		} else {
+			uint64_t slice = n->time + n->quantum;
+
+			if (next < slice)
+				slice = next;
+			if (slice > until)
+				slice = until;
+			if (slice > n->time) {
+				uint64_t c0 = 0, c1 = 0, c2 = 0;
+
+				if (clk)
+					c0 = clk();
+				if (idle9)
+					idle_to(&n->a9, slice);
+				else
+					acore_run(&n->a9, slice);
+				if (clk)
+					c1 = clk();
+				if (idle7)
+					idle_to(&n->a7, (slice + 1) >> 1);
+				else
+					acore_run(&n->a7, (slice + 1) >> 1);
+				if (clk) {
+					c2 = clk();
+					n->st.prof_a9 += c1 - c0;
+					n->st.prof_a7 += c2 - c1;
+				}
+				n->time = slice;
+				n->st.slices++;
+			}
 		}
 		nds_halt_check(n);
-		run_events(n);
+		if (n->ev_min <= n->time) {
+			if (clk) {
+				const uint64_t e0 = clk();
+
+				run_events(n);
+				n->st.prof_ev += clk() - e0;
+			} else {
+				run_events(n);
+			}
+		}
 	}
 }

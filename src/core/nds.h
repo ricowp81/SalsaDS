@@ -31,6 +31,7 @@
 #define NDS_RAM_SIZE (4u << 20)
 #define NDS_SWRAM_SIZE 0x8000u
 #define NDS_WRAM7_SIZE 0x10000u
+#define NDS_SAVE_MAX 0x100000u /* guardado: hasta 1 MB (EEPROM, FRAM o Flash) */
 #define NDS_VRAM_SIZE 0xA4000u /* 656 KB: A, B, C, D (128 KB), E (64), F, G (16), H (32), I (16) */
 #define NDS_PAL_SIZE 0x800u
 #define NDS_OAM_SIZE 0x800u
@@ -141,14 +142,23 @@ struct nds_cart {
 	uint8_t buf[0x4000];
 	uint32_t nwords, widx; /* palabras del bloque y siguiente a entregar */
 	uint8_t drq, busy;
-	uint8_t spi_hold;      /* AUXSPI sin chip de guardado: se contesta 0xFF */
+	uint64_t spi_done;     /* AUXSPI: instante (ARM9) en que termina el byte en curso (para el bit de ocupado) */
+};
+
+/* Chip de guardado del cartucho (AUXSPI): ver save.c. */
+enum { NDS_SAVE_EEPROM512 = 1, NDS_SAVE_EEPROM16, NDS_SAVE_FRAM, NDS_SAVE_EEPROM24, NDS_SAVE_FLASH };
+struct nds_save {
+	uint8_t type;
+	uint8_t state, cmd, a8, wel, wp, srwd, first, wrote, dirty;
+	uint8_t addr_len;
+	uint32_t size, page, addr, nbytes;
 };
 
 struct nds_spi {
 	uint16_t cnt;
 	uint8_t data;
 	uint8_t busy;
-	uint8_t fw_state, fw_cmd, fw_wel, fw_cnt;
+	uint8_t fw_state, fw_cmd, fw_wel, fw_cnt, fw_first;
 	uint32_t fw_addr;
 	uint8_t pm_state, pm_reg, pm_regs[8];
 	uint8_t tsc_ctl, tsc_q[2], tsc_qn;
@@ -212,12 +222,15 @@ struct nds {
 	struct nds_fifo fifo[2]; /* cola que envía cada CPU */
 
 	struct nds_cart cart;
+	struct nds_save save;
+	uint8_t savemem[NDS_SAVE_MAX];
 	struct nds_spi spi;
 	struct nds_rtc rtc;
 
 	/* tiempo y eventos */
 	uint64_t time;    /* ciclos del ARM9 que el planificador ya dio por vividos */
 	uint64_t ev[EV_COUNT];
+	uint64_t ev_min;  /* caché: cota inferior del próximo evento (se afina al procesar eventos) */
 	uint32_t line;    /* línea que muestran los eventos (0-262) */
 	uint32_t quantum; /* ciclos del ARM9 por tramo */
 	uint64_t frames;  /* cuadros completos (a cada inicio del VBlank) */
@@ -231,7 +244,22 @@ struct nds {
 
 	void (*log)(void *ctx, const char *msg);
 	void *log_ctx;
+	/* Contadores del planificador (los reinicia el dueño) y reloj opcional para repartir el tiempo de `nds_run*`:
+	 * con `prof_clock` distinto de NULL se acumulan en `prof_*` los ticks que pasan dentro de cada ARM, de los
+	 * eventos y fuera de ellos (el planificador). El reloj lo pone el dueño (en la PS3, el timebase). */
+	struct {
+		uint64_t slices, jumps, events;     /* tramos corridos, saltos de tiempo ocioso, eventos atendidos */
+		uint64_t prof_a9, prof_a7, prof_ev; /* ticks dentro del ARM9, del ARM7 y de los eventos */
+	} st;
+	uint64_t (*prof_clock)(void);
+	uint32_t dbg; /* NDS_DBG_*: trazas de depuración por `log` (0 = ninguna; solo el corredor del host las activa) */
 };
+
+#define NDS_DBG_SPI 1u
+#define NDS_DBG_IPC 2u
+#define NDS_DBG_IRQ 4u
+#define NDS_DBG_CART 8u
+#define NDS_DBG_IO 16u /* todos los accesos a la E/S que no tienen traza propia */
 
 /* ---- API pública -------------------------------------------------------------------------------- */
 
@@ -245,6 +273,13 @@ void nds_run(struct nds *n, uint64_t arm9_cycles);
 /* Corre hasta que empiece el siguiente VBlank (línea 192): un cuadro. */
 void nds_run_frame(struct nds *n);
 
+/* Guardado del cartucho. El tipo por omisión sale del código de juego (nds_load_rom); `nds_save_attach` carga el
+ * contenido de un archivo y fija el tipo por su tamaño (0 = bien, -1 = tamaño que no es de ningún chip).
+ * `nds_save_take_dirty` dice si el juego escribió desde la última vez; `nds_save_data` da el contenido actual. */
+int nds_save_attach(struct nds *n, const uint8_t *data, size_t len);
+const uint8_t *nds_save_data(const struct nds *n, size_t *len);
+int nds_save_take_dirty(struct nds *n);
+
 /* Entrada: botones NDS_KEY_*, y el toque en píxeles (0-255, 0-191) si NDS_KEY_PEN. */
 void nds_set_input(struct nds *n, uint32_t keys, unsigned touch_x, unsigned touch_y);
 
@@ -257,6 +292,13 @@ uint32_t nds_peek32(struct nds *n, int cpu, uint32_t addr);
 uint32_t nds_peek8(struct nds *n, int cpu, uint32_t addr);
 
 void nds_logf(struct nds *n, const char *fmt, ...);
+/* Traza de depuración: solo si `n->dbg` tiene el bit. Lleva el instante (ciclos del ARM9). */
+#define NDS_TRACE(n, bit, ...) \
+	do { \
+		if (__builtin_expect((n)->dbg & (bit), 0)) \
+			nds_tracef((n), __VA_ARGS__); \
+	} while (0)
+void nds_tracef(struct nds *n, const char *fmt, ...);
 
 /* IRQ que una CPU levanta en otra (o en sí misma): el único camino de IRQ entre CPUs. */
 void nds_irq_raise(struct nds *n, int cpu, uint32_t mask);

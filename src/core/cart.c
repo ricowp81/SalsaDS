@@ -9,7 +9,7 @@
  * límite de 4 KB (da la vuelta dentro de su página); más allá de la capacidad se espeja. El bloque se
  * entrega palabra a palabra: DRQ (bit 23) se levanta cuando hay una palabra lista y el bloque termina (bit
  * 31 a 0, IRQ 19 si AUXSPICNT.14) cuando se leyó la última; las lecturas por DMA (modo cartucho) sacan una
- * palabra por disparo. Sin chip de guardado: AUXSPIDATA contesta 0xFF.
+ * palabra por disparo. AUXSPIDATA habla con el chip de guardado de save.c.
  *
  * Fuente: GBATEK (DS Cartridge I/O Ports, Protocol, Header). Código propio.
  */
@@ -60,6 +60,8 @@ static void cart_start(struct nds *n, int cpu)
 
 	if (!(c->auxcnt & 0x8000u) || c->busy)
 		return;
+	NDS_TRACE(n, NDS_DBG_CART, "CART%d cmd %02x %02x%02x%02x%02x ctl %08x (%u bytes)", cpu ? 7 : 9, c->cmd[0], c->cmd[1],
+		  c->cmd[2], c->cmd[3], c->cmd[4], ctl, (unsigned)nbytes);
 	switch (c->cmd[0]) {
 	case 0xB7:
 		addr = (uint32_t)c->cmd[1] << 24 | (uint32_t)c->cmd[2] << 16 | (uint32_t)c->cmd[3] << 8 | c->cmd[4];
@@ -142,7 +144,7 @@ uint32_t nds_cart_read(struct nds *n, int cpu, uint32_t off, int sz)
 	if (cpu != nds_cart_owner(n) || off < 0x1A0u || off + (uint32_t)sz > 0x1C0u)
 		return 0;
 	memset(img, 0, sizeof img);
-	wr16le(img + 0, (uint16_t)(c->auxcnt & 0xE043u));
+	wr16le(img + 0, (uint16_t)((c->auxcnt & 0xE043u) | (nds_cpu_now(n, cpu) < c->spi_done ? 0x80u : 0u)));
 	wr16le(img + 2, c->auxdata);
 	wr32le(img + 4, (c->romctl & ~((1u << 31) | (1u << 23))) | ((uint32_t)c->busy << 31) | ((uint32_t)c->drq << 23));
 	memcpy(img + 8, c->cmd, 8);
@@ -171,8 +173,18 @@ void nds_cart_write(struct nds *n, int cpu, uint32_t off, int sz, uint32_t v)
 		case 1:
 			c->auxcnt = (uint16_t)((c->auxcnt & 0x00FFu) | ((b & 0xE0u) << 8));
 			break;
-		case 2: /* AUXSPIDATA: sin chip de guardado, contesta 0xFF */
-			c->auxdata = 0xFF;
+		case 2: /* AUXSPIDATA: un byte hacia el chip de guardado (si la ranura está en modo serie y habilitada) */
+			if ((c->auxcnt & 0xA000u) == 0xA000u) {
+				static const uint16_t cyc[4] = { 134, 268, 536, 1072 }; /* ciclos del ARM9 por byte: 4, 2, 1 MHz y 512 KHz */
+
+				c->auxdata = nds_save_xfer(n, b);
+				c->spi_done = nds_cpu_now(n, cpu) + cyc[c->auxcnt & 3u];
+				if (!(c->auxcnt & 0x40u))
+					nds_save_deselect(n);
+				NDS_TRACE(n, NDS_DBG_CART, "AUXSPI%d cnt %04x out %02x in %02x", cpu ? 7 : 9, c->auxcnt, b, c->auxdata);
+			} else {
+				c->auxdata = 0xFF;
+			}
 			break;
 		case 4: case 5: case 6:
 			c->romctl = (c->romctl & ~(0xFFu << (8 * (o - 4)))) | ((uint32_t)b << (8 * (o - 4)));

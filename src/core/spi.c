@@ -11,6 +11,10 @@
  * (EV_SPI) que limpia ocupado y, si SPICNT.14, levanta la IRQ 23. Chip select: se mantiene mientras el bit
  * de retener (11) esté puesto; al soltarlo, el dispositivo vuelve a esperar un comando.
  *
+ * El firmware se puede escribir (WREN, página 0Ah, programar 02h, borrar página DBh y sector D8h) y se lee de vuelta
+ * como cambió, solo en la memoria de la emulación: algunos juegos (Mario Kart DS) escriben su configuración de
+ * Wi-Fi al arrancar y la verifican leyéndola; si lo escrito no vuelve, repiten sin fin.
+ *
  * Fuente: GBATEK (SPI, firmware y datos de usuario, TSC, gestión de energía, RTC). Código propio.
  */
 #include <string.h>
@@ -109,8 +113,15 @@ static uint8_t fw_xfer(struct nds *n, uint8_t in)
 		return 0;
 	case 1: /* dirección de 3 bytes */
 		s->fw_addr = (s->fw_addr << 8) | in;
-		if (++s->fw_cnt == 3)
+		if (++s->fw_cnt == 3) {
+			s->fw_addr &= NDS_FW_SIZE - 1u;
 			s->fw_state = s->fw_cmd == 0x0B ? 2 : 3;
+			s->fw_first = 1;
+			if (s->fw_cmd == 0xDB && s->fw_wel) /* borrar página de 256 bytes */
+				memset(n->fw + (s->fw_addr & ~0xFFu), 0xFF, 0x100);
+			else if (s->fw_cmd == 0xD8 && s->fw_wel) /* borrar sector de 64 KB */
+				memset(n->fw + (s->fw_addr & ~0xFFFFu), 0xFF, 0x10000);
+		}
 		return 0;
 	case 2: /* byte ficticio de la lectura rápida */
 		s->fw_state = 3;
@@ -124,7 +135,22 @@ static uint8_t fw_xfer(struct nds *n, uint8_t in)
 			return (uint8_t)(s->fw_wel << 1);
 		case 0x9F:
 			return jedec[(s->fw_cnt++) % 3];
-		default: /* escrituras y borrados: se aceptan y se ignoran */
+		case 0x0A: /* escribir página: borra la página y programa (la dirección da la vuelta dentro de ella) */
+		case 0x02: /* programar página: solo baja bits (Y de lo que había) */
+			if (s->fw_wel) {
+				const uint32_t base = s->fw_addr & ~0xFFu;
+
+				if (s->fw_first && s->fw_cmd == 0x0A)
+					memset(n->fw + base, 0xFF, 0x100);
+				s->fw_first = 0;
+				if (s->fw_cmd == 0x0A)
+					n->fw[s->fw_addr] = in;
+				else
+					n->fw[s->fw_addr] &= in;
+				s->fw_addr = base | ((s->fw_addr + 1u) & 0xFFu);
+			}
+			return 0;
+		default: /* borrados y el resto: nada que devolver */
 			return 0;
 		}
 	default:
@@ -186,8 +212,10 @@ static uint8_t pm_xfer(struct nds *n, uint8_t in)
 	if (s->pm_reg & 0x80u)
 		return s->pm_regs[s->pm_reg & 7u];
 	s->pm_regs[s->pm_reg & 7u] = in;
-	if ((s->pm_reg & 0x7Fu) == 0 && (in & 0x40u))
+	if ((s->pm_reg & 0x7Fu) == 0 && (in & 0x40u)) {
 		n->powered_off = 1;
+		NDS_TRACE(n, NDS_DBG_SPI, "PM: apagar la consola (registro 0 = %02x)", in);
+	}
 	return 0;
 }
 
@@ -254,6 +282,7 @@ void nds_spi_write(struct nds *n, uint32_t off, int sz, uint32_t v)
 			s->cur_dev = (uint8_t)dev;
 			s->cur_hold = (uint8_t)((s->cnt >> 11) & 1u);
 			s->data_next = dev == 0 ? pm_xfer(n, b) : dev == 1 ? fw_xfer(n, b) : dev == 2 ? tsc_xfer(n, b) : 0;
+			NDS_TRACE(n, NDS_DBG_SPI, "SPI dev %u hold %u out %02x in %02x", dev, (unsigned)s->cur_hold, b, s->data_next);
 			s->busy = 1;
 			cycles = 8u * (8u << (s->cnt & 3u)); /* bits × ciclos de bus por bit (4 MHz = 8,4) */
 			nds_event_set(n, EV_SPI, nds_cpu_now(n, NDS_CPU7) + (uint64_t)cycles * 2u);

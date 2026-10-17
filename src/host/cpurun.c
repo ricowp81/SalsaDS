@@ -78,6 +78,24 @@ static void save_ppm(const char *path)
 	fclose(f);
 }
 
+/* Si el juego escribió en su memoria de guardado y hay archivo, lo deja actualizado. */
+static void save_out(const char *path)
+{
+	size_t len;
+	const uint8_t *d;
+	FILE *f;
+
+	if (!path || !nds_save_take_dirty(&M))
+		return;
+	d = nds_save_data(&M, &len);
+	f = fopen(path, "wb");
+	if (f) {
+		fwrite(d, 1, len, f);
+		fclose(f);
+		fprintf(stderr, "núcleo: guardado escrito en %s (%zu bytes)\n", path, len);
+	}
+}
+
 /* Registros que deciden la imagen, en el mismo formato que `tools/melonds-run.py --regs` (para compararlos). */
 static void print_regs(void)
 {
@@ -114,7 +132,14 @@ int main(int argc, char **argv)
 	uint32_t keys = 0, tx = 0, ty = 0, quantum = 0;
 	const char *rom_path = NULL, *screens_path = NULL;
 	int stats = 0, show_arm7 = 0, trace_cpu = 0;
-	uint64_t trace_n = 0, frames = 0;
+	uint64_t trace_n = 0, frames = 0, skip_frames = 0, hist_n = 0, ring_n = 0;
+	uint32_t break_pc = 0, dbg = 0, watch_addr = 0, save_size = 0;
+	const char *save_path = NULL;
+	struct { uint32_t addr, len; const char *file; } dumps[8];
+	uint32_t ndumps = 0;
+	int watch_cpu = 0;
+	uint64_t watch_max = 0;
+	int break_cpu = -1;
 	uint32_t peek[8], npeek = 0;
 	int show_regs = 0;
 	size_t len;
@@ -141,6 +166,38 @@ int main(int argc, char **argv)
 			trace_n = strtoull(argv[++i], NULL, 0);
 		else if (!strcmp(argv[i], "--trace7"))
 			trace_cpu = 1;
+		else if (!strcmp(argv[i], "--skip") && i + 1 < argc)
+			skip_frames = strtoull(argv[++i], NULL, 0);
+		else if ((!strcmp(argv[i], "--watch9") || !strcmp(argv[i], "--watch7")) && i + 1 < argc) {
+			watch_cpu = argv[i][7] == '7';
+			watch_addr = (uint32_t)strtoul(argv[++i], NULL, 0);
+		} else if (!strcmp(argv[i], "--watch-max") && i + 1 < argc)
+			watch_max = strtoull(argv[++i], NULL, 0);
+		else if (!strcmp(argv[i], "--dump") && i + 1 < argc && ndumps < 8) {
+			/* DIR:LONG:ARCHIVO — al terminar, vuelca esa memoria tal como la ve el ARM9 */
+			char *a = argv[++i], *b = strchr(a, ':'), *c = b ? strchr(b + 1, ':') : NULL;
+
+			if (!c) {
+				fprintf(stderr, "--dump DIR:LONG:ARCHIVO\n");
+				return 2;
+			}
+			*b = *c = 0;
+			dumps[ndumps].addr = (uint32_t)strtoul(a, NULL, 0);
+			dumps[ndumps].len = (uint32_t)strtoul(b + 1, NULL, 0);
+			dumps[ndumps++].file = c + 1;
+		} else if (!strcmp(argv[i], "--save") && i + 1 < argc)
+			save_path = argv[++i];
+		else if (!strcmp(argv[i], "--save-size") && i + 1 < argc)
+			save_size = (uint32_t)strtoul(argv[++i], NULL, 0);
+		else if (!strcmp(argv[i], "--dbg") && i + 1 < argc)
+			dbg = (uint32_t)strtoul(argv[++i], NULL, 0);
+		else if (!strcmp(argv[i], "--hist") && i + 1 < argc)
+			hist_n = strtoull(argv[++i], NULL, 0);
+		else if ((!strcmp(argv[i], "--break9") || !strcmp(argv[i], "--break7")) && i + 1 < argc) {
+			break_cpu = argv[i][7] == '7';
+			break_pc = (uint32_t)strtoul(argv[++i], NULL, 0);
+		} else if (!strcmp(argv[i], "--ring") && i + 1 < argc)
+			ring_n = strtoull(argv[++i], NULL, 0);
 		else if (!strcmp(argv[i], "--screens") && i + 1 < argc)
 			screens_path = argv[++i];
 		else if (!strcmp(argv[i], "--regs"))
@@ -152,7 +209,7 @@ int main(int argc, char **argv)
 	}
 	if (!rom_path) {
 		fprintf(stderr, "uso: salsads-cpurun [--cycles N] [--frames N] [--quantum N] [--stats] [--arm7] "
-				"[--keys HEX] [--touch X,Y] [--screens FILE.ppm] [--peek ADDR] ROM.nds\n");
+				"[--keys HEX] [--touch X,Y] [--screens FILE.ppm] [--peek ADDR] [--save FILE | --save-size N] ROM.nds\n");
 		return 2;
 	}
 	rom = slurp(rom_path, &len);
@@ -162,13 +219,142 @@ int main(int argc, char **argv)
 	}
 	M.log = log_to_stderr;
 	M.quantum = quantum;
+	M.dbg = dbg;
 	nds_init(&M);
 	if (nds_load_rom(&M, rom, len) || nds_boot_direct(&M)) {
 		fprintf(stderr, "ROM inválida\n");
 		return 2;
 	}
+	if (save_path) {
+		size_t sl;
+		uint8_t *sd = slurp(save_path, &sl);
+
+		if (sd && nds_save_attach(&M, sd, sl) == 0)
+			fprintf(stderr, "núcleo: guardado de %s: %zu bytes\n", save_path, sl);
+		else if (sd)
+			fprintf(stderr, "núcleo: %s no tiene el tamaño de ningún chip (%zu bytes): se ignora\n", save_path, sl);
+		free(sd);
+	} else if (save_size) {
+		uint8_t *blank = malloc(save_size);
+
+		if (blank) {
+			memset(blank, 0xFF, save_size);
+			if (nds_save_attach(&M, blank, save_size))
+				fprintf(stderr, "--save-size %u no es el tamaño de ningún chip\n", save_size);
+			free(blank);
+		}
+	}
 	if (keys)
 		nds_set_input(&M, keys, tx, ty);
+	for (uint64_t f = 0; f < skip_frames; f++)
+		nds_run_frame(&M);
+	if (watch_addr) {
+		/* paso a paso (1 ciclo del ARM9): imprime cada cambio de la palabra en watch_addr, vista por watch_cpu */
+		uint32_t old = nds_peek32(&M, watch_cpu, watch_addr);
+		uint64_t steps = 0, changes = 0;
+
+		printf("vigilo 0x%08x (ARM%d): valor inicial %08x\n", watch_addr, watch_cpu ? 7 : 9, old);
+		while (steps < max_cycles && changes < (watch_max ? watch_max : 50)) {
+			const uint32_t v = nds_peek32(&M, watch_cpu, watch_addr);
+
+			if (v != old) {
+				printf("t=%llu cuadro %llu: %08x -> %08x  (ARM9 pc %08x lr %08x, ARM7 pc %08x lr %08x)\n",
+				       (unsigned long long)M.time, (unsigned long long)M.frames, old, v, acore_pc(&M.a9), M.a9.r[14],
+				       acore_pc(&M.a7), M.a7.r[14]);
+				old = v;
+				changes++;
+			}
+			nds_run(&M, 1);
+			steps++;
+		}
+		return 0;
+	}
+	if (break_cpu >= 0) {
+		/* corre de a un ciclo hasta que la CPU llegue a break_pc; luego imprime las últimas ring_n instrucciones
+		 * de esa CPU (para ver cómo llegó) */
+		struct acore *c = break_cpu ? &M.a7 : &M.a9;
+		struct ent { uint32_t pc, insn, cpsr, r0, r1, r2, lr; } *ring;
+		const uint64_t rn = ring_n ? ring_n : 256;
+		uint64_t pos = 0, last_ic = c->icount, steps = 0;
+
+		ring = calloc(rn, sizeof *ring);
+		while (steps < max_cycles) {
+			const uint32_t pc = acore_pc(c);
+
+			if (c->icount != last_ic) {
+				last_ic = c->icount;
+			}
+			if (pc == break_pc && !c->halted)
+				break;
+			{
+				struct ent *e = &ring[pos++ % rn];
+				const uint32_t insn = nds_peek32(&M, break_cpu, pc & ~3u);
+
+				e->pc = pc;
+				e->insn = (c->cpsr & ACORE_T) ? (insn >> ((pc & 2) * 8)) & 0xFFFF : insn;
+				e->cpsr = c->cpsr;
+				e->r0 = c->r[0];
+				e->r1 = c->r[1];
+				e->r2 = c->r[2];
+				e->lr = c->r[14];
+			}
+			{
+				const uint64_t ic = c->icount;
+
+				do {
+					nds_run(&M, 1);
+					steps++;
+				} while (c->icount == ic && steps < max_cycles && !c->halted);
+				if (c->halted)
+					nds_run(&M, 2);
+			}
+		}
+		printf("llegó a %08x: ARM9 pc %08x, ARM7 pc %08x, cuadros %llu, ciclos %llu\n", break_pc, acore_pc(&M.a9),
+		       acore_pc(&M.a7), (unsigned long long)M.frames, (unsigned long long)M.time);
+		printf("pila (sp=%08x):", c->r[13]);
+		for (uint32_t k = 0; k < 64; k++) {
+			if (k % 8 == 0)
+				printf("\n  %08x:", c->r[13] + 4 * k);
+			printf(" %08x", nds_peek32(&M, break_cpu, c->r[13] + 4 * k));
+		}
+		printf("\nregistros:");
+		for (int k = 0; k < 16; k++)
+			printf(" r%d=%08x", k, c->r[k]);
+		printf("\n");
+		for (uint64_t i = pos > rn ? pos - rn : 0; i < pos; i++) {
+			const struct ent *e = &ring[i % rn];
+
+			printf("%08x: %08x  cpsr=%08x r0=%08x r1=%08x r2=%08x lr=%08x\n", e->pc, e->insn, e->cpsr, e->r0, e->r1, e->r2, e->lr);
+		}
+		return 0;
+	}
+	if (hist_n) {
+		/* histograma de PC de las dos CPUs durante hist_n pasos de 1 ciclo del ARM9 (después de --skip cuadros) */
+		struct { uint32_t pc; uint32_t n; } h[2][64];
+		uint32_t nh[2] = { 0, 0 };
+
+		for (uint64_t i = 0; i < hist_n; i++) {
+			for (int c = 0; c < 2; c++) {
+				const uint32_t pc = acore_pc(c ? &M.a7 : &M.a9);
+				uint32_t k;
+
+				for (k = 0; k < nh[c] && h[c][k].pc != pc; k++)
+					;
+				if (k == nh[c] && nh[c] < 64)
+					h[c][nh[c]++].pc = pc, h[c][k].n = 0;
+				if (k < nh[c])
+					h[c][k].n++;
+			}
+			nds_run(&M, 2);
+		}
+		for (int c = 0; c < 2; c++) {
+			printf("%s: %u PC distintos (máx 64)\n", c ? "ARM7" : "ARM9", nh[c]);
+			for (uint32_t k = 0; k < nh[c]; k++)
+				if (h[c][k].n * 50 >= hist_n)
+					printf("  pc %08x  %5.1f %%\n", h[c][k].pc, 100.0 * h[c][k].n / (double)hist_n);
+		}
+		return 0;
+	}
 	if (trace_n) {
 		/* traza de instrucciones de una CPU (la otra avanza a su ritmo) */
 		struct acore *c = trace_cpu ? &M.a7 : &M.a9;
@@ -177,9 +363,9 @@ int main(int argc, char **argv)
 			const uint32_t pc = acore_pc(c);
 			const uint32_t insn = nds_peek32(&M, trace_cpu, pc & ~3u);
 
-			printf("%08x: %08x  cpsr=%08x r0=%08x r1=%08x r2=%08x r3=%08x sp=%08x lr=%08x\n", pc,
+			printf("%08x: %08x  cpsr=%08x r0=%08x r1=%08x r2=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x sp=%08x lr=%08x\n", pc,
 			       (c->cpsr & ACORE_T) ? (insn >> ((pc & 2) * 8)) & 0xFFFF : insn, c->cpsr, c->r[0], c->r[1],
-			       c->r[2], c->r[3], c->r[13], c->r[14]);
+			       c->r[2], c->r[3], c->r[4], c->r[5], c->r[6], c->r[7], c->r[13], c->r[14]);
 			nds_run(&M, 1);
 		}
 		return 0;
@@ -205,12 +391,26 @@ int main(int argc, char **argv)
 			printf("estadísticas: %llu cuadros, ARM9 %llu instr., ARM7 %llu instr., %.3f s, %.1f MIPS\n",
 			       (unsigned long long)frames, (unsigned long long)M.a9.icount, (unsigned long long)M.a7.icount,
 			       t1 - t0, (double)(M.a9.icount + M.a7.icount) / (t1 - t0) / 1e6);
+		if (stats)
+			printf("planificador: %.1f tramos, %.1f saltos ociosos y %.1f eventos por cuadro; %.1f us por cuadro\n",
+			       (double)M.st.slices / (double)frames, (double)M.st.jumps / (double)frames,
+			       (double)M.st.events / (double)frames, (t1 - t0) * 1e6 / (double)frames);
 		if (screens_path)
 			save_ppm(screens_path);
 		for (uint32_t k = 0; k < npeek; k++)
 			printf("peek 0x%08x = 0x%08x\n", peek[k], nds_peek32(&M, 0, peek[k]));
 		if (show_regs)
 			print_regs();
+		save_out(save_path);
+		for (uint32_t k = 0; k < ndumps; k++) {
+			FILE *f = fopen(dumps[k].file, "wb");
+
+			if (!f)
+				continue;
+			for (uint32_t o = 0; o < dumps[k].len; o++)
+				fputc((int)nds_peek8(&M, 0, dumps[k].addr + o), f);
+			fclose(f);
+		}
 		return 0;
 	}
 	{
@@ -242,6 +442,7 @@ int main(int argc, char **argv)
 		int rc;
 
 		name = name ? name + 1 : rom_path;
+		save_out(save_path);
 		for (int i = 0; i < 12; i++)
 			w[i] = nds_peek32(&M, 0, SDS_ADDR + 4 * (uint32_t)i);
 		if (stats) {

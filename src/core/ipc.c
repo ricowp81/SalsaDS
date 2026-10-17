@@ -63,6 +63,7 @@ uint16_t nds_ipcsync_read(struct nds *n, int cpu)
 
 void nds_ipcsync_write(struct nds *n, int cpu, uint16_t v, uint16_t mask)
 {
+	NDS_TRACE(n, NDS_DBG_IPC, "IPCSYNC%d <- %04x/%04x", cpu ? 7 : 9, v, mask);
 	if (mask & 0x0F00u)
 		n->ipcsync_out[cpu] = (v >> 8) & 0xFu;
 	if (mask & 0x4000u)
@@ -107,6 +108,7 @@ void nds_ipcfifo_send(struct nds *n, int cpu, uint32_t v)
 	struct nds_cpuio *io = &n->io[cpu];
 	const unsigned old = conds(n);
 
+	NDS_TRACE(n, NDS_DBG_IPC, "FIFO%d envía %08x (en cola %u)", cpu ? 7 : 9, v, s->count);
 	if (!(io->ipcfifocnt & CNT_ENABLE))
 		return; /* deshabilitada: el dato se descarta, sin error */
 	if (s->count == 16) {
@@ -132,6 +134,7 @@ uint32_t nds_ipcfifo_recv(struct nds *n, int cpu)
 		return r->last;
 	}
 	v = r->q[r->head];
+	NDS_TRACE(n, NDS_DBG_IPC, "FIFO%d recibe %08x", cpu ? 7 : 9, v);
 	r->head = (r->head + 1) & 15u;
 	r->count--;
 	r->last = v;
