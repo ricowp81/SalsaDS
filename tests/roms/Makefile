@@ -17,7 +17,7 @@ ARM7_FLAGS := -marm -mcpu=arm7tdmi -O2 -Wall -Wextra -ffunction-sections -fdata-
               -D__NDS__ -D__BLOCKSDS__ -DARM7 -isystem $(BLOCKSDS)/libs/libnds/include -specs=$(BLOCKSDS)/sys/crts/ds_arm7.specs
 ARM7_LIBS  := -L$(BLOCKSDS)/libs/libnds/lib -Wl,--start-group -lnds7 -lc -Wl,--end-group
 
-ROMS := hola cpu9 cpuarm mem irq dma ipc bios periph
+ROMS := hola cpu9 cpuarm mem irq dma ipc bios periph demo
 SRCS_hola := src/common/sds.c src/hola/main.c
 SRCS_cpu9 := src/common/sds.c $(wildcard src/cpu9/*.c) $(wildcard src/cpu9/*.S)
 SRCS_cpuarm := src/common/sds.c src/cpuarm/arm9.c src/cpuarm/helpers.S src/cpu9/thumb.S
@@ -36,6 +36,8 @@ SRCS_bios := src/common/sds.c src/bios/arm9.c src/bios/helpers.S
 SRCS7_bios := src/common/sds7.c src/bios/arm7.c src/bios/helpers.S
 SRCS_periph := src/common/sds.c src/periph/arm9.c
 SRCS7_periph := src/common/sds7.c src/periph/arm7.c
+SRCS_demo := src/common/sds.c src/demo/arm9.c
+SRCS7_demo := src/common/sds7.c src/demo/arm7.c
 TITLE_hola := SalsaDS hola;prueba de VRAM;SalsaDS
 TITLE_cpu9 := SalsaDS cpu9;pruebas de CPU ARM9;SalsaDS
 TITLE_cpuarm := SalsaDS cpuarm;pruebas de CPU ARM9 y ARM7;SalsaDS
@@ -45,6 +47,7 @@ TITLE_dma := SalsaDS dma;transferencias DMA;SalsaDS
 TITLE_ipc := SalsaDS ipc;sincronia y FIFO entre CPUs;SalsaDS
 TITLE_bios := SalsaDS bios;llamadas SWI de la BIOS;SalsaDS
 TITLE_periph := SalsaDS periph;SPI, RTC, cartucho y matematicas;SalsaDS
+TITLE_demo := SalsaDS demo;demostracion del nucleo;SalsaDS
 
 .PHONY: all install clean $(ROMS)
 all: $(addprefix $(OUT)/,$(addsuffix .nds,$(ROMS)))

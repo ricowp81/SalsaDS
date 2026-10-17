@@ -3,7 +3,7 @@
  * resultados (tests/roms/src/common/sds.h), como hace tools/melonds-run.py con melonDS.
  *
  *   salsads-cpurun [--cycles N] [--frames N] [--quantum N] [--stats] [--arm7] [--keys HEX] [--touch X,Y]
- *                  [--screens FILE.ppm] [--trace N [--trace7]] ROM.nds
+ *                  [--screens FILE.ppm] [--peek ADDR]... [--trace N [--trace7]] ROM.nds
  *
  * Código de salida: 0 = OK, 1 = FALLO, 2 = sin veredicto, 3 = una CPU cayó en un vector de excepción de la BIOS
  * sin manejador. Con --frames corre ese número de cuadros y termina con 0 (para sacar imágenes).
@@ -78,6 +78,18 @@ static void save_ppm(const char *path)
 	fclose(f);
 }
 
+/* Registros que deciden la imagen, en el mismo formato que `tools/melonds-run.py --regs` (para compararlos). */
+static void print_regs(void)
+{
+	printf("regs DISPCNT_A=%08x DISPCNT_B=%08x BRIGHT_A=%04x BRIGHT_B=%04x POWCNT1=%04x\n", nds_peek32(&M, 0, 0x04000000),
+	       nds_peek32(&M, 0, 0x04001000), nds_peek32(&M, 0, 0x0400006C) & 0xFFFF, nds_peek32(&M, 0, 0x0400106C) & 0xFFFF,
+	       nds_peek32(&M, 0, 0x04000304) & 0xFFFF);
+	printf("regs VRAMCNT=");
+	for (uint32_t a = 0x04000240; a <= 0x04000249; a++)
+		printf("%02x", nds_peek8(&M, 0, a));
+	printf("\n");
+}
+
 /* ¿Una CPU quedó atrapada en un vector de excepción de la BIOS (sin manejador)? */
 static int stuck_in_vector(const struct nds *n, const char **which, uint32_t *pc)
 {
@@ -103,6 +115,8 @@ int main(int argc, char **argv)
 	const char *rom_path = NULL, *screens_path = NULL;
 	int stats = 0, show_arm7 = 0, trace_cpu = 0;
 	uint64_t trace_n = 0, frames = 0;
+	uint32_t peek[8], npeek = 0;
+	int show_regs = 0;
 	size_t len;
 	uint8_t *rom;
 	double t0, t1;
@@ -129,12 +143,16 @@ int main(int argc, char **argv)
 			trace_cpu = 1;
 		else if (!strcmp(argv[i], "--screens") && i + 1 < argc)
 			screens_path = argv[++i];
+		else if (!strcmp(argv[i], "--regs"))
+			show_regs = 1;
+		else if (!strcmp(argv[i], "--peek") && i + 1 < argc && npeek < 8)
+			peek[npeek++] = strtoul(argv[++i], NULL, 0);
 		else
 			rom_path = argv[i];
 	}
 	if (!rom_path) {
 		fprintf(stderr, "uso: salsads-cpurun [--cycles N] [--frames N] [--quantum N] [--stats] [--arm7] "
-				"[--keys HEX] [--touch X,Y] [--screens FILE.ppm] ROM.nds\n");
+				"[--keys HEX] [--touch X,Y] [--screens FILE.ppm] [--peek ADDR] ROM.nds\n");
 		return 2;
 	}
 	rom = slurp(rom_path, &len);
@@ -177,6 +195,10 @@ int main(int argc, char **argv)
 			       t1 - t0, (double)(M.a9.icount + M.a7.icount) / (t1 - t0) / 1e6);
 		if (screens_path)
 			save_ppm(screens_path);
+		for (uint32_t k = 0; k < npeek; k++)
+			printf("peek 0x%08x = 0x%08x\n", peek[k], nds_peek32(&M, 0, peek[k]));
+		if (show_regs)
+			print_regs();
 		return 0;
 	}
 	{
@@ -222,6 +244,10 @@ int main(int argc, char **argv)
 		}
 		if (screens_path)
 			save_ppm(screens_path);
+		for (uint32_t k = 0; k < npeek; k++)
+			printf("peek 0x%08x = 0x%08x\n", peek[k], nds_peek32(&M, 0, peek[k]));
+		if (show_regs)
+			print_regs();
 		if (show_arm7 && nds_peek32(&M, 0, SDS_ARM7_ADDR) == SDS_MAGIC) {
 			uint32_t w7[12];
 

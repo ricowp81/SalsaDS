@@ -437,16 +437,18 @@ void nds_mem_init(struct nds *n)
 
 /* ---- depuración -------------------------------------------------------------------------------------- */
 
+/* Las lecturas de depuración de la E/S solo valen para los registros sin efecto al leerse: no los de las FIFO ni
+ * el dato del cartucho (0x04100000 en adelante). */
 uint32_t nds_peek32(struct nds *n, int cpu, uint32_t a)
 {
-	if ((a >> 24) == 4)
+	if ((a >> 24) == 4 && (a & 0xFFFFFF) >= 0x100000)
 		return 0;
 	return nds_bus_read(n, cpu, a & ~3u, 4);
 }
 
 uint32_t nds_peek8(struct nds *n, int cpu, uint32_t a)
 {
-	if ((a >> 24) == 4)
+	if ((a >> 24) == 4 && (a & 0xFFFFFF) >= 0x100000)
 		return 0;
 	return nds_bus_read(n, cpu, a, 1);
 }

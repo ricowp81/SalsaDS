@@ -163,6 +163,21 @@ def save_ppm(path: str, raw: bytes) -> None:
         f.write(b"P6\n256 192\n255\n" + bytes(px))
 
 
+def print_regs(rsp) -> None:
+    """Imprime los registros de la imagen con el formato de `salsads-cpurun --regs`."""
+    def w32(addr):
+        return struct.unpack("<I", rsp.snapshot(addr, 4, 4))[0]
+
+    def w16(addr):
+        return struct.unpack("<H", rsp.snapshot(addr, 4, 4)[:2])[0] if addr & 3 == 0 else \
+            struct.unpack("<I", rsp.snapshot(addr & ~3, 4, 4))[0] >> 16
+
+    vram = rsp.snapshot(0x04000240, 16, 16)[:10]
+    print("regs DISPCNT_A=%08x DISPCNT_B=%08x BRIGHT_A=%04x BRIGHT_B=%04x POWCNT1=%04x" %
+          (w32(0x04000000), w32(0x04001000), w16(0x0400006C), w16(0x0400106C), w16(0x04000304)))
+    print("regs VRAMCNT=" + "".join("%02x" % b for b in vram))
+
+
 def print_arm7(arm7) -> None:
     if not arm7:
         return
@@ -190,6 +205,9 @@ def main() -> int:
     ap.add_argument("--keep", action="store_true", help="dejar melonDS abierto al terminar")
     ap.add_argument("--arm7", action="store_true",
                     help="al terminar (o al agotar el tiempo) mostrar también el bloque de resultados del ARM7")
+    ap.add_argument("--regs", action="store_true",
+                    help="al terminar, imprimir los registros que deciden la imagen (mismo formato que "
+                    "`salsads-cpurun --regs`) leídos por el stub de GDB")
     ap.add_argument("--vram", metavar="FILE.ppm",
                     help="guardar como imagen PPM el banco A de VRAM (la pantalla de arriba de las ROMs "
                     "de prueba, en modo de visualización directa), leído por el stub de GDB")
@@ -235,6 +253,11 @@ def main() -> int:
                             save_ppm(args.vram, rsp.dump(0x06800000, 256 * 192 * 2))
                         except (OSError, ConnectionError) as e:
                             print(f"no pude leer la VRAM: {e}", file=sys.stderr)
+                    if args.regs:
+                        try:
+                            print_regs(rsp)
+                        except (OSError, ConnectionError) as e:
+                            print(f"no pude leer los registros: {e}", file=sys.stderr)
                     break
             except (OSError, ConnectionError, ValueError):
                 if rsp:
@@ -242,6 +265,13 @@ def main() -> int:
                     rsp = None
             time.sleep(0.5)
     finally:
+        if rsp and result is None and args.vram and proc.poll() is None:
+            try:  # una ROM sin veredicto (una demostración): la imagen del momento
+                save_ppm(args.vram, rsp.dump(0x06800000, 256 * 192 * 2))
+                if args.regs:
+                    print_regs(rsp)
+            except (OSError, ConnectionError) as e:
+                print(f"no pude leer la VRAM: {e}", file=sys.stderr)
         if rsp:
             rsp.sock.close()
         if not args.keep and proc.poll() is None:

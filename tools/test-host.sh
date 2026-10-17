@@ -42,10 +42,13 @@ else
 	fail=1
 fi
 
-# --- ROMs de prueba de CPU en los intérpretes de src/cpu -----------------------
-# Las ROMs de tests/roms/homebrew (hola, cpu9 y cpuarm, ARM9 y ARM7) corren con
-# arranque directo en los intérpretes, en little-endian (gcc del contenedor) y en
-# big-endian (qemu-ppc64), y deben dar OK como con melonDS (tools/melonds-run.py).
+# --- ROMs de prueba en la máquina de src/core ---------------------------------------------------------------
+# Las ROMs de tests/roms/homebrew (CPU, mapa de memoria, IRQ y temporizadores, DMA, IPC, SWI de la BIOS, periféricos)
+# corren con arranque directo en la máquina de la Fase 1.2, en little-endian (gcc del contenedor) y en big-endian
+# (qemu-ppc64), y deben dar OK como con melonDS (tools/melonds-run.py). Además se repiten con otros tamaños de tramo
+# del planificador (la frontera para el ARM7 en otro hilo: docs/fase1.md) y se corre la demostración, que no termina:
+# se comprueba que sus dos CPUs viven.
+ROMS="hola cpu9 cpuarm mem irq dma ipc bios periph"
 check_rom() { # orden rom log
 	if grep -q "^OK " "$3"; then
 		printf '%-4s OK     %s\n' "$1" "$(grep '^OK ' "$3")"
@@ -55,20 +58,40 @@ check_rom() { # orden rom log
 		fail=1
 	fi
 }
+check_demo() { # orden log
+	frames=$(sed -n 's/^peek 0x023a0004 = //p' "$2")
+	if grep -q "^peek 0x023a0000 = 0x4f4d4544" "$2" && [ -n "$frames" ] && [ $((frames)) -ge 100 ]; then
+		printf '%-4s OK     demo: el ARM7 dejó su marca y contó %d cuadros\n' "$1" $((frames))
+	else
+		printf '%-4s FALLO  demo (ver %s)\n' "$1" "$2"
+		tail -n 6 "$2"
+		fail=1
+	fi
+}
 if tools/build.sh -C src/host >build/logs/build-host-run.log 2>&1; then
-	for rom in hola cpu9 cpuarm; do
+	for rom in $ROMS; do
 		tools/build.sh --sh "build/host-run/salsads-cpurun tests/roms/homebrew/$rom.nds" >"build/logs/rom-$rom-le.log" 2>&1
 		check_rom "LE" "$rom" "build/logs/rom-$rom-le.log"
 	done
+	for q in 1 16 2048 20000; do
+		for rom in irq ipc dma periph; do
+			tools/build.sh --sh "build/host-run/salsads-cpurun --quantum $q tests/roms/homebrew/$rom.nds" >"build/logs/rom-$rom-le-q$q.log" 2>&1
+			check_rom "LEq$q" "$rom" "build/logs/rom-$rom-le-q$q.log"
+		done
+	done
+	tools/build.sh --sh "build/host-run/salsads-cpurun --frames 120 --peek 0x023A0000 --peek 0x023A0004 tests/roms/homebrew/demo.nds" >build/logs/rom-demo-le.log 2>&1
+	check_demo LE build/logs/rom-demo-le.log
 else
 	echo "LE   FALLO  la compilación de src/host (build/logs/build-host-run.log)"
 	fail=1
 fi
 if tools/build-ppc64.sh host >build/logs/build-ppc64-run.log 2>&1; then
-	for rom in hola cpu9 cpuarm; do
+	for rom in $ROMS; do
 		tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun tests/roms/homebrew/$rom.nds >"build/logs/rom-$rom-be.log" 2>&1
 		check_rom "BE" "$rom" "build/logs/rom-$rom-be.log"
 	done
+	tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --frames 120 --peek 0x023A0000 --peek 0x023A0004 tests/roms/homebrew/demo.nds >build/logs/rom-demo-be.log 2>&1
+	check_demo BE build/logs/rom-demo-be.log
 else
 	echo "BE   FALLO  la compilación ppc64 de src/host (build/logs/build-ppc64-run.log)"
 	fail=1
