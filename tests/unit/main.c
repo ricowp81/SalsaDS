@@ -18,6 +18,9 @@ void test_layout(void);
 void test_jit(void);
 void test_r3d(void);
 void test_r3d_selftest(void);
+void test_acore_arm(void);
+void test_acore_thumb(void);
+void test_acore_sys(void);
 
 int main(void)
 {
@@ -33,6 +36,9 @@ int main(void)
 	test_jit();
 	test_r3d_selftest();
 	test_r3d();
+	test_acore_arm();
+	test_acore_thumb();
+	test_acore_sys();
 	printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);
 	return check_failed ? 1 : 0;
 }
