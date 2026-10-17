@@ -12,7 +12,7 @@ vive en `tests/phase0/<nombre>`, su resultado va aquí y la medición, en
 | 0.4 Rasterizador 3D en un SPE | hecho (2026-10-16): medido en la PS3 real, **criterio cumplido** (4,19 ms), decisión abajo |
 | 0.5 Composición 2D en un SPE | medido en la PS3 real (2026-10-16): imagen correcta, **criterio < 4 ms NO cumplido** con las dos pantallas en un SPE (4,31 / 5,59 / 8,46 ms); salidas anotadas abajo |
 | 0.6 Salida de dos pantallas | **60 Hz estables en la PS3 real** a 720p y 1080p (16/16 combinaciones); sensación de los modos del puntero pendiente |
-| 0.7 Prueba de JIT ARM → PPC | pendiente |
+| 0.7 Prueba de JIT ARM → PPC | construido y verificado (host y qemu-ppc64, 2026-10-16); **MHz, banderas y hilos pendientes de la PS3 real** |
 
 ## 0.1 Esqueleto
 
@@ -1067,3 +1067,131 @@ consola no da sensores); `salida WxH`; las 16 líneas `DATO pantallas`;
 `barrido: N combinaciones, M con 60 Hz estable`; después, en el modo interactivo,
 una línea `sixaxis:` por segundo con el puntero en modo inclinación.
 `rsxkit_video_reconfigure(1080p) = -2` significa que la tele no da 1080p.
+
+## 0.7 Prueba mínima del JIT ARM → PPC64 (`tests/phase0/jit-arm`)
+
+Criterio del plan: mismo resultado y ganancia medida contra el intérprete de 0.3;
+si en CFW se cuelga, el respaldo al intérprete funciona. Se agregó lo acordado
+con el autor: (a) cuántos MHz de ARM9 saca el código traducido en bucles reales
+contra el intérprete de 0.3 y contra la meta de 67 MHz; (b) cómo salen las
+banderas NZCV en el PPE; (c) el ARM7 en el hilo 1 del PPE. Estado: **construido
+y verificado en el host y en qemu-ppc64; falta medirlo en la PS3 real** (paquete
+«SalsaDS JIT», APPID `SLDS00007`, log `/dev_hdd0/salsads/jit-arm.log`).
+
+### Qué es
+
+`src/jit/` (código portable; el traductor emite PowerPC64 sin ejecutarlo, así que
+compila y se prueba en cualquier host):
+
+- **Subconjunto ARM**: datos (AND, EOR, ORR, MOV, ADD, SUB, ADC y CMP) con
+  inmediato o registro con desplazamiento inmediato (LSL, LSR, ASR, ROR) y S en
+  ADD/SUB/CMP; LDR/STR/LDRB/STRB con desplazamiento inmediato; B<cond> y SWI. Lo
+  demás (MUL, bloques LDM/STM, desplazamiento por registro, ejecución
+  condicional de datos y las condiciones MI, PL, VS y VC) se rechaza con
+  `JA_E_UNSUPPORTED` o `JA_E_FLAGS`: es una prueba de factibilidad, no el
+  recompilador de la Fase 4.
+- **Traductor** (`jit_arm.c`): una pasada sobre el programa; bloques básicos con
+  un encabezado de 3 instrucciones que comprueba que el bloque quepa en el
+  presupuesto de instrucciones hasta el próximo evento y lo descuenta (la
+  regla de exactitud de tiempo de Salsa64); los r0–r12 del guest en r14–r26;
+  memoria del guest en little-endian con `lwbrx`/`stwbrx`/`lbzx`/`stbx` sobre una
+  RAM plana de 16 KB con la dirección enmascarada (la tabla de páginas de la
+  Fase 1 sumaría su costo encima y **no está medida aquí**); resultados de 32
+  bits con `clrldi` tras cada suma o resta. Sin formas con punto, `mfcr`,
+  `mtcrf` ni desplazamientos por registro; solo Power ISA 2.02.
+- **Tres formas de llevar las banderas** (`ja_flagmode`):
+  - *perezosas*: se guardan los operandos y el resultado (2 `mr` por
+    comparación) y el consumidor hace su `cmpw`/`cmplw` y el salto;
+  - *CR por instrucción*: cada instrucción que fija banderas deja sus
+    comparaciones en `cr0` (con signo, igualdad) y `cr1` (sin signo, acarreo) y el
+    salto lee el campo; ADC sale con un salto corto sobre el bit de acarreo;
+  - *fusionadas*: el `cmp` + `bcc` se funden si las banderas mueren ahí (análisis
+    de vida sobre el programa) y solo se emite la comparación que el salto
+    necesita; si no, perezosas.
+  Como en el recompilador de Salsa64, el consumidor sabe en tiempo de traducción
+  cuál fue la última instrucción que fijó las banderas (resta o suma), así que
+  no se guarda un «tipo». Por eso las condiciones con signo salen exactas de
+  `cmpw` tras una resta (no hace falta calcular N ni V) y solo se rechazan MI, PL,
+  VS y VC, y las condiciones con signo tras una suma.
+- **Intérprete de referencia** (`ref_arm.c`): banderas completas; es la verdad
+  contra la que se compara el código traducido (y un intérprete más para medir).
+- **Cuatro bucles** (`loops.c`): `mezcla` (el programa de la 0.3, mismo
+  resultado y 9221 instr. por pasada; solo este corre en el intérprete de 0.3),
+  `suma64` (ADDS + ADC y CMP/BNE), `ramas` (dos CMP + salto por elemento con
+  datos casi aleatorios: HI/LS sin signo y GE/LT con signo) y `bytes`
+  (LDRB/STRB, 9 instrucciones por byte).
+
+### Caché de código y respaldo
+
+`mk/rec-cache.ld` + `rec_cache.c`: cola NOBITS de 4 MB al final del segmento de
+texto (con HEN es lo único escribible y ejecutable; el mecanismo y su medición
+están en `docs/cell-desde-salsa64.md` §2; el segmento se descuenta de la
+memoria de usuario). Antes de usarla, un **hilo de prueba** escribe
+`mulli; addi; blr`, vacía la caché de instrucciones y lo ejecuta (22), lo
+reescribe y vuelve a ejecutar (24), repite al final de la caché y escribe una
+palabra por página; si no vuelve en 2 s (CFW: la escritura cuelga el hilo) o falla,
+el programa sigue con los intérpretes y lo dice en el log. Un archivo
+(`jit-arm.marker`, con la versión) marca la prueba y, después, el uso del código
+traducido: si el proceso muere con la marca puesta, el siguiente arranque de esa
+versión no usa el JIT. `jit-arm-nojit` fuerza el respaldo. En RPCS3 el texto es de
+solo lectura: con el archivo de prueba automática el JIT no se intenta y solo
+corre el respaldo (verificado: los intérpretes miden y el programa sale OK).
+
+### Verificación
+
+- **Host LE y BE** (`tools/build.sh test-host`, `tests/unit/test_jit.c`):
+  codificaciones PowerPC contra valores conocidos, el intérprete de referencia
+  contra el resultado calculado en C en los 4 bucles y contra el intérprete de 0.3
+  en `mezcla` (mismas palabras de programa, mismos r0 y r4, mismas instrucciones),
+  traducción de los 4 bucles en los 3 modos y rechazo de lo no soportado.
+- **qemu-ppc64 (BE) ejecuta el código traducido**: los 4 bucles × 3 modos dan los
+  mismos r0–r12, la misma memoria, el mismo pc y el mismo número de
+  instrucciones (por el presupuesto) que el intérprete de referencia, y un
+  presupuesto corto sale por el encabezado de un bloque sin pasarse. Esto cubre
+  la corrección de lo emitido, no los tiempos. Descubierto en el camino: el
+  compilador descartaba las escrituras del descriptor de función ELFv1 si solo se
+  leían por el cast; hace falta una barrera de memoria antes de la llamada.
+- En la PS3 el programa verifica de nuevo cada traducción contra el intérprete
+  (registros, memoria y número de instrucciones) antes de medirla; si algo
+  difiere, `RESULTADO … FALLO`.
+
+### Qué mide en la PS3 y cómo leerlo
+
+Líneas del log (`DATO …`), todas con el timebase, mediana y mínimo de 5 corridas
+calibradas a ≥ 60 ms:
+
+- `DATO jit <bucle> <implementación>`: ns por instrucción guest, MIPS, ciclos del
+  PPE por instrucción guest, y los **MHz de ARM9 equivalentes** de dos maneras:
+  con 1 ciclo por instrucción (= MIPS) y con un modelo simple (+2 ciclos por salto
+  tomado), contra la **meta de 67 MHz**. Las implementaciones: referencia,
+  intérprete de 0.3 (solo `mezcla`) y JIT con las tres formas de banderas.
+- `DATO jit-traducción`: instrucciones del PPE emitidas por instrucción guest, bloques,
+  cmp+salto fusionados, y el costo de traducir y de vaciar la caché de instrucciones.
+- `DATO jit resumen`: ganancia contra la referencia y contra el intérprete de 0.3, y
+  lo que ganan o pierden CR y fusionadas contra las perezosas. Con la tabla de
+  costos de 0.3 (formas con punto ~12,5 ciclos extra, `mfcr` ~25, `add.` y `subf.`
+  nativos) lo esperable es que CR y fusionadas queden cerca de la cota de
+  «comparación + salto», pero **no hay números todavía**.
+- Limitación de lo medido: la memoria es plana y sin tabla de páginas, no hay
+  enlazado de bloques ni caché de destinos, y los bucles son cortos; los MHz son un
+  techo para el código de la Fase 4, no una promesa.
+
+**(c) El ARM7 en el hilo 1** (`threads.c`): el ARM9 corre `suma64` traducida en
+trozos de ~6150 instrucciones y un segundo hilo simula el ARM7, casi siempre en
+HALT: despierta, hace 2 µs de trabajo y vuelve a esperar. Se mide, contra el ARM9 sin
+hilo del ARM7, la pérdida de MIPS del ARM9 y la latencia de despertarlo
+(publicación → hilo corriendo) para cada forma de esperar: **girar**, **girar con
+prioridad baja de SMT** (`or 1,1,1`), **dormir con `sysUsleep(50)`**, **semáforo de
+lv2** (a 1000, 100 y 33 µs entre despertares) y **cola de eventos de lv2** (a 1000
+y 100 µs), más el costo de publicar en el hilo del ARM9 (`sysSemPost`,
+`sysEventPortSend`). Salsa64 midió ~0,13 ms de emulación perdidos por ms de
+trabajo del hilo 1; esta prueba mide lo que cuesta además **esperar**.
+
+### Pendiente
+
+Pegar aquí las medianas de la PS3 (MHz por bucle y modo, ganancia contra 0.3,
+costo de las banderas, pérdida del ARM9 y latencia por forma de esperar) y decidir:
+si el JIT alcanza los 67 MHz del ARM9; qué forma de banderas se lleva a la
+Fase 4; y cómo espera el hilo del ARM7 (la elección de la dirección del ARM7:
+PPE hilo 1 o un SPE sigue abierta hasta tener estos números, ver «Decisiones» de
+0.3 punto 6).

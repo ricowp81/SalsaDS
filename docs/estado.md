@@ -4,6 +4,21 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-16 — Prueba mínima del JIT ARM → PPC (Fase 0.7)
+
+- `tests/phase0/jit-arm` («SalsaDS JIT», SLDS00007) + `src/jit/`: traductor de un
+  subconjunto de ARM (datos con S, ADC, LDR/STR/LDRB/STRB, B<cond>) a PowerPC64 con
+  tres formas de banderas (perezosas, CR por instrucción, cmp+salto fusionados), un
+  intérprete de referencia y cuatro bucles (el de la 0.3, suma64 con acarreo,
+  ramas, bytes). **qemu-ppc64 ejecuta el código traducido** y da lo mismo que la
+  referencia (registros, memoria, instrucciones); falta medir en la PS3 real.
+- Caché de código: cola NOBITS de 4 MB en el texto (`mk/rec-cache.ld`), hilo de
+  prueba con plazo de 2 s y marca en disco; si falla o cuelga (CFW), respaldo a los
+  intérpretes. En RPCS3 el JIT no se intenta (solo lectura).
+- Mide también el ARM7 en el hilo 1 del PPE: pérdida de MIPS del ARM9 y latencia de
+  despertar con giro, giro de prioridad baja, `sysUsleep`, semáforo y cola de
+  eventos de lv2.
+
 ## 2026-10-16 — Rasterizador 3D en SPEs (Fase 0.4)
 
 - `tests/phase0/spe-raster3d` («SalsaDS raster», SLDS00002): escena sintética

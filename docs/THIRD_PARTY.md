@@ -55,7 +55,7 @@ Código propio de la Fase 0.5 y 0.6, escrito desde GBATEK (documentación, sin
 copiar código de ningún emulador) y desde las bibliotecas MIT del proyecto:
 `src/gpu2d/` (referencia, compositor SPE/host y escenas sintéticas),
 `src/frontend/{dspad,layout}.{h,c}` (entrada y geometría de las pantallas),
-`tests/phase0/spe-gpu2d` y `tests/phase0/dual-screen`, `tools/raw-png.py`. El
+`tests/phase0/spe-gpu2d` y `tests/phase0/dual-screen`, `tools/raw-png.py`. De la Fase 0.7: `src/jit/` (codificadores ARM y PowerPC desde los manuales públicos, traductor, intérprete de referencia) y `tests/phase0/jit-arm`; `mk/rec-cache.ld` y `tests/phase0/jit-arm/rec_cache.c` están adaptados de la caché de código y su prueba de Salsa64 (código propio del autor). El
 texto en pantalla usa la fuente 8x13 de X11 (dominio público) que ya trae
 `lib/rsxkit`.
 ## Documentación consultada (sin código)
