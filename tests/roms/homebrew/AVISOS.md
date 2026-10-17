@@ -17,8 +17,8 @@ imagen de Docker, BlocksDS v1.24.0, el 2026-10-16):
 **No** entran DSWiFi, Maxmod ni Mbed TLS (avisos MIT, ISC y Apache-2.0 de
 BlocksDS): el ARM7 de `hola` y `cpu9` es uno propio mínimo
 (`tests/roms/src/arm7min`) en lugar del núcleo por omisión, que los enlazaría. El de
-`cpuarm` es un programa de pruebas propio (`tests/roms/src/cpuarm/arm7.c`) que enlaza
-`libnds7` (zlib) y el `crt0` del ARM7, pero tampoco esas tres bibliotecas.
+`cpuarm` y los de `mem`, `irq`, `dma`, `ipc`, `bios`, `periph` y `demo` son programas de pruebas propios
+(`tests/roms/src/*/arm7.c`) que enlazan `libnds7` (zlib) y el `crt0` del ARM7, pero tampoco esas tres bibliotecas.
 El ícono de la cabecera es propio (`tests/roms/src/icon.bmp`), no el logotipo
 de BlocksDS (CC BY-ND 4.0).
 

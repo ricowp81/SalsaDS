@@ -186,9 +186,21 @@ int main(int argc, char **argv)
 	}
 	t0 = now();
 	if (frames) {
-		for (uint64_t f = 0; f < frames; f++)
+		const char *who;
+		uint32_t pc;
+
+		for (uint64_t f = 0; f < frames; f++) {
 			nds_run_frame(&M);
+			if (stuck_in_vector(&M, &who, &pc)) {
+				printf("EXCEPCIÓN %s sin manejador en el cuadro %llu: pc = 0x%08x (ARM9 pc 0x%08x, ARM7 pc 0x%08x)\n", who,
+				       (unsigned long long)f, pc, acore_pc(&M.a9), acore_pc(&M.a7));
+				break;
+			}
+		}
 		t1 = now();
+		printf("fin: ARM9 pc 0x%08x cpsr 0x%08x%s, ARM7 pc 0x%08x cpsr 0x%08x%s; cuadros %llu\n", acore_pc(&M.a9), M.a9.cpsr,
+		       M.a9.halted ? " (en HALT)" : "", acore_pc(&M.a7), M.a7.cpsr, M.a7.halted ? " (en HALT)" : "",
+		       (unsigned long long)M.frames);
 		if (stats)
 			printf("estadísticas: %llu cuadros, ARM9 %llu instr., ARM7 %llu instr., %.3f s, %.1f MIPS\n",
 			       (unsigned long long)frames, (unsigned long long)M.a9.icount, (unsigned long long)M.a7.icount,

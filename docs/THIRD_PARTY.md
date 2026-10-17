@@ -51,6 +51,13 @@ licencia se fija con esa decisión.
 Código propio: `tests/roms/src/` (marco `sds`, `hola`, `cpu9` y su modelo de
 ARM, ARM7 mínimo, ícono) y `tools/melonds-run.py`.
 
+Código propio de la Fase 1.2: `src/core/` (máquina de la DS), `src/bios/` (BIOS en HLE y arranque directo), `src/host/cpurun.c`,
+`tests/roms/src/{mem,irq,dma,ipc,bios,periph,demo}/` y `common/hw.h`, `tests/phase1/nucleo/`, `tools/{gen-bios-vectors,compare-image}.py`.
+Escrito desde GBATEK; melonDS solo se lanza y se lee su memoria por GDB; sin código de melonDS, NooDS ni DeSmuME. Los
+manejadores de IRQ de la BIOS son seis y nueve instrucciones ARM escritas para el contrato que documenta GBATEK
+(ensambladas aparte con `arm-none-eabi-as`). Los datos comprimidos de las pruebas de la BIOS los generan compresores
+propios (`tools/gen-bios-vectors.py`) desde la descripción de los formatos.
+
 Código propio de la Fase 1.1: `src/cpu/` (intérpretes ARM7/ARM9), `src/host/` (corredor de ROMs, máquina mínima y banco de los intérpretes), `tests/unit/test_acore_*.c` y `acore_tm.h`, `tests/roms/src/cpuarm/` y `tests/roms/src/common/sds7.c`; `tools/cpurun.sh`. Los grupos de `tests/roms/src/cpu9/` se movieron a `groups.h` para compartirlos con `cpuarm`. Sin código de melonDS, NooDS ni DeSmuME: melonDS se usa solo como emulador de referencia (se lanza y se lee su memoria por GDB con `tools/melonds-run.py`).
 
 Código propio de la Fase 0.5 y 0.6, escrito desde GBATEK (documentación, sin
@@ -61,6 +68,11 @@ copiar código de ningún emulador) y desde las bibliotecas MIT del proyecto:
 texto en pantalla usa la fuente 8x13 de X11 (dominio público) que ya trae
 `lib/rsxkit`.
 ## Documentación consultada (sin código)
+
+| Fuente | Para qué | Notas |
+|---|---|---|
+| GBATEK (Martin Korth), páginas por tema de problemkaputt.de: mapas de memoria, control de WRAM y VRAM, interrupciones, temporizadores, DMA, IPC, teclado (EXTKEYIN), SPI, firmware (cabecera y datos de usuario), pantalla táctil, gestión de energía, RTC, cartucho (puertos, protocolo y cabecera), funciones de la BIOS (resumen, Halt, aritméticas, copia de memoria, descompresión, varias), matemáticas, control de energía, memoria del cartucho y RAM principal, modos de video y captura | `src/core` y `src/bios` (Fase 1.2): comportamiento de cada periférico, formatos de los descompresores y datos de usuario del firmware | Leído el 2026-10-17; solo hechos de hardware, nada de texto ni código. Lo que GBATEK no dice y se decidió de otra manera (valores iniciales, cola de respuesta del táctil, calibración generada) está en el encabezado del archivo que lo decide |
+| Desensamblado del `crt0` de BlocksDS y de los símbolos de libnds (objdump de la imagen de Docker; ambos son zlib/MPL-2.0) | Entender el apretón de manos por IPCSYNC del arranque, dónde pone libnds su manejador de IRQ y sus banderas de IntrWait, y los registros de las SWI | Es la herramienta de las ROMs de prueba, no material de Nintendo; no se copió ni se guarda su desensamblado |
 
 | Fuente | Para qué | Notas |
 |---|---|---|

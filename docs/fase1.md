@@ -9,7 +9,7 @@ modo de framebuffer.
 | Paso | Estado |
 |---|---|
 | 1.1 Intérpretes de CPU (ARM9 ARMv5TE, ARM7 ARMv4T) | **hecho (2026-10-17)**, probado en el host y contra melonDS; sin tocar la PS3 |
-| 1.2 Mapa de memoria, IRQ, temporizadores, DMA, IPC, cartucho, SPI, SWI en HLE, arranque directo y primera imagen | por hacer (plan abajo) |
+| 1.2 Mapa de memoria, IRQ, temporizadores, DMA, IPC, cartucho, SPI, SWI en HLE, arranque directo y primera imagen | **hecho (2026-10-17) en el host, qemu-ppc64 (BE) y RPCS3**; probado contra melonDS; **falta la PS3 real** (paquete «SalsaDS núcleo», SLDS00008) |
 
 ## 1.1 Intérpretes de CPU
 
@@ -209,52 +209,214 @@ corra una ROM allí).
 - Ciclos exactos (esperas de la memoria principal, ARM9 vs ARM7, ITCM/DTCM sin espera).
 - LDRD/STRD con direcciones no alineadas a 8: se tratan como dos palabras alineadas.
 
-## 1.2 Plan: mapa de memoria, E/S y primera imagen
+## 1.2 La máquina de la DS (`src/core`, `src/bios`)
 
-Orden propuesto (cada paso con su ROM de prueba propia en `tests/roms/src`, comparada con
-melonDS como `cpuarm`, y corrida en los intérpretes con `salsads-cpurun` en LE y BE):
+Código propio escrito desde GBATEK (páginas por tema de problemkaputt.de, consultadas el 2026-10-17: ver
+`docs/THIRD_PARTY.md`) y comparado, solo en comportamiento, con melonDS 1.1; nada copiado de ningún emulador.
+Sustituye a la máquina mínima de la 1.1 (`ndsmin`, retirada): `salsads-cpurun` corre ahora las ROMs sobre
+`struct nds` (≈ 3 400 líneas en `src/core` y `src/bios`; el estado ocupa 5,12 MB: `sizeof struct nds`, en `docs/memory-budget.md`).
 
-1. **Mapa de memoria** (`src/core/`): los callbacks de `acore_bus` por región y por CPU:
-   memoria principal (4 MB espejada hasta 0x02FFFFFF), WRAM compartida con WRAMCNT, WRAM
-   del ARM7 (64 KB), paleta, OAM, **VRAM por bancos** (A–I con VRAMCNT; tabla de páginas de
-   16 KB por CPU y por uso: LCDC, fondo/objetos A y B, textura, paleta extendida, ARM7),
-   cartucho (ranura de GBA vacía), BIOS (ver 5), ITCM/DTCM ya en el núcleo, E/S por
-   registro con tabla. Sustituye a `ndsmin.c` (que queda para las pruebas de CPU o se
-   retira). Tabla de punteros por región para la ruta rápida; los sitios de escritura
-   quedan marcados para la invalidación de código de la Fase 4.
-2. **Planificador y tiempo**: una cola de eventos con el reloj del ARM9 como base (67 MHz,
-   ARM7 a la mitad), intercalado en rebanadas (el ARM7 en un hilo aparte es la Fase 4:
-   `docs/fase0.md`, 0.7). Las esperas de memoria entran por `c->cycles` desde los
-   callbacks. Medir el costo de la rebanada con el intérprete.
-3. **Interrupciones**: IME/IE/IF por CPU, fuentes (VBlank, HBlank, VCount, temporizadores,
-   DMA, IPC, cartucho, teclas, ...), línea a `acore_set_irq`; HALTCNT del ARM7 y la espera
-   de interrupción de CP15 del ARM9 (ya en el núcleo: `halted`).
-4. **Temporizadores** (4 por CPU, encadenados, prescalers) y **DMA** (4 por CPU, modos de
-   inicio: inmediato, VBlank, HBlank, memoria principal, cartucho, FIFO de sonido; las
-   transferencias pasan por el mapa y respetan el PU del ARM9 solo si se modela).
-5. **BIOS en HLE**: bloque de BIOS propio generado por el emulador (vectores que saltan al
-   manejador del programa: ARM9 `[DTCM + 0x3FFC]`, ARM7 `[0x0380FFFC]`) y las SWI por
-   `swi_hook` (Halt, VBlankIntrWait, IntrWait, Div, Sqrt, CpuSet, CpuFastSet, CRC16,
-   BitUnPack, LZ77, Huffman, RLUnComp, SoundBias, GetCRC16, IsDebugger...). Nada de BIOS
-   de Nintendo ni desensamblados: el contrato sale de GBATEK y de lo que usan las ROMs.
-   `ndsmin.c` ya tiene lo mínimo (IsDebugger, Div, Sqrt, CpuSet, CpuFastSet).
-6. **IPC**: IPCSYNC (ya hecho en `ndsmin.c`), IPCFIFOCNT/SEND/RECV (FIFO de 16 palabras
-   por sentido, IRQ de «vacía» y «no vacía») y la memoria compartida.
-7. **Cartucho**: ROM ya desencriptada (el autor aporta el respaldo; nada de claves ni
-   KEY1/KEY2 en el repo), ROMCTRL/comandos de lectura, AUXSPI (guardado: EEPROM, flash,
-   FRAM), cabecera y área segura sin cifrar.
-8. **SPI y periféricos**: firmware con los datos de usuario generados (nombre, idioma,
-   calibración del táctil), pantalla táctil (ADC), gestión de energía, RTC, teclas
-   (KEYINPUT, EXTKEYIN), DIVCNT/SQRTCNT por hardware.
-9. **Arranque directo**: cabecera copiada a 0x027FFE00, binarios cargados, estado de
-   registros de la BIOS (CP15 del ARM9: ITCM 32 KB y DTCM 16 KB como los deja la
-   BIOS real, `WRAMCNT = 3`, `POSTFLG`...), datos de usuario en 0x027FFC80 y el resto de
-   la tabla que lee libnds.
-10. **Primera imagen**: DISPCNT en el modo de visualización directa de VRAM (banco A como
-    LCDC) y volcado del cuadro a PPM en el host (`salsads-run`), después al módulo de
-    salida de la Fase 0.6. Criterio: `hola` y un homebrew simple muestran su texto y su
-    imagen.
+| Archivo | Qué hace |
+|---|---|
+| `src/core/nds.h` | El estado entero de la máquina (`struct nds`), la API pública y las constantes de tiempo; la frontera para el ARM7 en otro hilo está en su cabecera |
+| `src/core/mem.c` | Mapa de memoria de las dos CPUs, VRAM por bancos, callbacks del bus |
+| `src/core/io.c` | Reparto de los registros de E/S (0x04000000) por dirección y tamaño |
+| `src/core/sched.c` | Planificador de eventos, IRQ, DISPSTAT/VCOUNT, teclas, temporizadores, DMA |
+| `src/core/ipc.c`, `cart.c`, `spi.c`, `math.c` | IPC (SYNC y FIFO), cartucho (ROMCTRL, ROMDATA, AUXSPI), SPI (firmware generado, táctil, energía) y RTC, DIVCNT/SQRTCNT |
+| `src/core/nds.c` | Arranque de la estructura, ROM, ejecución, entrada y la imagen de las dos pantallas |
+| `src/bios/bios.c`, `boot.c` | Bloques de BIOS propios, SWI en HLE, arranque directo y SoftReset |
 
-Pruebas por paso: ROMs propias para DMA, temporizadores, IPC y bancos de VRAM (ninguna de
-terceros mientras no tenga licencia clara: `docs/fase0.md`, 0.2) y las suites de CPU ya
-hechas como regresión.
+### Mapa de memoria
+
+| Región | ARM9 | ARM7 |
+|---|---|---|
+| 0x00000000 | ITCM (la lleva el núcleo; región virtual de 32 MB por CP15, espejo en 0x01000000) | BIOS propia (vectores y manejador de IRQ; 16 KB, el resto en cero) |
+| 0x02000000 | RAM principal 4 MB, espejo cada 4 MB hasta 0x02FFFFFF | igual |
+| 0x03000000 | WRAM compartida (32 KB) según WRAMCNT: 0 = todo, 1 = 2.ª mitad, 2 = 1.ª mitad, 3 = nada (lee cero); espejo en todo el rango | 0x03000000–0x037FFFFF: la parte compartida del ARM7 (3 = todo, 1 = 1.ª, 2 = 2.ª) o, con 0, espejo de la WRAM del ARM7; 0x03800000–0x03FFFFFF: WRAM del ARM7 de 64 KB repetida |
+| 0x04000000 | E/S (los puertos sin definir leen 0); 0x04100000 FIFO de IPC y 0x04100010 datos del cartucho | E/S del ARM7; la WiFi (0x04800000) lee 0 |
+| 0x05000000 / 0x07000000 | paleta y OAM (2 KB cada una, espejo); **las escrituras de 8 bits se ignoran** | no existen (leen 0) |
+| 0x06000000 | VRAM por ventanas (abajo) | VRAM de los bancos C y D asignados al ARM7, 256 KB repetidos; aquí **sí** se escriben bytes |
+| 0x08000000–0x0AFFFFFF | ranura de GBA vacía: lee unos (0xFFFF…, 0xFF en la parte de RAM) si la ranura es del ARM9, ceros si no | igual |
+| 0xFFFF0000 | BIOS propia de 4 KB | — |
+
+VRAM (GBATEK, «DS Memory Control - VRAM»): nueve bancos (A–D 128 KB, E 64, F 16, G 16, H 32, I 16 = 656 KB) en
+un solo arreglo en el orden del modo LCDC. VRAMCNT los asigna por páginas de 16 KB a las ventanas de fondo A
+(512 KB), fondo B (128 KB), OBJ A (256 KB), OBJ B (128 KB) y ARM7 (256 KB); cada ventana se repite dentro de su
+región de 2 MB. Dos bancos sobre la misma página se leen con OR y se escriben los dos. Los usos que la CPU no ve
+(texturas, paletas extendidas: MST 3, 4 y 5 de varios bancos) se anotan en `vramcnt` para las Fases 2 y 3.
+Verificado con 43 asignaciones (banco, MST, OFS) escritas por la ventana y leídas de vuelta como LCDC.
+
+### Tiempo, planificador y la frontera para el ARM7 en otro hilo
+
+La base es el reloj del ARM9 (67,027964 MHz, `n->time`); el ARM7 corre a la mitad y el bus y los
+temporizadores a 33,513982 MHz (= ciclos del ARM7). Una línea son 355 puntos × 6 ciclos de bus = **4260 ciclos
+del ARM9**; un cuadro 263 líneas = 1 120 380 ciclos (59,8261 Hz). El HBlank empieza en el punto 256 (3072).
+
+- `nds_sched_run`: tramos de `n->quantum` ciclos del ARM9 (128 por omisión) acotados por el siguiente evento; el
+  ARM9 corre hasta el final del tramo y el ARM7 hasta la mitad. Una CPU puede pasarse por lo que dura su última
+  instrucción (y por las esperas de un DMA que ella disparó): ese error de pocos ciclos es el que se acepta.
+  Una CPU en HALT sin interrupción solo adelanta su reloj.
+- Eventos (`EV_*`, uno por fuente): inicio de línea, inicio del HBlank, desborde de cada uno de los ocho
+  temporizadores, el cartucho y el SPI. **El video no tiene estado**: línea, posición y banderas de DISPSTAT salen
+  del instante en que se leen (`nds_line_at`/`nds_dot_at`); los eventos de línea solo sirven para las IRQ y los
+  disparos de DMA. Los temporizadores son perezosos (contador y t0) con un evento por desborde.
+- Las esperas de memoria **no** se modelan: 1 ciclo por instrucción en las dos CPUs (la ARM9 real corre a ~⅓ de
+  eso con la RAM principal y sin caché, pero el cociente 2:1 entre las CPUs se conserva). El DMA cobra 4 (ARM9) o
+  2 (ARM7) ciclos por unidad a la CPU dueña.
+
+**Frontera para el hilo del ARM7 (Fase 4; `docs/fase0.md` 0.7).** Cada CPU posee su estado (`struct acore` y
+`struct nds_cpuio`: IME/IE/IF, temporizadores, DMA, DISPSTAT, KEYCNT, registros generales). Lo único compartido
+entre las dos es: (1) la memoria (RAM principal y WRAM compartida), (2) el IPC (`ipcsync_*` y las dos colas de
+FIFO, cada una de un productor y un consumidor) y (3) las líneas de IRQ que una CPU levanta en la otra
+(`nds_irq_raise`, el único camino de IRQ entre CPUs). Los registros de video, WRAMCNT y VRAMCNT los escribe solo el
+ARM9; el cartucho, el SPI y el RTC pertenecen a quien tenga la ranura o al ARM7. Con el ARM7 dormido en un
+semáforo de lv2 y despertado cada ≥ 100 µs (la latencia medida en la 0.7: ≈ 6700 ciclos del ARM9), el cambio es:
+`nds_irq_raise` pasa a un OR atómico en IF más el aviso al hilo, el ARM7 lleva sus propios eventos (sus
+temporizadores y el SPI) y los avisos entre CPUs llevan marca de tiempo. **Prueba de que la frontera aguanta**:
+`tools/build.sh test-host` repite irq, ipc, dma y periph con tramos de 1, 16, 2048 y 20 000 ciclos
+(20 000 ≈ 0,3 ms, 3 veces el despertar medido) y las nueve ROMs dan OK.
+
+### Periféricos
+
+| Pieza | Lo que está y lo que no |
+|---|---|
+| IRQ | IME/IE/IF por CPU con las 25 fuentes (IF se limpia escribiendo 1); línea = IME & IE & IF; el HALT del ARM7 termina con IE & IF ≠ 0 aunque IME esté en 0 (GBATEK); el WFI del ARM9 solo con la línea. Las IRQ de FIFO son por flanco |
+| Video (tiempos) | VCOUNT 0–262, VBlank en 192–261, HBlank en cada línea (también en el VBlank), LYC de 9 bits, IRQ de VBlank/HBlank/VCOUNT por CPU. DISPSTAT y VCOUNT salen del instante de lectura |
+| Teclas | KEYINPUT, KEYCNT (O/Y, IRQ por flanco), EXTKEYIN (X, Y, lápiz, tapa con su IRQ) desde `nds_set_input` |
+| Temporizadores | 4 por CPU, prescalers 1/64/256/1024, cuenta ascendente encadenada, IRQ de desborde, recarga al arrancar, 32 bits como recarga + control. El bit de cuenta ascendente del timer 0 hace que no cuente nunca (como melonDS) |
+| DMA | 4 canales por CPU; inicio inmediato, VBlank, HBlank (solo líneas visibles), «inicio de pantalla» (una transferencia por línea visible), cartucho (una palabra por aviso), repetir, destino con recarga, relleno por DMAFILL, IRQ de fin, cuenta de 21 bits (ARM9) o 14/16 (ARM7). No ven las TCM. Sin modo de memoria principal ni de FIFO de geometría |
+| IPC | IPCSYNC con su IRQ, FIFO de 16 palabras por sentido con error, vaciado, lectura con la FIFO apagada y las IRQ de «envío vacío» y «recepción no vacía» por flanco (también al habilitarlas con la condición cierta) |
+| Cartucho | ROM ya desencriptada: ROMCTRL, ROMCMD, ROMDATA por sondeo o por DMA, bloques de 4 bytes a 16 KB, IRQ de fin, B7 (lectura; por debajo de 0x8000 se lee 0x8000 + (dir & 0x1FF); da la vuelta en la página de 4 KB; se espeja más allá de la capacidad), B8 y 90h (identificador), 00h (cabecera), AUXSPI sin chip (contesta 0xFF). Sin KEY1/KEY2. **Sin guardados todavía** |
+| SPI | Firmware de 256 KB generado (cabecera con la dirección de los datos de usuario, dos copias con CRC16, JEDEC, WEL), pantalla táctil (X, Y, Z1, Z2, 12 y 8 bits, cola de respuesta de 2 bytes; sin tocar: X = 0, Y = 0xFFF) con calibración exacta (ADC = 0x120 + 14·x; 0x0B8 + 19·y), gestión de energía (registros 0–4), IRQ de fin de byte. El RTC es el del puerto 0x04000138 con el protocolo bit a bit, fecha por BCD y 24 horas |
+| Matemáticas | DIVCNT (tres modos, entre cero, -MAX / -1), SQRTCNT (32 y 64 bits), bandera de ocupado por tiempo; el resultado está listo al escribir |
+| Varios | POSTFLG, HALTCNT, POWCNT1/2, EXMEMCNT/EXMEMSTAT, WRAMCNT/WRAMSTAT, VRAMCNT/VRAMSTAT. Los registros de los motores 2D, el 3D, el sonido, SIO y la captura solo se guardan y se leen de vuelta |
+
+### BIOS en HLE
+
+El bloque de BIOS de cada CPU lo genera `nds_bios_init`: tabla de vectores con salto a sí mismos, un manejador de
+IRQ de seis o nueve instrucciones (ensambladas aparte con `arm-none-eabi-as` y comprobadas con su `objdump`) que
+guarda r0–r3, r12 y lr y salta a `[DTCM + 0x3FFC]` (ARM9, base por CP15) o `[0x0380FFFC]` (ARM7, vía
+0x04000000 − 4), y una instrucción de retorno para los callbacks. Las SWI se atienden en C por `swi_hook` (en el
+ARM9 solo con los vectores altos; si el programa instala los suyos, la SWI es una excepción de verdad). Una
+llamada sin implementar se anota una vez y se ignora; una CPU que cae en un vector de excepción de la BIOS sin
+manejador queda en un `b .` que `salsads-cpurun` detecta e informa.
+
+Hechas: 00h SoftReset (vuelve a la entrada de la cabecera), 03h WaitByLoop, 04h IntrWait, 05h VBlankIntrWait,
+06h Halt, 07h Sleep (como Halt), 08h SoundBias, 09h Div, 0Bh CpuSet, 0Ch CpuFastSet, 0Dh Sqrt, 0Eh GetCRC16, 0Fh
+IsDebugger, 10h BitUnPack, 11h LZ77 desde memoria, 12h LZ77 por callbacks (escritura de 16 bits), 13h Huffman por
+callbacks, 14h RLE, 15h RLE por callbacks, 16h–18h filtros de diferencias (el 17h no figura en la lista de la DS)
+y 1Fh CustomHalt. **No hechas**: 1Ah–1Ch (las tablas de seno, de tono y de volumen del ARM7: los juegos de
+Nintendo las usan; para el sonido de la Fase 2). IntrWait/VBlankIntrWait/Halt ponen la CPU en HALT y reejecutan
+la SWI al despertar, con una bandera por CPU que recuerda que ya se descartaron los avisos viejos; las banderas
+están en [DTCM+0x3FF8] / [0x0380FFF8] y las pone el manejador del programa (el de libnds lo hace).
+
+### Arranque directo (de dónde sale cada valor)
+
+Nada sale de la BIOS de Nintendo. Cabecera (0x170 bytes) en 0x027FFE00 y datos de usuario (0x70 bytes, la copia más
+nueva del firmware generado) en 0x027FFC80: GBATEK. Identificador del chip en 0x027FF800 y 0x027FFC00 e indicador de
+arranque normal en 0x027FFC40: convención de los cargadores directos (no verificada en GBATEK). ARM9: modo sistema
+con I y F, r12 = lr = pc = entrada, CP15 con la ITCM de 32 KB (región virtual de 32 MB, que es lo que libnds usa
+en 0x01000000) y la DTCM de 16 KB en 0x00800000 habilitadas, vectores altos (control = 0x00052078); pilas propias
+SVC 0x00803FC0, IRQ 0x00803FA0 y sistema 0x00803EC0 (donde la BIOS suele dejarlas; libnds fija las suyas). ARM7:
+lo mismo con pilas 0x0380FFDC, 0x0380FFB0 y 0x0380FF00. E/S: POSTFLG = 1, WRAMCNT = 3, EXMEMCNT = 0x6000,
+KEYINPUT = 0x03FF, POWCNT1 = 0x0001, POWCNT2 = 1, IME = 0. El crt0 de BlocksDS hace un apretón de manos por IPCSYNC con el
+otro procesador: los dos lados funcionan solos con esta máquina.
+
+### Primera imagen
+
+Modo de visualización directa de VRAM del motor A (DISPCNT bits 16–17 = 2, banco A–D por los bits 18–19, que tiene
+que estar asignado al LCDC), el color de fondo (paleta 0) para el modo de gráficos del motor B y del A (**sin capas:
+son de la Fase 2**), pantalla blanca para el modo 0, brillo maestro (MASTER_BRIGHT) y el intercambio de pantallas
+(POWCNT1.15). `nds_screens` da las dos imágenes en RGB555; `salsads-cpurun --screens f.ppm` las vuelca (256×384).
+
+**Contra melonDS** (`tools/melonds-run.py --vram m.ppm --regs` y `tools/compare-image.py`): `hola` y `mem` dan la
+**misma imagen píxel a píxel** (256×192 idénticos) y los mismos DISPCNT, POWCNT1 y VRAMCNT en los dos. La demostración
+(`demo`, animada) no puede compararse píxel a píxel (el ritmo difiere), pero corre en melonDS con los mismos
+registros y la misma composición.
+
+### ROMs propias y resultados
+
+Cada ROM corre en las dos CPUs con el marco de pruebas de la 1.1 (resultado en RAM y en pantalla) y se construye
+con `tools/build-roms.sh`; las comprobaciones salen de GBATEK, no de un emulador. **Todas dan OK en SalsaDS (little y
+big-endian) y en melonDS 1.1**; lo que melonDS hace distinto y GBATEK no dice con claridad se anota como divergencia
+(no cuenta como fallo, `docs/fase1.md` más abajo).
+
+| ROM | Qué prueba | Comprobaciones ARM9 + ARM7 |
+|---|---|---|
+| `hola`, `cpu9`, `cpuarm` | las de la 1.1: ahora sobre la máquina nueva, con IRQ de verdad | 5; 65 187; 65 409 + 61 144 |
+| `mem` | RAM y espejos, WRAM en los 4 modos vista por las dos CPUs, 9 bancos de VRAM en 43 asignaciones, solapes, espejos, VRAM del ARM7 y VRAMSTAT, paleta y OAM, puertos sin definir | 218 + 13 |
+| `irq` | VCOUNT y DISPSTAT, IRQ de VBlank/HBlank/VCOUNT, prescalers, cascada, IRQ de temporizadores, IME/IE/IF, HALT (con IME = 0 en el ARM7), teclas; en las dos CPUs con libnds | 59 + 61 |
+| `dma` | copias de 16/32 bits en los 4 canales, modos de dirección, relleno, IRQ de fin, canales simultáneos, VBlank con repetición, HBlank, VRAM y paleta, ancho de la cuenta del ARM7 | 68 + 63 |
+| `ipc` | IPCSYNC y su IRQ, FIFO (llena, error, vaciado, FIFO apagada, IRQ por flanco) desde las dos CPUs | 65 |
+| `bios` | Div, Sqrt, GetCRC16, CpuSet/CpuFastSet, LZ77 (memoria y callbacks), RLE, Huffman 8 y 4 bits, BitUnPack, diferencias, y que las SWI conserven r4–r11 | 54 + 49 |
+| `periph` | DIV/SQRT por hardware, cartucho (B7/B8 por sondeo y por DMA, IRQ de fin, AUXSPI), SPI (firmware, táctil, energía), RTC, EXTKEYIN, puertos, estado de arranque, el ARM7 con la ranura | 73 + 28 |
+| `demo` | demostración animada (sin veredicto): `test-host` comprueba que sus dos CPUs viven | — |
+
+### Divergencias de melonDS 1.1 (contra GBATEK y SalsaDS)
+
+Ninguna está verificada en una DS real. Las que SalsaDS no comparte se anotan en cada ROM como `SDS_DIVERGE`.
+
+| Caso | GBATEK / SalsaDS | melonDS 1.1 |
+|---|---|---|
+| DMA en HBlank | una transferencia por línea visible | unas pocas más que las líneas (104 en la línea 100); en el VBlank no corre |
+| DMA modo 3 («inicio de pantalla») | una por línea visible | una sola por habilitación |
+| Lectura de una FIFO de IPC vacía | la última palabra | lo que quedó en esa posición del anillo |
+| TMxCNT_H, SQRTCNT, EXMEMCNT | los bits sin uso leen cero | guarda todo lo escrito |
+| IE con escritura de 8 bits; DIV_NUMER con 16 | funcionan | se ignoran |
+| −MAX / −1 (resto) | no se dice | deja un valor viejo |
+| Timer 0 con cuenta ascendente | (no se dice) | no cuenta; SalsaDS lo copia |
+| Cartucho tras el arranque | comandos 00h/90h valen antes de KEY1 | ya está en KEY2: 00h y 90h no sirven (B7/B8 sí) |
+| B7 por debajo de 0x8000; lectura que cruza 4 KB | 0x8000 + (dir & 0x1FF); da la vuelta en la página | otra cosa; no da la vuelta |
+| Firmware | 256 KB generado | 128 KB; Z1 sin tocar = 0xFFF (SalsaDS: 0) |
+| Ranura de GBA vacía | (no se dice) lee unos | 0xFE08 en 0x08000000 |
+| **BIOS libre**: Div | resto con el signo del numerador (GBATEK: −1234 / 10 da −4) | valor absoluto; INT_MIN / 1 no termina |
+| BIOS libre: Sqrt | 0xFFFF con las entradas de 32 bits más grandes | 0 |
+| BIOS libre: Huffman (SWI 0x13) | descomprime | no la tiene |
+| BIOS libre: Halt del ARM7 | conserva todos los registros | destruye r0 y r2: libnds7 la llama sin declarar clobbers, así que el compilador deja valores vivos y las ROMs que usan `swiHalt` fallaban según la disposición del código |
+
+Dos hallazgos de formato que no dependen de ningún emulador: la variante de 16 bits del LZ77 por callbacks no admite
+la distancia 1 (lee la posición anterior antes de escribirla; los vectores de la ROM `bios` usan distancia mínima
+2) y en Huffman por callbacks el `r2` solo le llega al callback de apertura (libnds pasa 0): GBATEK habla de un búfer
+temporal que la BIOS real no necesita.
+
+### Rendimiento del intérprete con las dos CPUs y el planificador (host)
+
+Solo el **host**, no vale para la PS3 (`docs/perf-log.md`). ROMs completas con arranque, IRQ, DMA y las dos CPUs;
+Mac, clang -O2, tramo de 128 ciclos (el tiempo en HALT no cuesta):
+
+| Programa | MIPS (ARM9 + ARM7 juntos) |
+|---|---|
+| `cpuarm` / `cpu9` (casi puro cómputo) | 99–106 (Mac); 114–126 (contenedor, gcc) |
+| `irq`, `dma`, `ipc`, `periph`, `bios` (E/S, IRQ, esperas) | 79–85 |
+| Mario Kart DS, Super Mario 64 DS, New Super Mario Bros. (600 cuadros) | 102–124 |
+
+Coste del planificador, `cpuarm` en la Mac: tramo de 1 ciclo 27,8 MIPS; 16 → 77,2; 128 → 99,5; 1000 → 108,5;
+20 000 → 103,7 (ruido de ±5 en corridas de 0,07 s). Con 128 ciclos por tramo el planificador cuesta ≈ 6 % frente a no
+partir. En la PS3 el núcleo corre del orden de 12 MIPS **[est: escala del host, sin medir]**; el paquete mide el
+tiempo de emulación por cuadro y lo escribe en su log (`DATO nucleo`).
+
+### Paquete de PS3 «SalsaDS núcleo» (SLDS00008)
+
+`tests/phase1/nucleo`: corre `struct nds` sobre una ROM y saca las dos pantallas con la salida de la 0.6 (rsxkit:
+dos texturas de 256×192 RGBA5551 por cuadro, cuatro distribuciones con L2, escala ajustada, 720p o 1080p), el DS3 como
+botones de la DS y el puntero del táctil (`controles.cfg` de la 0.6) y un cuadro de la DS por cada vsync. ROM: **la
+demostración propia embebida** (`tests/roms/src/demo`); si existe `/dev_hdd0/salsads/rom.nds`, esa (un respaldo del
+autor ya desencriptado o una ROM propia: se lee entera a memoria; las de 16 y 32 MB caben, las más grandes habrá que
+verlas con `docs/memory-budget.md`). Línea de estado con L3 + R3. Log en
+`/dev_hdd0/salsads/nucleo.log` con la versión (commit) y el APPID en la primera línea y una línea `DATO nucleo` cada
+120 cuadros (emulación de un cuadro: mediana, p95 y máximo; intervalo del RSX; instrucciones por cuadro de cada CPU).
+En RPCS3 (`tools/rpcs3-run.py nucleo`, prueba automática): 150 cuadros con entrada sintética, las dos CPUs de la
+demostración vivas y su imagen la esperada: **RESULTADO nucleo: OK** (no mide rendimiento).
+
+### Qué falta para cerrar la Fase 1
+
+1. **Probarlo en la PS3 real**: que el paquete arranque, los MIPS del intérprete en el PPE (la estimación es ≈ 12), los
+   60 Hz con la demostración, el DS3 y el puntero del táctil, y una ROM por `rom.nds`.
+2. Guardados (AUXSPI: EEPROM, Flash, FRAM) y su archivo; SWI 1Ah–1Ch (sonido, Fase 2).
+3. Averiguar por qué Mario Kart DS (el ARM7 lee el firmware sin parar por SPI y el video nunca se configura) y New
+   Super Mario Bros. (los dos procesadores quedan esperándose con las IRQ enmascaradas) se detienen: hace falta una
+   traza por juego; Super Mario 64 DS arranca más lejos (configura video, carga ~100 KB de VRAM y sigue con su lógica;
+   escribe a la FIFO de geometría, que aún no existe).
+4. Del plan que quedó fuera: DMA en modo de memoria principal y de FIFO de geometría, captura de pantalla, modo 3 de
+   visualización (memoria principal), permisos y cachés del ARM9 (de la 1.1), esperas de memoria y ciclos exactos.
+5. Contrastar en una DS real las divergencias de las dos tablas (la de la 1.1 y la de arriba).

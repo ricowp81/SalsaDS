@@ -4,6 +4,28 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-17 — Máquina de la DS y primera imagen (Fase 1.2)
+
+- `src/core` + `src/bios`: mapa de memoria de las dos CPUs (RAM, WRAM con WRAMCNT, VRAM por bancos con VRAMCNT,
+  paleta, OAM), planificador de eventos con el ARM7 a la mitad del reloj del ARM9, IRQ por CPU, DISPSTAT/VCOUNT y
+  VBlank/HBlank, temporizadores, DMA, IPC (SYNC y FIFO), teclas, cartucho (ROM desencriptada), SPI con firmware
+  generado, táctil, energía y RTC, división y raíz por hardware, BIOS en HLE (bloques de BIOS propios + SWI) y
+  arranque directo. Sustituye a `ndsmin`. Detalle, frontera para el ARM7 en otro hilo, tablas y divergencias en
+  `docs/fase1.md`.
+- **Primera imagen**: modo de visualización directa de VRAM del motor A y color de fondo del motor B. `hola` y `mem`
+  dan en melonDS la misma imagen píxel a píxel y los mismos registros. `salsads-cpurun --screens` la vuelca.
+- ROMs propias por paso (`mem`, `irq`, `dma`, `ipc`, `bios`, `periph`, `demo`): **todas OK** en SalsaDS (little y
+  big-endian, y con tramos del planificador de 1 a 20 000 ciclos) y en melonDS 1.1; sus divergencias quedaron anotadas.
+  Hallazgos de melonDS: su BIOS libre destruye r0 y r2 en el Halt del ARM7, da el resto de Div en valor absoluto, Sqrt
+  0 con entradas grandes y no tiene Huffman; el DMA de HBlank y el de «inicio de pantalla» difieren de GBATEK.
+- Paquete de PS3 **«SalsaDS núcleo» (SLDS00008)**: corre la máquina con la demostración propia embebida (o
+  `/dev_hdd0/salsads/rom.nds`) y las dos pantallas de la 0.6. En RPCS3: OK. **Falta la PS3 real.**
+- Respaldos del autor (a mano, sin capturas en el repo): Super Mario 64 DS arranca más lejos (configura video y
+  VRAM y sigue con su lógica; usa la FIFO de geometría); New Super Mario Bros. configura video y se queda con los
+  dos procesadores esperándose; Mario Kart DS no llega a configurar el video (el ARM7 lee el firmware sin parar).
+- Decisión pendiente del autor: ninguna nueva. Pendiente técnico (guardados, SWI 1Ah–1Ch, trazas de los juegos, GX
+  FIFO): lista en `docs/fase1.md`, «Qué falta para cerrar la Fase 1».
+
 ## 2026-10-17 — Intérpretes de CPU (Fase 1.1)
 
 - `src/cpu/`: un núcleo (`struct acore`) para el **ARM9 (ARMv5TE)** y el **ARM7 (ARMv4T)**,
@@ -155,6 +177,7 @@ APPIDs de SalsaDS: rango `SLDS`, distinto del `SLSA` de Salsa64.
 | SLDS00004 | `tests/phase0/dual-screen` («SalsaDS pantallas») |
 | SLDS00006 | `dual-screen` con otro nombre («SalsaDS pantallas giro», modo GIRO) |
 | SLDS00007 | `tests/phase0/jit-arm` (0.7) |
+| SLDS00008 | `tests/phase1/nucleo` («SalsaDS núcleo», Fase 1.2) |
 
 Pendiente (preguntas abiertas del plan, de la decisión del autor):
 licencia del proyecto, juegos objetivo, aplicación independiente o núcleo

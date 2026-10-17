@@ -81,6 +81,18 @@ if tools/build.sh -C src/host >build/logs/build-host-run.log 2>&1; then
 	done
 	tools/build.sh --sh "build/host-run/salsads-cpurun --frames 120 --peek 0x023A0000 --peek 0x023A0004 tests/roms/homebrew/demo.nds" >build/logs/rom-demo-le.log 2>&1
 	check_demo LE build/logs/rom-demo-le.log
+	# las ROMs otra vez con ASan y UBSan (errores de memoria en el mapa, la VRAM por bancos o la E/S)
+	if tools/build.sh --sh "gcc -std=gnu11 -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -Wall -Wextra -Isrc src/host/cpurun.c src/core/*.c src/bios/*.c src/cpu/*.c -o build/host-run/cpurun-san" >build/logs/build-cpurun-san.log 2>&1; then
+		for rom in $ROMS; do
+			tools/build.sh --sh "build/host-run/cpurun-san tests/roms/homebrew/$rom.nds" >"build/logs/rom-$rom-san.log" 2>&1
+			check_rom "SAN" "$rom" "build/logs/rom-$rom-san.log"
+		done
+		tools/build.sh --sh "build/host-run/cpurun-san --frames 200 --touch 100,50 --keys 0x0510 --peek 0x023A0000 --peek 0x023A0004 tests/roms/homebrew/demo.nds" >build/logs/rom-demo-san.log 2>&1
+		check_demo SAN build/logs/rom-demo-san.log
+	else
+		echo "SAN  FALLO  la compilación con sanitizadores (build/logs/build-cpurun-san.log)"
+		fail=1
+	fi
 else
 	echo "LE   FALLO  la compilación de src/host (build/logs/build-host-run.log)"
 	fail=1
