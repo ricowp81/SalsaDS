@@ -250,13 +250,13 @@ static void screen_pos(const gx_t *g, const gx_cvtx *v, unsigned sh, int64_t *sx
 	const int64_t w = v->w;
 
 	if (w <= 0 || vw <= 0 || vh <= 0) {
-		*sx = x1 << sh;
-		*sy = (191 - y2) << sh;
+		*sx = x1 * ((int64_t)1 << sh);
+		*sy = (191 - y2) * ((int64_t)1 << sh);
 		return;
 	}
 	/* y se mide desde abajo (y = 191 - y); la y de recorte positiva va hacia arriba */
-	*sx = (((int64_t)v->x + w) * vw * ((int64_t)1 << sh)) / (2 * w) + (x1 << sh);
-	*sy = ((w - (int64_t)v->y) * vh * ((int64_t)1 << sh)) / (2 * w) + ((191 - y2) << sh);
+	*sx = (((int64_t)v->x + w) * vw * ((int64_t)1 << sh)) / (2 * w) + (x1 * ((int64_t)1 << sh));
+	*sy = ((w - (int64_t)v->y) * vh * ((int64_t)1 << sh)) / (2 * w) + ((191 - y2) * ((int64_t)1 << sh));
 }
 
 static int16_t clamp16(int64_t v)
@@ -524,10 +524,10 @@ static void vertex_submit(gx_t *g, int32_t x, int32_t y, int32_t z)
 	{
 		const int32_t *m = g->clip.m;
 
-		c.x = (int32_t)((px * m[0] + py * m[4] + pz * m[8] + ((int64_t)m[12] << 12)) >> 12);
-		c.y = (int32_t)((px * m[1] + py * m[5] + pz * m[9] + ((int64_t)m[13] << 12)) >> 12);
-		c.z = (int32_t)((px * m[2] + py * m[6] + pz * m[10] + ((int64_t)m[14] << 12)) >> 12);
-		c.w = (int32_t)((px * m[3] + py * m[7] + pz * m[11] + ((int64_t)m[15] << 12)) >> 12);
+		c.x = (int32_t)((px * m[0] + py * m[4] + pz * m[8] + ((int64_t)m[12] * 4096)) >> 12);
+		c.y = (int32_t)((px * m[1] + py * m[5] + pz * m[9] + ((int64_t)m[13] * 4096)) >> 12);
+		c.z = (int32_t)((px * m[2] + py * m[6] + pz * m[10] + ((int64_t)m[14] * 4096)) >> 12);
+		c.w = (int32_t)((px * m[3] + py * m[7] + pz * m[11] + ((int64_t)m[15] * 4096)) >> 12);
 	}
 	tex_transform(g, &c.s, &c.t);
 	c.r = (int32_t)expand6(g->color5[0]);
@@ -597,10 +597,10 @@ static void clip_vertex_of(const gx_t *g, int32_t x, int32_t y, int32_t z, gx_cv
 	const int64_t px = x, py = y, pz = z;
 
 	memset(c, 0, sizeof *c);
-	c->x = (int32_t)((px * m[0] + py * m[4] + pz * m[8] + ((int64_t)m[12] << 12)) >> 12);
-	c->y = (int32_t)((px * m[1] + py * m[5] + pz * m[9] + ((int64_t)m[13] << 12)) >> 12);
-	c->z = (int32_t)((px * m[2] + py * m[6] + pz * m[10] + ((int64_t)m[14] << 12)) >> 12);
-	c->w = (int32_t)((px * m[3] + py * m[7] + pz * m[11] + ((int64_t)m[15] << 12)) >> 12);
+	c->x = (int32_t)((px * m[0] + py * m[4] + pz * m[8] + ((int64_t)m[12] * 4096)) >> 12);
+	c->y = (int32_t)((px * m[1] + py * m[5] + pz * m[9] + ((int64_t)m[13] * 4096)) >> 12);
+	c->z = (int32_t)((px * m[2] + py * m[6] + pz * m[10] + ((int64_t)m[14] * 4096)) >> 12);
+	c->w = (int32_t)((px * m[3] + py * m[7] + pz * m[11] + ((int64_t)m[15] * 4096)) >> 12);
 }
 
 static int box_visible(gx_t *g, const uint32_t *p)
