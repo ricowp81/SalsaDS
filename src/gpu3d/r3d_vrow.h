@@ -212,13 +212,15 @@ R3D_INLINE v4u vr_wrap(v4u c, uint32_t l, uint32_t rep, uint32_t flip)
 }
 
 /* Prueba de profundidad por carril (r3d_depth_ok) */
-R3D_INLINE v4u vr_dok(uint32_t dequal, uint32_t wbuf, v4u d, v4u dst)
+R3D_INLINE v4u vr_dok(uint32_t dequal, uint32_t wbuf, uint32_t front, v4u d, v4u dst, v4u att)
 {
 	if (dequal) {
 		const v4u mg = vs(wbuf ? 0xFFu : 0x200u);
 
 		return ~vgtu(dst, d + mg) & ~vgtu(d, dst + mg); /* d + m >= dst && d <= dst + m */
 	}
+	if (front) /* un frontal gana el empate sobre una profundidad de espalda */
+		return vgtu(dst, d) | (~vgtu(d, dst) & veq(att & vs(AT_BACK), vs(AT_BACK)));
 	return vgtu(dst, d);
 }
 
@@ -244,7 +246,7 @@ R3D_INLINE void r3d_vrow(r3d_ctx *c, const r3d_rstate *rs, r3d_stats *st, const 
 	const uint32_t zl = row->l.z, zr = row->r.z;
 	const uint32_t wbuf = rs->wbuf, d3 = rs->d3;
 	const uint32_t mode = p->mode, shadow = mode == 3, wire = p->wire, pid = p->id;
-	const uint32_t dequal = (p->attr & PA_DEQUAL) != 0, tdepth = (p->attr & PA_TDEPTH) != 0, pfog = (p->attr & PA_FOG) != 0;
+	const uint32_t front = p->front, dequal = (p->attr & PA_DEQUAL) != 0, tdepth = (p->attr & PA_TDEPTH) != 0, pfog = (p->attr & PA_FOG) != 0;
 	const uint32_t atest = (d3 & D3_ALPHATEST) != 0, blend = (d3 & D3_BLEND) != 0, highlight = (d3 & D3_HIGHLIGHT) != 0;
 	const float rcp = 1.0f / (float)uL;
 	const v4f rcpv = vsf(rcp);
@@ -308,7 +310,7 @@ R3D_INLINE void r3d_vrow(r3d_ctx *c, const r3d_rstate *rs, r3d_stats *st, const 
 		att_new = att_old;
 		if (shadow) {
 			if (pid == 0) { /* máscara de sombra: marca donde la prueba de profundidad FALLA */
-				*(v4u_ma *)patt = vsel(att_old, att_old | vs(AT_STENCIL), M & ~vr_dok(dequal, wbuf, d, dst));
+				*(v4u_ma *)patt = vsel(att_old, att_old | vs(AT_STENCIL), M & ~vr_dok(dequal, wbuf, front, d, dst, att_old));
 				continue;
 			}
 			{
@@ -321,7 +323,7 @@ R3D_INLINE void r3d_vrow(r3d_ctx *c, const r3d_rstate *rs, r3d_stats *st, const 
 			}
 		}
 		/* prueba de profundidad */
-		M &= vr_dok(dequal, wbuf, d, dst);
+		M &= vr_dok(dequal, wbuf, front, d, dst, a0);
 		if (!vany(M)) {
 			if (shadow)
 				*(v4u_ma *)patt = att_new;
@@ -452,7 +454,7 @@ R3D_INLINE void r3d_vrow(r3d_ctx *c, const r3d_rstate *rs, r3d_stats *st, const 
 				trn = mw & ~opq;
 				/* opacos: color, profundidad, id, niebla y borde */
 				cnew = vsel(dcol, cc, opq);
-				anew = vsel(att_new, (a0 & vs(AT_STENCIL)) | vs(pid | (pfog ? AT_FOG : 0u)) | (edge & vs(AT_EDGE)), opq);
+				anew = vsel(att_new, (a0 & vs(AT_STENCIL)) | vs(pid | (pfog ? AT_FOG : 0u) | (front ? 0u : AT_BACK)) | (edge & vs(AT_EDGE)), opq);
 				dnew = vsel(dst, d, opq);
 				/* translúcidos: no se mezclan dos veces con el mismo id */
 				if (vany(trn)) {
@@ -473,7 +475,7 @@ R3D_INLINE void r3d_vrow(r3d_ctx *c, const r3d_rstate *rs, r3d_stats *st, const 
 					if (tdepth)
 						dnew = vsel(dnew, d, trn);
 					anew = vsel(anew,
-						    (a0 & ~vs(AT_FOG | (63u << 6))) | vs(AT_TRANS | (pid << 6)) |
+						    (a0 & ~vs(AT_FOG | (63u << 6) | (tdepth ? AT_BACK : 0u))) | vs(AT_TRANS | (pid << 6) | ((tdepth && !front) ? AT_BACK : 0u)) |
 							    (veq(a0 & vs(AT_FOG), vs(AT_FOG)) & vs(pfog ? AT_FOG : 0u)),
 						    trn);
 				}

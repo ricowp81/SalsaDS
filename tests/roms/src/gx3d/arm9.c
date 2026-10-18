@@ -970,10 +970,170 @@ static void s_mesh_persp(void)
 		}
 }
 
+/* 26/27: empate de profundidad con «menor» (Z-buffer, W-buffer): un polígono encima de otro en la misma z, según el
+ * sentido de giro de cada uno (A = el de quad(), B = el contrario) y si el de arriba es opaco o translúcido. Medido contra
+ * melonDS (los juegos ponen un parche de tierra en el mismo plano que el suelo). */
+static void quad_b(int x0, int y0, int x1, int y1, int32_t z, uint16_t c)
+{
+	cmd(BEGIN, 1);
+	cmd(COLOR, c);
+	sv(x0, y0, z);
+	sv(x1, y0, z);
+	sv(x1, y1, z);
+	sv(x0, y1, z);
+	cmd(END, 0);
+}
+
+static void s_tie(int wbuf)
+{
+	ident_all();
+	for (int row = 0; row < 2; row++) {
+		const int y0 = 8 + row * 92;
+
+		cmd(POLY_ATTR, ATTR(0, 31, 1 + row));
+		if (row)
+			quad_b(8, y0, 248, y0 + 84, 0x0200, BLUE);
+		else
+			quad(8, y0, 248, y0 + 84, 0x0200, BLUE);
+		for (int col = 0; col < 4; col++) {
+			const int x0 = 16 + col * 58;
+			const int alpha = col >= 2 ? 16 : 31;
+
+			cmd(POLY_ATTR, ATTR(0, alpha, 10 + row * 4 + col));
+			if (col & 1)
+				quad_b(x0, y0 + 12, x0 + 48, y0 + 72, 0x0200, col >= 2 ? YELLOW : RED);
+			else
+				quad(x0, y0 + 12, x0 + 48, y0 + 72, 0x0200, col >= 2 ? YELLOW : RED);
+		}
+	}
+	cmd(SWAP, wbuf ? 2u : 0u);
+}
+
+/* 28/29: profundidad (28 Z, 29 W) de dos polígonos casi en el mismo plano en perspectiva, como el parche de tierra sobre el
+ * suelo de un mapa (el de arriba, un poco más cerca): un triángulo de suelo con aristas x-mayores y un cuadrilátero
+ * translúcido encima. Sale una raya donde la profundidad de uno y otro se cruzan por redondeo; la forma de esas rayas tiene
+ * que ser la de melonDS (4 x 3 celdas de 64 x 64). */
+static int zdist(int px, int py, int cx, int cy, int zb, int sx, int sy)
+{
+	return zb + sx * (px - cx) + sy * (py - cy);
+}
+
+static void dpv(int px, int py, int cx, int cy, int zb, int sx, int sy, int dz)
+{
+	const int zd = zdist(px, py, cx, cy, zb, sx, sy) - dz; /* |z| en unidades 1/4096 */
+	const int x = (int)(((int64_t)(px - 128) * zd) / 128);
+	const int y = (int)(((int64_t)(96 - py) * zd * 3) / (96 * 4));
+
+	vtx(x, y, -zd);
+}
+
+static void s_wdepth(int wbuf, int only)
+{
+	persp();
+	lcg_state = 4321u + (uint32_t)wbuf;
+	for (int cell = 0; cell < 12; cell++) {
+		const int cx = 32 + (cell & 3) * 64, cy = 32 + (cell >> 2) * 64;
+		const int zb = 5000 + rnd(3000), sx = rnd(21) - 10, sy = 20 + rnd(60);
+		const int dz = 8 + rnd(40);
+		const int ax = cx - 30 + rnd(8), bx = cx + 30 - rnd(8), top = cy - 30 + rnd(8), bot = cy + 30 - rnd(8);
+
+		if (only != 2) {
+		cmd(POLY_ATTR, ATTR(0, 31, 1));
+		cmd(BEGIN, 0);
+		cmd(COLOR, BLUE);
+		dpv(ax, bot, cx, cy, zb, sx, sy, 0);
+		dpv(bx, bot, cx, cy, zb, sx, sy, 0);
+		dpv(bx + 20, top, cx, cy, zb, sx, sy, 0);
+		cmd(END, 0);
+		}
+		if (only == 1)
+			continue;
+		cmd(POLY_ATTR, ATTR(0, 30, 2));
+		cmd(BEGIN, 1);
+		cmd(COLOR, YELLOW);
+		dpv(cx - 28, cy - 24, cx, cy, zb, sx, sy, dz);
+		dpv(cx - 26, cy + 26, cx, cy, zb, sx, sy, dz);
+		dpv(cx + 28, cy + 24, cx, cy, zb, sx, sy, dz);
+		dpv(cx + 24, cy - 26, cx, cy, zb, sx, sy, dz);
+		cmd(END, 0);
+	}
+	cmd(SWAP, wbuf ? 2u : 0u);
+}
+
+/* 32/33: dos triángulos opacos de planos distintos que se cruzan, en perspectiva (32 Z-buffer, 33 W-buffer): la línea donde
+ * se cruzan enseña la profundidad por píxel de cada uno (4 x 3 celdas de 64 x 64). */
+static void s_cross(int wbuf)
+{
+	persp();
+	lcg_state = 777u + (uint32_t)wbuf;
+	for (int cell = 0; cell < 12; cell++) {
+		const int cx = 32 + (cell & 3) * 64, cy = 32 + (cell >> 2) * 64;
+		const int zb = 5000 + rnd(3000), sx = rnd(21) - 10, sy = 20 + rnd(60);
+		const int sx2 = rnd(41) - 20, sy2 = rnd(120) - 30;
+		const int ax = cx - 30 + rnd(8), bx = cx + 30 - rnd(8), top = cy - 30 + rnd(8), bot = cy + 30 - rnd(8);
+
+		cmd(POLY_ATTR, ATTR(0, 31, 1));
+		cmd(BEGIN, 0);
+		cmd(COLOR, BLUE);
+		dpv(ax, bot, cx, cy, zb, sx, sy, 0);
+		dpv(bx, bot, cx, cy, zb, sx, sy, 0);
+		dpv(bx + 20, top, cx, cy, zb, sx, sy, 0);
+		cmd(END, 0);
+		cmd(POLY_ATTR, ATTR(0, 31, 2));
+		cmd(BEGIN, 0);
+		cmd(COLOR, YELLOW);
+		dpv(cx - 28, cy - 26, cx, cy, zb, sx2, sy2, 0);
+		dpv(cx - 24, cy + 28, cx, cy, zb, sx2, sy2, 0);
+		dpv(cx + 28, cy + 6, cx, cy, zb, sx2, sy2, 0);
+		cmd(END, 0);
+	}
+	cmd(SWAP, wbuf ? 2u : 0u);
+}
+
+/* 34: el parche de tierra del mapa de New Super Mario Bros. sobre su suelo, con las pantallas y las w medidas del juego
+ * (W-buffer): un triángulo opaco de suelo y un cuadrilátero translúcido (alfa 30) casi en su plano. Con el modelo de
+ * profundidad de la 3.5 al dibujo le faltaba alguna línea del parche. Proyección con w = 48·|z| para llegar a w de 1,3 M. */
+static void wv48(int px, int py, int32_t w)
+{
+	const int64_t Z = w / 48; /* |z| en 1/4096 */
+	const int x = (int)(((int64_t)(px - 128) * Z) / 128);
+	const int y = (int)(((int64_t)(96 - py) * Z * 3) / (96 * 4));
+
+	vtx(x, y, -(int32_t)Z);
+}
+
+static void s_dirt(void)
+{
+	static const int32_t m[16] = { 0x1000 * 48, 0, 0, 0, 0, 0x1555 * 48, 0, 0, 0, 0, -0x1000 * 24, -0x1000 * 48, 0, 0, 0, 0 };
+
+	ident_all();
+	cmd(MTX_MODE, 0);
+	for (int i = 0; i < 16; i++)
+		GXP(MTX_LOAD_4x4) = (uint32_t)m[i];
+	cmd(MTX_MODE, 2);
+	cmd(MTX_IDENTITY, 0);
+	cmd(POLY_ATTR, ATTR(0, 31, 1));
+	cmd(BEGIN, 0);
+	cmd(COLOR, BLUE);
+	wv48(7, 123, 1318641);
+	wv48(66, 123, 1318641);
+	wv48(127, 72, 1528377);
+	cmd(END, 0);
+	cmd(POLY_ATTR, ATTR(0, 30, 2));
+	cmd(BEGIN, 1);
+	cmd(COLOR, YELLOW);
+	wv48(36, 71, 1528763);
+	wv48(18, 135, 1271963);
+	wv48(109, 135, 1271963);
+	wv48(112, 71, 1528763);
+	cmd(END, 0);
+	cmd(SWAP, 2u);
+}
+
 int main(void)
 {
 	scene = *(volatile uint32_t *)0x027FFE0Cu & 0xFFFFu;
-	if (scene > 25)
+	if (scene > 34)
 		scene = 0;
 	sds_init_quiet();
 	REG16(R_POWCNT1) = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 9) | (1 << 15);
@@ -1013,8 +1173,17 @@ int main(void)
 	case 23: s_mesh(0); break;
 	case 24: s_mesh(1); break;
 	case 25: s_mesh_persp(); break;
+	case 26: s_tie(0); break;
+	case 27: s_tie(1); break;
+	case 28: s_wdepth(0, 0); break;
+	case 30: s_wdepth(0, 2); break;
+	case 31: s_wdepth(0, 1); break;
+	case 32: s_cross(0); break;
+	case 33: s_cross(1); break;
+	case 34: s_dirt(); break;
+	case 29: s_wdepth(1, 0); break;
 	}
-	if (scene != 4 && scene != 5 && scene != 6)
+	if (scene < 26 && scene != 4 && scene != 5 && scene != 6)
 		cmd(SWAP, 0);
 	gfx_frames(3);
 	gfx_capture();

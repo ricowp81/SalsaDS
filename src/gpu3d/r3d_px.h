@@ -65,6 +65,7 @@
 #define AT_FOG (1u << 13)
 #define AT_EDGE (1u << 14)
 #define AT_STENCIL (1u << 15)
+#define AT_BACK (1u << 16)             /* la profundidad del píxel es de un polígono de espalda (empate: lo frontal gana) */
 
 typedef struct r3d_rstate {
 	uint32_t d3;          /* DISP3DCNT */
@@ -149,6 +150,7 @@ typedef struct r3d_poly {
 	uint32_t attr, mode, alpha, id, wshift;
 	uint32_t wire, translucent_sort;
 	uint32_t textured;
+	uint32_t front;      /* polígono frontal (GX_POLY_FRONT) */
 	r3d_tex tex;
 } r3d_poly;
 
@@ -186,6 +188,7 @@ static inline int r3d_poly_setup(r3d_poly *p, const gx_poly *gp, const gx_vertex
 	p->attr = gp->attr;
 	p->mode = PA_MODE(gp->attr);
 	p->alpha = PA_ALPHA(gp->attr);
+	p->front = (gp->flags & GX_POLY_FRONT) ? 1u : 0u;
 	p->wire = p->alpha == 0;
 	if (p->wire)
 		p->alpha = 31;
@@ -384,6 +387,24 @@ static __attribute__((noinline)) void r3d_end_at(r3d_end *e, const r3d_v *a, con
 	e->z = len ? r3d_zlerp(a->z, b->z, pos, len) : a->z;
 }
 
+/* w y z de la arista en la línea `ypos` (0..len) de su recorrido en y, con la corrección por w. Para las aristas x-mayores con
+ * perspectiva: la línea siguiente (ypos = y + 1 - a.y), medido contra melonDS con las escenas 28 a 33 de gx3d. */
+static __attribute__((noinline)) void r3d_end_wz(r3d_end *e, const r3d_v *a, const r3d_v *b, uint32_t ypos, uint32_t len)
+{
+	uint32_t f;
+
+	if (ypos >= len) {
+		e->w = b->w;
+		e->z = b->z;
+		return;
+	}
+	f = r3d_pfac(ypos, len, a->w, b->w, 9);
+	e->w = (uint32_t)r3d_lerp((int32_t)a->w, (int32_t)b->w, f, 9);
+	if (e->w == 0)
+		e->w = 1;
+	e->z = r3d_zlerp(a->z, b->z, ypos, len);
+}
+
 static inline void r3d_end_of(r3d_end *e, const r3d_v *a)
 {
 	e->s = a->s;
@@ -492,8 +513,12 @@ static inline void r3d_edge_x(const r3d_v *a, const r3d_v *b, int32_t y, int rig
 			pos = adx;
 		if (a->w == b->w) /* ortográfica: los atributos siguen la y, en el extremo de afuera del tramo de la línea [melonDS] */
 			r3d_end_at(e, a, b, (uint32_t)(y - a->y + ((right ? dx > 0 : dx < 0) ? 1 : 0)), (uint32_t)dy);
-		else
+		else {
 			r3d_end_at(e, a, b, (uint32_t)pos, (uint32_t)adx);
+			/* la w y la z de la arista siguen la y, no la x (docs/fase3.md, 3.5): al seguir la x del píxel entero saltaban de
+			 * una línea a otra y dos polígonos casi coplanares (el parche de tierra sobre el suelo del mapa) se perforaban */
+			r3d_end_wz(e, a, b, (uint32_t)(y - a->y + 1), (uint32_t)dy);
+		}
 	}
 }
 
@@ -717,13 +742,16 @@ R3D_INLINE uint32_t r3d_shade(const r3d_poly *p, const r3d_rstate *rs, uint32_t 
 }
 
 /* Prueba de profundidad: «menor» o «igual» (con margen: 0x200 en Z, 0xFF en W) [sin contrastar] */
-R3D_INLINE int r3d_depth_ok(const r3d_poly *p, const r3d_rstate *rs, uint32_t d, uint32_t dst)
+R3D_INLINE int r3d_depth_ok(const r3d_poly *p, const r3d_rstate *rs, uint32_t d, uint32_t dst, uint32_t dst_att)
 {
 	if (p->attr & PA_DEQUAL) {
 		const uint32_t m = rs->wbuf ? 0xFFu : 0x200u;
 
 		return d + m >= dst && d <= dst + m;
 	}
+	/* «menor»: un polígono frontal también gana el empate sobre una profundidad de espalda [medido contra melonDS, gx3d 26 y 27] */
+	if (p->front && (dst_att & AT_BACK))
+		return d <= dst;
 	return d < dst;
 }
 
@@ -839,7 +867,7 @@ static inline __attribute__((always_inline)) void r3d_draw_row(const r3d_poly *p
 		}
 		a0 = att[x];
 		if (shadow && p->id == 0) { /* máscara de sombra: marca donde la prueba de profundidad FALLA */
-			if (!r3d_depth_ok(p, rs, d, dep[x]))
+			if (!r3d_depth_ok(p, rs, d, dep[x], a0))
 				att[x] = a0 | AT_STENCIL;
 			continue;
 		}
@@ -851,7 +879,7 @@ static inline __attribute__((always_inline)) void r3d_draw_row(const r3d_poly *p
 			if (AT_OID(a0) == p->id)
 				continue;
 		}
-		if (!r3d_depth_ok(p, rs, d, dep[x]))
+		if (!r3d_depth_ok(p, rs, d, dep[x], a0))
 			continue;
 		{
 			const uint32_t fc = f >> (R3D_PS - R3D_PC); /* en perspectiva el color con menos bits (8) [melonDS] */
@@ -879,7 +907,8 @@ static inline __attribute__((always_inline)) void r3d_draw_row(const r3d_poly *p
 			if (a == 31 && !shadow) {
 				col[x] = c;
 				dep[x] = d;
-				att[x] = (a0 & AT_STENCIL) | p->id | ((p->attr & PA_FOG) ? AT_FOG : 0u) | (edge ? AT_EDGE : 0u);
+				att[x] = (a0 & AT_STENCIL) | p->id | ((p->attr & PA_FOG) ? AT_FOG : 0u) | (edge ? AT_EDGE : 0u) |
+					 (p->front ? 0u : AT_BACK);
 			} else {
 				const uint32_t dc = col[x], da = R3D_PX_A(dc);
 
@@ -896,8 +925,9 @@ static inline __attribute__((always_inline)) void r3d_draw_row(const r3d_poly *p
 				col[x] = c;
 				if (p->attr & PA_TDEPTH)
 					dep[x] = d;
-				att[x] = (a0 & ~(uint32_t)(AT_FOG | (63u << 6))) | AT_TRANS | (p->id << 6) |
-					 (((a0 & AT_FOG) && (p->attr & PA_FOG)) ? AT_FOG : 0u);
+				att[x] = (a0 & ~(uint32_t)(AT_FOG | (63u << 6) | ((p->attr & PA_TDEPTH) ? AT_BACK : 0u))) | AT_TRANS |
+					 (p->id << 6) | (((a0 & AT_FOG) && (p->attr & PA_FOG)) ? AT_FOG : 0u) |
+					 (((p->attr & PA_TDEPTH) && !p->front) ? AT_BACK : 0u);
 			}
 			written++;
 		}

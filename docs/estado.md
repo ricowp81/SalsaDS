@@ -50,6 +50,29 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 - Pendiente: medir en la consola (mismas escenas, y `nucleo-jit-tramo` con 128 para comparar); LDM/STM a la E/S, CMP
   condicionales, entrada y salida más baratas.
 
+## 2026-10-18 — Dos fallos de New Super Mario Bros. vistos en la PS3 (rama fase24)
+
+- **Mapa del mundo 1, líneas verdes sobre el camino de tierra: arreglado** (no era del 2D; era el 3D). El parche de tierra (cuadrilátero
+  translúcido, W-buffer) y el suelo (triángulo opaco con aristas x-mayores) están casi en el mismo plano; la w de las aristas
+  x-mayores se interpolaba por la x del píxel entero y saltaba entre líneas, de modo que en unas líneas la profundidad de los dos
+  empataba y el parche perdía. Ahora la w y la z de esas aristas siguen la y (línea siguiente), medido contra melonDS; y los
+  empates de profundidad con «menor» los gana un polígono frontal sobre uno de espalda, como melonDS. Detalle, escenas nuevas de
+  `gx3d` (26 a 34) y lo que queda abierto: `docs/fase3.md`, 3.5.
+- **Nivel 1-3, nubes del fondo como un bloque claro con bordes rectos: sin reproducir.** El host llega al mapa con un guion de
+  teclas (`--press`, ahora hasta 512 entradas; el nivel 1-1 corre, con saltos y carrera), pero para llegar al 1-3 hay que pasar el 1-1
+  y el 1-2 jugando y el guion ciego muere antes. Hace falta la partida del autor (`/dev_hdd0/salsads/saves/` en la PS3, 8 KB):
+  con ella `salsads-cpurun --save PARTIDA --press ...` y `tools/melonds-shot.py` llevan a la escena. Lo único probable sin la
+  escena: el bloque es del 3D (las plataformas en forma de hongo del nivel son 3D) y la regla de empates nueva (frontal sobre
+  espalda) podría arreglarlo; **sin confirmar**. Si no, las pistas del autor (nube solo arriba y el resto cielo) apuntan a una
+  capa que se repite en vertical o a una ventana: revisar con `tools/gfx-bisect.py` sobre el cuadro de esa escena.
+- Herramientas: `--press` admite 512 entradas (antes 64). Escenas 26 a 34 de la ROM `gx3d`.
+- Pruebas: `tools/build.sh test-host` verde (LE, BE y sanitizadores); `gx3d.golden` con 35 escenas; MKDS, SM64DS y NSMB con `--vs-ref3d`
+  y `--vs-ref` iguales. SPE del 3D: texto 58 296 B, pila con 16 464 B libres (holgura 9 696 B; `r3d_end_wz` va fuera de línea: en
+  línea la holgura bajaba a 7 392 y el enlace lo rechazaba).
+- **Paquete «SalsaDS JIT núcleo» (SLDS00009)** con el recompilador, del commit e13daba: `build/salsads-nucleo-jit-fase24.pkg`
+  (copia de `build/salsads-nucleo-jit/salsads-nucleo-jit.pkg`), SHA-256 `cbf36d479d932a3afb647bd4e859a7f856ee107248536016c747178a6a0b8ae1`.
+  **Sin probar en la PS3** (ni en RPCS3): falta confirmar que el mapa del mundo 1 ya no tiene líneas y mirar el nivel 1-3.
+
 ## 2026-10-18 — Recompilador del ARM9 (Fase 4)
 
 - **El ARM9 corre con un recompilador ARMv5TE (ARM y Thumb) → PowerPC64** propio (`src/jit/arec*`, conectado a la máquina en
