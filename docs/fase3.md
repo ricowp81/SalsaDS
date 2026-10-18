@@ -195,3 +195,174 @@ Sin contrastar con una DS real (se marca `[sin contrastar]` en el código): la i
 3. **Dónde corre el motor**: medir en la PS3 («DATO geometria»); si pasa de ≈ 2 ms, SPE.
 4. Orden de los translúcidos, `SWAP_BUFFERS` con el rasterizador asíncrono (¿el motor se detiene hasta que el SPE termina el
    cuadro anterior?), y la copia del 3D al motor A (captura de pantalla, modo de visualización 3D, bit 3 de DISPCNT).
+
+
+# Fase 3.2 — Motor de render 3D
+
+El motor de render de la DS sobre `gx_frame`: una referencia en C portable y la versión de los SPE, que dan **los mismos
+bits** (host LE, qemu BE, PPE y SPE), y la capa 3D (BG0 del motor A) mezclada por el compositor 2D. Código propio desde
+GBATEK y la comparación con melonDS **ejecutándolo** (ROM `gx3d`, `tools/gfx-compare.py`, `tools/r3d-fit.py`,
+`tools/melonds-shot.py`); no se leyó ni copió código de melonDS, NooDS ni DeSmuME.
+
+## Archivos
+
+| Archivo | Qué es |
+|---|---|
+| `src/gpu3d/r3d.h` | API: `r3d_job` (un cuadro, su reparto en bandas y las ranuras de VRAM), píxel de salida (`R3D_PX`: 6 bits por canal + alfa de 5), contadores |
+| `src/gpu3d/r3d_px.h` | **Las reglas**, funciones `static inline` en enteros de 32 bits que comparten la referencia y el SPE: polígono, aristas, líneas, interpolación, texturas, modos, profundidad, translúcidos, sombras, edge marking, niebla |
+| `src/gpu3d/r3d_ref.c` | Referencia: el cuadro entero en memoria, polígono por polígono, cada texel leído de la VRAM |
+| `src/gpu3d/r3d_core.c`, `r3d_core.h`, `r3d_io.h` | El rasterizador por bandas (el código del SPE; en el host y el PPE, con copias que comprueban las reglas del DMA) |
+| `src/gpu3d/r3d_scene.c` | Escenas sintéticas con el motor de geometría real (pruebas y autoprueba de la PS3) |
+| `src/spu/raster3d/` | Programa SPE (spukit) |
+| `src/core/video.c`, `geom.c`, `src/gpu2d/*` | La capa 3D en la instantánea del cuadro, los ganchos de la PS3 y BG0 en el compositor y su referencia |
+| `tests/unit/test_render3d.c`, `tests/roms/src/gx3d/arm9.c` | Pruebas unitarias y ROM `gx3d` (15 escenas por semilla) |
+
+## Las reglas (r3d_px.h)
+
+- **Orden**: opacos primero, translúcidos después (alfa 1-30 o textura A3I5/A5I3); cada grupo por la y de abajo y luego la de
+  arriba, estable; con `swap_params` bit 0 los translúcidos van en el orden de envío. [melonDS: la escena de translúcidos sale idéntica]
+- **Cobertura**: líneas `ytop..ybot-1` (de altura cero, su única línea). Dos cadenas desde el vértice de arriba; la izquierda
+  por el signo del área. Aristas en punto fijo de 18 bits con la pendiente truncada hacia cero. Arista y-mayor: un píxel por
+  línea (izquierda `piso(X)`, con 1/2^18 menos si la pendiente es negativa; derecha `piso(X)` exclusivo). Arista x-mayor: la x
+  de la línea siguiente redondeada (izquierda `X(y+1) − 1/2^18`, derecha `X(y+1)`, o `− 1/2^18` si va a la izquierda), y su
+  tramo «gordo» cuando va hacia afuera. Línea vacía por redondeo con los bordes iguales: un píxel. **Ajustado a melonDS** con la
+  escena 13 (48 triángulos al azar) y `tools/r3d-fit.py`: de 866 píxeles distintos a 44; quedan ≈ 5 % de las líneas con un
+  píxel de diferencia en un borde.
+- **Interpolación**: factor con corrección por w, `f = piso(pos·w0·2^P / ((len−pos)·w1 + pos·w0))`, P = 9 en aristas (posición
+  en y, o en x para las x-mayores) y P = 9 en la línea para texturas y w, 8 para el color; `a = (a0·(2^P−f) + a1·f) >> P`. El
+  color se interpola con 3 bits más y la fracción llena. z lineal en pantalla (Z-buffer); la del W-buffer es la w interpolada
+  `<< wshift`. Todo exacto en 32 bits (el factor: cociente en coma flotante corregido en enteros; con las w iguales y la z,
+  por cociente y resto paso a paso).
+- **Profundidad**: «menor» o «igual» (margen 0x200 en Z, 0xFF en W) [sin contrastar el margen]. Borrado con `CLEAR_COLOR`
+  (color, alfa, niebla, id) y `CLEAR_DEPTH << 9` (0x7FFF llena los 9 bits bajos).
+- **Píxel**: textura (7 formatos, incluido el 4x4 con sus 4 modos; repetir, espejo, recorte; índice 0 transparente) y modos
+  modulate `((t+1)(v+1)−1)>>6`, decal, toon (el rojo del vértice indexa la tabla) y highlight (gris del rojo × textura + tabla),
+  sombra (máscara con id 0 marca donde falla la profundidad; la sombra dibuja donde hay marca y otro id de opaco). Alfa 0 no se
+  dibuja; alpha test con `ALPHA_TEST_REF`. Opaco: escribe color, profundidad, id, niebla y borde. Translúcido: no se mezcla dos
+  veces con el mismo id, mezcla `(src·(a+1) + dst·(31−a)) >> 5` si `DISP3DCNT` bit 3 y el destino tiene alfa, alfa = máximo,
+  profundidad solo con `POLYGON_ATTR` bit 11, niebla = la del destino y la suya.
+- **Posproceso por línea**: edge marking (un píxel de borde de opaco con un vecino de otro id y más lejos toma el color de
+  borde de su id) y niebla (densidad interpolada de la tabla de 32 desde `FOG_OFFSET` con pasos de `0x400 >> FOG_SHIFT`; color
+  y alfa o solo alfa).
+- **Pendiente** (registros ya leídos en `gx_regs`): **antialiasing** de aristas (bit 4), **imagen de fondo** (bit 14: hoy
+  solo el color de borrado), polígonos de un punto (bit 13 de `POLYGON_ATTR`), los bits de desbordamiento de `DISP3DCNT`.
+
+## En la PS3
+
+- **Dos SPE, bandas alternas de 16 líneas** (12 por cuadro). Reparto de SPE: 2D A, 2D B, sonido y 3D × 2: **queda uno libre**
+  (filtros, Fase 5). El PPE no hace nada por polígono: publica un trabajo de spukit por SPE.
+- **Por SPE y cuadro**: trae los 2048 polígonos a trozos de 64 (doble búfer), clave de orden e índice en una palabra, radix de
+  3 pasadas; por banda limpia color/profundidad/atributos, filtra la lista por `ymin/ymax`, trae polígonos (listas de DMA de 48 B)
+  y vértices (listas de 32 B) en lotes de 16 con el siguiente en vuelo, dibuja, posprocesa y saca la banda (16 KB, doble búfer).
+  Con edge marking la banda se dibuja con una línea más arriba y otra abajo (los vecinos del borde).
+- **Caché de texturas** (el problema de la 0.4, que traía texturas enteras y se desbordaba al recorrer cada unidad la lista):
+  **bloques de 256 texeles ya decodificados** (4 líneas × 64 texeles, o la textura en franjas si es más angosta), 64 bloques de
+  1 KB, 4 vías con LRU por conjunto, llenados por demanda con el mismo `r3d_decode` de la referencia leyendo la VRAM por una
+  caché de líneas de 128 B (2 vías; texturas y paletas aparte). Dura todo el cuadro (todas las bandas del SPE) y se vacía al
+  empezar. Último bloque en un registro: casi todos los texeles no buscan. Aciertos en juegos (host, una unidad): Super Mario 64
+  DS 99,89 % (54 bloques por cuadro, 0 desalojos), New Super Mario Bros. 99,54 % (111, 70), Mario Kart DS 99,41 % (428, 366).
+- **Local store** (`src/spu/raster3d/raster3d.c`, medido al enlazar): texto 46,5 KB, datos 0,8 KB, bss 190 KB (contexto
+  186 368 B), pila con 24,5 KB libres (la cadena más honda usa 4,4 KB; mínimo 8 KB).
+- **Autoprueba al arrancar**: 9 sondas de aritmética (factor, lerp, aristas, divisiones, desplazamientos y multiplicaciones de
+  64 bits, una línea entera) y 4 escenas sintéticas (2000, 431, 292 y 394 polígonos) en los dos SPE contra la referencia del PPE;
+  si algo difiere rasteriza el PPE. En la prueba automática, además, cada 30 cuadros la capa 3D de los SPE contra la del PPE.
+- **Línea `DATO raster3d`** en `nucleo.log`: ms por cuadro de cada SPE (mediana, p95, máx), espera del PPE en el VBlank,
+  polígonos, píxeles, aciertos de la caché, bloques y desalojos, y el reparto del tiempo (orden, listas y borrado, DMA, dibujo,
+  texturas, posproceso, salida).
+- **RPCS3** (recompilador LLVM de SPU): sondas iguales, las 4 escenas con 0 píxeles distintos, la verificación durante la prueba
+  con la ROM gx3d sin diferencias, `RESULTADO nucleo: OK`. Su **intérprete** de SPU da otros resultados en multiplicaciones de 32
+  bits y desplazamientos de 64 (no sirve para esto) y su recompilador se colgó («Illegal instruction») con la primera versión,
+  que tenía desplazamientos de 64 bits con signo: por eso todo `r3d_px.h` es de 32 bits y la sonda 5 lo vigila (informativa).
+
+## Sincronía
+
+El cuadro que el motor de geometría entrega en el SWAP_BUFFERS del VBlank N se **dibuja durante el cuadro N+1**, como en la
+DS (que lo rasteriza mientras barre la pantalla):
+
+1. **Línea 0 de N+1** (`nds_video_frame_begin`): se toma la instantánea del cuadro (VRAM, la de texturas incluida: los juegos
+   suben texturas en el VBlank, antes de que el hardware llegue a esas líneas) y se lanza el trabajo 3D con el cuadro entregado
+   (`gx_front`). Si el motor A no muestra BG0 3D en la línea 0 no se rasteriza; sin cuadro entregado o con el render apagado
+   (`POWCNT1` bit 2) la capa es transparente.
+2. **Línea 192 de N+1** (`nds_gx_vblank`, antes del SWAP_BUFFERS): el PPE espera el 3D (`wait3d`). Hace falta por dos cosas:
+   el SWAP_BUFFERS devuelve ese cuadro al motor de geometría para llenarlo de nuevo, y en seguida se entrega el 2D de N+1,
+   cuyo SPE del motor A lee la capa 3D línea por línea (`img3d_ea` de la instantánea, 1 KB por línea por DMA).
+3. El 2D se compone mientras se emula N+2 (el cuadro de retraso de la Fase 2): la capa 3D queda en el mismo cuadro que su 2D.
+
+El 3D tiene así el tiempo de emular 192 líneas (casi todo el cuadro) en dos SPE; si tarda más, el PPE espera (línea
+`DATO raster3d`, «espera del PPE»). En el host todo es síncrono en la línea 0.
+
+## La capa 3D en el compositor 2D
+
+BG0 del motor A (DISPCNT bit 3, o modo 6): la línea de la imagen 3D desplazada por `BG0HOFS` (9 bits; lo que cae en 256..511 es
+transparente), con su prioridad y las ventanas. **Todo píxel 3D** que queda arriba se mezcla con el objetivo 2 (si lo es la capa
+de abajo) con **su propio alfa**, sin mirar el modo de BLDCNT ni EVA/EVB: `(3D·(a+1) + 2D·(31−a) + 16)/32` en 6 bits por canal
+con los 6 bits del 3D (el opaco queda igual); sin objetivo 2, brillo si BG0 es objetivo 1. Igual en el compositor (SPE) y en su
+referencia; contra melonDS la escena 11 es idéntica.
+
+## Pruebas
+
+1. **Unitarias** (`tests/unit/test_render3d.c`, LE con ASan/UBSan y BE con qemu): 40 escenas del motor de geometría real (hasta
+   2000 polígonos, los 7 formatos, modos, alfas, W/Z, niebla, bordes, registros al azar) con 4 repartos (bandas de 8 y 16, 1 a 3
+   unidades): **idénticas a la referencia**, sin transferencias que el MFC rechazaría, ≈ 78 000 desalojos de la caché, y el
+   hash de la semilla 7 igual en LE y BE.
+2. **ROM `gx3d`** (`tests/roms/homebrew`, una escena por semilla con `tools/rom-seed.py`): en `test-host.sh` en LE, BE y con
+   sanitizadores: el código del SPE igual a la referencia en cada cuadro, los píxeles de prueba (`--expect`), el compositor 2D
+   igual a su referencia y la imagen igual a `gx3d.golden`. Con captura (melonDS, una DS real) la ROM lee el banco A y anota con
+   `SDS_DIVERGE` los píxeles de prueba que no coinciden.
+3. **Contra melonDS 1.1** (`tools/gfx-compare.py build/roms/gx3d.nds 0..14`, imágenes en `build/r3d/cmp/`):
+
+| Escena | Píxeles distintos | De más de 1 en 5 bits | Qué queda |
+|---|---|---|---|
+| 0 cobertura | 1656 | 500 | bordes (≈ 5 % de líneas) y el color de la tira de Gouraud |
+| 1 Gouraud | 14 001 | 2914 | color ±1 (ver abajo) |
+| 2 perspectiva | 391 | 80 | color ±1 y algún píxel de borde |
+| 3 los 7 formatos y repetir/espejo/recorte | **0** | 0 | — |
+| 4 translúcidos (ids, orden, profundidad) | **0** | 0 | — |
+| 5 / 6 Z-buffer / W-buffer | 35 / 35 | 35 | un píxel de borde cada 5 líneas en una arista |
+| 7 / 8 decal y toon / highlight | 3941 / 4957 | 2529 / 2653 | el color interpolado ±1 mueve el índice de la tabla de toon |
+| 9 alpha test, niebla, edge marking | 1560 | 0 | niebla ±1 en una franja |
+| 10 sombras | **0** | 0 | — |
+| 11 3D sobre BG1 con mezcla | **0** | 0 | — |
+| 12 profundidad «igual» | **0** | 0 | — |
+| 13 / 14 triángulos al azar (cobertura / Gouraud) | 44 / 2239 | 44 / 1003 | bordes / color ±1 |
+
+   **Divergencia principal**: la interpolación del color de vértice. Con el modelo actual el 70 % de los canales coincide y el
+   resto difiere en 1 (de 5 bits); ninguna variante de precisión, redondeo o posición probada con `tools/r3d-fit.py` lo explica.
+   Visualmente no se nota salvo en toon/highlight, donde ±1 en el rojo cambia de entrada de la tabla en el borde de cada franja.
+4. **Juegos** (respaldos del autor, fuera del repositorio; capturas en `build/r3d/juegos/`): New Super Mario Bros. 1-1
+   (`nsmb-4500.png`: Mario dibujado, con su contorno y su sombreado; `nsmb-mario-zoom.png`), Mario Kart DS demostración
+   (`mkds-1500.png`, `mkds-2500.png`: pista, karts y escenario) y Super Mario 64 DS «Touch to start» (`sm64ds-2900.png`). En las
+   tres, `--vs-ref3d` da el código del SPE igual a la referencia en todos los cuadros. Contra melonDS (`tools/melonds-shot.py`,
+   la escena por tiempo, a ojo: `sm64ds-vs-melonds.png`) la estrella de SM64DS **sale mal**: sus ojos son tiras negras en X y la
+   textura de entorno (4x4 con coordenadas por normales, modo 2) tiene ruido. Los vértices de esos polígonos ya vienen así del
+   motor de geometría (`--gx-dump`), así que es un pendiente de la 3.1 (matrices de los huesos o el modo 2 de texturas), no del
+   rasterizador. NSMB no se comparó con melonDS (no se le pueden mandar teclas por guion).
+
+## Mediciones
+
+Host (Mac, arm64, clang -O2; el código del SPE en escalar con una unidad), `--r3d-stats`:
+
+| Escena | Polígonos por cuadro | Píxeles probados / escritos | ms por cuadro |
+|---|---|---|---|
+| New Super Mario Bros. (menú, archivo, mapa y 1-1; 3993 cuadros con 3D) | 643 | 45 454 / 20 591 | **0,95** |
+| Mario Kart DS, demostración (1674) | 851 | 127 966 / 71 444 | **3,30** |
+| Super Mario 64 DS, «Touch to start» (2799) | 46 | 149 428 / 115 150 | **1,52** |
+
+El bucle de la línea sin divisiones enteras ni 64 bits bajó SM64DS de 2,43 a 1,52 ms y MKDS de 3,62 a 3,30 en el host, con los
+mismos bits. **En la PS3 no está medido**: el SPE no tiene unidad escalar ni predice saltos y este bucle es escalar (un píxel por
+vuelta, con saltos por modo y por prueba), como el compositor 2D de la 2.1 que costó 28 ms antes de vectorizarlo. En RPCS3 (que no
+mide, solo orienta) la escena 9 de gx3d (31 000 píxeles) da 1,6 ms por SPE. Si la PS3 da más de ≈ 6 ms por SPE en MKDS, lo
+siguiente es vectorizar la línea (4 píxeles por vuelta con el factor y los atributos en vectores, especializada por modo).
+
+## Paquete
+
+«SalsaDS núcleo» (SLDS00008) del commit `211d01e`: `build/salsads-nucleo-fase32.pkg` (SHA-256 en `docs/estado.md`). Con la ROM
+gx3d (o un juego) como `/dev_hdd0/salsads/rom.nds`, el log trae `DATO raster3d` cada 120 cuadros.
+
+## Qué sigue
+
+1. **Medir en la PS3** (`DATO raster3d` con NSMB 1-1, MKDS y SM64DS) y, según el número, vectorizar el bucle de la línea.
+2. La interpolación del color (±1) y los bordes que quedan (≈ 5 % de líneas), con más escenas de ajuste.
+3. Antialiasing, imagen de fondo, polígonos de un punto.
+4. La estrella de SM64DS: el motor de geometría (huesos y coordenadas de textura por normales).
+5. Correr `gx3d` en una DS real (`docs/ds-real.md`): sus `SDS_DIVERGE` dicen qué hace el hardware en los píxeles de prueba.

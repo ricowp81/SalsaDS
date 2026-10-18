@@ -4,6 +4,30 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-18 — Motor de render 3D (Fase 3.2)
+
+- **Rasterizador de la DS** sobre `gx_frame` (`src/gpu3d/r3d_*`, código propio desde GBATEK y melonDS ejecutándolo): orden de
+  opacos y translúcidos, aristas en punto fijo ajustadas a melonDS, interpolación con corrección por w, Z/W-buffer, prueba
+  menor/igual, translúcidos con id, alpha test, modulate/decal/toon/highlight/sombras, los 7 formatos de textura con
+  repetir/espejo/recorte, edge marking y niebla. **Referencia** (cuadro entero) y **código del SPE** (bandas de 16 líneas, DMA por
+  listas, caché de bloques de texeles decodificados con LRU) comparten las reglas en enteros de 32 bits y dan **los mismos bits**
+  en el host LE, qemu BE, el PPE y el SPE. Pendientes: antialiasing, imagen de fondo, polígonos de un punto.
+- **Capa 3D** como BG0 del motor A en el compositor 2D (SPE y referencia): BG0HOFS y la mezcla del 3D con el objetivo 2 con su
+  propio alfa. Se dibuja en la línea 0 del cuadro siguiente al SWAP_BUFFERS y se espera en la línea 192 (detalle en `docs/fase3.md`).
+- **Pruebas**: unitarias (40 escenas × 4 repartos, LE y BE), ROM `gx3d` (15 escenas, en `test-host` con imagen de referencia) y
+  contra melonDS: 5 escenas idénticas (formatos de textura, translúcidos, sombras, 3D sobre 2D, prueba «igual»); el resto difiere
+  en bordes (≈ 5 % de las líneas, un píxel) y en el color de Gouraud (±1 de 5 bits en ≈ 30 % de los canales).
+- **Juegos** en el host: Mario sale dibujado en New Super Mario Bros. 1-1 y la carrera de Mario Kart DS se ve; la estrella de Super
+  Mario 64 DS sale rota, pero sus vértices ya vienen mal del motor de geometría (pendiente de la 3.1). Host: 0,95 / 3,30 / 1,52 ms
+  por cuadro.
+- **PS3**: dos SPE para el 3D (2D A, 2D B, sonido, 3D × 2: queda un SPE libre), autoprueba al arrancar (sondas de aritmética y 4
+  escenas contra el PPE) y `DATO raster3d`. Paquete «SalsaDS núcleo» (SLDS00008) del commit `211d01e`:
+  `build/salsads-nucleo-fase32.pkg`, SHA-256 `77fa46e6972291609050993e2996ffea5ab3f4768fcc67832ec220bc9d1fa046`. En RPCS3:
+  autoprueba igual, verificación durante la prueba igual, `RESULTADO nucleo: OK`. **Sin medir en la PS3**: el bucle de la línea es
+  escalar y puede ser lento en el SPE; si pasa de ≈ 6 ms por SPE en MKDS, vectorizarlo.
+- Arreglos de paso: desplazamientos de valores con signo en `gx.c` (UBSan). Herramientas: `tools/r3d-fit.py`,
+  `tools/melonds-shot.py`, `rpcs3-run.py --rom/--frames`, `salsads-cpurun --ref3d/--vs-ref3d/--r3d-stats/--img3d`.
+
 ## 2026-10-17 — Motor de geometría (Fase 3.1)
 
 - **El motor de geometría real** (`src/gpu3d`, C portable y sin dependencias; pegamento en `src/core/geom.c`) sustituye a la
