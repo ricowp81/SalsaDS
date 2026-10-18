@@ -4,6 +4,17 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-18 — Pantallas de carga: sondeo del cartucho (fase46)
+
+- **Medido en el host** (NSMB, partida del autor): una carga de ~60 cuadros (título, cuadros 183–245) y las de los cuadros 1233–1300 y 1600–1700
+  leen 512 bytes por comando B7 con la CPU (no por DMA), palabra a palabra, y el juego gira en `ldr ROMCTRL / tst bit 23` (60–70 % de las
+  instrucciones del ARM9 en esos cuadros); el resto es trabajo del juego (rellenos y descompresión). El tiempo emulado es el de la DS real
+  (~6,7 MB/s): ~9 000 bloques en 1 700 cuadros. Host: 4,6 ms por cuadro de carga contra 1,4 ms ociosos.
+- **Hecho**: al leer ROMCTRL con el bloque esperando palabra o fin, el reloj de esa CPU avanza hasta el siguiente evento (tope `ev_min`) en vez de
+  ejecutar el bucle; mismo tiempo para el juego, ARM9 −9 % de instrucciones en NSMB (1 700 cuadros), −21 % de tiempo host en la carga del título.
+  `test-host` verde (la ROM `periph` y los tamaños de tramo sin cambios).
+- No se tocó la latencia emulada del cartucho: acortarla sería adelantar la carga respecto a la DS real (opción posterior, con interruptor).
+
 ## 2026-10-18 — NSMB 1-3: tallos y nubes (3.6)
 
 - **La partida del autor** (`A2DE.sav`, la de las 20:13; la de las 13:42 estaba recién formateada y no servía) lleva el host al 1-3:
