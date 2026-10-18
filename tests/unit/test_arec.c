@@ -265,6 +265,9 @@ static uint32_t gen_arm(uint32_t addr, unsigned left)
 		case 10:
 			return cond | 0x0121F000u | rm;                                               /* MSR CPSR_c, rm */
 		case 11:
+			if (rn(2)) /* LDR(B/H) rd, [pc, #±off]: un literal en el código (se lee al traducir) */
+				return rn(3) ? (cond | 0x051F0000u | rn(2) << 23 | rn(2) << 22 | rd << 12 | (rn(4) ? rn(64) * 4 : rn(256)))
+					     : (cond | 0x015F00B0u | rn(2) << 23 | rd << 12 | ((rn(32) * 2) & 0xF0u) << 4 | (rn(8) * 2));
 			return cond | 0x016FF000u | rm;                                               /* MSR SPSR_fsxc, rm */
 		default:
 			return cond | 0x0169F000u | rm;                                               /* MSR SPSR_fc, rm */
@@ -656,6 +659,31 @@ static void test_irq_mid_block(void)
 	CHECK_EQ(MJ.c.r[2], 0);
 }
 
+/* Un literal (LDR rd, [pc, #off]) que el programa reescribe: el bloque que lo leyó al traducirse se invalida. */
+static void test_literal(void)
+{
+	static const uint32_t prog[] = {
+		0xE59F0010u, /* ldr r0, [pc, #16]  -> literal en AM_CODE + 24 */
+		0xE0811000u, /* add r1, r1, r0 */
+		0xE2800001u, /* add r0, r0, #1 */
+		0xE28F2004u, /* add r2, pc, #4     -> AM_CODE + 24 */
+		0xE5820000u, /* str r0, [r2]       -> el literal cambia */
+		0xEAFFFFF9u, /* b al principio */
+		0x00000005u, /* literal */
+	};
+
+	setup_both(1);
+	if (!MJ.j)
+		return;
+	load_prog(prog, 7, AM_CODE);
+	acore_set_pc(&MJ.c, AM_CODE);
+	acore_set_pc(&MI.c, AM_CODE);
+	run_both(200);
+	CHECK(same_state("literal que cambia", 0));
+	CHECK(MJ.c.r[1] > 5u * 6u);
+	CHECK(arec_stats(MJ.j)->inval_blocks >= 1);
+}
+
 /* MSR CPSR_c en línea que habilita la IRQ con la línea ya levantada: se toma en la instrucción siguiente. */
 static void test_msr_irq(void)
 {
@@ -848,6 +876,7 @@ void test_arec(void)
 	}
 	test_irq_mid_block();
 	test_msr_irq();
+	test_literal();
 	test_smc();
 	test_calls();
 	test_waits();

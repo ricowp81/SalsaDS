@@ -22,6 +22,7 @@
 
 #include "jit/arec_priv.h"
 #include "jit/ppcenc.h"
+#include "util/endian.h"
 
 #define G(n) (14u + (n))
 #define RCYC 29u
@@ -1761,8 +1762,62 @@ static void page_lookup(struct em *e, unsigned ra, int wr, unsigned cold)
 	bc_to(e, BO_T, CRB(1, EQ), cold);
 }
 
+/* LDR rd, [pc, #±imm] (el «literal pool»): la dirección se conoce al traducir. Si la palabra está en la memoria del propio
+ * código (la misma vista para datos y para captación) y dentro de las cubetas del bloque, se lee ahora y el bloque cubre
+ * también esos bytes: una escritura ahí lo invalida, como al código. Devuelve 1 y el valor en *v. */
+static int literal_value(struct em *e, const struct ai *x, uint32_t *v)
+{
+	struct arec *j = e->j;
+	struct ablock *b = e->b;
+	uint32_t a, ph, avail;
+	const uint8_t *p, *d;
+
+	if (!x->load || x->rn != 15 || x->o2 != O2_IMM || x->wb || x->rd == 15 || !x->pre)
+		return 0;
+	a = x->up ? x->pcv + x->imm : x->pcv - x->imm;
+	if (a & (x->msz - 1u))
+		return 0;
+	p = j->cfg.code_ptr(j->cfg.ctx, a, &ph, &avail);
+	if (!p || avail < x->msz)
+		return 0;
+	d = j->pt[a >> AREC_PAGE_SHIFT];
+	if (!d || d + (a & ((1u << AREC_PAGE_SHIFT) - 1u)) != p)
+		return 0;
+	if (b->phys_lo == AREC_PHYS_NONE) {
+		if (ph != AREC_PHYS_NONE)
+			return 0;
+	} else {
+		if (ph == AREC_PHYS_NONE || ph < e->win_lo || ph + x->msz > e->win_hi)
+			return 0;
+		if (ph < b->phys_lo)
+			b->phys_lo = ph;
+		if (ph + x->msz > b->phys_hi)
+			b->phys_hi = ph + x->msz;
+	}
+	switch (x->msz) {
+	case 4:
+		*v = rd32le(p);
+		break;
+	case 2:
+		*v = x->msign ? (uint32_t)(int32_t)(int16_t)rd16le(p) : rd16le(p);
+		break;
+	default:
+		*v = x->msign ? (uint32_t)(int32_t)(int8_t)p[0] : p[0];
+		break;
+	}
+	return 1;
+}
+
 static void emit_mem(struct em *e, const struct ai *x, unsigned P)
 {
+	{
+		uint32_t lit;
+
+		if (literal_value(e, x, &lit)) {
+			li32(e, G(x->rd), lit);
+			return;
+		}
+	}
 	const unsigned cold = newlab(e), join = newlab(e);
 	const unsigned live = cold_live(e, e->i);
 	const unsigned mk = x->load ? (x->msz == 4 ? MK_W : x->msz == 2 ? (x->msign ? MK_SH : MK_H) : (x->msign ? MK_SB : MK_B))
