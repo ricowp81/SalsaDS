@@ -111,7 +111,7 @@ static struct {
 	uint32_t wait_us;
 } sub, prev;
 static uint32_t sub_count;
-static uint64_t prof_sum[2][12]; /* tiempos por etapa de las dos pantallas (ticks del SPE), para la línea DATO spe-etapas */
+static uint32_t prof_buf[2][12][STATS_FRAMES]; /* tiempos por etapa de las dos pantallas (ticks del SPE), para la línea DATO spe-etapas */
 static uint32_t prof_n;
 static int autotest_verify;
 static int last_dset = -1; /* juego de texturas del último cuadro dibujado */
@@ -914,14 +914,16 @@ static void log_stats(void)
 		for (int e = 0; e < 2; e++) {
 			k += snprintf(line + k, sizeof line - (size_t)k, "%s%c:", e ? "; " : "", 'A' + e);
 			for (int q = 0; q < 12; q++) {
-				const uint64_t us = prof_sum[e][q] * 1000000ull / spukit_tick_hz() / prof_n;
+				uint64_t us;
+
+				sort_u32(prof_buf[e][q], prof_n);
+				us = (uint64_t)prof_buf[e][q][prof_n / 2] * 1000000ull / spukit_tick_hz();
 
 				k += snprintf(line + k, sizeof line - (size_t)k, " %s %u.%02u", nm[q], (unsigned)(us / 1000), (unsigned)(us % 1000 / 10));
 			}
 		}
-		salsads_log("DATO spe-etapas (ms por pantalla y cuadro, media de %u cuadros; entre paréntesis lo que está dentro de la etapa anterior): %s",
+		salsads_log("DATO spe-etapas (ms por pantalla y cuadro, mediana de %u cuadros; entre paréntesis lo que está dentro de la etapa anterior): %s",
 			    prof_n, line);
-		memset(prof_sum, 0, sizeof prof_sum);
 		prof_n = 0;
 	}
 	{
@@ -1043,10 +1045,12 @@ static void render_frame(void)
 				for (int e = 0; e < 2; e++) {
 					const uint32_t *pp = (const uint32_t *)(const void *)&prev.res[e].prof;
 
-					for (int q = 0; q < 12; q++)
-						prof_sum[e][q] += pp[q];
+					if (prof_n < STATS_FRAMES)
+						for (int q = 0; q < 12; q++)
+							prof_buf[e][q][prof_n] = pp[q];
 				}
-				prof_n++;
+				if (prof_n < STATS_FRAMES)
+					prof_n++;
 				put(M_SPEA, (uint32_t)((uint64_t)prev.res[0].ticks * 1000000ull / spukit_tick_hz()));
 				put(M_SPEB, (uint32_t)((uint64_t)prev.res[1].ticks * 1000000ull / spukit_tick_hz()));
 				put(M_WAIT, prev.wait_us);
