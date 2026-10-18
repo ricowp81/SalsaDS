@@ -10,7 +10,7 @@ CC      ?= gcc
 SAN     ?= -fsanitize=address,undefined -fno-sanitize-recover=undefined
 CFLAGS  := -std=gnu11 -O2 -g -Wall -Wextra -Werror -ffp-contract=off -fno-math-errno \
            -I$(ROOT)/src -I$(CURDIR) -I$(ROOT)/tests/phase0/ppe-bench -I$(ROOT)/tests/phase0/spe-raster3d \
-           $(SAN) $(EXTRA_CFLAGS)
+           -DR3D_VERIFY_DECODE $(SAN) $(EXTRA_CFLAGS)
 LDFLAGS := $(SAN) $(EXTRA_LDFLAGS)
 LDLIBS  := -lm
 

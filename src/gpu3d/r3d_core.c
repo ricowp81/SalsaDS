@@ -13,16 +13,20 @@
  *      con edge marking la banda se dibuja con una línea más arriba y otra abajo (los vecinos que mira el borde);
  *   3. texturas: caché de bloques DECODIFICADOS de 256 texeles (4 líneas × 64 texeles, o la textura entera en
  *      franjas si es más angosta) en 64 bloques de 1 KB, asociativa de 4 vías con LRU por conjunto, que se llena por
- *      demanda: el bloque se decodifica (r3d_decode, el mismo de la referencia) leyendo la VRAM por una caché de líneas
- *      de 128 bytes. Se vacía al empezar el cuadro (la VRAM pudo cambiar) y dura todas las bandas del SPE: lo que
- *      desbordaba la caché de texturas enteras de la Fase 0.4 (cada banda recorría todas las texturas) ya no pasa,
- *      porque solo se decodifica lo que se muestrea.
+ *      demanda: el bloque se decodifica por tramos de la fila (tc_fill: la VRAM entra por una caché de líneas de 128
+ *      bytes y la paleta ya convertida se queda en el local store), con los mismos valores que r3d_decode. Se vacía al
+ *      empezar el cuadro (la VRAM pudo cambiar) y dura todas las bandas del SPE: lo que desbordaba la caché de texturas
+ *      enteras de la Fase 0.4 (cada banda recorría todas las texturas) ya no pasa, porque solo se decodifica lo que se
+ *      muestrea.
+ *   4. los píxeles de cada línea de polígono los dibuja r3d_vrow.h en vectores de 4 (Fase 3.4); r3d_draw_row de r3d_px.h
+ *      queda como referencia (r3d_ref.c) y da los mismos bits.
  *
  * Presupuesto del local store del contexto (sizeof(r3d_ctx), lo imprime el SPE; programa en src/spu/raster3d):
  *   color 2 × 18 líneas × 1 KB = 36 KB (doble búfer de salida), profundidad 18 KB, atributos 18 KB,
  *   orden y extensiones 2048 × (4 + 4 + 2 + 2) = 24 KB, lista de la banda 4 KB, lotes 2 × (16 × 48 + 160 × 32) = 11,5 KB,
- *   listas de DMA 2 × 160 × 8 = 2,5 KB, caché de texturas 64 KB + etiquetas 1 KB, líneas de VRAM 64 × 128 = 8 KB.
- *   ≈ 188 KB; el programa y la pila van en el resto (ver la cabecera de src/spu/raster3d/raster3d.c).
+ *   listas de DMA 2 × 160 × 8 = 2,5 KB, caché de texturas 64 KB + etiquetas 1 KB, líneas de VRAM 40 × 128 = 5 KB,
+ *   paleta convertida 1 KB y tramo de VRAM 0,5 KB.
+ *   ≈ 178,4 KB (182 656 B); el programa (≈ 55 KB) y la pila van en el resto (ver la cabecera de src/spu/raster3d/raster3d.c).
  */
 #include <stddef.h>
 #include <string.h>
@@ -31,8 +35,19 @@
 #include "gpu3d/r3d_core.h"
 #include "gpu3d/r3d_px.h"
 
+/* Código que no está en el camino caliente (se corre una vez por bloque o por cuadro): compilado para tamaño, que el local
+ * store del SPE está justo. */
+#if defined(__SPU__)
+#define R3D_SMALL __attribute__((optimize("Os")))
+#else
+#define R3D_SMALL
+#endif
+
 #ifndef __SPU__
 uint32_t r3d_io_errors;
+#endif
+#ifdef R3D_VERIFY_DECODE
+uint32_t r3d_decode_errors; /* texeles del bloque decodificado que difieren de r3d_decode */
 #endif
 
 uint32_t r3d_core_ctx_size(void)
@@ -61,7 +76,9 @@ static uint64_t vram_line_ea(const r3d_ctx *c, uint32_t space, uint32_t a)
 	return c->job.vram_ea + off + (a & ~127u);
 }
 
-static inline uint32_t lc_rd(r3d_ctx *c, uint32_t space, uint32_t a)
+/* El byte `a` de la memoria de texturas (espacio 0, 512 KB) o de paletas (1, 128 KB) en el local store. El puntero vale
+ * hasta la siguiente búsqueda en el mismo espacio. */
+static inline const uint8_t *lc_line(r3d_ctx *c, uint32_t space, uint32_t a)
 {
 	/* asociativas de 2 vías (conjunto = línea & n/2 - 1; se reemplaza la que no se usó por última vez), una para
 	 * texturas y otra para paletas: los datos, los índices del 4x4 y la paleta de un mismo texel no se pisan */
@@ -72,11 +89,11 @@ static inline uint32_t lc_rd(r3d_ctx *c, uint32_t space, uint32_t a)
 
 	if (c->ltag[i0] == key) {
 		c->lru[i0 - base] = 0;
-		return c->lines[i0][a & 127u];
+		return &c->lines[i0][a & 127u];
 	}
 	if (c->ltag[i1] == key) {
 		c->lru[i0 - base] = 1;
-		return c->lines[i1][a & 127u];
+		return &c->lines[i1][a & 127u];
 	}
 	i = c->lru[i0 - base] ? i0 : i1; /* la que no se usó */
 	c->lru[i0 - base] = (uint8_t)(i == i1);
@@ -85,15 +102,37 @@ static inline uint32_t lc_rd(r3d_ctx *c, uint32_t space, uint32_t a)
 	c->ltag[i] = key;
 	c->st->line_miss++;
 	c->st->tex_bytes += 128;
-	return c->lines[i][a & 127u];
+	return &c->lines[i][a & 127u];
 }
 
-static uint32_t lc_rdt(void *ctx, uint32_t a)
+static inline uint32_t lc_rd(r3d_ctx *c, uint32_t space, uint32_t a)
+{
+	return *lc_line(c, space, a);
+}
+
+/* Copia `len` bytes seguidos de la memoria de texturas o paletas (con la vuelta de dirección de cada una) al local store. */
+static void lc_copy(r3d_ctx *c, uint32_t space, uint32_t a, uint32_t len, uint8_t *dst)
+{
+	const uint32_t mask = space ? 0x1FFFFu : 0x7FFFFu;
+
+	while (len) {
+		uint32_t n = 128u - (a & 127u);
+
+		if (n > len)
+			n = len;
+		memcpy(dst, lc_line(c, space, a & mask), n);
+		dst += n;
+		a += n;
+		len -= n;
+	}
+}
+
+static __attribute__((unused)) uint32_t lc_rdt(void *ctx, uint32_t a)
 {
 	return lc_rd((r3d_ctx *)ctx, 0, a & 0x7FFFFu);
 }
 
-static uint32_t lc_rdp(void *ctx, uint32_t a)
+static __attribute__((unused)) uint32_t lc_rdp(void *ctx, uint32_t a)
 {
 	return lc_rd((r3d_ctx *)ctx, 1, a & 0x1FFFFu);
 }
@@ -103,6 +142,168 @@ static uint32_t lc_rdp(void *ctx, uint32_t a)
 static inline uint32_t tc_csh(const r3d_tex *tx)
 {
 	return tx->sl < 6 ? tx->sl : 6u;
+}
+
+/* Paleta ya convertida (r3d_555 con alfa 0) de `n` entradas a partir de tx->pal; dura todo el cuadro. */
+static const uint32_t *tc_pal(r3d_ctx *c, const r3d_tex *tx, uint32_t n)
+{
+	if (c->pal_n < n || c->pal_addr != tx->pal) {
+		lc_copy(c, 1, tx->pal, n * 2u, c->stage);
+		for (uint32_t i = 0; i < n; i++)
+			c->pxtab[i] = r3d_555((uint32_t)c->stage[2u * i] | ((uint32_t)c->stage[2u * i + 1u] << 8), 0);
+		c->pal_addr = tx->pal;
+		c->pal_n = n;
+	}
+	return c->pxtab;
+}
+
+/* Texeles comprimidos 4x4 (formato 5): por cada tile, los índices de 2 bits, la palabra de modo y de paleta y los
+ * colores; lo mismo que r3d_decode, un tile a la vez. Rellena `rows` filas de `cols` texeles desde (s0, t0). */
+static R3D_SMALL void tc_fill5(r3d_ctx *c, const r3d_tex *tx, uint32_t *blk, uint32_t s0, uint32_t t0, uint32_t cols, uint32_t nr,
+		     uint32_t csh)
+{
+	const uint32_t S = 1u << tx->sl, tw = S >> 2;
+
+	for (uint32_t ty = 0; ty < nr; ty += 4) {
+		for (uint32_t tq = 0; tq < cols; tq += 4) {
+			const uint32_t blkn = ((t0 + ty) >> 2) * tw + ((s0 + tq) >> 2);
+			const uint32_t da = tx->addr + blkn * 4u;
+			const uint32_t ia = 0x20000u + ((da & 0x1FFFFu) >> 1) + (((da >> 18) & 1u) ? 0x10000u : 0u);
+			uint8_t dat[4];
+			uint32_t pi, mode, pa, px[4];
+			const uint8_t *q;
+
+			memcpy(dat, lc_line(c, 0, da & 0x7FFFFu), 4);
+			q = lc_line(c, 0, ia & 0x7FFFFu);
+			pi = (uint32_t)q[0] | ((uint32_t)q[1] << 8);
+			mode = pi >> 14;
+			pa = tx->pal + (pi & 0x3FFFu) * 4u;
+			{
+				uint8_t pb[8];
+				uint32_t c0, c1;
+
+				memcpy(pb, lc_line(c, 1, pa & 0x1FFFFu), 4);
+				if (mode == 0 || mode == 2)
+					memcpy(pb + 4, lc_line(c, 1, (pa + 4u) & 0x1FFFFu), 4);
+				c0 = (uint32_t)pb[0] | ((uint32_t)pb[1] << 8);
+				c1 = (uint32_t)pb[2] | ((uint32_t)pb[3] << 8);
+				px[0] = r3d_555(c0, 31);
+				px[1] = r3d_555(c1, 31);
+				if (mode == 0 || mode == 2) {
+					px[2] = r3d_555((uint32_t)pb[4] | ((uint32_t)pb[5] << 8), 31);
+					px[3] = mode == 0 ? 0u : r3d_555((uint32_t)pb[6] | ((uint32_t)pb[7] << 8), 31);
+				} else {
+					uint32_t m2 = 0, m3 = 0;
+
+					for (uint32_t k = 0; k < 15; k += 5) {
+						const uint32_t a = (c0 >> k) & 31u, b = (c1 >> k) & 31u;
+
+						if (mode == 1) {
+							m2 |= ((a + b) >> 1) << k;
+						} else {
+							m2 |= ((a * 5u + b * 3u) >> 3) << k;
+							m3 |= ((a * 3u + b * 5u) >> 3) << k;
+						}
+					}
+					px[2] = r3d_555(m2, 31);
+					px[3] = mode == 1 ? 0u : r3d_555(m3, 31);
+				}
+			}
+			for (uint32_t r = 0; r < 4; r++) {
+				const uint32_t b = dat[r];
+				uint32_t *o = blk + ((ty + r) << csh) + tq;
+
+				o[0] = px[b & 3u];
+				o[1] = px[(b >> 2) & 3u];
+				o[2] = px[(b >> 4) & 3u];
+				o[3] = px[b >> 6];
+			}
+		}
+	}
+}
+
+/* Decodifica el bloque (bx, by) de la textura en blk (cols × filas de texeles R3D_PX, filas de 1 << csh palabras) con los
+ * mismos valores que r3d_decode, leyendo la VRAM por tramos y no texel a texel. */
+static R3D_SMALL void tc_fill(r3d_ctx *c, const r3d_tex *tx, uint32_t *blk, uint32_t bx, uint32_t by)
+{
+	const uint32_t csh = tc_csh(tx), rsh = 8u - csh;
+	const uint32_t cols = 1u << csh, rows = 1u << rsh;
+	const uint32_t S = 1u << tx->sl, T = 1u << tx->tl;
+	const uint32_t t0 = by << rsh, s0 = bx << csh;
+	const uint32_t nr = t0 + rows > T ? T - t0 : rows;
+	const uint32_t fmt = tx->fmt;
+	/* bits por texel y entradas de la paleta */
+	static const uint8_t bpp[8] = { 0, 8, 2, 4, 8, 0, 8, 16 };
+	static const uint16_t npal[8] = { 0, 32, 4, 16, 256, 0, 8, 0 };
+
+	if (fmt == 5) {
+		tc_fill5(c, tx, blk, s0, t0, cols, nr, csh);
+		return;
+	}
+	{
+		const uint32_t *pt = npal[fmt] ? tc_pal(c, tx, npal[fmt]) : NULL;
+		const uint32_t b = bpp[fmt];
+		/* si el bloque cubre filas enteras de la textura (cols == S) es un solo tramo; si no, un tramo por fila */
+		const uint32_t nseg = cols == S ? 1u : nr;
+		const uint32_t cnt = cols == S ? nr * cols : cols;
+
+		for (uint32_t sg = 0; sg < nseg; sg++) {
+			const uint32_t i0 = (cols == S ? t0 * S : (t0 + sg) * S + s0);
+			uint32_t *o = blk + (cols == S ? 0u : (sg << csh));
+			const uint8_t *src = c->stage;
+
+			lc_copy(c, 0, tx->addr + ((i0 * b) >> 3), (cnt * b) >> 3, c->stage);
+			switch (fmt) {
+			case 1: /* A3I5 */
+				for (uint32_t j = 0; j < cnt; j++) {
+					const uint32_t v = src[j], a3 = v >> 5;
+
+					o[j] = pt[v & 31u] | (((a3 << 2) + (a3 >> 1)) << 24);
+				}
+				break;
+			case 2: /* 4 colores */
+				for (uint32_t j = 0; j < cnt; j += 4) {
+					const uint32_t v = src[j >> 2];
+
+					for (uint32_t k = 0; k < 4; k++) {
+						const uint32_t idx = (v >> (2u * k)) & 3u;
+
+						o[j + k] = (idx == 0 && tx->c0t) ? 0u : (pt[idx] | (31u << 24));
+					}
+				}
+				break;
+			case 3: /* 16 colores */
+				for (uint32_t j = 0; j < cnt; j += 2) {
+					const uint32_t v = src[j >> 1], i0_ = v & 15u, i1_ = v >> 4;
+
+					o[j] = (i0_ == 0 && tx->c0t) ? 0u : (pt[i0_] | (31u << 24));
+					o[j + 1] = (i1_ == 0 && tx->c0t) ? 0u : (pt[i1_] | (31u << 24));
+				}
+				break;
+			case 4: /* 256 colores */
+				for (uint32_t j = 0; j < cnt; j++) {
+					const uint32_t v = src[j];
+
+					o[j] = (v == 0 && tx->c0t) ? 0u : (pt[v] | (31u << 24));
+				}
+				break;
+			case 6: /* A5I3 */
+				for (uint32_t j = 0; j < cnt; j++) {
+					const uint32_t v = src[j];
+
+					o[j] = pt[v & 7u] | ((v >> 3) << 24);
+				}
+				break;
+			default: /* 7: directo */
+				for (uint32_t j = 0; j < cnt; j++) {
+					const uint32_t v = (uint32_t)src[2u * j] | ((uint32_t)src[2u * j + 1u] << 8);
+
+					o[j] = r3d_555(v & 0x7FFFu, (v & 0x8000u) ? 31u : 0u);
+				}
+				break;
+			}
+		}
+	}
 }
 
 static const uint32_t *tc_block(r3d_ctx *c, const r3d_tex *tx, uint64_t tag, uint32_t bx, uint32_t by)
@@ -127,20 +328,24 @@ static const uint32_t *tc_block(r3d_ctx *c, const r3d_tex *tx, uint64_t tag, uin
 	}
 	{
 		const uint32_t i = set * R3D_TC_WAYS + way;
-		const uint32_t csh = tc_csh(tx), rsh = 8u - csh;
-		const uint32_t cols = 1u << csh, rows = 1u << rsh;
-		const uint32_t T = 1u << tx->tl;
-		const uint32_t t0 = by << rsh, s0 = bx << csh;
-		const uint32_t nr = t0 + rows > T ? T - t0 : rows;
 		const uint32_t t_ = R3D_T();
 
 		if (c->ttag[i] != ~0ull)
 			c->st->tex_evict++;
 		c->st->tex_misses++;
 		blk = c->tcache[i];
-		for (uint32_t r = 0; r < nr; r++)
-			for (uint32_t q = 0; q < cols; q++)
-				blk[(r << csh) | q] = r3d_decode(tx, s0 + q, t0 + r, lc_rdt, lc_rdp, c);
+		tc_fill(c, tx, blk, bx, by);
+#ifdef R3D_VERIFY_DECODE
+		{ /* contra r3d_decode texel a texel (pruebas del host) */
+			const uint32_t csh = tc_csh(tx), rsh = 8u - csh, cols = 1u << csh, rows = 1u << rsh, T = 1u << tx->tl;
+			const uint32_t t0 = by << rsh, s0 = bx << csh, nr = t0 + rows > T ? T - t0 : rows;
+
+			for (uint32_t r = 0; r < nr; r++)
+				for (uint32_t q = 0; q < cols; q++)
+					if (blk[(r << csh) | q] != r3d_decode(tx, s0 + q, t0 + r, lc_rdt, lc_rdp, c))
+						r3d_decode_errors++;
+		}
+#endif
 		c->ttag[i] = tag;
 		c->tstamp[i] = c->clock;
 		R3D_ACC(c->st->t_tex, t_);
@@ -148,24 +353,31 @@ static const uint32_t *tc_block(r3d_ctx *c, const r3d_tex *tx, uint64_t tag, uin
 	return blk;
 }
 
-static uint32_t tc_tex(void *ctx, const r3d_tex *tx, uint32_t s, uint32_t t)
+/* La textura de un polígono: su identidad para la caché y, si no es la del último bloque usado, se olvida ese bloque. */
+static inline void tc_bind(r3d_ctx *c, const r3d_tex *tx)
 {
-	r3d_ctx *c = (r3d_ctx *)ctx;
+	/* identidad: desplazamiento (16 bits), tamaños y formato y transparencia (10), paleta (13); el bloque va aparte */
+	c->cur_base = (uint64_t)((tx->key & 0xFFFFu) | (((tx->key >> 20) & 0x3FFu) << 16)) | ((uint64_t)tx->pkey << 26);
+	if (c->cur_base != c->last_base) {
+		c->last_base = c->cur_base;
+		c->last_id = 0xFFFFFFFFu;
+		c->last_tag = ~0ull;
+	}
+}
 
-	c->st->tex_px++;
-	const uint32_t csh = tc_csh(tx), rsh = 8u - csh;
-	const uint32_t bx = s >> csh, by = t >> rsh;
-	/* identidad: desplazamiento (16 bits), tamaños y formato y transparencia (10), paleta (13), bloque (12) */
-	const uint64_t tag = (uint64_t)((tx->key & 0xFFFFu) | (((tx->key >> 20) & 0x3FFu) << 16)) | ((uint64_t)tx->pkey << 26) |
-			     ((uint64_t)((by << 4) | bx) << 39);
+/* El texel `ix` del bloque `id` (by << 4 | bx) de la textura vigente (tc_bind) */
+static uint32_t tc_get(r3d_ctx *c, const r3d_tex *tx, uint32_t id, uint32_t ix)
+{
+	const uint64_t tag = c->cur_base | ((uint64_t)id << 39);
 
 	if (tag != c->last_tag) {
-		c->last_blk = tc_block(c, tx, tag, bx, by);
+		c->last_blk = tc_block(c, tx, tag, id & 15u, id >> 4);
 		c->last_tag = tag;
+		c->last_id = id;
 	} else {
 		c->st->tex_hits++;
 	}
-	return c->last_blk[((t & ((1u << rsh) - 1u)) << csh) | (s & ((1u << csh) - 1u))];
+	return c->last_blk[ix & 255u];
 }
 
 static void tc_reset(r3d_ctx *c)
@@ -178,7 +390,10 @@ static void tc_reset(r3d_ctx *c)
 		c->ltag[i] = 0xFFFFFFFFu;
 	memset(c->lru, 0, sizeof c->lru);
 	c->last_tag = ~0ull;
+	c->last_base = ~0ull;
+	c->last_id = 0xFFFFFFFFu;
 	c->last_blk = c->tcache[0];
+	c->pal_n = 0;
 	c->clock = 0;
 }
 
@@ -281,6 +496,44 @@ static void fetch_verts(r3d_ctx *c, uint32_t b, uint32_t m)
 	c->st->dma_bytes += k * (uint32_t)sizeof(gx_vertex);
 }
 
+/* ---- la línea de un polígono, en vectores ------------------------------------------------------------------- */
+
+#include "gpu3d/r3d_vrow.h"
+
+static __attribute__((noinline)) void vrow_lin_tex(r3d_ctx *c, const r3d_poly *p, const r3d_row *row, uint32_t *col, uint32_t *dep,
+						   uint32_t *att)
+{
+	r3d_vrow(c, &c->rs, c->st, p, row, col, dep, att, 1, 1);
+}
+static __attribute__((noinline)) void vrow_persp_tex(r3d_ctx *c, const r3d_poly *p, const r3d_row *row, uint32_t *col, uint32_t *dep,
+						     uint32_t *att)
+{
+	r3d_vrow(c, &c->rs, c->st, p, row, col, dep, att, 0, 1);
+}
+/* Sin textura (también lo usan la sonda de la autoprueba y las pruebas unitarias: no necesita contexto) */
+void r3d_core_row_notex(const r3d_rstate *rs, r3d_stats *st, const r3d_poly *p, const r3d_row *row, uint32_t *col, uint32_t *dep,
+			uint32_t *att)
+{
+	if (row->l.w == row->r.w)
+		r3d_vrow(NULL, rs, st, p, row, col, dep, att, 1, 0);
+	else
+		r3d_vrow(NULL, rs, st, p, row, col, dep, att, 0, 0);
+}
+
+static inline void draw_poly_row(r3d_ctx *c, const r3d_poly *p, const r3d_row *row, uint32_t *col, uint32_t *dep, uint32_t *att)
+{
+	const int lin = row->l.w == row->r.w;
+
+	if (p->textured) {
+		if (lin)
+			vrow_lin_tex(c, p, row, col, dep, att);
+		else
+			vrow_persp_tex(c, p, row, col, dep, att);
+	} else {
+		r3d_core_row_notex(&c->rs, c->st, p, row, col, dep, att);
+	}
+}
+
 /* ---- una banda ---------------------------------------------------------------------------------------- */
 
 static void draw_band(r3d_ctx *c, uint32_t n, int32_t y0, int32_t y1, uint32_t cb)
@@ -298,10 +551,12 @@ static void draw_band(r3d_ctx *c, uint32_t n, int32_t y0, int32_t y1, uint32_t c
 	for (int32_t y = r0; y < r1; y++) {
 		uint32_t *cr = col[y - base], *dr = c->dep[y - base], *ar = c->att[y - base];
 
-		for (int x = 0; x < R3D_W; x++) {
-			cr[x] = c->rs.clear_px;
-			dr[x] = c->rs.clear_depth;
-			ar[x] = c->rs.clear_attr;
+		const v4u vc = vs(c->rs.clear_px), vd = vs(c->rs.clear_depth), va = vs(c->rs.clear_attr);
+
+		for (int x = 0; x < R3D_W; x += 4) {
+			*(v4u_ma *)(void *)(cr + x) = vc;
+			*(v4u_ma *)(void *)(dr + x) = vd;
+			*(v4u_ma *)(void *)(ar + x) = va;
 		}
 	}
 	/* lista de la banda, en orden de dibujo */
@@ -342,25 +597,37 @@ static void draw_band(r3d_ctx *c, uint32_t n, int32_t y0, int32_t y1, uint32_t c
 				const uint32_t nv = gp->nverts > GX_POLY_MAXV ? GX_POLY_MAXV : gp->nverts;
 				const gx_vertex *vv[GX_POLY_MAXV];
 				r3d_poly p;
+				uint32_t t2;
 
 				for (uint32_t v = 0; v < nv; v++)
 					vv[v] = &c->vb[b][vo + v];
 				vo += nv;
-				if (nv < 3 || !r3d_poly_setup(&p, gp, vv, &c->rs))
+				t2 = R3D_T();
+				if (nv < 3 || !r3d_poly_setup(&p, gp, vv, &c->rs)) {
+					R3D_ACC(c->st->t_setup, t2);
 					continue;
+				}
+				R3D_ACC(c->st->t_setup, t2);
 				c->st->band_polys++;
+				if (p.textured)
+					tc_bind(c, &p.tex);
 				{
 					const int32_t ya = p.ytop > r0 ? p.ytop : r0;
 					const int32_t yb = p.ybot < r1 - 1 ? p.ybot : r1 - 1;
 
 					for (int32_t y = ya; y <= yb; y++) {
 						r3d_row row;
+						int ok;
 
-						if (!r3d_row_at(&p, y, &row))
+						t2 = R3D_T();
+						ok = r3d_row_at(&p, y, &row);
+						R3D_ACC(c->st->t_rows, t2);
+						if (!ok)
 							continue;
 						c->st->rows++;
-						r3d_draw_row(&p, &row, &c->rs, col[y - base], c->dep[y - base], c->att[y - base], tc_tex, c,
-							     c->st);
+						t2 = R3D_T();
+						draw_poly_row(c, &p, &row, col[y - base], c->dep[y - base], c->att[y - base]);
+						R3D_ACC(c->st->t_pix, t2);
 					}
 				}
 			}
@@ -467,16 +734,7 @@ static uint32_t prnd(void)
 	return probe_lcg;
 }
 
-/* Buscador de texeles de la sonda: nunca se llama (el polígono de la sonda no lleva textura), pero existe como símbolo para el
- * análisis de pila del SPE no vea una llamada indirecta (con NULL el compilador ya no puede descartarla). */
-static __attribute__((noinline)) uint32_t probe_tex(void *ctx, const r3d_tex *tx, uint32_t s, uint32_t t)
-{
-	(void)ctx;
-	(void)tx;
-	return s ^ t;
-}
-
-uint32_t r3d_math_probe(uint32_t seed, uint32_t which)
+R3D_SMALL uint32_t r3d_math_probe(uint32_t seed, uint32_t which)
 {
 	uint64_t h = 0xcbf29ce484222325ull;
 
@@ -539,7 +797,8 @@ uint32_t r3d_math_probe(uint32_t seed, uint32_t which)
 			break;
 		}
 		default: { /* una línea entera de un triángulo con color (r3d_row_at + r3d_draw_row, sin textura) */
-			static uint32_t col[R3D_W], dep[R3D_W], att[R3D_W];
+			static uint32_t col[R3D_W] __attribute__((aligned(16))), dep[R3D_W] __attribute__((aligned(16))),
+				att[R3D_W] __attribute__((aligned(16)));
 			r3d_rstate rs;
 			r3d_poly p;
 			r3d_row row;
@@ -550,12 +809,19 @@ uint32_t r3d_math_probe(uint32_t seed, uint32_t which)
 				break;
 			memset(&rs, 0, sizeof rs);
 			memset(&p, 0, sizeof p);
-			rs.d3 = D3_BLEND;
+			rs.d3 = D3_BLEND | ((prnd() & 3) == 0 ? D3_ALPHATEST : 0u) | ((prnd() & 3) == 0 ? D3_HIGHLIGHT : 0u);
+			rs.alpha_ref = prnd() & 31;
 			rs.wbuf = prnd() & 1;
+			for (int k = 0; k < 32; k++)
+				rs.toon[k] = prnd() & 0x3F3F3Fu;
 			p.n = 3;
-			p.alpha = 1 + (prnd() % 31);
+			p.alpha = (prnd() & 7) == 0 ? 31 : 1 + (prnd() % 31);
 			p.id = prnd() & 63;
-			p.attr = (p.alpha << 16) | (p.id << 24);
+			p.mode = prnd() & 3;
+			p.wire = (prnd() & 15) == 0;
+			p.wshift = (prnd() & 3) == 0 ? 4 : 0;
+			p.attr = (p.alpha << 16) | (p.id << 24) | (p.mode << 4) | ((prnd() & 1) ? PA_TDEPTH : 0u) | ((prnd() & 7) == 0 ? PA_DEQUAL : 0u) |
+				 ((prnd() & 1) ? PA_FOG : 0u);
 			p.ytop = 0x7FFFFFFF;
 			p.ybot = -0x7FFFFFFF;
 			for (int k = 0; k < 3; k++) {
@@ -564,7 +830,7 @@ uint32_t r3d_math_probe(uint32_t seed, uint32_t which)
 				d->x = (int32_t)(prnd() % 300) - 20;
 				d->y = (int32_t)(prnd() % 200) - 4;
 				d->z = prnd() & 0xFFFFFF;
-				d->w = 1 + (prnd() & 0xFFFF);
+				d->w = 1 + (prnd() & 0x7FFF);
 				d->r = (int32_t)((prnd() & 63) << 3 | 7);
 				d->g = (int32_t)((prnd() & 63) << 3 | 7);
 				d->b = (int32_t)((prnd() & 63) << 3 | 7);
@@ -585,7 +851,7 @@ uint32_t r3d_math_probe(uint32_t seed, uint32_t which)
 			memset(&row, 0, sizeof row);
 			memset(&st, 0, sizeof st);
 			if (r3d_row_at(&p, y, &row)) {
-				r3d_draw_row(&p, &row, &rs, col, dep, att, probe_tex, NULL, &st);
+				r3d_core_row_notex(&rs, &st, &p, &row, col, dep, att);
 				for (int x = 0; x < R3D_W; x++)
 					h = (h ^ col[x] ^ ((uint64_t)dep[x] << 32) ^ ((uint64_t)att[x] << 7)) * 0x100000001b3ull;
 			}

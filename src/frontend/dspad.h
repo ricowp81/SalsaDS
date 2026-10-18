@@ -6,6 +6,7 @@
  *
  * Botones, por omisión:
  *   A ○ · B ✕ · X △ · Y □ · L L1 · R R1 · Start · Select · cruceta
+ *   el stick izquierdo hace de cruceta (con histéresis)
  *   L2 cambia la distribución de las pantallas
  *   R2 es el botón de toque (la DS «toca» mientras está apretado)
  *   L3 recentra la inclinación (la postura actual pasa a ser el centro)
@@ -135,6 +136,7 @@ struct sds_keys {
 /* Estado interno del puntero y de los flancos. */
 struct sds_input {
 	uint32_t prev_inputs;   /* entradas apretadas en el cuadro anterior (bits enum sds_in_id) */
+	uint16_t stick_keys;    /* cruceta del stick izquierdo (bits sds_key), con histéresis */
 	/* puntero (coordenadas de la pantalla táctil) */
 	float x, y;
 	float off_x, off_y;     /* desplazamiento del stick en el modo de inclinación */

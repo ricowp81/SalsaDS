@@ -343,6 +343,27 @@ static int pressed(const struct sds_padcfg *c, uint32_t buttons, int input)
 	return (a < SDS_DS3_NBUTTONS && (buttons & (1u << a))) || (b < SDS_DS3_NBUTTONS && (buttons & (1u << b)));
 }
 
+/* Stick izquierdo como cruceta: una dirección se enciende al pasar de
+ * STICK_ON desde el centro y se apaga al volver por debajo de STICK_OFF, para
+ * que no parpadee cerca del umbral. */
+#define STICK_ON  80
+#define STICK_OFF 48
+
+static uint16_t stick_axis(uint16_t keys, int v, int neg, int pos)
+{
+	const uint16_t n = (uint16_t)(1u << neg), p = (uint16_t)(1u << pos);
+	const int d = v - 128;
+	if (d <= -STICK_ON)
+		return (uint16_t)((keys & ~p) | n);
+	if (d >= STICK_ON)
+		return (uint16_t)((keys & ~n) | p);
+	if (d > -STICK_OFF)
+		keys &= (uint16_t)~n;
+	if (d < STICK_OFF)
+		keys &= (uint16_t)~p;
+	return keys;
+}
+
 void sds_pad_map(const struct sds_padcfg *c, struct sds_input *in, const struct sds_ds3 *pad, struct sds_keys *out)
 {
 	static const uint8_t key_of[SDS_IN_TOUCH] = {
@@ -360,6 +381,9 @@ void sds_pad_map(const struct sds_padcfg *c, struct sds_input *in, const struct 
 		if (k < SDS_IN_TOUCH)
 			keys |= (uint16_t)(1u << key_of[k]);
 	}
+	in->stick_keys = stick_axis(in->stick_keys, pad->lx, SDS_KEY_LEFT, SDS_KEY_RIGHT);
+	in->stick_keys = stick_axis(in->stick_keys, pad->ly, SDS_KEY_UP, SDS_KEY_DOWN);
+	keys |= in->stick_keys;
 	/* La DS no tiene cruceta opuesta a la vez: arriba+abajo e izquierda+derecha
 	 * no se dan juntos en el hardware; se anulan. */
 	if ((keys & (1u << SDS_KEY_UP)) && (keys & (1u << SDS_KEY_DOWN)))

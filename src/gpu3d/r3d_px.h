@@ -339,6 +339,17 @@ R3D_INLINE int32_t r3d_lin(int32_t a, int32_t b, uint32_t pos, uint32_t len)
 	return a + q;
 }
 
+/* za + trunc((zb - za)·pos / len) con 0 <= pos < len, sin aritmética de 64 bits (en el SPE la división de 64 bits es de
+ * software y cuesta cientos de ciclos): cociente y resto del salto entre len, piso(|zb - za|·pos / len) = q·pos + piso(r·pos / len). */
+R3D_INLINE uint32_t r3d_zlerp(uint32_t za, uint32_t zb, uint32_t pos, uint32_t len)
+{
+	const uint32_t adz = zb >= za ? zb - za : za - zb;
+	const uint32_t q = adz / len, r = adz - q * len;
+	const uint32_t t = q * pos + (r * pos) / len;
+
+	return zb >= za ? za + t : za - t;
+}
+
 static __attribute__((noinline)) void r3d_end_at(r3d_end *e, const r3d_v *a, const r3d_v *b, uint32_t pos, uint32_t len)
 {
 	uint32_t f;
@@ -357,7 +368,7 @@ static __attribute__((noinline)) void r3d_end_at(r3d_end *e, const r3d_v *a, con
 		e->g = r3d_lin(a->g, b->g, pos, len);
 		e->b = r3d_lin(a->b, b->b, pos, len);
 		e->w = a->w;
-		e->z = (uint32_t)((int64_t)a->z + ((int64_t)b->z - (int64_t)a->z) * (int64_t)pos / (int64_t)len);
+		e->z = r3d_zlerp(a->z, b->z, pos, len);
 		return;
 	}
 	f = r3d_pfac(pos, len, a->w, b->w, 9);
@@ -370,7 +381,7 @@ static __attribute__((noinline)) void r3d_end_at(r3d_end *e, const r3d_v *a, con
 	if (e->w == 0)
 		e->w = 1;
 	/* z lineal en pantalla */
-	e->z = len ? (uint32_t)((int64_t)a->z + ((int64_t)b->z - (int64_t)a->z) * (int64_t)pos / (int64_t)len) : a->z;
+	e->z = len ? r3d_zlerp(a->z, b->z, pos, len) : a->z;
 }
 
 static inline void r3d_end_of(r3d_end *e, const r3d_v *a)
@@ -390,8 +401,15 @@ static inline int r3d_chain_edge(const r3d_poly *p, int dir, int32_t y, const r3
 	int i = p->top;
 
 	for (int k = 0; k < p->n; k++) {
-		const int j = (i + dir + p->n) % p->n;
-		const r3d_v *a = &p->v[i], *b = &p->v[j];
+		int j = i + dir;
+		const r3d_v *a, *b;
+
+		if (j < 0)
+			j += p->n;
+		else if (j >= p->n)
+			j -= p->n;
+		a = &p->v[i];
+		b = &p->v[j];
 
 		if (b->y > y && a->y <= y) {
 			*pa = a;
@@ -426,10 +444,19 @@ R3D_INLINE int32_t r3d_fx(int32_t v)
 	return v >> 18; /* desplazamiento aritmético: piso */
 }
 
+/* ¿Arista y-mayor? Con |dx| = dy (45°) la DS la trata como x-mayor si va hacia la izquierda al bajar (dx < 0) y como y-mayor si va
+ * hacia la derecha: medido contra melonDS con las escenas 0, 13, 14, 23 y 25 de gx3d (docs/fase3.md, 3.4). */
+R3D_INLINE int r3d_ymajor(int32_t dx, int32_t dy)
+{
+	const int32_t adx = dx < 0 ? -dx : dx;
+
+	return adx < dy || (adx == dy && dx > 0);
+}
+
 /* Bordes de la línea y con una arista: la izquierda da el primer píxel (y el final de su tramo de arista), la derecha
  * el final exclusivo (y el principio de su tramo). Modelo ajustado a melonDS con la escena 13 de la ROM gx3d
  * (tools/r3d-fit.py; docs/fase3.md, 3.2):
- *   y-mayor:  izquierda piso(X(y)) (con 1/2^18 menos si la pendiente es negativa); derecha piso(X(y))
+ *   y-mayor (|dx| < dy, o |dx| = dy hacia la derecha):  izquierda piso(X(y)) (con 1/2^18 menos si la pendiente es negativa); derecha piso(X(y))
  *   x-mayor:  la x de la línea siguiente redondeada: izquierda redondeo(X(y+1) - 1/2^18); derecha redondeo(X(y+1)) si
  *             va a la derecha, redondeo(X(y+1) - 1/2^18) si va a la izquierda; en la última línea de la arista, x1
  *   tramo de arista «gordo»: una izquierda x-mayor que va a la izquierda cubre hasta redondeo(X(y)); una derecha x-mayor
@@ -440,7 +467,7 @@ static inline void r3d_edge_x(const r3d_v *a, const r3d_v *b, int32_t y, int rig
 	const int32_t xf = r3d_xfix(a, b, y);
 	const int32_t half = 1 << 17;
 
-	if (adx <= dy) { /* y-mayor */
+	if (r3d_ymajor(dx, dy)) { /* y-mayor */
 		*xb = r3d_fx(xf + (!right && dx < 0 ? -1 : 0));
 		*xrun = right ? 0x7FFFFFFF : -0x7FFFFFFF; /* sin tramo gordo */
 		r3d_end_at(e, a, b, (uint32_t)(y - a->y), (uint32_t)dy);

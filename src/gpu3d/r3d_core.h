@@ -18,8 +18,8 @@
 #define R3D_TC_WAYS 4
 #define R3D_TC_SETS 16
 #define R3D_TC_BLOCKS (R3D_TC_WAYS * R3D_TC_SETS)
-#define R3D_LC_LINES 64  /* líneas de 128 bytes de la memoria de texturas */
-#define R3D_LP_LINES 16  /* ídem, de la de paletas */
+#define R3D_LC_LINES 32  /* líneas de 128 bytes de la memoria de texturas */
+#define R3D_LP_LINES 8   /* ídem, de la de paletas */
 
 /* etiquetas de DMA (31 es de spukit) */
 enum { R3D_TAG_HDR = 0, R3D_TAG_SORT = 1, R3D_TAG_POLY = 3, R3D_TAG_VTX = 5, R3D_TAG_OUT = 7, R3D_TAG_LINE = 9 };
@@ -48,11 +48,24 @@ struct r3d_ctx {
 	uint8_t lru[R3D_LC_LINES / 2];   /* por conjunto: 1 = la vía 1 fue la última usada */
 	uint64_t last_tag;
 	const uint32_t *last_blk;
+	uint64_t last_base;  /* identidad de la textura del último bloque usado (sin el bloque) */
+	uint64_t cur_base;   /* ídem, de la textura del polígono que se dibuja */
+	uint32_t last_id;    /* bloque (by << 4 | bx) del último usado; ~0 = ninguno */
 	uint32_t clock;
+	/* decodificación de bloques: paleta ya convertida (r3d_555 sin alfa) y bytes de VRAM traídos */
+	uint32_t pxtab[256];
+	uint32_t pal_addr, pal_n; /* de qué paleta es pxtab y cuántas entradas tiene (0 = ninguna) */
+	uint8_t stage[512];
 	/* trabajo */
 	r3d_job job;
 	r3d_rstate rs;
 	r3d_stats *st;
 };
+
+
+/* La línea de un polígono sin textura con el código vectorial del SPE (r3d_vrow.h); no necesita contexto. col, dep y att
+ * son de 256 palabras alineadas a 16. Para las pruebas contra r3d_draw_row y la sonda de la autoprueba. */
+void r3d_core_row_notex(const r3d_rstate *rs, r3d_stats *st, const r3d_poly *p, const r3d_row *row, uint32_t *col, uint32_t *dep,
+			uint32_t *att);
 
 #endif

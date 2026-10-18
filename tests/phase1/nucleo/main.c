@@ -998,14 +998,14 @@ static void log_stats(void)
 
 		salsads_log("DATO raster3d: %u cuadros con 3D; por cuadro y SPE (decrementador), mediana / p95 / máx en ms: SPE0 %u.%02u / %u.%02u / %u.%02u, "
 			    "SPE1 %u.%02u / %u.%02u / %u.%02u; espera del PPE en el VBlank %u.%02u / %u.%02u; por cuadro: %.0f polígonos, %.0f banda·polígono, "
-			    "%.0f píxeles, %.0f escritos; texeles %.0f, aciertos de la caché %.2f %%, %.1f bloques decodificados, %.1f desalojos, %.1f líneas de VRAM; "
-			    "ms por cuadro (suma de los dos SPE): orden %.2f, listas %.2f, DMA %.2f, dibujo %.2f (de eso texturas %.2f), posproceso %.2f, salida %.2f",
+			    "%.0f líneas, %.0f píxeles, %.0f escritos; texeles %.0f, aciertos de la caché %.2f %%, %.1f bloques decodificados, %.1f desalojos, %.1f líneas de VRAM; "
+			    "ms por cuadro (suma de los dos SPE): orden %.2f, listas %.2f, DMA %.2f, dibujo %.2f (de eso texturas %.2f; polígonos %.2f, aristas %.2f, píxeles %.2f), posproceso %.2f, salida %.2f",
 			    (unsigned)acc_r3d_frames, MS(pct(M_R3D0, 50)), MS(pct(M_R3D0, 95)), MS(pct(M_R3D0, 100)), MS(pct(M_R3D1, 50)),
 			    MS(pct(M_R3D1, 95)), MS(pct(M_R3D1, 100)), MS(pct(M_R3DW, 50)), MS(pct(M_R3DW, 95)), r->polys / n / 2.0,
-			    r->band_polys / n, r->pixels / n, r->written / n, r->tex_px / n,
+			    r->band_polys / n, r->rows / n, r->pixels / n, r->written / n, r->tex_px / n,
 			    r->tex_px ? 100.0 * (double)r->tex_hits / (double)(r->tex_hits + r->tex_misses) : 100.0, r->tex_misses / n, r->tex_evict / n,
 			    r->line_miss / n, r->t_sort / n / hz, r->t_list / n / hz, r->t_fetch / n / hz, r->t_raster / n / hz, r->t_tex / n / hz,
-			    r->t_post / n / hz, r->t_out / n / hz);
+			    r->t_setup / n / hz, r->t_rows / n / hz, r->t_pix / n / hz, r->t_post / n / hz, r->t_out / n / hz);
 		memset(&acc_r3d, 0, sizeof acc_r3d);
 		acc_r3d_frames = 0;
 	}
