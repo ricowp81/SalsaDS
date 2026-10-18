@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <fat.h>
+#include <nds/exceptions.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -301,6 +302,64 @@ static void sd_flush(void)
 		sd_state = 1;
 }
 
+/* Manejador de excepciones propio (ARM9): en vez de la pantalla de libnds en la de abajo, anota el PC, la instrucción y los
+ * registros en la pantalla de arriba y en el log, e intenta escribir el log antes de rendirse. */
+static void sd_flush(void);
+static void exc_handler(void)
+{
+	char line[40], num[12];
+	const uint32_t pc = (uint32_t)exceptionRegisters[15];
+	uint32_t w1 = *(volatile uint32_t *)(pc - 4), w2 = *(volatile uint32_t *)(pc - 8);
+
+	fill_rect(0, 0, 256, 192, RGB(20, 2, 2));
+	line[0] = 0;
+	append(line, "EXCEPCION EN ");
+	append(line, group_name ? group_name : "-");
+	draw_text(0, 0, line, C_FG, RGB(20, 2, 2));
+	line[0] = 0;
+	append(line, "PC ");
+	hex32(num, pc);
+	append(line, num);
+	draw_text(2, 0, line, C_FG, RGB(20, 2, 2));
+	line[0] = 0;
+	append(line, "I-4 ");
+	hex32(num, w1);
+	append(line, num);
+	draw_text(3, 0, line, C_FG, RGB(20, 2, 2));
+	line[0] = 0;
+	append(line, "I-8 ");
+	hex32(num, w2);
+	append(line, num);
+	draw_text(4, 0, line, C_FG, RGB(20, 2, 2));
+	for (int r = 0; r < 4; r++) {
+		line[0] = 0;
+		append(line, "R");
+		dec(num, (uint32_t)(r * 4));
+		append(line, num);
+		append(line, " ");
+		hex32(num, (uint32_t)exceptionRegisters[r * 4]);
+		append(line, num);
+		draw_text(6 + r, 0, line, C_FG, RGB(20, 2, 2));
+	}
+	line[0] = 0;
+	append(line, "SP ");
+	hex32(num, (uint32_t)exceptionRegisters[13]);
+	append(line, num);
+	append(line, " LR ");
+	hex32(num, (uint32_t)exceptionRegisters[14]);
+	append(line, num);
+	draw_text(11, 0, line, C_FG, RGB(20, 2, 2));
+	lprintf("[EXCEPCION] en el grupo %s\n", group_name ? group_name : "-");
+	for (int r = 0; r < 16; r++)
+		lprintf("  r%d=%08lX\n", r, (unsigned long)exceptionRegisters[r]);
+	lprintf("  instruccion en PC-4=%08lX PC-8=%08lX\n", (unsigned long)w1, (unsigned long)w2);
+	draw_text(13, 0, "ESCRIBIENDO LOG...", C_FG, RGB(20, 2, 2));
+	sd_flush();
+	draw_text(13, 0, sd_state == 1 ? "LOG ESCRITO EN LA SD  " : "SIN SD: ANOTA LA FOTO", C_FG, RGB(20, 2, 2));
+	for (;;)
+		;
+}
+
 void sds_init(const char *title)
 {
 	volatile uint32_t *w = (volatile uint32_t *)R;
@@ -311,6 +370,7 @@ void sds_init(const char *title)
 	R->version = 1;
 	publish();
 
+	setExceptionHandler(exc_handler);
 	REG_POWCNT1 = (1 << 0) | (1 << 1) | (1 << 9) | (1 << 15); /* LCD, motor A, motor B, A arriba */
 	REG_VRAMCNT_A = 0x80;                                     /* banco A: LCDC */
 	REG_DISPCNT_B = 0;                                        /* la de abajo, apagada */

@@ -115,7 +115,12 @@ Las ROMs de pruebas (`hola`, `cpu9`, `cpuarm`, `mem`, `irq`, `dma`, `ipc`, `bios
    interrumpir). Si hay más de 10 grupos, la lista sube una fila y se ven los últimos.
    La SWI 0x17 (Diff8bitUnFilterVram) es de la GBA y no está en la BIOS de la DS: `bios` no la llama (solo con
    `-DBIOS_SWI17`, para comparar emuladores).
-7. En un flashcart los grupos `CARTUCHO` y `CART ARM7` de `periph` miden el R4, no el cartucho de la ROM: si el chip ID
+7. **Excepciones del ARM9** (instrucción indefinida, abortos): las ROMs que usan `sds_init` instalan su manejador
+   (`setExceptionHandler`): pintan en rojo en la pantalla de arriba el grupo, el PC, las dos palabras antes del PC
+   (`I-4`, `I-8`: la instrucción ofensiva es una de ellas según el modo) y los registros, anotan lo mismo en el log y
+   tratan de escribirlo (restaurando el estado). El grupo `MODOS` de `cpuarm` ya no escribe el bit T con
+   `msr cpsr_c, #0xFF` (impredecible en ARMv5; en la DS real cambiaba a Thumb y ejecutaba basura): solo con `-DMSR_T_TEST`.
+8. En un flashcart los grupos `CARTUCHO` y `CART ARM7` de `periph` miden el R4, no el cartucho de la ROM: si el chip ID
    (B8) es 0/FFFFFFFF o B7 no devuelve los bytes conocidos, sus comprobaciones pasan a informativas y el log lo anota
    (`NOTA: ... no aplican en flashcart`). La lectura de SQRTCNT justo tras escribir también es informativa: en hardware el
    cálculo (13 ciclos) puede haber terminado ya.

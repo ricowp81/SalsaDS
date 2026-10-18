@@ -329,8 +329,12 @@ static void group_modes(void)
 	CHECK_7DIV(v & 0xF8000000u, BY_CPU(0xF0000000u, 0xF8000000u));
 	__asm__ volatile("msr cpsr_f, #0xA0000000\n\t mrs %0, cpsr\n\t msr cpsr_f, #0" : "=r"(v) : : "cc");
 	SDS_CHECK(v & 0xF8000000u, 0xA0000000u);
+#ifdef MSR_T_TEST
+	/* Escribir el bit T con MSR es impredecible según el manual de ARM: los emuladores lo ignoran, pero un ARM946E-S real
+	 * cambia a Thumb y la ROM ejecutaba basura (excepción de instrucción indefinida en la DS). Solo con -DMSR_T_TEST. */
 	__asm__ volatile("mrs r3, cpsr\n\t msr cpsr_c, #0xFF\n\t mrs %0, cpsr\n\t msr cpsr_c, r3" : "=r"(v) : : "r3", "cc");
 	SDS_CHECK(v & 0xFF, 0xDF); /* 0xFF pedía T puesto y el modo 0x1F: el modo cambió, T no */
+#endif
 	__asm__ volatile("msr cpsr_f, #0x10000000\n\t mrs %0, cpsr\n\t msr cpsr_f, #0" : "=r"(v) : : "cc");
 	SDS_CHECK(v & 0xF8000000u, 0x10000000u);
 }
