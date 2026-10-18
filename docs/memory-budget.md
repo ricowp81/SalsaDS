@@ -25,7 +25,7 @@ Cifras en MB. **Previsto** = estimación de diseño (todavía no hay núcleo);
 | Registro de escrituras de video por línea (cuadro) | 1 | | Para los SPEs (2D/3D); doble búfer |
 | Texturas decodificadas (3D) | 8 | | |
 | Búferes de DMA y anillos de los SPEs | 4 | | |
-| Audio | 1 | | |
+| Audio | 1 | 0,3 (2 trabajos de 43 KB + anillo de 128 KB; `sizeof struct nds` pasó de 8 623 872 a 8 749 184 B con el estado y las escrituras del sonido) | Fase 2.2: anillo de 16 384 muestras estéreo flotantes (340 ms) en `audio_out.c` |
 | Estados guardados | 10 | | Foto en segundo plano |
 | Código, pilas, heap de newlib | 16 | | |
 | **Total previsto** | **≈ 230** | | Con una ROM de 128 MB no cabe junto con todo lo demás en ~210 MB: decidir el tope de ROM o leerla por demanda |
@@ -51,5 +51,6 @@ datos, búferes de DMA y pila; la holgura de la pila se mide al enlazar con
 |---|---|---|---|---|
 | `spu_gpu2d` (composición 2D de 2 pantallas, Fase 0.5) | 11,8 KB | 187 KB (contexto 186 KB: OBJ 2 × 128 × 512 B = 128 KB, teselas 17 KB, cambios 24 KB, resto 12 KB) | holgura 60 976 B | medido al enlazar (`spu-size`, `tools/spu-stack.py`); ≈ 199,7 KB |
 | `gpu2d` (compositor de una pantalla, Fase 2.1; `src/spu/gpu2d`) | 38,5 KB | 198,2 KB (contexto 196 224 B: paleta unificada 42 KB, mapas afines 40 KB, OBJ 2 × 16 KB, teselas 4 × 2 × 2 KB, cambios 2 × 4 KB, el resto líneas y trabajos) | holgura ≈ 25 KB (mínimo 4 KB) | un SPE por pantalla; medido al enlazar |
+| `snd` (mezclador de sonido, Fase 2.2; `src/spu/snd`) | 14,4 KB | 50,2 KB (estado 3,4 KB, escrituras 32 KB, muestras de 16 bits 2,5 KB, salida flotante 8 KB, escalón de la captura) | holgura 190 KB (mínimo 4 KB) | un SPE; medido al enlazar |
 | (rasterizador 3D, Fase 0.4) | | | | pendiente |
 | `spe-raster3d` (0.4) | 27,3 KB | 202,9 KB | 25,6 KB libres; usa 2,5 KB (holgura 23,1 KB, mínimo 8 KB) | Caché de texturas 112 KB, color 2 × 16 KB, profundidad 16 KB, cajas 16 KB, registros 12 KB; detalle en `tests/phase0/spe-raster3d/spu_main.c` |

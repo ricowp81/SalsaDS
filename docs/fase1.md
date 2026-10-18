@@ -306,8 +306,7 @@ Hechas: 00h SoftReset (vuelve a la entrada de la cabecera), 03h WaitByLoop, 04h 
 06h Halt, 07h Sleep (como Halt), 08h SoundBias, 09h Div, 0Bh CpuSet, 0Ch CpuFastSet, 0Dh Sqrt, 0Eh GetCRC16, 0Fh
 IsDebugger, 10h BitUnPack, 11h LZ77 desde memoria, 12h LZ77 por callbacks (escritura de 16 bits), 13h Huffman por
 callbacks, 14h RLE, 15h RLE por callbacks, 16h–18h filtros de diferencias (el 17h no figura en la lista de la DS)
-y 1Fh CustomHalt. **No hechas**: 1Ah–1Ch (las tablas de seno, de tono y de volumen del ARM7: los juegos de
-Nintendo las usan; para el sonido de la Fase 2). IntrWait/VBlankIntrWait/Halt ponen la CPU en HALT y reejecutan
+y 1Fh CustomHalt. **1Ah–1Ch** (las tablas de seno, de tono y de volumen del ARM7) se hicieron en la Fase 2.2 (`docs/fase2.md`). IntrWait/VBlankIntrWait/Halt ponen la CPU en HALT y reejecutan
 la SWI al despertar, con una bandera por CPU que recuerda que ya se descartaron los avisos viejos; las banderas
 están en [DTCM+0x3FF8] / [0x0380FFF8] y las pone el manejador del programa (el de libnds lo hace).
 
@@ -564,7 +563,7 @@ Mismo título y mismo APPID que el de la 1.2, construido desde el commit 9f2a177
 ### Qué queda pendiente al cerrar la Fase 1
 
 1. **Medir el paquete nuevo en la PS3** (lista de arriba).
-2. SWI 1Ah–1Ch de la BIOS (tablas de seno, de tono y de volumen del ARM7): New Super Mario Bros. las llama al arrancar y hoy se ignoran (para el sonido de la Fase 2).
+2. SWI 1Ah–1Ch de la BIOS (tablas de seno, de tono y de volumen del ARM7): hechas en la Fase 2.2 (`docs/fase2.md`).
 3. Super Mario 64 DS escribe a la FIFO de geometría, que aún no existe (Fase 3); hasta ahí coincide con melonDS.
 4. Guardado: detección sin archivo ni tabla (hoy EEPROM de 64 KB), Flash de 8 MB, escritura con tiempo (WIP) y protección por bloques; ampliar la tabla de códigos de juego cuando haya más respaldos.
 5. Eventos de video perezosos (arriba) si el desglose de la PS3 lo pide.
