@@ -18,7 +18,8 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 - Modo rápido (el de la PS3): un bloque puede pasarse del final del tramo; para que eso no rompa las esperas por tiempo, los
   desbordes de temporizadores vencidos se atienden al leer o escribir un temporizador (la ROM `irq` fallaba sin eso; con el
   intérprete ningún resultado cambia).
-- **Paquete «SalsaDS JIT núcleo» (SLDS00009)**: `build/salsads-nucleo-jit/salsads-nucleo-jit.pkg` (`tests/phase4/nucleo-jit`),
+- **Paquete «SalsaDS JIT núcleo» (SLDS00009)**: `build/salsads-nucleo-jit/salsads-nucleo-jit.pkg` (`tests/phase4/nucleo-jit`) del commit
+  7a90a6a, SHA-256 `400704fe1253af680131e890c02fd81e69264aa9f6fc17909e7919ac3ebe726a`,
   con la línea `DATO jit` y el ARM9 en `DATO desglose`. En RPCS3 corre el respaldo (intérprete) y da `RESULTADO nucleo: OK`.
   **Sin medir en la PS3**: la meta es el ARM9 bajo ~8 ms por cuadro (44–49 ms con el intérprete).
 - Pendiente: medir en la consola; el ARM7 en el recompilador; en línea las llamadas al intérprete frecuentes (CP15 de caché,
