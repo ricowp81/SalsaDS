@@ -4,6 +4,27 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-18 — Fidelidad del 3D (Fase 3.3)
+
+- **La estrella de «Touch to start» de Super Mario 64 DS**: dos errores del motor de geometría (`gx.c`). VTX_DIFF sumaba la
+  diferencia por 8 (se suma tal cual: los ojos eran ocho veces más grandes) y las coordenadas de textura generadas (la textura de
+  entorno de la estrella) no seguían el hardware: el modo 2 se calcula al llegar NORMAL con `>> 21` y sin traslación (antes `>> 17`
+  con traslación), el 3 con `>> 24` en cada vértice, el 1 en TEXCOORD sin multiplicar la traslación por 16. Hallado volcando las
+  órdenes del cuadro y comparando con melonDS (escena 15 de `gx3d`, idéntica). Pruebas en `test_gx.c`.
+- **Regla de interpolación del color** (medida con las escenas 16 a 22 de `gx3d`, que aíslan línea, aristas, perspectiva y aristas
+  inclinadas): color con 3 bits más y fracción llena salvo en el 0; lineal exacto con las `w` iguales; con `w` distinta, P = 8 en la
+  línea; un píxel más de denominador con la arista derecha inclinada y y-mayor; aristas x-mayores por la y en el extremo de afuera;
+  decal con alfa 0 y 31. Contra melonDS: Gouraud de 14 001 a 828 píxeles distintos, toon y highlight de ~4 000 a **0**, escenas
+  15 a 18 idénticas (detalle y lo que queda en `docs/fase3.md`, 3.3).
+- **Queda**: el color de los triángulos con aristas x-mayores (±1 en ≈ 40 % de los canales de la escena 21), niebla (escena 9),
+  bordes de un píxel, antialiasing, imagen de fondo y la captura de pantalla DISPCAPCNT (no hecha; plan en `docs/fase3.md`).
+- **Pruebas**: `test-host` verde (LE con sanitizadores y BE; ROM `gx3d` con 23 semillas e imágenes de referencia nuevas); juegos sin
+  regresión (`--vs-ref3d` igual en SM64DS, MKDS y NSMB). Cambió la ROM `gx3d` (escenas 15 a 22), no `geom`.
+- **PS3**: el SPE del 3D usa las mismas reglas (texto 47,1 KB, pila libre 23,9 KB; `r3d_end_at` y `r3d_dda_init` salieron de línea para
+  no inflar el bucle). Paquete «SalsaDS núcleo» (SLDS00008) `build/salsads-nucleo-fase33.pkg` del commit PAQUETE_COMMIT, SHA-256
+  PAQUETE_SHA. En RPCS3: autoprueba 3D igual y MKDS 400 cuadros `RESULTADO nucleo: OK`. **Sin medir en la PS3** (el bucle sigue escalar).
+- Aparte: `tests/unit/core` (volcado de memoria de qemu, 1,8 MB) está commiteado por error en `main`; lo regeneran las corridas BE.
+
 ## 2026-10-18 — Motor de render 3D (Fase 3.2)
 
 - **Rasterizador de la DS** sobre `gx_frame` (`src/gpu3d/r3d_*`, código propio desde GBATEK y melonDS ejecutándolo): orden de

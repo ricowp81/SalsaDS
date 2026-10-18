@@ -467,6 +467,15 @@ static uint32_t prnd(void)
 	return probe_lcg;
 }
 
+/* Buscador de texeles de la sonda: nunca se llama (el polígono de la sonda no lleva textura), pero existe como símbolo para el
+ * análisis de pila del SPE no vea una llamada indirecta (con NULL el compilador ya no puede descartarla). */
+static __attribute__((noinline)) uint32_t probe_tex(void *ctx, const r3d_tex *tx, uint32_t s, uint32_t t)
+{
+	(void)ctx;
+	(void)tx;
+	return s ^ t;
+}
+
 uint32_t r3d_math_probe(uint32_t seed, uint32_t which)
 {
 	uint64_t h = 0xcbf29ce484222325ull;
@@ -576,7 +585,7 @@ uint32_t r3d_math_probe(uint32_t seed, uint32_t which)
 			memset(&row, 0, sizeof row);
 			memset(&st, 0, sizeof st);
 			if (r3d_row_at(&p, y, &row)) {
-				r3d_draw_row(&p, &row, &rs, col, dep, att, NULL, NULL, &st);
+				r3d_draw_row(&p, &row, &rs, col, dep, att, probe_tex, NULL, &st);
 				for (int x = 0; x < R3D_W; x++)
 					h = (h ^ col[x] ^ ((uint64_t)dep[x] << 32) ^ ((uint64_t)att[x] << 7)) * 0x100000001b3ull;
 			}

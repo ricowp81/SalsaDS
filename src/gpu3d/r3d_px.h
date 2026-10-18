@@ -339,7 +339,7 @@ R3D_INLINE int32_t r3d_lin(int32_t a, int32_t b, uint32_t pos, uint32_t len)
 	return a + q;
 }
 
-static inline void r3d_end_at(r3d_end *e, const r3d_v *a, const r3d_v *b, uint32_t pos, uint32_t len)
+static __attribute__((noinline)) void r3d_end_at(r3d_end *e, const r3d_v *a, const r3d_v *b, uint32_t pos, uint32_t len)
 {
 	uint32_t f;
 
@@ -707,7 +707,7 @@ typedef struct r3d_dda {
 	uint32_t r, acc;
 } r3d_dda;
 
-R3D_INLINE void r3d_dda_init(r3d_dda *d, int32_t a, int32_t b, int32_t L, uint32_t k0)
+static __attribute__((noinline)) void r3d_dda_init(r3d_dda *d, int32_t a, int32_t b, int32_t L, uint32_t k0)
 {
 	const int32_t Ld = L > 0 ? L : 1, q = r3d_floordiv(b - a, Ld);
 
