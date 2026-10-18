@@ -81,6 +81,18 @@ void sds_finish(void) __attribute__((noreturn));
 /* Pone un texto en una línea de la pantalla (para ROMs que lo necesiten). */
 void sds_print_row(int row, const char *text);
 
+/* Para las ROMs de gráficos: ni usan la pantalla para el texto (la imagen es el resultado) ni cambian los motores.
+ * `sds_init_quiet` solo limpia y publica el bloque de resultados; `sds_finish_quiet` publica el veredicto (1 = OK) y
+ * no vuelve. Las expectativas de píxeles (`sds_expect_pixel`) quedan en SDS_EXPECT_ADDR para que quien mira la
+ * imagen (tools/gfxcheck.py) compruebe los píxeles conocidos. */
+void sds_init_quiet(void);
+void sds_finish_quiet(int ok) __attribute__((noreturn));
+#define SDS_EXPECT_ADDR 0x02380800u
+#define SDS_EXPECT_MAX 1000u
+#define SDS_EXPECT_MAGIC 0x45505847u /* "GXPE" */
+/* screen 0 = motor A, 1 = motor B; color BGR555 que debe tener el píxel (x, y) de ese motor. */
+void sds_expect_pixel(int screen, int x, int y, uint16_t color);
+
 #define SDS_CHECK(got, want) sds_check((uint32_t)(got), (uint32_t)(want), __LINE__)
 /* Informativa: no falla, solo se registra si difiere. */
 void sds_diverge(uint32_t got, uint32_t want, uint32_t id);

@@ -170,6 +170,48 @@ void sds_init(const char *title)
 	draw_text(1, 0, "SALSADS TEST", C_DIM, C_BG);
 }
 
+void sds_init_quiet(void)
+{
+	volatile uint32_t *w = (volatile uint32_t *)R;
+
+	for (unsigned i = 0; i < (SDS_DIVERGE_OFFSET + SDS_DIVERGE_MAX * sizeof(struct sds_fail)) / 4; i++)
+		w[i] = 0;
+	R->magic = SDS_MAGIC;
+	R->version = 1;
+	publish();
+	{
+		volatile uint32_t *x = (volatile uint32_t *)SDS_EXPECT_ADDR;
+
+		for (unsigned i = 0; i < 2 + 2 * SDS_EXPECT_MAX; i++)
+			x[i] = 0;
+		x[0] = SDS_EXPECT_MAGIC;
+		flush_range((const void *)SDS_EXPECT_ADDR, 8u + 8u * SDS_EXPECT_MAX);
+	}
+}
+
+void sds_expect_pixel(int screen, int x, int y, uint16_t color)
+{
+	volatile uint32_t *x32 = (volatile uint32_t *)SDS_EXPECT_ADDR;
+	const uint32_t n = x32[1];
+
+	if (n >= SDS_EXPECT_MAX)
+		return;
+	x32[2 + 2 * n] = (uint32_t)(screen & 1) | ((uint32_t)(x & 0xFFFF) << 16);
+	x32[3 + 2 * n] = (uint32_t)(y & 0xFFFF) | ((uint32_t)color << 16);
+	x32[1] = n + 1;
+	flush_range((const void *)SDS_EXPECT_ADDR, 8u + 8u * SDS_EXPECT_MAX);
+}
+
+void sds_finish_quiet(int ok)
+{
+	R->verdict = ok ? SDS_VERDICT_OK : SDS_VERDICT_FAIL;
+	R->failed = ok ? 0 : 1;
+	R->state = 1;
+	publish();
+	for (;;)
+		;
+}
+
 static void close_group(void)
 {
 	char line[40], num[12], padded[14];

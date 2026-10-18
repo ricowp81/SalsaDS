@@ -110,6 +110,60 @@ check_ocio() { # orden log
 		fail=1
 	fi
 }
+# --- Motores 2D (Fase 2.1) ----------------------------------------------------------------------------------------
+# Las ROMs gfx* de tests/roms montan escenas conocidas en los motores 2D. Cada una corre 6 cuadros con arranque directo y
+# se comprueba, según la ROM: la lista de píxeles que dejó (EXPECT), que los dos motores den la misma imagen (A==B) y,
+# siempre, que el compositor por líneas (el código del SPE, aquí escalar) dé los mismos píxeles que el renderizador de
+# referencia (REF). gfxrand corre varias semillas (tools/rom-seed.py las pone en una copia de la ROM). La comparación con
+# melonDS es a mano (tools/gfx-compare.py): docs/fase2.md.
+GFX_A="gfxtext gfxaffine gfxaffine1 gfxext16 gfxbmp8 gfxbmpd gfxobj gfxobjaff gfxobjx gfxwin gfxblend0 gfxblend1 gfxblend2 gfxblend3 gfxblend4 gfxblend5"
+GFX_E="gfxraster gfxwinx gfxmode0 gfxmode2 gfxmode3"
+GFX_R="gfxfx gfxfx1 gfxmos0 gfxmos1 gfxmos2 gfxmos3 gfxmos4 gfxmos5 gfxmos6 gfxmos7 gfxmos8 gfxmos9 gfxmos10 gfxmos11 gfxextpal gfxextpal1 gfxextpal2"
+GFX_SEEDS="0 1 2 3 4 5 6 7 8 9 10 11"
+GFX_OPT_A="--expect --same-ab --vs-ref"
+GFX_OPT_E="--expect --vs-ref"
+GFX_OPT_R="--vs-ref"
+check_gfx() { # orden rom log patrones...
+	o=$1 r=$2 l=$3
+	shift 3
+	ok=1
+	for pat in "$@"; do
+		grep -q "$pat" "$l" || ok=0
+	done
+	if [ $ok = 1 ]; then
+		printf '%-4s OK     gfx %s: %s\n' "$o" "$r" "$(grep -E '^(EXPECT|A==B|REF)' "$l" | tr '\n' ' ')"
+	else
+		printf '%-4s FALLO  gfx %s (ver %s)\n' "$o" "$r" "$l"
+		grep -E '^(EXPECT|A==B|REF)|no puedo' "$l" | head -n 6
+		fail=1
+	fi
+}
+# corre las ROMs de gráficos con `runner` (un comando que recibe el ejecutable, las opciones y la ROM) y las revisa
+gfx_group() { # orden etiqueta runner... 
+	o=$1 lab=$2
+	shift 2
+	for r in $GFX_A; do
+		"$@" --frames 14 $GFX_OPT_A "tests/roms/homebrew/$r.nds" >"build/logs/gfx-$r-$lab.log" 2>&1
+		check_gfx "$o" "$r" "build/logs/gfx-$r-$lab.log" '^EXPECT: .* 0 fallos$' '^A==B: OK$' '^REF: IGUAL$'
+	done
+	for r in $GFX_E; do
+		fr=14
+		[ "$r" = gfxraster ] && fr=6 # sus cambios por línea paran a los 6 cuadros: después la imagen ya no es la de la lista
+		"$@" --frames $fr $GFX_OPT_E "tests/roms/homebrew/$r.nds" >"build/logs/gfx-$r-$lab.log" 2>&1
+		check_gfx "$o" "$r" "build/logs/gfx-$r-$lab.log" '^EXPECT: .* 0 fallos$' '^REF: IGUAL$'
+	done
+	for r in $GFX_R; do
+		"$@" --frames 14 $GFX_OPT_R "tests/roms/homebrew/$r.nds" >"build/logs/gfx-$r-$lab.log" 2>&1
+		check_gfx "$o" "$r" "build/logs/gfx-$r-$lab.log" '^REF: IGUAL$'
+	done
+	for sd in $GFX_SEEDS; do
+		"$@" --frames 14 $GFX_OPT_R "build/logs/gfxrand-$sd.nds" >"build/logs/gfx-rand$sd-$lab.log" 2>&1
+		check_gfx "$o" "rand$sd" "build/logs/gfx-rand$sd-$lab.log" '^REF: IGUAL$'
+	done
+}
+for sd in $GFX_SEEDS; do
+	python3 tools/rom-seed.py tests/roms/homebrew/gfxrand.nds "build/logs/gfxrand-$sd.nds" "$sd" >/dev/null
+done
 if tools/build.sh -C src/host >build/logs/build-host-run.log 2>&1; then
 	for rom in $ROMS; do
 		tools/build.sh --sh "build/host-run/salsads-cpurun tests/roms/homebrew/$rom.nds" >"build/logs/rom-$rom-le.log" 2>&1
@@ -131,8 +185,9 @@ if tools/build.sh -C src/host >build/logs/build-host-run.log 2>&1; then
 	check_carga LE build/logs/rom-carga-le.log
 	tools/build.sh --sh "build/host-run/salsads-cpurun --frames 600 --stats tests/roms/homebrew/ocio.nds" >build/logs/rom-ocio-le.log 2>&1
 	check_ocio LE build/logs/rom-ocio-le.log
+	gfx_group LE le tools/build.sh --sh build/host-run/salsads-cpurun
 	# las ROMs otra vez con ASan y UBSan (errores de memoria en el mapa, la VRAM por bancos o la E/S)
-	if tools/build.sh --sh "gcc -std=gnu11 -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -Wall -Wextra -Isrc src/host/cpurun.c src/core/*.c src/bios/*.c src/cpu/*.c -o build/host-run/cpurun-san" >build/logs/build-cpurun-san.log 2>&1; then
+	if tools/build.sh --sh "gcc -std=gnu11 -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -Wall -Wextra -Isrc src/host/cpurun.c src/core/*.c src/bios/*.c src/cpu/*.c src/gpu2d/*.c -o build/host-run/cpurun-san" >build/logs/build-cpurun-san.log 2>&1; then
 		for rom in $ROMS; do
 			tools/build.sh --sh "build/host-run/cpurun-san tests/roms/homebrew/$rom.nds" >"build/logs/rom-$rom-san.log" 2>&1
 			check_rom "SAN" "$rom" "build/logs/rom-$rom-san.log"
@@ -145,6 +200,7 @@ if tools/build.sh -C src/host >build/logs/build-host-run.log 2>&1; then
 		check_carga SAN build/logs/rom-carga-san.log
 		tools/build.sh --sh "build/host-run/cpurun-san --frames 200 --touch 100,50 --keys 0x0510 --peek 0x023A0000 --peek 0x023A0004 tests/roms/homebrew/demo.nds" >build/logs/rom-demo-san.log 2>&1
 		check_demo SAN build/logs/rom-demo-san.log
+		gfx_group SAN san tools/build.sh --sh build/host-run/cpurun-san
 	else
 		echo "SAN  FALLO  la compilación con sanitizadores (build/logs/build-cpurun-san.log)"
 		fail=1
@@ -168,6 +224,7 @@ if tools/build-ppc64.sh host >build/logs/build-ppc64-run.log 2>&1; then
 	check_carga BE build/logs/rom-carga-be.log
 	tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --frames 600 --stats tests/roms/homebrew/ocio.nds >build/logs/rom-ocio-be.log 2>&1
 	check_ocio BE build/logs/rom-ocio-be.log
+	gfx_group BE be tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun
 else
 	echo "BE   FALLO  la compilación ppc64 de src/host (build/logs/build-ppc64-run.log)"
 	fail=1

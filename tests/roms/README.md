@@ -81,3 +81,12 @@ La imagen se compara con melonDS así: `tools/melonds-run.py ROM.nds --vram melo
 sds.ppm --regs ROM.nds`, luego `tools/compare-image.py sds.ppm melon.ppm` (la pantalla de arriba contra el banco A) y
 la comparación de la línea `regs`. `tools/gen-bios-vectors.py` genera `src/bios/vectors.h` y, con `--pattern`,
 `src/periph/pattern.h` (bytes conocidos para leer el cartucho).
+
+## ROMs de gráficos 2D (`gfx*`, `src/gfx`)
+
+Montan escenas en los motores 2D (Fase 2.1) y dejan en RAM (`0x02380800`) una lista de píxeles con color conocido
+(`sds_expect_pixel`). `salsads-cpurun --expect --same-ab --vs-ref` comprueba la lista, que A y B den lo mismo y que el
+compositor coincida con el renderizador de referencia; `tools/gfx-compare.py` compara el motor A con melonDS (la ROM dispara
+DISPCAPCNT y melonDS entrega el banco A por GDB). `gfxrand` saca una escena aleatoria de la semilla que `tools/rom-seed.py`
+escribe en el código de juego; `tools/gfx-bisect.py` y `tools/gfx-bisect-obj.py` aíslan qué característica u OBJ hace
+diferir a las dos. `gfxprobe`, `gfxobjmap*` y `gfxomap*` son sondas de melonDS y no se instalan. Detalle en `docs/fase2.md`.
