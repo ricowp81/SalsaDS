@@ -135,6 +135,20 @@ struct acore {
 	uint32_t vector_base;
 	uint64_t itcm_rd_len, itcm_wr_len, dtcm_rd_len, dtcm_wr_len;
 	uint32_t dtcm_base;
+
+	/* ---- avisos al dueño (los usa el recompilador de la Fase 4; NULL = nada) ---- */
+	void (*tcm_hook)(struct acore *c);                                /* cambió la configuración de las TCM */
+	void (*itcm_hook)(struct acore *c, uint32_t off, uint32_t size);  /* el núcleo escribió en la ITCM */
+
+	/* ---- estado del recompilador (src/jit/arec*; el código generado lo lee por desplazamiento) ---- */
+	uint32_t jit_nzcv;       /* NZCV en los bits 31-28 mientras corre código generado */
+	uint32_t jit_pad;
+	uint64_t jit_until;      /* límite de ciclos de la corrida en curso */
+	uint64_t jit_pt;         /* tabla de páginas de la ruta rápida */
+	uint64_t jit_jl;         /* tabla de destinos indirectos */
+	uint64_t jit_fn[8];      /* direcciones de los ayudantes en C */
+	uint64_t jit_spill[8];   /* registros volátiles que sobreviven a una llamada en un camino frío */
+	void *jit;               /* struct arec */
 };
 
 void acore_init(struct acore *c, enum acore_kind kind, const struct acore_bus *bus, void *user);
@@ -147,6 +161,17 @@ void acore_reset(struct acore *c);
 void acore_run(struct acore *c, uint64_t until);
 /* Una instrucción (o la entrada a una IRQ). */
 void acore_step(struct acore *c);
+/* Atiende HALT y las líneas de interrupción como al principio de cada paso de acore_run(c, until). Devuelve 1 si
+ * eso consumió el paso (entró a una excepción o la CPU sigue parada: entonces el reloj avanza hasta `until`). */
+int acore_service(struct acore *c, uint64_t until);
+/* Una instrucción sin mirar las interrupciones (para quien ya llamó a acore_service). */
+void acore_step_insn(struct acore *c);
+/* Ejecuta una instrucción ya captada como lo haría el intérprete después de probar la condición (la llamada al
+ * intérprete del recompilador). r[15] tiene que valer la dirección + 8 (ARM) o + 4 (Thumb). */
+void acore_exec_arm(struct acore *c, uint32_t insn);
+void acore_exec_thumb(struct acore *c, uint32_t insn);
+/* Condición ARM `cond` (0-15) con las banderas NZCV (bits 31-28 de `cpsr`). */
+int acore_cond_ok(uint32_t cond, uint32_t cpsr);
 
 void acore_set_irq(struct acore *c, int level);
 void acore_set_fiq(struct acore *c, int level);

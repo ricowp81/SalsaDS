@@ -191,15 +191,43 @@ static void tm_overflow(struct nds *n, int cpu, int i, uint64_t when)
 	}
 }
 
+/* Desbordes de los temporizadores de `cpu` que ya vencieron a la hora de la CPU (`now`) y el planificador todavía no
+ * atendió (la CPU puede ir por delante del último evento: lo que dura su última instrucción con el intérprete, o un
+ * bloque con el recompilador). Sin esto, el contador bajo, que se calcula de la hora, da la vuelta antes de que el
+ * encadenado sume uno y una lectura de 32 bits «hacia atrás» rompe las esperas por tiempo (ROM irq). */
+static void tm_catch_up(struct nds *n, int cpu, uint64_t now)
+{
+	const int base = cpu ? EV_TM7 : EV_TM9;
+
+	for (;;) {
+		int best = -1;
+		uint64_t bt = NDS_NEVER;
+
+		for (int i = 0; i < 4; i++)
+			if (n->ev[base + i] <= now && n->ev[base + i] < bt) {
+				bt = n->ev[base + i];
+				best = i;
+			}
+		if (best < 0)
+			return;
+		tm_overflow(n, cpu, best, bt);
+	}
+}
+
 uint16_t nds_timer_read(struct nds *n, int cpu, int i)
 {
-	return (uint16_t)tm_value(&n->io[cpu].tm[i], i, nds_cpu_now(n, cpu));
+	const uint64_t now = nds_cpu_now(n, cpu);
+
+	tm_catch_up(n, cpu, now);
+	return (uint16_t)tm_value(&n->io[cpu].tm[i], i, now);
 }
 
 void nds_timer_write(struct nds *n, int cpu, int i, int hi, uint16_t v, uint16_t mask)
 {
 	struct nds_timer *t = &n->io[cpu].tm[i];
 	const uint64_t now = nds_cpu_now(n, cpu);
+
+	tm_catch_up(n, cpu, now);
 
 	if (!hi) {
 		t->reload = (uint16_t)((t->reload & ~mask) | (v & mask));
@@ -509,8 +537,12 @@ void nds_sched_run(struct nds *n, uint64_t until)
 
 	n->stop = 0;
 	while (n->time < until && !n->stop) {
-		uint64_t next = n->ev_min;
-		const int idle9 = cpu_idle(&n->a9), idle7 = cpu_idle(&n->a7);
+		uint64_t next = n->force_next ? n->force_next : n->ev_min;
+		const int idle9 = n->force_idle9 ? n->force_idle9 == 2 : cpu_idle(&n->a9);
+		const int idle7 = n->force_idle7 ? n->force_idle7 == 2 : cpu_idle(&n->a7);
+
+		n->force_idle9 = n->force_idle7 = 0;
+		n->force_next = 0;
 
 		if (idle9 && idle7) {
 			if (next > until)
@@ -535,6 +567,8 @@ void nds_sched_run(struct nds *n, uint64_t until)
 					c0 = clk();
 				if (idle9)
 					idle_to(&n->a9, slice);
+				else if (n->jit9)
+					arec_run(n->jit9, slice);
 				else
 					acore_run(&n->a9, slice);
 				if (clk)
@@ -563,5 +597,7 @@ void nds_sched_run(struct nds *n, uint64_t until)
 				run_events(n);
 			}
 		}
+		if (n->one_step)
+			break;
 	}
 }

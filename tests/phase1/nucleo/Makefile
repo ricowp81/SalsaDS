@@ -3,6 +3,7 @@ TITLE   := SalsaDS núcleo
 APPID   := SLDS00008
 SRCS    := main.c
 COMMON  := src/platform/ps3/log.c src/platform/ps3/audio_out.c src/frontend/dspad.c src/frontend/layout.c \
+           src/jit/arec.c src/jit/arec_dec.c src/jit/arec_emit.c \
            $(patsubst $(abspath ../../..)/%,%,$(wildcard $(abspath ../../..)/src/core/*.c $(abspath ../../..)/src/bios/*.c $(abspath ../../..)/src/cpu/*.c $(abspath ../../..)/src/gpu2d/gpu2d_ref.c $(abspath ../../..)/src/gpu2d/gpu2d_compose.c $(abspath ../../..)/src/gpu3d/gx.c $(abspath ../../..)/src/gpu3d/r3d_ref.c $(abspath ../../..)/src/gpu3d/r3d_core.c $(abspath ../../..)/src/gpu3d/r3d_scene.c $(abspath ../../..)/src/audio/snd_mix.c))
 LIBS    := -lrsx -lgcm_sys -lio -lsysutil -lnet -lsysmodule -lrt -llv2 -laudio -lm
 RSXKIT  := 1

@@ -244,7 +244,7 @@ ALWAYS_INLINE void step_one(struct acore *c)
 }
 
 /* Atiende HALT y las líneas de interrupción. Devuelve 1 si ya consumió el paso (excepción o parada). */
-static int service_attn(struct acore *c, uint64_t until)
+int acore_service(struct acore *c, uint64_t until)
 {
 	if (c->halted) {
 		if (!(c->irq || c->fiq)) {
@@ -271,15 +271,38 @@ static int service_attn(struct acore *c, uint64_t until)
 void acore_run(struct acore *c, uint64_t until)
 {
 	while (c->cycles < until) {
-		if (UNLIKELY(c->attn) && service_attn(c, until))
+		if (UNLIKELY(c->attn) && acore_service(c, until))
 			continue;
 		step_one(c);
 	}
 }
 
+void acore_step_insn(struct acore *c)
+{
+	step_one(c);
+}
+
+void acore_exec_arm(struct acore *c, uint32_t insn)
+{
+	if ((insn >> 28) == 0xF)
+		acore_arm_uncond(c, insn);
+	else
+		acore_arm_table[c->v5][((insn >> 16) & 0xFF0u) | ((insn >> 4) & 0xFu)](c, insn);
+}
+
+void acore_exec_thumb(struct acore *c, uint32_t insn)
+{
+	acore_thumb_table[c->v5][(insn >> 6) & 0x3FF](c, insn);
+}
+
+int acore_cond_ok(uint32_t cond, uint32_t cpsr)
+{
+	return (acore_cond_mask[cond & 15] >> (cpsr >> 28)) & 1u;
+}
+
 void acore_step(struct acore *c)
 {
-	if (UNLIKELY(c->attn) && service_attn(c, c->cycles + 1))
+	if (UNLIKELY(c->attn) && acore_service(c, c->cycles + 1))
 		return;
 	step_one(c);
 }

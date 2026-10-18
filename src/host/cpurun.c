@@ -15,6 +15,7 @@
 #include <time.h>
 
 #include "core/nds.h"
+#include "host/jitrun.h"
 #include "util/endian.h"
 
 #define SDS_ADDR 0x02380000u
@@ -22,6 +23,31 @@
 #define SDS_MAGIC 0x52534453u
 
 static struct nds M;
+static struct nds R; /* --lockstep: la referencia con el intérprete */
+static int lockstep, jit_mode; /* jit_mode: 0 intérprete, 1 rápido, 2 estricto */
+
+static void run_frame(void)
+{
+	if (lockstep)
+		hj_lockstep_frame();
+	else
+		nds_run_frame(&M);
+}
+
+static void run_cycles(uint64_t k)
+{
+	if (lockstep)
+		hj_lockstep_cycles(k);
+	else
+		nds_run(&M, k);
+}
+
+static void set_input(uint32_t keys, unsigned x, unsigned y)
+{
+	nds_set_input(&M, keys, x, y);
+	if (lockstep)
+		nds_set_input(&R, keys, x, y);
+}
 
 static uint8_t *slurp(const char *path, size_t *len)
 {
@@ -409,7 +435,9 @@ int main(int argc, char **argv)
 	uint8_t *rom;
 	double t0, t1;
 	int rc_gfx = 0;
+	int jit_nolink = 0, jit_far = 0, jit_nojl = 0;
 
+	setvbuf(stdout, NULL, _IOLBF, 0);
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--wav") && i + 1 < argc)
 			wav_path = argv[++i];
@@ -521,6 +549,18 @@ int main(int argc, char **argv)
 			same_ab = 1;
 		else if (!strcmp(argv[i], "--unmapped"))
 			unmapped = 1;
+		else if (!strcmp(argv[i], "--jit"))
+			jit_mode = 1;
+		else if (!strcmp(argv[i], "--jit-strict"))
+			jit_mode = 2;
+		else if (!strcmp(argv[i], "--jit-nolink"))
+			jit_nolink = 1;
+		else if (!strcmp(argv[i], "--jit-far"))
+			jit_far = 1;
+		else if (!strcmp(argv[i], "--jit-nojl"))
+			jit_nojl = 1;
+		else if (!strcmp(argv[i], "--lockstep"))
+			lockstep = 1;
 		else if (!strcmp(argv[i], "--peek") && i + 1 < argc && npeek < 8)
 			peek[npeek++] = strtoul(argv[++i], NULL, 0);
 		else
@@ -549,14 +589,29 @@ int main(int argc, char **argv)
 		M.snd.ops.sink = wav_sink;
 	if (snd_original)
 		nds_snd_set_mode(&M, SND_MODE_ORIGINAL);
+	if (lockstep) {
+		R.quantum = quantum;
+		R.vid.use_ref = use_ref;
+		nds_init(&R);
+		if (snd_original)
+			nds_snd_set_mode(&R, SND_MODE_ORIGINAL);
+		if (hj_lockstep_attach(&M, &R))
+			return 2;
+	} else if (jit_mode && hj_attach(&M, jit_mode == 2, jit_nolink, jit_far, jit_nojl, NULL)) {
+		return 2;
+	}
 	if (nds_load_rom(&M, rom, len) || nds_boot_direct(&M)) {
 		fprintf(stderr, "ROM inválida\n");
 		return 2;
 	}
+	if (lockstep && (nds_load_rom(&R, rom, len) || nds_boot_direct(&R)))
+		return 2;
 	if (save_path) {
 		size_t sl;
 		uint8_t *sd = slurp(save_path, &sl);
 
+		if (sd && lockstep)
+			nds_save_attach(&R, sd, sl);
 		if (sd && nds_save_attach(&M, sd, sl) == 0)
 			fprintf(stderr, "núcleo: guardado de %s: %zu bytes\n", save_path, sl);
 		else if (sd)
@@ -567,21 +622,23 @@ int main(int argc, char **argv)
 
 		if (blank) {
 			memset(blank, 0xFF, save_size);
+			if (lockstep)
+				nds_save_attach(&R, blank, save_size);
 			if (nds_save_attach(&M, blank, save_size))
 				fprintf(stderr, "--save-size %u no es el tamaño de ningún chip\n", save_size);
 			free(blank);
 		}
 	}
 	if (keys)
-		nds_set_input(&M, keys, tx, ty);
+		set_input(keys, tx, ty);
 	for (uint64_t f = 0; f < skip_frames; f++) {
 		for (uint32_t k = 0; k < npress; k++)
 			if (press[k].frame == f)
-				nds_set_input(&M, press[k].keys, press[k].x, press[k].y);
+				set_input(press[k].keys, press[k].x, press[k].y);
 		for (uint32_t k = 0; k < nshot; k++)
 			if (shot[k].frame == f)
 				save_ppm(shot[k].file);
-		nds_run_frame(&M);
+		run_frame();
 	}
 	if (watch_addr) {
 		/* paso a paso (1 ciclo del ARM9): imprime cada cambio de la palabra en watch_addr, vista por watch_cpu */
@@ -716,11 +773,13 @@ int main(int argc, char **argv)
 		for (uint64_t f = 0; f < frames; f++) {
 			for (uint32_t k = 0; k < npress; k++)
 				if (press[k].frame == f)
-					nds_set_input(&M, press[k].keys, press[k].x, press[k].y);
+					set_input(press[k].keys, press[k].x, press[k].y);
 			for (uint32_t k = 0; k < nshot; k++)
 				if (shot[k].frame == f)
 					save_ppm(shot[k].file);
-			nds_run_frame(&M);
+			run_frame();
+			if (lockstep && hj_fail())
+				break;
 			if (g2d_stats)
 				nds_video_render_host(&M);
 			if (stuck_in_vector(&M, &who, &pc)) {
@@ -743,6 +802,10 @@ int main(int argc, char **argv)
 			       (double)M.st.events / (double)frames, (t1 - t0) * 1e6 / (double)frames);
 		if (stats)
 			print_gx_stats(M.frames), gx_cmds();
+		if (M.jit9)
+			hj_print_stats(&M);
+		if (lockstep && hj_fail())
+			rc_gfx = 1;
 		if (gxdump_path)
 			gx_dump(gxdump_path);
 		if (img3d_path)
@@ -824,8 +887,10 @@ int main(int argc, char **argv)
 		uint32_t pc;
 
 		while (done < max_cycles) {
-			nds_run(&M, step);
+			run_cycles(step);
 			done += step;
+			if (lockstep && hj_fail())
+				break;
 			magic = nds_peek32(&M, 0, SDS_ADDR);
 			state = nds_peek32(&M, 0, SDS_ADDR + 8);
 			if (magic == SDS_MAGIC && state == 1)
@@ -860,6 +925,10 @@ int main(int argc, char **argv)
 		}
 		if (stats)
 			print_gx_stats(M.frames), gx_cmds();
+		if (M.jit9)
+			hj_print_stats(&M);
+		if (lockstep && hj_fail())
+			rc_gfx = 1;
 		if (gxdump_path)
 			gx_dump(gxdump_path);
 		if (img3d_path)
@@ -922,6 +991,10 @@ int main(int argc, char **argv)
 			fprintf(stderr, "  divergencia: grupo %u, id %u, obtuvo 0x%08x, documentado 0x%08x\n",
 				nds_peek32(&M, 0, a), nds_peek32(&M, 0, a + 4), nds_peek32(&M, 0, a + 8),
 				nds_peek32(&M, 0, a + 12));
+		}
+		if (lockstep && hj_fail()) {
+			printf("FALLO %s: el recompilador difiere del intérprete (--lockstep)\n", name);
+			return 1;
 		}
 		if (w[0] != SDS_MAGIC || w[2] != 1) {
 			printf("SIN VEREDICTO %s (ARM9 pc 0x%08x, ARM7 pc 0x%08x, marca %u)\n", name, acore_pc(&M.a9),

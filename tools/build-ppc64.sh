@@ -22,7 +22,7 @@ mkhost() {
 	docker run --rm -i --user "$(id -u):$(id -g)" -e HOME=/tmp \
 		-v "$ROOT:/src" -w /src "$IMAGE" \
 		make --no-print-directory -C src/host CC=powerpc64-linux-gnu-gcc OUT=/src/build/ppc64-run \
-		CFLAGS="-std=gnu11 -O2 -g -Wall -Wextra -Werror -mcpu=cell -mno-relative-jumptables -I/src/src -static"
+		CFLAGS="-std=gnu11 -O2 -g -Wall -Wextra -Werror -mcpu=cell -mno-relative-jumptables -I/src/src -static ${SALSADS_PPC64_CFLAGS:-}"
 }
 if [ "${1:-}" = "host" ]; then
 	for try in 1 2; do
@@ -37,7 +37,7 @@ mk1() {
 	docker run --rm -i --user "$(id -u):$(id -g)" -e HOME=/tmp \
 		-v "$ROOT:/src" -w /src "$IMAGE" \
 		make --no-print-directory -C tests/unit CC=powerpc64-linux-gnu-gcc SAN= OUT=/src/build/ppc64 \
-		EXTRA_CFLAGS="-mcpu=cell -mno-relative-jumptables" EXTRA_LDFLAGS=-static all
+		EXTRA_CFLAGS="-mcpu=cell -mno-relative-jumptables ${SALSADS_PPC64_CFLAGS:-}" EXTRA_LDFLAGS=-static all
 }
 for try in 1 2; do
 	mk1 && exit 0

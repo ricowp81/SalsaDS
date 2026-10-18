@@ -5,6 +5,7 @@
 #define SALSADS_CORE_NDS_PRIV_H
 
 #include "core/nds.h"
+#include "jit/arec.h"
 #include "util/endian.h"
 
 #if defined(__GNUC__)
@@ -15,8 +16,18 @@
 #define NDS_UNLIKELY(x) (x)
 #endif
 
-/* Sitio donde la Fase 4 invalidará bloques recompilados cuando una escritura toque código. Hoy no hace nada. */
-#define NDS_CODE_WRITE(n, a, size) ((void)(n), (void)(a), (void)(size))
+/* Escritura a memoria (puntero del host `p`): si el recompilador tiene código traducido ahí, lo invalida. Sin JIT,
+ * jit_phys es 0 y no hace nada. */
+static inline void NDS_CODE_WRITE(struct nds *n, const uint8_t *p, unsigned size)
+{
+	const uintptr_t off = (uintptr_t)p - (uintptr_t)n->itcm;
+
+	if (NDS_UNLIKELY(off < n->jit_phys))
+		arec_code_write(n->jit9, (uint32_t)off, size);
+}
+void nds_code_write_range(struct nds *n, const uint8_t *p, size_t len);
+void nds_jit_wramcnt(struct nds *n);
+void nds_jit_reinit(struct nds *n);
 
 static inline struct acore *nds_core(struct nds *n, int cpu)
 {

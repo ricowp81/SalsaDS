@@ -112,6 +112,7 @@ void nds_mem_wramcnt(struct nds *n, uint8_t v)
 {
 	n->wramcnt = v & 3;
 	rebuild_rgn(n);
+	nds_jit_wramcnt(n);
 }
 
 /* ---- VRAM por bancos ---------------------------------------------------------------------------- */
@@ -368,7 +369,7 @@ void nds_bus_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v)
 
 	if (r->p) {
 		wr_sz(r->p + (a & r->mask), sz, v);
-		NDS_CODE_WRITE(n, a, sz);
+		NDS_CODE_WRITE(n, r->p + (a & r->mask), (unsigned)sz);
 		return;
 	}
 	switch (a >> 24) {
@@ -424,7 +425,7 @@ void nds_bus_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v)
 		const struct nds_rgn *r = &n->rgn_wr[CPU][a >> 23];                                           \
 		if (NDS_LIKELY(r->p)) {                                                                       \
 			r->p[a & r->mask] = (uint8_t)v;                                                       \
-			NDS_CODE_WRITE(n, a, 1);                                                              \
+			NDS_CODE_WRITE(n, r->p + (a & r->mask), 1);                                                              \
 		} else {                                                                                      \
 			nds_bus_write(n, CPU, a, 1, v);                                                       \
 		}                                                                                             \
@@ -435,7 +436,7 @@ void nds_bus_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v)
 		const struct nds_rgn *r = &n->rgn_wr[CPU][a >> 23];                                           \
 		if (NDS_LIKELY(r->p)) {                                                                       \
 			wr16le(r->p + (a & r->mask), (uint16_t)v);                                            \
-			NDS_CODE_WRITE(n, a, 2);                                                              \
+			NDS_CODE_WRITE(n, r->p + (a & r->mask), 2);                                                              \
 		} else {                                                                                      \
 			nds_bus_write(n, CPU, a, 2, v);                                                       \
 		}                                                                                             \
@@ -446,7 +447,7 @@ void nds_bus_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v)
 		const struct nds_rgn *r = &n->rgn_wr[CPU][a >> 23];                                           \
 		if (NDS_LIKELY(r->p)) {                                                                       \
 			wr32le(r->p + (a & r->mask), v);                                                      \
-			NDS_CODE_WRITE(n, a, 4);                                                              \
+			NDS_CODE_WRITE(n, r->p + (a & r->mask), 4);                                                              \
 		} else {                                                                                      \
 			nds_bus_write(n, CPU, a, 4, v);                                                       \
 		}                                                                                             \

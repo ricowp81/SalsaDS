@@ -32,8 +32,10 @@ static void host_store(void *ctx, uint32_t addr, const uint8_t *src, uint32_t le
 	struct nds *n = ctx;
 	const struct nds_rgn *r = &n->rgn_wr[NDS_CPU7][(addr >> 23) & 511u];
 
-	if (r->p)
+	if (r->p) {
 		memcpy(r->p + (addr & r->mask), src, len);
+		nds_code_write_range(n, r->p + (addr & r->mask), len);
+	}
 }
 
 void nds_snd_init(struct nds *n)

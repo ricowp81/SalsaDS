@@ -61,6 +61,16 @@
 #include "rsxkit/text.h"
 #include "rsxkit/ui.h"
 
+#ifdef NUCLEO_JIT
+/* «SalsaDS JIT núcleo» (Fase 4): el ARM9 con el recompilador (src/jit/arec*); caché de código y prueba con respaldo de la
+ * Fase 0.7 (tests/phase0/jit-arm/rec_cache.c). Archivos: NOJIT_FLAG fuerza el intérprete; JIT_MARKER marca la prueba y el
+ * uso del código traducido (si la aplicación muere con la marca puesta, el siguiente arranque de esta versión no usa el JIT). */
+#include "jit/arec.h"
+#include "rec_cache.h"
+#define NOJIT_FLAG SALSADS_DATA_DIR "/nucleo-jit-nojit"
+#define JIT_MARKER SALSADS_DATA_DIR "/nucleo-jit.marker"
+static int jit_on;
+#endif
 #include "carga_bin.h"
 #include "../../roms/src/carga/shared.h"
 #include "../../roms/src/snd/adpcm.h"
@@ -69,8 +79,10 @@
 #ifndef NUCLEO_VERSION
 #define NUCLEO_VERSION "desconocida"
 #endif
+#ifndef NUCLEO_TITLE
 #define NUCLEO_TITLE "SalsaDS núcleo"
 #define NUCLEO_APPID "SLDS00008"
+#endif
 #define ROM_PATH SALSADS_DATA_DIR "/rom.nds"
 #define CFG_PATH SALSADS_DATA_DIR "/controles.cfg"
 #define AUDIO_CFG_PATH SALSADS_DATA_DIR "/audio.cfg"
@@ -805,6 +817,12 @@ static uint64_t tb_clock(void)
 }
 
 static uint64_t tb_hz;
+#ifdef NUCLEO_JIT
+static uint64_t jit_clock_ns(void)
+{
+	return tb_hz ? tb_clock() * 1000000000ull / tb_hz : 0;
+}
+#endif
 
 static inline uint32_t tb_us(uint64_t ticks)
 {
@@ -991,6 +1009,36 @@ static void log_stats(void)
 		memset(&acc_r3d, 0, sizeof acc_r3d);
 		acc_r3d_frames = 0;
 	}
+#ifdef NUCLEO_JIT
+	if (jit_on && nds->jit9) {
+		static struct arec_stats prev_js;
+		const struct arec_stats *js = arec_stats(nds->jit9), *p = &prev_js;
+		uint32_t live;
+		size_t used, cap;
+
+		arec_usage(nds->jit9, &live, &used, &cap);
+		salsads_log("DATO jit: por cuadro (promedio de %u): %llu entradas, %llu bloques traducidos (%llu instr., %.1f palabras "
+			    "PPC por instr., %u.%03u ms traduciendo), %llu enlaces nuevos; salidas al despachador: %llu por pc, %llu enlazables, "
+			    "%llu con estado, %llu por presupuesto, %llu tras un acceso lento; caídas al intérprete: %llu llamadas desde el "
+			    "bloque, %llu pasos del despachador (%llu sin código traducible); ruta lenta: %llu lecturas, %llu escrituras; "
+			    "%llu escrituras a líneas con código, %llu bloques invalidados; en total: %u bloques vivos, código %u de %u KB, "
+			    "%llu vaciados, %llu bloques descartados por el análisis de banderas, %llu banderas en frío",
+			    n, (unsigned long long)((js->enters - p->enters) / n), (unsigned long long)((js->blocks_made - p->blocks_made) / n),
+			    (unsigned long long)((js->guest_made - p->guest_made) / n),
+			    js->guest_made > p->guest_made ? (double)(js->host_words - p->host_words) / (double)(js->guest_made - p->guest_made) : 0.0,
+			    (unsigned)((js->compile_ns - p->compile_ns) / n / 1000000u), (unsigned)((js->compile_ns - p->compile_ns) / n / 1000u % 1000u),
+			    (unsigned long long)((js->links - p->links) / n), (unsigned long long)((js->exits_pc - p->exits_pc) / n),
+			    (unsigned long long)((js->exits_link - p->exits_link) / n), (unsigned long long)((js->exits_state - p->exits_state) / n),
+			    (unsigned long long)((js->exits_budget - p->exits_budget) / n), (unsigned long long)((js->mem_exits - p->mem_exits) / n),
+			    (unsigned long long)((js->callouts - p->callouts) / n), (unsigned long long)((js->interp_steps - p->interp_steps) / n),
+			    (unsigned long long)((js->no_code - p->no_code) / n), (unsigned long long)((js->slow_rd - p->slow_rd) / n),
+			    (unsigned long long)((js->slow_wr - p->slow_wr) / n), (unsigned long long)((js->code_wr - p->code_wr) / n),
+			    (unsigned long long)((js->inval_blocks - p->inval_blocks) / n), (unsigned)live, (unsigned)(used >> 10),
+			    (unsigned)(cap >> 10), (unsigned long long)js->flushes, (unsigned long long)js->bad_blocks,
+			    (unsigned long long)js->cold_flags);
+		prev_js = *js;
+	}
+#endif
 	salsads_log("DATO MIPS: ARM9 %.2f, ARM7 %.2f (instrucciones entre el tiempo dentro de cada CPU: %u cuadros con perfil); "
 		    "sobre el tiempo total de emulación: ARM9 %.2f, ARM7 %.2f, juntas %.2f",
 		    mips9_cpu, mips7_cpu, (unsigned)acc_prof_n, mips9_tot, mips7_tot, mips9_tot + mips7_tot);
@@ -1424,6 +1472,45 @@ int main(void)
 	save_load();
 	salsads_log("ROM: %s; entrada ARM9 0x%08x, ARM7 0x%08x; cuántos bytes ocupa el núcleo: %u", rom_name,
 		    (unsigned)rd32le(rom_buf + 0x24), (unsigned)rd32le(rom_buf + 0x34), (unsigned)sizeof *nds);
+#ifdef NUCLEO_JIT
+	{
+		struct stat jst;
+
+		if (stat(NOJIT_FLAG, &jst) == 0) {
+			salsads_log("jit: %s existe: el ARM9 con el intérprete (el respaldo)", NOJIT_FLAG);
+		} else if (autotest) {
+			salsads_log("jit: prueba automática (RPCS3): su texto es de solo lectura, no se intenta; el ARM9 con el intérprete (el respaldo)");
+		} else {
+			char why[160];
+			uint64_t us = 0;
+			const enum rec_probe_status ps = salsads_rec_probe(JIT_MARKER, NUCLEO_VERSION, 2000, why, sizeof why, &us);
+
+			if (ps == REC_PROBE_OK) {
+				struct nds_jit_cfg jc;
+
+				memset(&jc, 0, sizeof jc);
+				jc.code = salsads_rec_cache();
+				jc.code_bytes = REC_CACHE_BYTES;
+				jc.icache_flush = salsads_rec_flush;
+				if (nds_jit_attach(nds, &jc) == 0) {
+					jit_on = 1;
+					arec_stats(nds->jit9); /* (las estadísticas empiezan en cero) */
+					((struct arec_pub *)(void *)nds->jit9)->clock_ns = jit_clock_ns;
+					salsads_rec_marker(JIT_MARKER, NUCLEO_VERSION, 1);
+					salsads_log("jit: el ARM9 con el recompilador (caché de código de %u MB, prueba de %u µs)",
+						    REC_CACHE_BYTES >> 20, (unsigned)us);
+				} else {
+					salsads_log("jit: el recompilador no se pudo crear (sin memoria): el ARM9 con el intérprete");
+				}
+			} else if (ps == REC_PROBE_SKIPPED) {
+				salsads_log("jit: el ARM9 con el intérprete: %s", why);
+			} else {
+				salsads_log("jit: la prueba de la caché %s: %s; el ARM9 con el intérprete (el respaldo)",
+					    ps == REC_PROBE_HUNG ? "no volvió" : "falló", why);
+			}
+		}
+	}
+#endif
 
 	if (rsxkit_init(NULL) != 0) {
 		salsads_log("RESULTADO nucleo: FALLO rsxkit_init");
@@ -1551,6 +1638,10 @@ int main(void)
 			if (wk[e])
 				spukit_worker_stop(wk[e]);
 	}
+#ifdef NUCLEO_JIT
+	if (jit_on)
+		salsads_rec_marker(JIT_MARKER, NUCLEO_VERSION, 0);
+#endif
 	salsads_log("RESULTADO nucleo: %s", failures ? "FALLO" : "OK");
 	if (!rsxkit_lost()) {
 		rsxkit_finish();

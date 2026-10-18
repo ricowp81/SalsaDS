@@ -57,6 +57,8 @@ static void update_tcm(struct acore *c)
 	if (!c->itcm) {
 		c->itcm_wr_len = c->itcm_rd_len = 0;
 	}
+	if (c->tcm_hook)
+		c->tcm_hook(c);
 }
 
 void acore_set_tcm_state(struct acore *c, uint32_t ctrl, uint32_t itcm_reg, uint32_t dtcm_reg)

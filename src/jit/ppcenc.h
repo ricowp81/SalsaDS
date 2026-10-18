@@ -84,4 +84,90 @@ static inline uint32_t ppc_bc(unsigned bo, unsigned bi, int32_t off) { return 16
 static inline uint32_t ppc_mflr(unsigned rt) { return 31u << 26 | rt << 21 | 256u << 11 | 339u << 1; }
 static inline uint32_t ppc_mtlr(unsigned rs) { return 31u << 26 | rs << 21 | 256u << 11 | 467u << 1; }
 
+/* ---- Lo que agrega el recompilador de la Fase 4 (src/jit/arec*) ------------------------------------------ */
+
+static inline uint32_t ppc_oris(unsigned ra, unsigned rs, uint32_t imm) { return ppc_d(25, rs, ra, (int32_t)imm); }
+static inline uint32_t ppc_xoris(unsigned ra, unsigned rs, uint32_t imm) { return ppc_d(27, rs, ra, (int32_t)imm); }
+static inline uint32_t ppc_mulli(unsigned rt, unsigned ra, int32_t imm) { return ppc_d(7, rt, ra, imm); }
+static inline uint32_t ppc_subfic(unsigned rt, unsigned ra, int32_t imm) { return ppc_d(8, rt, ra, imm); }
+static inline uint32_t ppc_lbz(unsigned rt, unsigned ra, int32_t d) { return ppc_d(34, rt, ra, d); }
+static inline uint32_t ppc_lhz(unsigned rt, unsigned ra, int32_t d) { return ppc_d(40, rt, ra, d); }
+static inline uint32_t ppc_stb(unsigned rs, unsigned ra, int32_t d) { return ppc_d(38, rs, ra, d); }
+static inline uint32_t ppc_sth(unsigned rs, unsigned ra, int32_t d) { return ppc_d(44, rs, ra, d); }
+static inline uint32_t ppc_cmpldi(unsigned crf, unsigned ra, uint32_t imm) { return 10u << 26 | crf << 23 | 1u << 21 | ra << 16 | (imm & 0xFFFFu); }
+static inline uint32_t ppc_cmpd(unsigned crf, unsigned ra, unsigned rb) { return 31u << 26 | crf << 23 | 1u << 21 | ra << 16 | rb << 11; }
+static inline uint32_t ppc_cmpld(unsigned crf, unsigned ra, unsigned rb) { return 31u << 26 | crf << 23 | 1u << 21 | ra << 16 | rb << 11 | 32u << 1; }
+
+/* XO-form aritméticas (sin OE ni Rc): rt, ra, rb */
+static inline uint32_t ppc_xo(unsigned xo, unsigned rt, unsigned ra, unsigned rb) { return 31u << 26 | rt << 21 | ra << 16 | rb << 11 | xo << 1; }
+static inline uint32_t ppc_neg(unsigned rt, unsigned ra) { return ppc_xo(104, rt, ra, 0); }
+static inline uint32_t ppc_mullw(unsigned rt, unsigned ra, unsigned rb) { return ppc_xo(235, rt, ra, rb); }
+static inline uint32_t ppc_mulld(unsigned rt, unsigned ra, unsigned rb) { return ppc_xo(233, rt, ra, rb); }
+static inline uint32_t ppc_mulhwu(unsigned rt, unsigned ra, unsigned rb) { return ppc_xo(11, rt, ra, rb); }
+static inline uint32_t ppc_mulhw(unsigned rt, unsigned ra, unsigned rb) { return ppc_xo(75, rt, ra, rb); }
+
+/* X-form lógicas: ra, rs, rb */
+static inline uint32_t ppc_andc(unsigned ra, unsigned rs, unsigned rb) { return ppc_x(31, 60, rs, ra, rb); }
+static inline uint32_t ppc_orc(unsigned ra, unsigned rs, unsigned rb) { return ppc_x(31, 412, rs, ra, rb); }
+static inline uint32_t ppc_nor(unsigned ra, unsigned rs, unsigned rb) { return ppc_x(31, 124, rs, ra, rb); }
+static inline uint32_t ppc_eqv(unsigned ra, unsigned rs, unsigned rb) { return ppc_x(31, 284, rs, ra, rb); }
+static inline uint32_t ppc_slw(unsigned ra, unsigned rs, unsigned rb) { return ppc_x(31, 24, rs, ra, rb); }
+static inline uint32_t ppc_srw(unsigned ra, unsigned rs, unsigned rb) { return ppc_x(31, 536, rs, ra, rb); }
+static inline uint32_t ppc_sraw(unsigned ra, unsigned rs, unsigned rb) { return ppc_x(31, 792, rs, ra, rb); }
+static inline uint32_t ppc_srawi(unsigned ra, unsigned rs, unsigned sh) { return ppc_x(31, 824, rs, ra, sh & 31u); }
+static inline uint32_t ppc_cntlzw(unsigned ra, unsigned rs) { return ppc_x(31, 26, rs, ra, 0); }
+static inline uint32_t ppc_extsb(unsigned ra, unsigned rs) { return ppc_x(31, 954, rs, ra, 0); }
+static inline uint32_t ppc_extsh(unsigned ra, unsigned rs) { return ppc_x(31, 922, rs, ra, 0); }
+
+/* Cargas y almacenamientos indexados */
+static inline uint32_t ppc_lhbrx(unsigned rt, unsigned ra, unsigned rb) { return ppc_x(31, 790, rt, ra, rb); }
+static inline uint32_t ppc_sthbrx(unsigned rs, unsigned ra, unsigned rb) { return ppc_x(31, 918, rs, ra, rb); }
+static inline uint32_t ppc_ldx(unsigned rt, unsigned ra, unsigned rb) { return ppc_x(31, 21, rt, ra, rb); }
+static inline uint32_t ppc_lwzx(unsigned rt, unsigned ra, unsigned rb) { return ppc_x(31, 23, rt, ra, rb); }
+
+/* rlwimi ra,rs,sh,mb,me y rlwnm ra,rs,rb,mb,me (sin punto) */
+static inline uint32_t ppc_rlwimi(unsigned ra, unsigned rs, unsigned sh, unsigned mb, unsigned me)
+{
+	return 20u << 26 | rs << 21 | ra << 16 | (sh & 31u) << 11 | mb << 6 | me << 1;
+}
+static inline uint32_t ppc_rlwnm(unsigned ra, unsigned rs, unsigned rb, unsigned mb, unsigned me)
+{
+	return 23u << 26 | rs << 21 | ra << 16 | rb << 11 | mb << 6 | me << 1;
+}
+/* rldicr ra,rs,sh,me: sldi ra,rs,n = rldicr ra,rs,n,63-n */
+static inline uint32_t ppc_rldicr(unsigned ra, unsigned rs, unsigned sh, unsigned me)
+{
+	return 30u << 26 | rs << 21 | ra << 16 | (sh & 31u) << 11 | (me & 31u) << 6 | ((me >> 5) & 1u) << 5 | 1u << 2 | ((sh >> 5) & 1u) << 1;
+}
+/* rldimi ra,rs,sh,mb */
+static inline uint32_t ppc_rldimi(unsigned ra, unsigned rs, unsigned sh, unsigned mb)
+{
+	return 30u << 26 | rs << 21 | ra << 16 | (sh & 31u) << 11 | (mb & 31u) << 6 | ((mb >> 5) & 1u) << 5 | 3u << 2 | ((sh >> 5) & 1u) << 1;
+}
+static inline uint32_t ppc_sldi(unsigned ra, unsigned rs, unsigned n) { return ppc_rldicr(ra, rs, n, 63 - n); }
+static inline uint32_t ppc_srdi(unsigned ra, unsigned rs, unsigned n) { return ppc_rldicl(ra, rs, 64 - n, n); }
+
+/* Saltos con enlace y por CTR */
+static inline uint32_t ppc_bl(int32_t off) { return ppc_b(off) | 1u; }
+#define PPC_BCTR 0x4E800420u
+#define PPC_BCTRL 0x4E800421u
+static inline uint32_t ppc_mtctr(unsigned rs) { return 31u << 26 | rs << 21 | 288u << 11 | 467u << 1; }
+
+/* Registro de condición. mfcr es microcódigo en el PPE (~34 ciclos): solo en caminos fríos. mtocrf de un campo
+ * es gratis (docs/fase0.md §0.3). */
+static inline uint32_t ppc_mfcr(unsigned rt) { return 31u << 26 | rt << 21 | 19u << 1; }
+static inline uint32_t ppc_mtocrf(unsigned crf, unsigned rs) { return 31u << 26 | rs << 21 | 1u << 20 | (0x80u >> crf) << 12 | 144u << 1; }
+/* mtcrf con varios campos (microcódigo): solo en la entrada y la salida del código traducido. */
+static inline uint32_t ppc_mtcrf(unsigned fxm, unsigned rs) { return 31u << 26 | rs << 21 | (fxm & 0xFFu) << 12 | 144u << 1; }
+static inline uint32_t ppc_crop(unsigned xo, unsigned bt, unsigned ba, unsigned bb) { return 19u << 26 | bt << 21 | ba << 16 | bb << 11 | xo << 1; }
+static inline uint32_t ppc_crand(unsigned bt, unsigned ba, unsigned bb) { return ppc_crop(257, bt, ba, bb); }
+static inline uint32_t ppc_cror(unsigned bt, unsigned ba, unsigned bb) { return ppc_crop(449, bt, ba, bb); }
+static inline uint32_t ppc_crxor(unsigned bt, unsigned ba, unsigned bb) { return ppc_crop(193, bt, ba, bb); }
+static inline uint32_t ppc_crnor(unsigned bt, unsigned ba, unsigned bb) { return ppc_crop(33, bt, ba, bb); }
+static inline uint32_t ppc_creqv(unsigned bt, unsigned ba, unsigned bb) { return ppc_crop(289, bt, ba, bb); }
+static inline uint32_t ppc_crandc(unsigned bt, unsigned ba, unsigned bb) { return ppc_crop(129, bt, ba, bb); }
+static inline uint32_t ppc_crorc(unsigned bt, unsigned ba, unsigned bb) { return ppc_crop(417, bt, ba, bb); }
+static inline uint32_t ppc_crnand(unsigned bt, unsigned ba, unsigned bb) { return ppc_crop(225, bt, ba, bb); }
+#define PPC_SO 3u
+
 #endif

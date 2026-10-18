@@ -48,6 +48,9 @@ void nds_init(struct nds *n)
 	const uint32_t dbg = n->dbg;
 	const struct nds_snd_ops sops = n->snd.ops;
 	const uint32_t smode = n->snd.mode;
+	struct arec *const jit9 = n->jit9;
+	const struct nds_jit_cfg jcfg = n->jit_cfg;
+	void *const jit_user = n->jit_user;
 
 	memset(n, 0, sizeof *n);
 	n->log = log;
@@ -80,6 +83,12 @@ void nds_init(struct nds *n)
 	nds_snd_init(n);
 	nds_gx_init(n);
 	n->snd.mode = smode;
+	n->jit_user = jit_user;
+	if (jit9) {
+		n->jit9 = jit9;
+		n->jit_cfg = jcfg;
+		nds_jit_reinit(n);
+	}
 }
 
 int nds_load_rom(struct nds *n, const uint8_t *rom, size_t len)

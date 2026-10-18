@@ -14,6 +14,6 @@
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IMAGE="${SALSADS_QEMU_IMAGE:-salsads-qemu:dev}"
-exec docker run --rm -i --user "$(id -u):$(id -g)" -v "$ROOT:/src" -w /src "$IMAGE" \
+exec docker run --rm -i --user "$(id -u):$(id -g)" -e AREC_TRACE -e AREC_DUMP -e AREC_SEED -e AREC_CUT -e AREC_THUMB -e AREC_FAST -v "$ROOT:/src" -w /src "$IMAGE" \
 	sh -c 'cpu=$1; shift; exec timeout "$0" qemu-ppc64-static -cpu "$cpu" "$@" 2>&1' \
 	"${QEMU_TIMEOUT:-600}" "${SALSADS_QEMU_CPU:-power9}" "$@"

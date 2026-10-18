@@ -101,6 +101,19 @@ enum nds_ev {
 #define NDS_NEVER UINT64_MAX
 
 struct nds;
+struct arec;
+
+/* Recompilador del ARM9 (Fase 4, src/core/jit.c y src/jit/arec*): memoria de código y opciones. */
+struct nds_jit_cfg {
+	void *code;          /* escribible y ejecutable (en la PS3, la cola del segmento de texto) */
+	size_t code_bytes;
+	int strict;          /* mismos ciclos que el intérprete (para --lockstep) */
+	int no_link;         /* cada bloque vuelve al despachador (para --lockstep) */
+	int no_inline_jl;    /* sin búsqueda de destinos indirectos en línea */
+	int far_calls;       /* llamadas a C por CTR (prueba) */
+	void (*icache_flush)(const void *p, size_t n);
+	void (*on_exec)(void *ctx, int ev, uint64_t until); /* ctx = la struct nds */
+};
 
 struct nds_timer {
 	uint16_t reload, ctl;
@@ -359,6 +372,11 @@ struct nds {
 	uint32_t quantum; /* ciclos del ARM9 por tramo */
 	uint64_t frames;  /* cuadros completos (a cada inicio del VBlank) */
 	uint8_t stop, stop_on_vblank; /* el planificador sale al terminar el evento en curso (nds_run_frame) */
+	uint8_t one_step;  /* el planificador sale después de un tramo (o un salto ocioso): para --lockstep */
+	uint64_t force_next;   /* --lockstep, en la referencia: el próximo evento como estaba antes del tramo (0 = el actual) */
+	uint8_t force_idle9, force_idle7; /* --lockstep, en la referencia: 1 = la CPU no estaba ociosa al empezar el tramo,
+					   * 2 = sí (el ARM9 de la referencia ya avanzó dentro del tramo del otro y pudo
+					   * despertar o dormir al ARM7); 0 = mirarlo */
 
 	/* BIOS en HLE */
 	uint8_t intrwait_active[2];
@@ -378,6 +396,11 @@ struct nds {
 	uint64_t (*prof_clock)(void);
 	struct nds_video vid;
 	struct nds_snd snd;
+	/* recompilador del ARM9 (NULL = intérprete); sobrevive a nds_init */
+	struct arec *jit9;
+	struct nds_jit_cfg jit_cfg;
+	uint32_t jit_phys;   /* tamaño del espacio físico con código posible (de `itcm` al final de `swram`); 0 sin JIT */
+	void *jit_user;      /* para el dueño (lockstep) */
 	uint32_t dbg; /* NDS_DBG_*: trazas de depuración por `log` (0 = ninguna; solo el corredor del host las activa) */
 };
 
@@ -395,6 +418,11 @@ void nds_init(struct nds *n);
 int nds_load_rom(struct nds *n, const uint8_t *rom, size_t len);
 /* Arranque directo: carga los binarios ARM9/ARM7, arma la memoria y los registros. 0 = bien. */
 int nds_boot_direct(struct nds *n);
+/* Recompilador del ARM9: lo conecta (0) o dice que no se puede en este host o sin memoria (-1: sigue el
+ * intérprete). Se puede llamar antes o después de nds_init / nds_boot_direct. */
+int nds_jit_attach(struct nds *n, const struct nds_jit_cfg *cfg);
+void nds_jit_detach(struct nds *n);
+
 /* Corre `arm9_cycles` ciclos del ARM9 (y la mitad del ARM7). */
 void nds_run(struct nds *n, uint64_t arm9_cycles);
 /* Corre hasta que empiece el siguiente VBlank (línea 192): un cuadro. */

@@ -112,6 +112,8 @@ ALWAYS_INLINE void mem_wr32(struct acore *c, uint32_t a, uint32_t v)
 {
 	if (IN_RANGE(a, 0u, c->itcm_wr_len)) {
 		wr32le(c->itcm + (a & (ACORE_ITCM_SIZE - 1)), v);
+		if (UNLIKELY(c->itcm_hook != 0))
+			c->itcm_hook(c, a & (ACORE_ITCM_SIZE - 1), 4u);
 		return;
 	}
 	if (IN_RANGE(a, c->dtcm_base, c->dtcm_wr_len)) {
@@ -125,6 +127,8 @@ ALWAYS_INLINE void mem_wr16(struct acore *c, uint32_t a, uint32_t v)
 {
 	if (IN_RANGE(a, 0u, c->itcm_wr_len)) {
 		wr16le(c->itcm + (a & (ACORE_ITCM_SIZE - 1)), (uint16_t)v);
+		if (UNLIKELY(c->itcm_hook != 0))
+			c->itcm_hook(c, a & (ACORE_ITCM_SIZE - 1), 2u);
 		return;
 	}
 	if (IN_RANGE(a, c->dtcm_base, c->dtcm_wr_len)) {
@@ -138,6 +142,8 @@ ALWAYS_INLINE void mem_wr8(struct acore *c, uint32_t a, uint32_t v)
 {
 	if (IN_RANGE(a, 0u, c->itcm_wr_len)) {
 		c->itcm[a & (ACORE_ITCM_SIZE - 1)] = (uint8_t)v;
+		if (UNLIKELY(c->itcm_hook != 0))
+			c->itcm_hook(c, a & (ACORE_ITCM_SIZE - 1), 1u);
 		return;
 	}
 	if (IN_RANGE(a, c->dtcm_base, c->dtcm_wr_len)) {
