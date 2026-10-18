@@ -19,7 +19,8 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
   LE y BE.
 - **Juegos**: New Super Mario Bros. (menú, archivo, mapa y 1-1), Mario Kart DS y Super Mario 64 DS siguen llegando adonde
   llegaban; NSMB manda ≈ 480 polígonos por cuadro en 1-1 (máximo 1895) y la geometría cuesta ≈ 0,64 ms por cuadro en la Mac.
-- Paquete «SalsaDS núcleo» con `DATO geometria` (tiempo del motor en el PPE con el reloj de perfil): construido, **falta medirlo
+- Paquete «SalsaDS núcleo» (SLDS00008) con `DATO geometria` (tiempo del motor en el PPE con el reloj de perfil): `build/salsads-nucleo-fase31.pkg`
+  (commit `9e1c73f`), SHA-256 `1dc3567fe7eeca57721f82bdb6da9d9e0db48ce31005322f43dbba8e156d6e81`; compila y enlaza, **no probado en RPCS3 ni medido
   en la PS3**; el PPE es varias veces más lento que la Mac y la decisión PPE/SPE del motor depende de ese número.
 - Pendiente: la 3.2 (rasterizador en SPE sobre `gx_frame`, texturas y paletas, orden de translúcidos, SWAP_BUFFERS con rasterizador
   asíncrono); medir el motor en la PS3; el modelo de iluminación y el recorte están sin contrastar con una DS real (correr `geom` ahí).
