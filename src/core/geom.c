@@ -62,16 +62,65 @@ int nds_gx_dma_ok(struct nds *n, uint64_t t)
 
 /* El motor corre perezoso (gx_advance en cada acceso); el evento EV_GX sólo hace falta para lo que no depende de que la CPU
  * lo mire: la IRQ 21 por nivel y los avisos a la DMA de modo 7 cuando la FIFO baja de la mitad. Sin ninguna de las dos
- * cosas no hay evento (antes había uno por orden: ≈ 16 000 por cuadro en New Super Mario Bros.). */
+ * cosas no hay evento (antes había uno por orden: ≈ 16 000 por cuadro en New Super Mario Bros.).
+ *
+ * Con alguna de las dos, el evento era una mirada cada NDS_GX_POLL ciclos (≈ 4400 por cuadro, 9 de cada 10 de todos los
+ * eventos). Ahora las miradas que no pueden hacer nada se saltan: la condición (nivel de la FIFO) sólo cambia cuando el motor
+ * empieza una orden, o cuando se cumple el periodo de la IRQ si el nivel ya está; el evento va al primer punto de la rejilla
+ * de NDS_GX_POLL ciclos (anclada en la última mirada, como antes) que llega a ese instante. El resultado es el mismo que
+ * mirando en todos los puntos. */
 static int gx_needs_poll(const struct nds *n)
 {
 	return n->gx.irqmode != 0 || nds_dma_waits(n, NDS_CPU9, NDS_DMA_GXFIFO);
 }
 
+/* Primer instante en que una mirada podría hacer algo, o NDS_NEVER. `now` es el instante de la CPU o del evento. */
+static uint64_t gx_poll_need(const struct nds *n, uint64_t now)
+{
+	const gx_t *g = &n->gx;
+	uint64_t need = NDS_NEVER;
+	const uint64_t ns = gx_next_start(g);
+
+	if (g->irqmode) {
+		if (gx_irq_level(g))
+			need = n->gx_irq_t + NDS_GX_PERIOD;
+		else if (ns < need)
+			need = ns;
+	}
+	if (nds_dma_waits(n, NDS_CPU9, NDS_DMA_GXFIFO)) {
+		if (gx_fifo_level(g) < GX_FIFO_ENTRIES / 2)
+			need = now < need ? now : need;
+		else if (ns < need)
+			need = ns;
+	}
+	return need;
+}
+
+static void gx_poll_set(struct nds *n, uint64_t now, uint64_t first)
+{
+	uint64_t need = gx_poll_need(n, now), when;
+
+	if (need == NDS_NEVER)
+		return;
+	if (need < first)
+		need = first;
+	when = n->gx_anchor;
+	if (need > when)
+		when += ((need - when + NDS_GX_POLL - 1u) / NDS_GX_POLL) * NDS_GX_POLL;
+	if (when < n->ev[EV_GX])
+		nds_event_set(n, EV_GX, when);
+}
+
 void nds_gx_schedule(struct nds *n, uint32_t delay)
 {
-	if (n->ev[EV_GX] == NDS_NEVER && gx_needs_poll(n))
-		nds_event_set(n, EV_GX, nds_cpu_now(n, NDS_CPU9) + delay);
+	const uint64_t now = nds_cpu_now(n, NDS_CPU9);
+
+	if (!gx_needs_poll(n))
+		return;
+	gx_advance(&n->gx, now); /* el nivel de la FIFO tiene que ser el de ahora */
+	if (n->ev[EV_GX] == NDS_NEVER)
+		n->gx_anchor = now + delay;
+	gx_poll_set(n, now, n->gx_anchor);
 }
 
 void nds_gx_event(struct nds *n, uint64_t bt)
@@ -79,6 +128,7 @@ void nds_gx_event(struct nds *n, uint64_t bt)
 	gx_t *g = &n->gx;
 
 	n->ev[EV_GX] = NDS_NEVER;
+	n->gx_anchor = bt;
 	gx_advance(g, bt);
 	/* IRQ por nivel: se repite cada NDS_GX_PERIOD mientras la condición siga, aunque el programa la confirme */
 	if (g->irqmode && gx_irq_level(g) && bt >= n->gx_irq_t + NDS_GX_PERIOD) {
@@ -88,7 +138,7 @@ void nds_gx_event(struct nds *n, uint64_t bt)
 	if (gx_fifo_level(g) < GX_FIFO_ENTRIES / 2)
 		nds_dma_trigger(n, NDS_CPU9, NDS_DMA_GXFIFO);
 	if (gx_needs_poll(n))
-		nds_event_set(n, EV_GX, bt + NDS_GX_POLL);
+		gx_poll_set(n, bt + NDS_GX_POLL, bt + NDS_GX_POLL);
 }
 
 /* Foto de los registros del 3D que lee el rasterizador (en 0x04000000 del ARM9). */

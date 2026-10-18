@@ -181,16 +181,16 @@ static void test_packed(void)
 	wf(0u);
 	wf(1u);
 	idle();
-	CHECK_EQ(G.mode, 1u);
+	CHECK_EQ(G.fe.mode, 1u);
 	CHECK_EQ(G.st.cmds, 4u);
 	/* 00h en medio se salta; una orden con 3 parámetros (MTX_SCALE) y luego MTX_MODE */
 	wf(0x00101B00u);
 	wf(0x3000u); wf(0x3000u); wf(0x3000u);
 	wf(2u);
 	idle();
-	CHECK_EQ(G.mode, 2u);
-	CHECK_EQ(G.pos.m[0], 0x3000);
-	CHECK_EQ(G.vec.m[0], 0x1000); /* la escala no toca la vectorial */
+	CHECK_EQ(G.fe.mode, 2u);
+	CHECK_EQ(G.ex.pos.m[0], 0x3000);
+	CHECK_EQ(G.ex.vec.m[0], 0x1000); /* la escala no toca la vectorial */
 	/* palabra de ceros y órdenes inexistentes: nada */
 	{
 		const uint64_t before = G.st.cmds;
@@ -327,7 +327,7 @@ static void test_stacks(void)
 	w(0x12, 31);
 	idle();
 	CHECK_EQ((gx_gxstat(&G, T) >> 8) & 0x1Fu, 0u);
-	CHECK_EQ(G.pos.m[12], 0);
+	CHECK_EQ(G.ex.pos.m[12], 0);
 	/* STORE y RESTORE absolutos */
 	w(0x1C, 0x2000); w(0x1C, 0); w(0x1C, 0);
 	w(0x13, 7);
@@ -335,7 +335,7 @@ static void test_stacks(void)
 	CHECK_EQ(gx_gxstat(&G, T) & GXSTAT_STACK_ERR, 0u);
 	w(0x14, 7);
 	idle();
-	CHECK_EQ(G.pos.m[12], 0x2000);
+	CHECK_EQ(G.ex.pos.m[12], 0x2000);
 	w(0x13, 31);
 	idle();
 	CHECK_EQ(gx_gxstat(&G, T) & GXSTAT_STACK_ERR, GXSTAT_STACK_ERR);
@@ -604,7 +604,7 @@ static void test_limits(void)
 	idle();
 	CHECK_EQ(gx_ram_count(&G) & 0xFFFu, 2048u);
 	CHECK_EQ(gx_ram_count(&G) >> 16, 6144u);
-	CHECK_EQ(G.st.dropped_poly, 2u);
+	CHECK_EQ(gx_stats_get(&G)->dropped_poly, 2u);
 }
 
 static void test_clip_interp(void)

@@ -97,6 +97,7 @@ void nds_dispstat_write(struct nds *n, int cpu, uint16_t v, uint16_t mask)
 
 	mask &= 0xFFB8u;
 	io->dispstat = (uint16_t)((io->dispstat & ~mask) | (v & mask));
+	nds_hblank_refresh(n);
 }
 
 /* ---- teclas ------------------------------------------------------------------------------------------ */
@@ -363,6 +364,8 @@ void nds_dma_write(struct nds *n, int cpu, unsigned reg, uint32_t v, uint32_t ma
 		} else if (!(nw & 0x80000000u)) {
 			d->latched = 0;
 		}
+		if (cpu == NDS_CPU9)
+			nds_hblank_refresh(n);
 		return;
 	}
 	}
@@ -398,13 +401,30 @@ int nds_dma_waits(const struct nds *n, int cpu, unsigned mode)
 
 /* ---- eventos del video ----------------------------------------------------------------------------------- */
 
+/* El evento de HBlank solo sirve para la IRQ de HBlank (DISPSTAT bit 4, de cualquiera de las dos CPUs) y el disparo de la DMA de
+ * modo HBlank del ARM9: sin ninguna de las dos no se arma (263 eventos por cuadro menos). Si se activa a mitad de línea
+ * (`nds_hblank_refresh`) se arma entonces, con el mismo instante que habría tenido. */
+static inline int hblank_wanted(const struct nds *n)
+{
+	return ((n->io[0].dispstat | n->io[1].dispstat) & 0x10u) || dma_waits_for(n, NDS_CPU9, NDS_DMA_HBLANK);
+}
+
+void nds_hblank_refresh(struct nds *n)
+{
+	const uint64_t when = n->hb_t + NDS_HBLANK_CYCLES;
+
+	if (n->ev[EV_HBLANK] == NDS_NEVER && when > n->time && hblank_wanted(n))
+		nds_event_set(n, EV_HBLANK, when);
+}
+
 static void ev_line(struct nds *n, uint64_t t)
 {
 	const uint32_t line = nds_line_at(t);
 
 	n->line = line;
 	n->ev[EV_LINE] = t + NDS_LINE_CYCLES;
-	n->ev[EV_HBLANK] = t + NDS_HBLANK_CYCLES;
+	n->hb_t = t;
+	n->ev[EV_HBLANK] = hblank_wanted(n) ? t + NDS_HBLANK_CYCLES : NDS_NEVER;
 	for (int cpu = 0; cpu < 2; cpu++) {
 		const uint16_t ds = n->io[cpu].dispstat;
 
@@ -472,6 +492,8 @@ static uint64_t ev_scan(const struct nds *n)
 
 static void run_events(struct nds *n)
 {
+	uint64_t (*const clk)(void) = n->prof_clock;
+
 	for (;;) {
 		int best = -1;
 		uint64_t bt = NDS_NEVER;
@@ -484,6 +506,9 @@ static void run_events(struct nds *n)
 		if (best < 0)
 			break;
 		n->st.events++;
+		n->st.ev_n[best]++;
+		const uint64_t k0 = clk ? clk() : 0;
+
 		switch (best) {
 		case EV_LINE:
 			ev_line(n, bt);
@@ -512,6 +537,8 @@ static void run_events(struct nds *n)
 			break;
 		}
 		}
+		if (clk)
+			n->st.ev_t[best] += clk() - k0;
 	}
 	n->ev_min = ev_scan(n);
 }

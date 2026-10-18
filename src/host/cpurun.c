@@ -15,6 +15,7 @@
 #include <time.h>
 
 #include "core/nds.h"
+#include "gpu3d/gx_loop.h"
 #include "host/jitrun.h"
 #include "util/endian.h"
 
@@ -167,7 +168,7 @@ static uint32_t count_holes(void)
 
 static void print_gx_stats(uint64_t frames)
 {
-	const gx_stats *s = &M.gx.st;
+	const gx_stats *s = gx_stats_get(&M.gx);
 	const double nf = frames ? (double)frames : 1.0;
 
 	printf("geometría: %llu SWAP_BUFFERS en %llu cuadros; por cuadro entregado %.1f polígonos y %.1f vértices (máximos %u y %u); "
@@ -183,6 +184,36 @@ static void print_gx_stats(uint64_t frames)
 	printf("geometría: motor ocupado %.1f%% del tiempo (%.0f ciclos del motor por cuadro); en el host %.1f us por cuadro (%.1f us por cuadro entregado)\n",
 	       100.0 * (double)s->cycles / ((double)NDS_FRAME_CYCLES * nf), (double)s->cycles / 2.0 / nf,
 	       (double)s->host_ticks / 1000.0 / nf, s->swaps ? (double)s->host_ticks / 1000.0 / (double)s->swaps : 0.0);
+}
+
+/* --gx-hash: FNV-1a de cada cuadro de geometría entregado (vértices y polígonos usados, registros, parámetros), para comparar
+ * dos ejecuciones (p. ej. modo directo y diferido) o dos versiones del motor. */
+static uint64_t gxh_all, gxh_n, gxh_last;
+static int gxh_on;
+
+static uint64_t fnv(uint64_t h, const void *p, size_t n)
+{
+	const uint8_t *b = p;
+
+	while (n--)
+		h = (h ^ *b++) * 1099511628211ull;
+	return h;
+}
+
+static void gx_hash_poll(void)
+{
+	const gx_frame *f;
+	uint64_t h = 1469598103934665603ull;
+
+	if (!gxh_on || M.gx_frames == gxh_last || !(f = nds_gx_front(&M)))
+		return;
+	gxh_last = M.gx_frames;
+	h = fnv(h, f->vtx, (size_t)f->nverts * sizeof f->vtx[0]);
+	h = fnv(h, f->poly, (size_t)f->npolys * sizeof f->poly[0]);
+	h = fnv(h, &f->npolys, 4 * 5);
+	h = fnv(h, &f->regs, sizeof f->regs);
+	gxh_all = (gxh_all ^ h) * 1099511628211ull;
+	gxh_n++;
 }
 
 static void gx_cmds(void)
@@ -450,7 +481,7 @@ int main(int argc, char **argv)
 	const char *wav_path = NULL;
 	int snd_original = 0, g2d_stats = 0;
 	const char *gxdump_path = NULL;
-	int gx_clock = 0, r3d_stats_on = 0, holes_on = 0;
+	int gx_clock = 0, r3d_stats_on = 0, holes_on = 0, gx_defer = 0;
 	const char *holes_dump = NULL, *fdump_prefix = NULL;
 	uint64_t fdump_frame = 0;
 	const char *img3d_path = NULL;
@@ -474,6 +505,10 @@ int main(int argc, char **argv)
 			wav_path = argv[++i];
 		else if (!strcmp(argv[i], "--g2d-stats"))
 			g2d_stats = 1;
+		else if (!strcmp(argv[i], "--gx-defer"))
+			gx_defer = 1; /* motor de geometría en modo diferido con el ejecutor de prueba (mismos bits que el directo) */
+		else if (!strcmp(argv[i], "--gx-hash"))
+			gxh_on = 1;
 		else if (!strcmp(argv[i], "--gx-clock"))
 			gx_clock = 1; /* mide el tiempo del motor de geometría con el reloj del host (el reloj mismo cuesta: sólo para repartir) */
 		else if (!strcmp(argv[i], "--ref3d"))
@@ -622,8 +657,15 @@ int main(int argc, char **argv)
 	M.dbg = dbg;
 	M.vid.use_ref = use_ref;
 	nds_init(&M);
-	if (gx_clock)
+	if (gx_defer) {
+		static gx_loop gloop;
+
+		gx_loop_attach(&M.gx, &gloop);
+	}
+	if (gx_clock) {
 		M.gx.clock = clock_ns;
+		M.prof_clock = clock_ns;
+	}
 	if (r3d_stats_on)
 		M.vid.clock = clock_ns;
 	if (wav_path)
@@ -825,6 +867,7 @@ int main(int argc, char **argv)
 				gx_dump(path);
 			}
 			run_frame();
+			gx_hash_poll();
 			if (lockstep && hj_fail())
 				break;
 			if (fdump_prefix && f == fdump_frame) {
@@ -867,6 +910,18 @@ int main(int argc, char **argv)
 			printf("planificador: %.1f tramos, %.1f saltos ociosos y %.1f eventos por cuadro; %.1f us por cuadro\n",
 			       (double)M.st.slices / (double)frames, (double)M.st.jumps / (double)frames,
 			       (double)M.st.events / (double)frames, (t1 - t0) * 1e6 / (double)frames);
+		if (gxh_on)
+			printf("gx-hash: %llu cuadros de geometría, %016llx\n", (unsigned long long)gxh_n, (unsigned long long)gxh_all);
+		if (stats) {
+			static const char *const evn[EV_COUNT] = { "línea", "hblank", "tm9.0", "tm9.1", "tm9.2", "tm9.3", "tm7.0", "tm7.1",
+								   "tm7.2", "tm7.3", "cartucho", "spi", "gx" };
+			printf("eventos por cuadro (cuántos y us por cuadro con --gx-clock):");
+			for (int k = 0; k < EV_COUNT; k++)
+				if (M.st.ev_n[k])
+					printf(" %s=%.1f/%.1f", evn[k], (double)M.st.ev_n[k] / (double)frames,
+					       (double)M.st.ev_t[k] / 1e3 / (double)frames);
+			printf("\n");
+		}
 		if (stats)
 			print_gx_stats(M.frames), gx_cmds();
 		if (M.jit9)
@@ -992,6 +1047,16 @@ int main(int argc, char **argv)
 			       (unsigned long long)M.a9.icount, (unsigned long long)M.a9.cycles,
 			       (unsigned long long)M.a7.icount, (unsigned long long)M.a7.cycles, secs, mips,
 			       (unsigned long long)M.frames);
+		}
+		if (stats) {
+			static const char *const evn[EV_COUNT] = { "línea", "hblank", "tm9.0", "tm9.1", "tm9.2", "tm9.3", "tm7.0", "tm7.1",
+								   "tm7.2", "tm7.3", "cartucho", "spi", "gx" };
+			printf("eventos por cuadro (cuántos y us por cuadro con --gx-clock):");
+			for (int k = 0; k < EV_COUNT; k++)
+				if (M.st.ev_n[k])
+					printf(" %s=%.1f/%.1f", evn[k], (double)M.st.ev_n[k] / (double)frames,
+					       (double)M.st.ev_t[k] / 1e3 / (double)frames);
+			printf("\n");
 		}
 		if (stats)
 			print_gx_stats(M.frames), gx_cmds();

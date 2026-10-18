@@ -353,6 +353,8 @@ struct nds {
 	/* Motor de geometría (Fase 3.1): src/gpu3d/gx.c; el pegamento con la máquina, en src/core/geom.c. */
 	gx_t gx;
 	uint64_t gx_frames; /* cuadros entregados por SWAP_BUFFERS */
+	uint64_t gx_anchor; /* origen de la rejilla de miradas de EV_GX (la última mirada, o la primera tras dormir) */
+	uint64_t hb_t;      /* inicio de la última línea atendida (para armar el evento de HBlank a demanda) */
 	uint64_t gx_irq_t;  /* instante de la última petición de la IRQ 21 (se repite cada NDS_GX_PERIOD mientras dure el nivel) */
 	uint32_t ipcsync_out[2]; /* bits 8-11 de cada CPU */
 	uint8_t ipcsync_irqen[2];
@@ -392,6 +394,8 @@ struct nds {
 	struct {
 		uint64_t slices, jumps, events;     /* tramos corridos, saltos de tiempo ocioso, eventos atendidos */
 		uint64_t prof_a9, prof_a7, prof_ev; /* ticks dentro del ARM9, del ARM7 y de los eventos */
+		uint64_t ev_n[EV_COUNT];            /* eventos atendidos por tipo (índice de EV_*) */
+		uint64_t ev_t[EV_COUNT];            /* ticks dentro de los eventos de cada tipo (solo con `prof_clock`) */
 	} st;
 	uint64_t (*prof_clock)(void);
 	struct nds_video vid;

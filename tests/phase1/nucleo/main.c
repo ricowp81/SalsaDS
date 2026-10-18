@@ -48,11 +48,14 @@
 #include "spu/gpu2d/job.h"
 #include "spu/snd/job.h"
 #include "spu/raster3d/job.h"
+#include "spu/geom/job.h"
+#include "gpu3d/gx_selftest.h"
 #include "gpu3d/r3d_scene.h"
 #include "spukit/spukit.h"
 #include "spu_gpu2d_bin.h"
 #include "spu_snd_bin.h"
 #include "spu_raster3d_bin.h"
+#include "spu_geom_bin.h"
 #include "frontend/layout.h"
 #include "platform/ps3/audio_out.h"
 #include "platform/ps3/autotest.h"
@@ -859,6 +862,15 @@ static struct stats cur_stats;
 static uint64_t acc_gx_ticks, acc_gx_cycles, acc_gx_polys, acc_gx_verts, acc_gx_swaps, acc_frames;
 static uint64_t acc_slices, acc_jumps, acc_events, acc_i9, acc_i7, acc_emu_ticks, acc_a9_ticks, acc_a7_ticks, acc_prof_n;
 static uint64_t acc_i9p, acc_i7p; /* instrucciones de los cuadros con perfil (para los MIPS dentro de cada CPU) */
+static spukit_worker *wk_geom;
+static int geom_on;
+static uint32_t geom_collect_seq = 1, geom_last_seq;
+static struct {
+	uint64_t jobs, ticks, cmds, puts, wait_us, waits, posts;
+	uint32_t ticks_max, errors;
+} geom_acc;
+static uint64_t acc_evn[EV_COUNT], acc_evt[EV_COUNT]; /* eventos del planificador por tipo: cuántos y ticks (cuadros con perfil) */
+static uint64_t acc_evn_all[EV_COUNT];                /* ídem, cuántos, en todos los cuadros */
 static r3d_stats acc_r3d;           /* render 3D: suma de los contadores de los dos SPE */
 static uint32_t acc_r3d_frames;
 
@@ -926,6 +938,21 @@ static void log_stats(void)
 			    MS(pct(M_DRAW, 50)), MS(pct(M_BEGIN, 50)), MS(pct(M_END, 50)), (unsigned)(acc_slices / n),
 			    (unsigned)(acc_jumps / n), (unsigned)(acc_events / n));
 	}
+	if (acc_prof_n) {
+		static const char *const evn[EV_COUNT] = { "línea", "hblank", "tm9.0", "tm9.1", "tm9.2", "tm9.3", "tm7.0", "tm7.1",
+							   "tm7.2", "tm7.3", "cartucho", "spi", "gx" };
+		char line[512];
+		size_t o = 0;
+
+		for (int k = 0; k < EV_COUNT && o < sizeof line - 80; k++) {
+			if (!acc_evn_all[k])
+				continue;
+			o += (size_t)snprintf(line + o, sizeof line - o, " %s %.1f (%.2f ms)", evn[k], (double)acc_evn_all[k] / (double)acc_frames,
+					      (double)acc_evt[k] * 1000.0 / (double)tb_hz / (double)acc_prof_n);
+		}
+		salsads_log("DATO eventos: por cuadro, cuántos (ms con reloj de perfil, promedio de %u cuadros; incluye lo que el evento ejecuta, "
+			    "p. ej. la geometría en «gx»):%s", (unsigned)acc_prof_n, line);
+	}
 	if (spu_on)
 		salsads_log("DATO spe: composición 2D por pantalla y por cuadro (decrementador del SPE), mediana / p95 / máx en ms: "
 			    "A %u.%02u / %u.%02u / %u.%02u, B %u.%02u / %u.%02u / %u.%02u; el PPE esperando a los SPE: mediana %u.%02u, "
@@ -991,6 +1018,16 @@ static void log_stats(void)
 			    acc_gx_swaps ? (unsigned)(acc_gx_verts / acc_gx_swaps) : 0u,
 			    acc_frames ? (unsigned)(100u * acc_gx_cycles / (acc_frames * NDS_FRAME_CYCLES)) : 0u,
 			    (unsigned)(gx_us / 1000u), (unsigned)(gx_us % 1000u), (unsigned)acc_prof_n);
+		if (geom_on) {
+			const double nf = acc_frames ? (double)acc_frames : 1.0, hz = (double)spukit_tick_hz();
+
+			salsads_log("DATO geometria-spe: por cuadro: %.1f trabajos (%.0f órdenes, %.1f subidas DMA), SPE %.2f ms (máx por trabajo %.2f ms), "
+				    "el PPE esperando al SPE %.2f ms (%.1f esperas); errores %u",
+				    (double)geom_acc.jobs / nf, (double)geom_acc.cmds / nf, (double)geom_acc.puts / nf,
+				    (double)geom_acc.ticks * 1000.0 / hz / nf, (double)geom_acc.ticks_max * 1000.0 / hz,
+				    (double)geom_acc.wait_us / 1000.0 / nf, (double)geom_acc.waits / nf, geom_acc.errors);
+			memset(&geom_acc, 0, sizeof geom_acc);
+		}
 	}
 	if (acc_r3d_frames) {
 		const r3d_stats *r = &acc_r3d;
@@ -1050,6 +1087,147 @@ static void log_stats(void)
 	acc_gx_ticks = acc_gx_cycles = acc_gx_polys = acc_gx_verts = acc_gx_swaps = acc_frames = 0;
 	acc_slices = acc_jumps = acc_events = acc_i9 = acc_i7 = acc_emu_ticks = acc_a9_ticks = acc_a7_ticks = acc_prof_n = 0;
 	acc_i9p = acc_i7p = 0;
+	memset(acc_evn, 0, sizeof acc_evn);
+	memset(acc_evt, 0, sizeof acc_evt);
+	memset(acc_evn_all, 0, sizeof acc_evn_all);
+}
+
+/* ---- motor de geometría en un SPE (Fase 3.5) ------------------------------------------------------------------------- */
+
+/* El motor de tiempo (FIFO, GXSTAT, IRQ) sigue en el PPE; las órdenes que empiezan se anotan en un registro y el SPE las ejecuta
+ * por lotes con el mismo código (src/gpu3d/gx_exec.c) y escribe los vértices y polígonos en el cuadro de salida. El PPE espera
+ * al SPE solo cuando la CPU lee un resultado de la ejecución y en el SWAP_BUFFERS (docs/fase3.md, 3.5). */
+
+/* recoge el resultado de los trabajos ya terminados (los resultados duran SPUKIT_QUEUE_LEN trabajos más) */
+static void geom_collect(int block_to)
+{
+	while (geom_collect_seq <= geom_last_seq && (block_to >= (int)geom_collect_seq || spukit_done(wk_geom, geom_collect_seq))) {
+		const spukit_result *r = spukit_wait(wk_geom, geom_collect_seq);
+		job_geom_result jr;
+
+		memcpy(&jr, r->data, sizeof jr);
+		if (r->error != 0 || jr.rc != 0) {
+			if (geom_acc.errors++ < 4)
+				salsads_log("FALLO el SPE de geometría devolvió error %d / %d", r->error, jr.rc);
+		}
+		geom_acc.jobs++;
+		geom_acc.ticks += r->ticks;
+		geom_acc.cmds += jr.cmds;
+		geom_acc.puts += jr.puts;
+		if (r->ticks > geom_acc.ticks_max)
+			geom_acc.ticks_max = r->ticks;
+		geom_collect_seq++;
+	}
+}
+
+static uint32_t geom_post(void *ctx, gx_t *g, uint32_t flags, const uint32_t *log, uint32_t nwords, gx_frame *f)
+{
+	job_geom j;
+
+	(void)ctx;
+	j.log_ea = (uint64_t)(uintptr_t)log;
+	j.vtx_ea = (uint64_t)(uintptr_t)f->vtx;
+	j.poly_ea = (uint64_t)(uintptr_t)f->poly;
+	j.out_ea = (uint64_t)(uintptr_t)&g->ex.out;
+	j.nwords = nwords;
+	j.flags = flags;
+	geom_collect(0);
+	geom_last_seq = spukit_post(wk_geom, JOB_GEOM, &j, sizeof j);
+	geom_acc.posts++;
+	return geom_last_seq;
+}
+
+static void geom_wait(void *ctx, gx_t *g, uint32_t seq)
+{
+	const uint64_t t0 = now_us();
+
+	(void)ctx;
+	(void)g;
+	if (!spukit_done(wk_geom, seq)) {
+		geom_acc.waits++;
+		spukit_wait(wk_geom, seq);
+		geom_acc.wait_us += now_us() - t0;
+	}
+	geom_collect((int)seq);
+}
+
+/* Autoprueba al arrancar: registros de órdenes pseudoaleatorios ejecutados en el PPE (cuadro entero) y en el SPE (dos trabajos,
+ * ventanas pequeñas por DMA): vértices, polígonos, resultados y matrices tienen que ser idénticos. Devuelve 0 si coinciden. */
+#define GST_WORDS 60000u
+static uint32_t gst_log[GST_WORDS] __attribute__((aligned(128)));
+static gx_frame gst_fa __attribute__((aligned(128))), gst_fb __attribute__((aligned(128)));
+static gx_exec gst_ref __attribute__((aligned(128)));
+static gx_exec_out gst_out __attribute__((aligned(128)));
+
+static int geom_selftest(void)
+{
+	static const uint32_t seeds[3] = { 1, 2, 3 };
+	const spukit_result *r;
+	job_geom_result ir;
+	uint32_t q;
+	int bad = 0;
+	job_geom j;
+
+	memset(&j, 0, sizeof j);
+	q = spukit_post(wk_geom, JOB_GEOM_INFO, &j, sizeof j);
+	r = spukit_wait(wk_geom, q);
+	memcpy(&ir, r->data, sizeof ir);
+	if (r->error != 0) {
+		salsads_log("autoprueba geometría: el SPE devolvió %d", r->error);
+		return 1;
+	}
+	salsads_log("geometría: contexto del SPE %u bytes", ir.ctx_bytes);
+	for (unsigned k = 0; k < 3; k++) {
+		const uint32_t n = gx_selftest_gen(seeds[k], gst_log, GST_WORDS, k == 0 ? 6000u : 2500u);
+		uint32_t cut = 0, diffs_v = 0, diffs_p = 0;
+		uint64_t t0, tppe, tspe;
+
+		while (cut < n / 2)
+			cut += 1u + gx_cmd_np(gst_log[cut]);
+		t0 = now_us();
+		gx_exec_init(&gst_ref);
+		gx_exec_newframe(&gst_ref);
+		gst_ref.vtx = gst_fa.vtx;
+		gst_ref.poly = gst_fa.poly;
+		gx_exec_run(&gst_ref, gst_log, n);
+		gx_exec_flush_mats(&gst_ref);
+		tppe = now_us() - t0;
+		memset(&gst_out, 0, sizeof gst_out);
+		memset(gst_fb.vtx, 0, sizeof(gx_vertex) * 64);
+		t0 = now_us();
+		j.log_ea = (uint64_t)(uintptr_t)gst_log;
+		j.vtx_ea = (uint64_t)(uintptr_t)gst_fb.vtx;
+		j.poly_ea = (uint64_t)(uintptr_t)gst_fb.poly;
+		j.out_ea = (uint64_t)(uintptr_t)&gst_out;
+		j.nwords = cut;
+		j.flags = GX_JOB_RESET;
+		spukit_post(wk_geom, JOB_GEOM, &j, sizeof j);
+		j.log_ea = (uint64_t)(uintptr_t)(gst_log + cut);
+		j.nwords = n - cut;
+		j.flags = GX_JOB_MATS;
+		q = spukit_post(wk_geom, JOB_GEOM, &j, sizeof j);
+		r = spukit_wait(wk_geom, q);
+		tspe = now_us() - t0;
+		if (r->error != 0) {
+			salsads_log("autoprueba geometría: el SPE devolvió %d", r->error);
+			return 1;
+		}
+		for (uint32_t i = 0; i < gst_ref.out.nverts; i++)
+			diffs_v += memcmp(&gst_fa.vtx[i], &gst_fb.vtx[i], sizeof gst_fa.vtx[0]) != 0;
+		for (uint32_t i = 0; i < gst_ref.out.npolys; i++)
+			diffs_p += memcmp(&gst_fa.poly[i], &gst_fb.poly[i], sizeof gst_fa.poly[0]) != 0;
+		{
+			const int out_diff = memcmp(&gst_out, &gst_ref.out, sizeof gst_out) != 0;
+
+			salsads_log("autoprueba geometría: registro %u (%u palabras): %u polígonos y %u vértices (%u recortados), vértices distintos %u, "
+				    "polígonos distintos %u, resultados %s; SPE %u us, PPE %u us",
+				    seeds[k], (unsigned)n, (unsigned)gst_ref.out.npolys, (unsigned)gst_ref.out.nverts,
+				    (unsigned)gst_ref.out.st.clipped, (unsigned)diffs_v, (unsigned)diffs_p, out_diff ? "DISTINTOS" : "iguales",
+				    (unsigned)tspe, (unsigned)tppe);
+			bad |= diffs_v || diffs_p || out_diff || gst_ref.out.npolys < 100;
+		}
+	}
+	return bad;
 }
 
 /* ---- render 3D en dos SPE (Fase 3.2) ------------------------------------------------------------------------------- */
@@ -1282,6 +1460,10 @@ static void render_frame(void)
 	{
 		const uint64_t s0 = nds->st.slices, j0 = nds->st.jumps, e0 = nds->st.events;
 		const uint64_t pa9 = nds->st.prof_a9, pa7 = nds->st.prof_a7, pev = nds->st.prof_ev;
+		uint64_t evn0[EV_COUNT], evt0[EV_COUNT];
+
+		memcpy(evn0, nds->st.ev_n, sizeof evn0);
+		memcpy(evt0, nds->st.ev_t, sizeof evt0);
 
 		const uint64_t gt0 = nds->gx.st.host_ticks, gc0 = nds->gx.st.cycles, gs0 = nds->gx.st.swaps;
 		const uint64_t gp0 = nds->gx.st.frame_polys, gv0 = nds->gx.st.frame_verts;
@@ -1299,6 +1481,13 @@ static void render_frame(void)
 		acc_gx_polys += nds->gx.st.frame_polys - gp0;
 		acc_gx_verts += nds->gx.st.frame_verts - gv0;
 		acc_frames++;
+		for (int k = 0; k < EV_COUNT; k++) {
+			acc_evn_all[k] += nds->st.ev_n[k] - evn0[k];
+			if (profiled) {
+				acc_evn[k] += nds->st.ev_n[k] - evn0[k];
+				acc_evt[k] += nds->st.ev_t[k] - evt0[k];
+			}
+		}
 		acc_slices += nds->st.slices - s0;
 		acc_jumps += nds->st.jumps - j0;
 		acc_events += nds->st.events - e0;
@@ -1533,8 +1722,8 @@ int main(void)
 	}
 	memset(tex_mem, 0, 1u << 20);
 	/* Los dos SPE del 2D (un trabajador por pantalla); si no arrancan, el PPE dibuja con el compositor del host */
-	/* SPE: 2D A, 2D B, sonido, render 3D × 2 (el sexto queda libre) */
-	if (spukit_init(5) == 0) {
+	/* SPE: 2D A, 2D B, sonido, render 3D × 2 y geometría */
+	if (spukit_init(6) == 0) {
 		for (int e = 0; e < 2 && (e == 0 || spu_on); e++) {
 			wk[e] = spukit_worker_start(spu_gpu2d_bin, e ? "gpu2d-b" : "gpu2d-a", 0);
 			spu_on = wk[e] != NULL;
@@ -1575,6 +1764,22 @@ int main(void)
 			}
 		} else {
 			salsads_log("render 3D: los SPE no arrancaron (spukit %d): rasteriza el PPE", spukit_last_error());
+		}
+	}
+	/* Motor de geometría en el sexto SPE; si no arranca o la autoprueba falla, el PPE ejecuta las órdenes (modo directo) */
+	if (spu_on) {
+		wk_geom = spukit_worker_start(spu_geom_bin, "geom", 0);
+		if (wk_geom && geom_selftest() == 0) {
+			static const gx_exec_ops gops = { NULL, geom_post, geom_wait };
+
+			gx_set_executor(&nds->gx, &gops);
+			geom_on = 1;
+			salsads_log("geometría: órdenes ejecutadas en un SPE (autoprueba contra el PPE: igual)");
+		} else if (wk_geom) {
+			failures++;
+			salsads_log("geometría: la autoprueba del SPE falló: ejecuta el PPE");
+		} else {
+			salsads_log("geometría: el SPE no arrancó (spukit %d): ejecuta el PPE", spukit_last_error());
 		}
 	}
 	snd_load_cfg();
@@ -1621,6 +1826,12 @@ int main(void)
 	}
 	if (wk_snd)
 		spukit_worker_stop(wk_snd);
+	if (geom_on) {
+		gx_sync(&nds->gx, 0);
+		geom_collect((int)geom_last_seq);
+	}
+	if (wk_geom)
+		spukit_worker_stop(wk_geom);
 	audio_out_shutdown();
 	if (r3d_on) {
 		r3d_spe_wait(NULL);

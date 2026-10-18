@@ -209,6 +209,11 @@ if tools/build.sh -C src/host >build/logs/build-host-run.log 2>&1; then
 			check_rom "LEq$q" "$rom" "build/logs/rom-$rom-le-q$q.log"
 		done
 	done
+	# el motor de geometría en modo diferido (ejecutor de prueba con ventanas chicas, Fase 3.5): las ROMs de geometría igual
+	for rom in gx geom; do
+		tools/build.sh --sh "build/host-run/salsads-cpurun --gx-defer tests/roms/homebrew/$rom.nds" >"build/logs/rom-$rom-le-defer.log" 2>&1
+		check_rom "LEdf" "$rom" "build/logs/rom-$rom-le-defer.log"
+	done
 	tools/build.sh --sh "build/host-run/salsads-cpurun --frames 120 --peek 0x023A0000 --peek 0x023A0004 tests/roms/homebrew/demo.nds" >build/logs/rom-demo-le.log 2>&1
 	check_demo LE build/logs/rom-demo-le.log
 	for sz in $SAVE_SIZES; do
@@ -253,6 +258,10 @@ if tools/build-ppc64.sh host >build/logs/build-ppc64-run.log 2>&1; then
 	for rom in $ROMS; do
 		tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun tests/roms/homebrew/$rom.nds >"build/logs/rom-$rom-be.log" 2>&1
 		check_rom "BE" "$rom" "build/logs/rom-$rom-be.log"
+	done
+	for rom in gx geom; do
+		tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --gx-defer tests/roms/homebrew/$rom.nds >"build/logs/rom-$rom-be-defer.log" 2>&1
+		check_rom "BEdf" "$rom" "build/logs/rom-$rom-be-defer.log"
 	done
 	tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --frames 120 --peek 0x023A0000 --peek 0x023A0004 tests/roms/homebrew/demo.nds >build/logs/rom-demo-be.log 2>&1
 	check_demo BE build/logs/rom-demo-be.log

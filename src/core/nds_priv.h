@@ -71,6 +71,7 @@ void nds_halt_check(struct nds *n);
 void nds_cpu_halt(struct nds *n, int cpu); /* HALT: espera IE & IF (ARM7) o la línea de IRQ (ARM9) */
 uint16_t nds_dispstat_read(struct nds *n, int cpu);
 void nds_dispstat_write(struct nds *n, int cpu, uint16_t v, uint16_t mask);
+void nds_hblank_refresh(struct nds *n); /* arma el evento de HBlank de la línea en curso si se acaba de pedir */
 void nds_keys_changed(struct nds *n);
 void nds_keycnt_write(struct nds *n, int cpu, uint16_t v, uint16_t mask);
 uint16_t nds_timer_read(struct nds *n, int cpu, int i);

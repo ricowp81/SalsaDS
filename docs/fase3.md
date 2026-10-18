@@ -575,3 +575,79 @@ de 179 a 171, 13 de 44 a 43, 25 de 34 a 27 (con la regla vieja y el recorte nuev
 Paquete «SalsaDS núcleo» (SLDS00008) de este commit (ruta y SHA-256 en `docs/estado.md`): SM64DS en una zona de juego, NSMB en un
 nivel y MKDS en carrera; la línea `DATO raster3d` ahora trae el reparto `polígonos / aristas / píxeles`. Y mirar si siguen viéndose
 juntas en SM64DS.
+
+
+# Fase 3.5 — Eventos del planificador y el motor de geometría en un SPE
+
+Medido en la PS3 con el JIT (SM64DS en juego, `build/ps3-jit/nucleo.log` y `nucleo-2.log`): la emulación de un cuadro costaba
+26,6 ms = ARM9 13,3 + ARM7 2,3 + **eventos 10,4** + planificador 0,6; en otras escenas del mismo juego el ARM9 sube a 17,4 y los
+eventos bajan a 5,4 (la suma no cambia). Y **la geometría en el PPE 7,0 ms por cuadro** (683 polígonos, 1617 vértices).
+
+## Eventos
+
+Contados por tipo (`salsads-cpurun --stats --gx-clock`, ahora con `eventos por cuadro`; en la PS3, la línea `DATO eventos`), SM64DS con
+JIT, por cuadro: **4363 de 4925 eventos eran `EV_GX`**, 263 de línea, 263 de HBlank, 127 del cartucho, 12 de SPI y 11 de temporizadores.
+
+- Por qué el tiempo de «eventos» se movía entre el ARM9 y los eventos sin cambiar la suma: el motor de geometría es perezoso, la
+  primera que lo mira lo ejecuta (`gx_advance`): la CPU al escribir/leer la FIFO, o el evento `EV_GX`. Los 7 ms de geometría estaban
+  repartidos entre «ARM9» y «eventos» según quién llegara antes (10,4 ms de eventos en un caso y 5,4 en otro); los eventos de verdad
+  (planificar, vaciar, mirar la cola) son una parte chica. Por eso no fue el JIT quien «subió» los eventos: con el JIT el ARM9 escribe
+  la FIFO más tarde dentro de su tramo y el evento llega primero.
+- `EV_GX` miraba la FIFO cada 256 ciclos mientras hubiera IRQ 21 por nivel o una DMA de modo 7 esperando (4375 por cuadro). Casi todas
+  las miradas no podían hacer nada: la condición (nivel de la FIFO) solo cambia cuando el motor empieza una orden; si el nivel ya
+  cumple, la IRQ se repite a los 1024 ciclos. Ahora el evento va al primer punto de la rejilla de 256 ciclos (anclada en la última
+  mirada, como antes) que llega al instante en que la condición puede cambiar (`gx_poll_need` en `src/core/geom.c`) y se recalcula
+  al escribir la FIFO. SM64DS 4363 → 1116 por cuadro, NSMB 4362 → 1684, MKDS 2443 → 1006.
+- El evento de **HBlank** solo se arma si hay IRQ de HBlank (DISPSTAT bit 4 de cualquier CPU) o una DMA de modo HBlank del ARM9; si se
+  activa a mitad de línea se arma en ese momento con el instante que habría tenido (`nds_hblank_refresh`). −263 eventos por cuadro
+  (NSMB lo usa: 245).
+- Total por cuadro (host, 4000 cuadros con pulsaciones): SM64DS 5039 → **1497**, NSMB 5031 → **2304**, MKDS 3183 → **1437**.
+- **Diferencias con el comportamiento anterior**: (1) una mirada vieja podía llegar *antes* de que el motor hubiera empezado la orden
+  que bajaba el nivel, si la CPU ya había adelantado el motor; la IRQ 21 salía hasta 256 ciclos antes de que la condición se
+  cumpliera, ahora sale en la primera mirada posterior. (2) Cada evento corta el tramo de las CPUs, aunque no haga nada: quitar los
+  que no hacían nada cambia dónde caen las fronteras de tramo y por tanto el intercalado fino del ARM9 y el ARM7 (nada que la DS real
+  fije: el planificador ya admite cualquier `--quantum`). Por eso el hash de la secuencia de cuadros de geometría de una partida
+  cambia (SM64DS, NSMB y MKDS, 4000 cuadros con pulsaciones; con el HBlank eterno NSMB conserva el hash de antes), mientras que
+  modo directo y diferido siguen dando el mismo hash entre sí. Las ROMs `irq`, `dma`, `ipc`, `periph`, `gx` y `geom` dan OK con
+  todos los tamaños de tramo (1, 16, 2048, 20000) y en LE, BE, con sanitizadores y con el recompilador.
+- No hecho: la línea (263 por cuadro) lleva la lógica de cuadro y no es perezosa; los eventos de cartucho y SPI son pocos.
+
+## Motor de geometría en el SPE libre
+
+El motor se parte en dos (`docs/fase3.md` 3.1 describe la geometría; el código está en tres archivos):
+
+| Archivo | Qué es |
+|---|---|
+| `src/gpu3d/gx.c` | **Motor de tiempo** (PPE): FIFO y tubería, coste en ciclos de cada orden (`gx_cmd_cost`), GXSTAT, el error y el nivel de las pilas (solo punteros, `gx_sp_*`), SWAP_BUFFERS, IRQ 21 y DMA de modo 7 |
+| `src/gpu3d/gx_exec.c` | **Ejecución** (PPE o SPE): matrices, vértices, luces, recorte, viewport y la lista de polígonos; el mismo C portable que antes, sin tiempo |
+| `src/spu/geom/geom.c` | El SPE: un trabajador de spukit que ejecuta trozos del registro de órdenes con `gx_job_run` |
+| `src/gpu3d/gx_loop.c`, `gx_selftest.c` | Ejecutor de prueba del host (mismas ventanas chicas que el SPE) y generador de registros de órdenes al azar (pruebas y autoprueba del SPE) |
+
+- **Por qué se puede partir**: el tiempo (cuándo empieza cada orden y cuánto cuesta) no depende de lo que las órdenes calculan, solo del
+  modo de matriz (MULT en el modo 2 cuesta +30), de POLYGON_ATTR (las luces de NORMAL), de los punteros de las pilas (error) y del
+  SWAP_BUFFERS. El motor de tiempo los sigue sin ejecutar nada. Todo lo demás es ejecución pura.
+- **Modo diferido**: cada orden que *empieza* (misma lógica de antes) se anota en un registro (`cmd, p0..pn-1`, 128 KB de palabras) en
+  vez de ejecutarse; al llegar a 2048 palabras se publica un trabajo a spukit sin esperar, así que el SPE ejecuta mientras el PPE
+  sigue emulando. Cada trabajo trae el trozo del registro y las direcciones del cuadro de salida y del bloque `gx_exec_out`
+  (contadores, resultados de BOX/POS/VEC_TEST y, si se piden, las matrices clip y vectorial). El SPE traduce el registro por tramos de
+  2048 palabras, escribe los vértices y polígonos en ventanas del local store (192 y 96) y las sube por DMA al cuadro en memoria
+  principal cuando se llenan y al terminar.
+- **Qué hace esperar al PPE** (`gx_sync`): leer GXSTAT solo si hay un BOX_TEST sin ejecutar (el bit 1), POS/VEC_TEST sin ejecutar,
+  RAM_COUNT con órdenes pendientes, la matriz clip o vectorial (0x640-0x6A0) y el SWAP_BUFFERS en el VBlank (el cuadro tiene que estar
+  completo). GXSTAT (lo que más se lee: ocupado, nivel de FIFO, error de pilas), la IRQ y la DMA son del motor de tiempo y no esperan.
+  El resto del cuadro el SPE va por delante: al VBlank solo queda el último trabajo.
+- **Sin diferencias de bits**: el mismo `gx_exec.c` corre en los dos. Pruebas: `test_gx_defer` (24 secuencias al azar de 4000 pasos con
+  lecturas en instantes al azar de GXSTAT, RAM_COUNT, resultados y matrices, cuadros entregados, contadores: motor directo y diferido
+  idénticos, 32 599 polígonos), `test_gx_job` (12 registros partidos en dos trabajos con ventanas de 40 vértices y tramos de 80
+  palabras contra la ejecución directa), las ROMs `gx` y `geom` con `--gx-defer` (LE y BE) y `salsads-cpurun --gx-defer --gx-hash`
+  (hash de cada cuadro de geometría entregado: SM64DS, NSMB y MKDS 4000 cuadros con pulsaciones, idénticos al modo directo y al motor
+  de antes de partirlo). En la PS3, autoprueba al arrancar: 3 registros al azar (6000 y 2500 pasos) en el SPE contra el PPE.
+- Cambios de datos: `gx_cvtx` guarda `sx, sy` del vértice ya guardado (el cuadro de salida puede estar ya en memoria principal cuando
+  una tira reutiliza un vértice); los contadores del cuadro pasan de `gx_frame` a `gx_exec_out` y se copian al cuadro en el
+  SWAP_BUFFERS; `gx_t` crece 128 KB (el registro).
+- Local store del SPE (`geom`, medido al enlazar): texto 42 296 B (incluye `__divti3` del recorte), bss 34 608 B, pila con 184 256 B
+  libres (la cadena más honda usa 4064).
+- **Sin medir en la PS3**: el paquete trae la línea `DATO geometria-spe` (trabajos, órdenes y subidas DMA por cuadro, ms del SPE, ms
+  que espera el PPE y cuántas esperas) además de `DATO geometria` (el tiempo que el PPE gasta ahora, anotando y publicando) y `DATO
+  eventos`. Expectativa: el PPE pasa de ≈ 7 ms a ≈ 1 ms por cuadro (anotar 3-4 palabras por orden y el costo de spukit_post) y el SPE
+  tarda alrededor de lo que el PPE tardaba dividido por la velocidad de un SPE en este código (sin vectorizar: enteros de 64 bits).
