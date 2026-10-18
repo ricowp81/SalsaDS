@@ -12,7 +12,7 @@ tanda: 2026-10-17 (ROMs del commit `728113c`). Lo que sigue marcado «pendiente�
 | `ipc` | OK; las dos divergencias (FIFO) coinciden con la documentación |
 | `bios` | OK 50 (sin las SWI 0x13 y 0x17); Halt del ARM7 conserva los registros (como GBATEK; la BIOS libre de melonDS no) |
 | `bios13` | OK 54: la SWI 0x13 funciona con las dos condiciones de abajo |
-| `mem` | OK 218; con una flashcard de GBA insertada la ranura lee 0 (falta medir vacía) |
+| `mem` | OK 218; ranura de GBA medida en cinco situaciones (ver «Ranura de GBA») |
 | `periph` | OK en lo que no toca el cartucho; SQRT y flashcart, abajo |
 | `dma`, `irq`, `cpuarm` | ver «Fallos y su clasificación» |
 
@@ -24,7 +24,7 @@ tanda: 2026-10-17 (ROMs del commit `728113c`). Lo que sigue marcado «pendiente�
 | SWI 0x17 (Diff8bitUnFilterVram) | no existe en la BIOS de la DS: la ROM cae en la excepción de instrucción indefinida | SalsaDS la implementa | la tiene | HLE de la BIOS: no implementarla (o dar excepción); `bios` ya no la llama (`-DBIOS_SWI17` para comparar emuladores) |
 | MSR con el bit T (`msr cpsr_c, #0xFF`) | cambia a Thumb (la ROM ejecutaba basura) | el manual la declara impredecible; SalsaDS la ignora | la ignora | Ninguno obligatorio; la ROM ya no la ejercita (`-DMSR_T_TEST`) |
 | Temporizador 0 con el bit 2 (cuenta ascendente) | el bit **no se guarda** (TM0CNT_H lee 0xC3 tras escribir 0xFFFF) y cuenta como uno normal | GBATEK: bits 0-2, 6, 7 (0xC7) y que con el bit no cuenta; SalsaDS lo copia de melonDS (no cuenta) | no cuenta; devuelve todo lo escrito (0xFFFF) | Núcleo de SalsaDS: en el temporizador 0 ignorar el bit 2 (no se guarda, no hay cascada) |
-| Ranura de GBA vacía (0x08000000 y 0x0A000000) | 16 bits: 0x0000; 8 bits: 0x00 | SalsaDS lee unos (0xFFFF y 0xFF) | 0xFE08 y 0xFF | Núcleo: devolver 0 (probable bus abierto = dirección/2); confirmar con más direcciones |
+| Ranura de GBA vacía (0x08000000 y 0x0A000000) | con el ARM9 dueño de la ranura (EXMEMCNT bit 7 = 0): bus abierto, 0xFFFF en 16 bits y 0xFF en 8; **la tapa de fábrica no influye**. Con el ARM7 dueño (estado al arrancar la ROM, EXMEMCNT = 0xE080) el ARM9 lee todo 0, con o sin cartucho | GBATEK/SalsaDS: 0xFFFF y 0xFF (acierta) | 0xFE08 y 0xFF (melonDS se equivoca en 16 bits) | Núcleo: ranura vacía con ARM9 dueño = 0xFFFF/0xFF; con el ARM7 dueño, el ARM9 lee 0 |
 | SQRTCNT justo tras escribir el parámetro | el bit de ocupado ya puede haber bajado (13 ciclos) | SalsaDS lo mantiene ocupado | ocupado | Núcleo: opcional modelar la latencia; la ROM ya lo trata como informativo |
 | Cartucho en flashcart | el chip ID (B8) y los comandos son del R4, no de la ROM | — | — | Ninguno; la ROM marca CARTUCHO y CART ARM7 como no aplicables si lo detecta |
 | IPC FIFO vacía (arm9.c:99 y :123) | coincide con la documentación | la documentación | no coincide | melonDS se equivoca; SalsaDS ya lo hace bien |
@@ -45,7 +45,7 @@ tanda: 2026-10-17 (ROMs del commit `728113c`). Lo que sigue marcado «pendiente�
 
 1. **Núcleo, temporizadores**: el temporizador 0 no guarda el bit 2 de TMxCNT_H y no forma cascada; TM0CNT_H lee 0xC3 tras escribir
    0xFFFF. Luego pasar el caso de `irqt.h` (TIMERS) a `SDS_CHECK`.
-2. (Ranura de GBA: sin cambios hasta medirla vacía; el 0 medido era de una flashcard de GBA.)
+2. **Núcleo, ranura de GBA**: vacía con el ARM9 dueño (EXMEMCNT bit 7 = 0) lee 0xFFFF (16 bits) y 0xFF (8 bits); con el ARM7 dueño, el ARM9 lee 0. Respetar el bit 7 de EXMEMCNT.
 3. **Núcleo, DMA de HBlank**: decidir con las cuentas del log de `dma` (grupo HBLANK) si hay más de una transferencia por línea
    o si corre en el VBlank, y ajustarlo; hoy hace una por línea visible.
 4. **Núcleo, SQRTCNT** (opcional): el bit de ocupado dura 13 ciclos; la lectura inmediata puede verlo ya bajo.
@@ -66,3 +66,22 @@ tanda: 2026-10-17 (ROMs del commit `728113c`). Lo que sigue marcado «pendiente�
 - Interpretación: `A=+` y `SD ERR` = el testigo se escribió al arrancar pero el log final no (estado de las pruebas);
   `A=-` y `SD ERR` = la escritura no funciona sin `exit` en ese flashcart; `SD OK` y el archivo sin cambios en la SD = el flashcart
   confirma la escritura solo al apagarse o reiniciarse.
+
+## Escritura del log en el R4
+
+- Hasta `ccd1a17` el log solo llegaba a la SD tras pulsar START (`exit(0)`). En el R4 **crear** archivos funciona y **agregar** a uno
+  existente no. Solución: un archivo por corrida (`<rom>-NNN.txt`, primer número libre) más el testigo `_arranque-<rom>-NNN.txt`, con
+  verificación tras reabrir (tamaño y marca final).
+
+## Ranura de GBA
+
+Cinco corridas de `mem` (ROMs `cc89405`) en una DS Lite: flashcard de GBA, ranura vacía, vacía con la tapa de fábrica, flashcard en modo
+ROM directa y un cartucho original de GBA. Solo conclusiones (no se copian bytes de cartuchos al repositorio):
+
+- Al arrancar la ROM el ARM7 es dueño de la ranura (EXMEMCNT = 0xE080): el ARM9 lee todo 0 en ROM y SRAM, también con cartucho.
+  Tras poner el dueño al ARM9 (bit 7 = 0) y la temporización lenta (EXMEMCNT = 0xE00F) la ranura se lee bien.
+- Con ranura vacía el bus abierto da 0xFFFF en 16 bits y 0xFF en 8 bits (también con la tapa de fábrica puesta, que no influye).
+  GBATEK/SalsaDS aciertan; melonDS (0xFE08 en 16 bits) no.
+- Flashcard, flashcard en modo ROM y cartucho original: cabecera de GBA válida (0x96 en 0x080000B2). Con cartucho o flashcard se lee
+  su contenido, así que esas lecturas no son divergencias (la ROM `mem` solo las anota con la ranura vacía; la divergencia que salía
+  con el cartucho original era simplemente su contenido).
