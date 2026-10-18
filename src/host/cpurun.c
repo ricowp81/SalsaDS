@@ -61,6 +61,55 @@ static uint64_t clock_ns(void)
 }
 
 /* Motor de geometría (Fase 3.1): resumen por cuadro y, con --gx-dump, el último cuadro entregado en texto. */
+/* Render 3D (Fase 3.2): tiempo y contadores por cuadro rasterizado */
+static void print_r3d_stats(void)
+{
+	const struct nds_video *v = &M.vid;
+	const r3d_stats *s = &v->r3d_sum;
+	const double n = v->r3d_frames ? (double)v->r3d_frames : 1.0;
+
+	printf("render 3D: %u cuadros rasterizados (%s, bandas de %u líneas, %u unidades); %.3f ms por cuadro en el host\n",
+	       v->r3d_frames, v->use_ref3d ? "referencia" : "código del SPE", v->r3d_band, v->r3d_units,
+	       v->clock ? (double)v->r3d_ticks / n / 1e6 : 0.0);
+	if (!v->use_ref3d)
+		printf("render 3D por cuadro: %.0f polígonos, %.0f banda·polígono, %.0f líneas, %.0f píxeles, %.0f escritos; texeles %.0f "
+		       "(aciertos %.2f %%), %.1f bloques decodificados, %.1f desalojos, %.1f líneas de VRAM (%.0f B); DMA %.0f B\n",
+		       s->polys / n, s->band_polys / n, s->rows / n, s->pixels / n, s->written / n, s->tex_px / n,
+		       s->tex_px ? 100.0 * (double)s->tex_hits / (double)(s->tex_hits + s->tex_misses) : 100.0, s->tex_misses / n,
+		       s->tex_evict / n, s->line_miss / n, s->tex_bytes / n, s->dma_bytes / n);
+	if (v->vs_ref3d)
+		printf("REF3D: %s (%u de %u cuadros distintos)\n", v->r3d_diff_frames ? "DISTINTO" : "IGUAL", v->r3d_diff_frames,
+		       v->r3d_frames);
+	if (r3d_io_errors)
+		printf("render 3D: %u transferencias que el MFC rechazaría\n", r3d_io_errors);
+}
+
+/* La capa 3D del último cuadro como PPM (lo transparente, magenta) */
+static void save_img3d(const char *path)
+{
+	FILE *f = fopen(path, "wb");
+	const int set = M.vid.last;
+
+	if (!f || set < 0) {
+		if (f)
+			fclose(f);
+		return;
+	}
+	fprintf(f, "P6\n256 192\n255\n");
+	for (int i = 0; i < R3D_W * R3D_H; i++) {
+		const uint32_t p = M.vid.set[set].img3d[i];
+		uint8_t rgb[3] = { 255, 0, 255 };
+
+		if (R3D_PX_A(p)) {
+			rgb[0] = (uint8_t)(R3D_PX_R(p) * 255 / 63);
+			rgb[1] = (uint8_t)(R3D_PX_G(p) * 255 / 63);
+			rgb[2] = (uint8_t)(R3D_PX_B(p) * 255 / 63);
+		}
+		fwrite(rgb, 1, 3, f);
+	}
+	fclose(f);
+}
+
 static void print_gx_stats(uint64_t frames)
 {
 	const gx_stats *s = &M.gx.st;
@@ -346,7 +395,8 @@ int main(int argc, char **argv)
 	const char *wav_path = NULL;
 	int snd_original = 0, g2d_stats = 0;
 	const char *gxdump_path = NULL;
-	int gx_clock = 0;
+	int gx_clock = 0, r3d_stats_on = 0;
+	const char *img3d_path = NULL;
 	struct { uint64_t frame; uint32_t keys, x, y; } press[64];
 	struct { uint64_t frame; const char *file; } shot[32];
 	uint32_t npress = 0, nshot = 0;
@@ -367,6 +417,18 @@ int main(int argc, char **argv)
 			g2d_stats = 1;
 		else if (!strcmp(argv[i], "--gx-clock"))
 			gx_clock = 1; /* mide el tiempo del motor de geometría con el reloj del host (el reloj mismo cuesta: sólo para repartir) */
+		else if (!strcmp(argv[i], "--ref3d"))
+			M.vid.use_ref3d = 1; /* render 3D con la referencia (si no, con el código del SPE) */
+		else if (!strcmp(argv[i], "--vs-ref3d"))
+			M.vid.vs_ref3d = 1;  /* comparar el código del SPE con la referencia en cada cuadro */
+		else if (!strcmp(argv[i], "--r3d-band") && i + 1 < argc)
+			M.vid.r3d_band = (uint32_t)strtoul(argv[++i], NULL, 0);
+		else if (!strcmp(argv[i], "--r3d-units") && i + 1 < argc)
+			M.vid.r3d_units = (uint32_t)strtoul(argv[++i], NULL, 0);
+		else if (!strcmp(argv[i], "--r3d-stats"))
+			r3d_stats_on = 1;
+		else if (!strcmp(argv[i], "--img3d") && i + 1 < argc)
+			img3d_path = argv[++i];
 		else if (!strcmp(argv[i], "--gx-dump") && i + 1 < argc)
 			gxdump_path = argv[++i];
 		else if (!strcmp(argv[i], "--snd-original"))
@@ -481,6 +543,8 @@ int main(int argc, char **argv)
 	nds_init(&M);
 	if (gx_clock)
 		M.gx.clock = clock_ns;
+	if (r3d_stats_on)
+		M.vid.clock = clock_ns;
 	if (wav_path)
 		M.snd.ops.sink = wav_sink;
 	if (snd_original)
@@ -681,6 +745,10 @@ int main(int argc, char **argv)
 			print_gx_stats(M.frames), gx_cmds();
 		if (gxdump_path)
 			gx_dump(gxdump_path);
+		if (img3d_path)
+			save_img3d(img3d_path);
+		if (r3d_stats_on || M.vid.vs_ref3d)
+			print_r3d_stats();
 		if (screens_path)
 			save_ppm(screens_path);
 		if (unmapped) {
@@ -794,6 +862,10 @@ int main(int argc, char **argv)
 			print_gx_stats(M.frames), gx_cmds();
 		if (gxdump_path)
 			gx_dump(gxdump_path);
+		if (img3d_path)
+			save_img3d(img3d_path);
+		if (r3d_stats_on || M.vid.vs_ref3d)
+			print_r3d_stats();
 		if (screens_path)
 			save_ppm(screens_path);
 		if (unmapped) {

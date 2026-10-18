@@ -122,6 +122,10 @@ void nds_gx_vblank(struct nds *n, uint64_t t)
 {
 	gx_t *g = &n->gx;
 
+	/* el render 3D en segundo plano (PS3) lee el cuadro entregado: tiene que terminar antes de que el SWAP_BUFFERS lo
+	 * devuelva al motor y de que el motor A lo componga (docs/fase3.md, 3.2: sincronía) */
+	if (n->vid.ops.wait3d)
+		n->vid.ops.wait3d(n->vid.ops.ctx);
 	gx_advance(g, t);
 	if (gx_swap_pending(g)) {
 		gx_regs regs;

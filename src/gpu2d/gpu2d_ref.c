@@ -646,7 +646,7 @@ static void render_line(rs_t *s, int y, uint16_t *out)
 		/* orden de capas de adelante hacia atrás */
 		int lay[6], nl = 0;
 		uint16_t col[6];
-		int semi = 0, balp = -1;
+		int semi = 0, balp = -1, a3top = 31;
 
 		for (int p = 0; p < 4; p++) {
 			if (op.v && best_prio == p && (!use_win || (wbits & 0x10))) {
@@ -656,10 +656,28 @@ static void render_line(rs_t *s, int y, uint16_t *out)
 				balp = op.balpha;
 			}
 			for (int b = 0; b < GPU2D_NBG; b++) {
-				if (bgt[b] == BG_OFF || bgt[b] == BG_3D || (int)G2D_BGCNT_PRIO(s->regs[G2D_R_BGCNT + b]) != p)
+				if (bgt[b] == BG_OFF || (int)G2D_BGCNT_PRIO(s->regs[G2D_R_BGCNT + b]) != p)
 					continue;
 				if (use_win && !(wbits & (1 << b)))
 					continue;
+				if (bgt[b] == BG_3D) {
+					/* capa 3D (Fase 3.2): el píxel del motor de render, desplazado por BG0HOFS (9 bits) */
+					const uint32_t *img = (const uint32_t *)(uintptr_t)s->e->img3d_ea;
+					const int xs = (x + (s->regs[G2D_R_BGHOFS] & 0x1FF)) & 0x1FF;
+					uint32_t px, a;
+
+					if (!img || xs >= GPU2D_W)
+						continue;
+					px = img[y * GPU2D_W + xs];
+					a = (px >> 24) & 31u;
+					if (a == 0)
+						continue;
+					if (nl == 0)
+						a3top = (int)a;
+					lay[nl] = 0;
+					col[nl++] = g2d_3d_555(px);
+					continue;
+				}
 				const px_t t = bgt[b] == BG_TEXT ? bg_text(s, b, x, y) : bg_affine(s, bgt[b], b, x, y);
 
 				if (t.v) {
@@ -675,7 +693,14 @@ static void render_line(rs_t *s, int y, uint16_t *out)
 		const int sec_l = nl > 1 ? lay[1] : 5;
 		const uint16_t sec_c = nl > 1 ? col[1] : s->pal[0];
 
-		if (top_l == 4 && (semi || balp >= 0)) {
+		if (top_l == 0 && a3top < 31) {
+			/* 3D translúcido: se mezcla con el objetivo 2 con su propio alfa, sin mirar el modo de BLDCNT; sin objetivo 2,
+			 * como un OBJ semitransparente (brillo si BG0 es objetivo 1) [melonDS] */
+			if (t2 & (1 << sec_l))
+				c = g2d_blend3d(c, sec_c, a3top);
+			else if (effects_ok && (t1 & 1) && emode >= 2)
+				c = emode == 2 ? g2d_bright_up(c, evy) : g2d_bright_down(c, evy);
+		} else if (top_l == 4 && (semi || balp >= 0)) {
 			if (t2 & (1 << sec_l)) {
 				const int a = balp >= 0 ? balp + 1 : eva, b = balp >= 0 ? 16 - a : evb;
 

@@ -28,6 +28,8 @@
 #include "gpu2d/gpu2d_compose.h"
 #include "audio/snd.h"
 #include "gpu3d/gx.h"
+#include "gpu3d/r3d.h"
+#include "gpu3d/r3d_core.h"
 
 #define NDS_CPU9 0
 #define NDS_CPU7 1
@@ -208,6 +210,9 @@ struct nds_vset {
 	uint8_t mmem[GPU2D_H][512] __attribute__((aligned(128))); /* modo 3: FIFO de memoria principal, por línea */
 	gpu2d_change chg[2][NDS_VLOG_MAX] __attribute__((aligned(128)));
 	gpu2d_frame frame;
+	uint32_t img3d[R3D_W * R3D_H] __attribute__((aligned(128))); /* capa 3D del cuadro (Fase 3.2): BG0 del motor A */
+	r3d_job r3d;      /* el trabajo del render 3D de este cuadro (lo arma la línea 0) */
+	int has3d;        /* el motor A muestra la capa 3D y hay que rasterizar */
 	uint16_t powcnt1; /* al final del cuadro */
 	uint32_t dropped; /* cambios que no cupieron */
 };
@@ -218,6 +223,11 @@ struct nds_video_ops {
 	void (*submit)(void *ctx, int set, gpu2d_frame *frame);
 	/* Antes de volver a llenar la instantánea `set`: el renderizador tiene que haber terminado con ella (opcional). */
 	void (*wait)(void *ctx, int set);
+	/* Render 3D (Fase 3.2). Línea 0: el trabajo del cuadro `set` está listo (la capa 3D sale en set->img3d); el
+	 * renderizador lo lanza en segundo plano. Línea 192 (antes del SWAP_BUFFERS y de entregar el 2D): tiene que haber
+	 * terminado. NULL = el host rasteriza en la línea 0. */
+	void (*submit3d)(void *ctx, int set, r3d_job *job);
+	void (*wait3d)(void *ctx);
 	void *ctx;
 };
 
@@ -236,6 +246,17 @@ struct nds_video {
 	gpu2d_ctx comp;     /* espacio de trabajo del compositor del host */
 	gpu2d_stats stat_sum[2]; /* host: suma de los contadores del compositor por motor (diagnóstico) */
 	uint32_t stat_frames;
+	/* render 3D en el host (Fase 3.2) */
+	int use_ref3d;      /* rasterizar con la referencia (r3d_ref.c) en lugar del código del SPE (r3d_core.c) */
+	int vs_ref3d;       /* comparar los dos en cada cuadro (diagnóstico; cuenta las diferencias) */
+	uint32_t r3d_band;  /* líneas por banda (16) y unidades simuladas (1) */
+	uint32_t r3d_units;
+	uint32_t r3d_frames, r3d_diff_frames;
+	uint64_t r3d_ticks; /* tiempo del host rasterizando (con `clock`) */
+	uint64_t (*clock)(void);
+	r3d_stats r3d_sum;  /* suma de los contadores */
+	r3d_ctx r3c;        /* contexto del rasterizador por bandas en el host */
+	uint32_t r3d_tmp[R3D_W * R3D_H]; /* para vs_ref3d */
 };
 
 /* ---- Sonido (Fase 2.2): el mezclador de src/audio recibe cada cuadro las escrituras a los registros de sonido del

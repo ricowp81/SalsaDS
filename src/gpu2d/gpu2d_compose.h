@@ -50,6 +50,7 @@ enum {
 	G2D_TAG_RAW = 19,      /* 19, 20: línea cruda de los modos 2 y 3 */
 	G2D_TAG_EXT = 21,      /* paletas extendidas */
 	G2D_TAG_MAP = 22,      /* mapas de los fondos afines */
+	G2D_TAG_3D = 23,       /* 23, 24: línea de la capa 3D (Fase 3.2) */
 };
 
 /* OBJ decodificado (16 bytes) */
@@ -170,6 +171,9 @@ typedef struct gpu2d_ctx {
 	g2d_v8 tmp[G2D_TILES + 1] __attribute__((aligned(16)));
 	uint16_t outbuf[2][GPU2D_W] __attribute__((aligned(128)));
 	uint8_t rawline[2][512] __attribute__((aligned(128)));
+	uint32_t l3d[2][GPU2D_W] __attribute__((aligned(128)));  /* línea de la capa 3D por paridad (Fase 3.2) */
+	g2d_v8 a3d[32] __attribute__((aligned(16)));            /* su alfa (0..31) en la línea que se compone */
+	uint32_t l3d_semi;                                       /* la línea tiene píxeles 3D translúcidos */
 	/* registro de cambios (por trozos) */
 	gpu2d_change chg[2][G2D_CHG_CHUNK] __attribute__((aligned(128)));
 	g2d_job job[2];

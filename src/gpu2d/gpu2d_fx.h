@@ -55,6 +55,25 @@ static inline uint16_t g2d_bright_down(uint16_t a, int evy)
 	return r;
 }
 
+/* Capa 3D (Fase 3.2): píxel del motor de render (R3D_PX: 6 bits por canal, alfa en 24-28) a BGR555. */
+static inline uint16_t g2d_3d_555(uint32_t px)
+{
+	return (uint16_t)(((px >> 1) & 31u) | (((px >> 9) & 31u) << 5) | (((px >> 17) & 31u) << 10));
+}
+
+/* 3D translúcido sobre el objetivo 2: (3D·(a + 1) + 2D·(31 − a)) / 32 en 6 bits por canal [melonDS]. */
+static inline uint16_t g2d_blend3d(uint16_t a, uint16_t b, int alpha)
+{
+	uint16_t r = 0;
+
+	for (int k = 0; k < 3; k++) {
+		const int v = (2 * ((a >> (5 * k)) & 31) * (alpha + 1) + 2 * ((b >> (5 * k)) & 31) * (31 - alpha)) >> 5;
+
+		r |= (uint16_t)((v >> 1) << (5 * k));
+	}
+	return r;
+}
+
 /* MASTER_BRIGHT: bits 0-4 factor, 14-15 modo (1 sube, 2 baja) */
 static inline uint16_t g2d_master_bright(uint16_t c, uint16_t reg)
 {

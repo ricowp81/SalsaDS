@@ -18,7 +18,8 @@
  *     mapeo 1D y 2D, 4 y 8 bits, paletas extendidas, mosaico.
  *   - Ventanas 0 y 1 y ventana de OBJ; prioridades; mezcla alfa y brillo (BLDCNT/BLDALPHA/BLDY); brillo maestro.
  *   - Modos de pantalla de DISPCNT: 0 (blanca), 1 (gráficos), 2 (VRAM, motor A) y 3 (memoria principal, motor A).
- *   - La capa 3D del motor A (DISPCNT bit 3) es una capa vacía hasta la Fase 3. No hay captura de pantalla.
+ *   - La capa 3D del motor A (DISPCNT bit 3, BG0): la imagen del motor de render (Fase 3.2, `img3d_ea`), con BG0HOFS y
+ *     la mezcla de los píxeles 3D translúcidos con el objetivo 2. No hay captura de pantalla.
  *
  * Un cuadro llega como una INSTANTÁNEA tomada al empezar el cuadro (línea 0) más un REGISTRO DE CAMBIOS por línea
  * de lo que el juego escribió mientras se dibujaba (registros de video, paleta, OAM): los efectos de raster
@@ -132,6 +133,7 @@ typedef struct gpu2d_engine {
 	uint64_t chg_ea;     /* nchg × gpu2d_change */
 	uint64_t out_ea;     /* GPU2D_W × GPU2D_H medias palabras */
 	uint64_t mmem_ea;    /* modo 3: GPU2D_H líneas de 512 bytes (BGR555); 0 si no hay */
+	uint64_t img3d_ea;   /* motor A: la capa 3D (Fase 3.2, src/gpu3d/r3d.h: 256 × 192 palabras de 32 bits); 0 = vacía */
 	uint32_t nchg;
 	uint32_t flags;      /* G2D_F_* */
 	uint32_t bgpages;    /* tamaño de la vista de fondos en páginas de 16 KB (potencia de 2) */
@@ -142,7 +144,7 @@ typedef struct gpu2d_engine {
 	uint32_t extbg[4];   /* paletas extendidas de fondo: desplazamiento de cada ranura de 8 KB, o G2D_UNMAPPED */
 	uint32_t extobj;     /* paleta extendida de OBJ (8 KB) */
 	uint32_t vdisp[4];   /* modo 2: banco de VRAM A..D como LCDC (desplazamiento) o G2D_UNMAPPED */
-	uint32_t pad[3];
+	uint32_t pad[1];
 } __attribute__((aligned(16))) gpu2d_engine;
 
 /* Un cuadro: las dos pantallas. 128 bytes de alineación para el DMA. */

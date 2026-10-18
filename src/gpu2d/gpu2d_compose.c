@@ -1116,6 +1116,14 @@ static void plan_line(gpu2d_ctx *c, const gpu2d_engine *e, int y)
 				G2D_STAGE(G2D_ST_AFFINE);
 				plan_affine(c, e, j, b, y, p, &j->waitmask);
 				G2D_ACC(c, plan_aff, t0_);
+			} else if (t == BG_3D) {
+				/* capa 3D (Fase 3.2): la línea y de la imagen del motor de render (1 KB) */
+				if (e->img3d_ea) {
+					g2d_get(c->l3d[p], e->img3d_ea + (uint64_t)y * GPU2D_W * 4u, GPU2D_W * 4u, G2D_TAG_3D + p);
+					j->waitmask |= 1u << (G2D_TAG_3D + p);
+				} else {
+					memset(c->l3d[p], 0, sizeof c->l3d[p]);
+				}
 			}
 		}
 		/* Etapa B de los fondos de texto: con los mapas en el local store, pedir las teselas. */
@@ -1250,6 +1258,30 @@ static void draw_affine(gpu2d_ctx *c, const g2d_job *j, int b, uint32_t p)
 	}
 }
 
+/* Capa 3D: la línea del motor de render a colores directos (bit 15) o transparente, y su alfa (c->a3d), desplazada por
+ * BG0HOFS (9 bits: lo que cae en 256..511 es transparente). */
+static void draw_3d(gpu2d_ctx *c, const g2d_job *j, uint32_t p)
+{
+	const uint32_t hofs = j->regs[G2D_R_BGHOFS] & 0x1FFu;
+	uint16_t px[8], al[8];
+	uint32_t semi = 0;
+
+	for (int v = 0; v < 32; v++) {
+		for (int k = 0; k < 8; k++) {
+			const uint32_t xs = ((uint32_t)(v * 8 + k) + hofs) & 0x1FFu;
+			const uint32_t q = xs < GPU2D_W ? c->l3d[p][xs] : 0u;
+			const uint32_t a = (q >> 24) & 31u;
+
+			px[k] = a ? (uint16_t)(0x8000u | g2d_3d_555(q)) : (uint16_t)G2D_TRANSP;
+			al[k] = (uint16_t)a;
+			semi |= a != 0 && a != 31;
+		}
+		memcpy(&c->bg[0][8 + v], px, 16);
+		memcpy(&c->a3d[v], al, 16);
+	}
+	c->l3d_semi = semi;
+}
+
 /* Máscaras de ventana: para cada capa (0..3 fondos, 4 OBJ, 5 efectos) un vector de 0xFFFF donde se permite */
 static void build_windows(gpu2d_ctx *c, const g2d_job *j, uint32_t p)
 {
@@ -1355,6 +1387,20 @@ static inline g2d_v8 v8_bright_down(g2d_v8 a, g2d_v8 evy)
 	return r;
 }
 
+/* g2d_blend3d de gpu2d_fx.h (3D translúcido sobre el objetivo 2), con el alfa del 3D por carril. */
+static inline g2d_v8 v8_blend3d(g2d_v8 a, g2d_v8 b, g2d_v8 alpha)
+{
+	const g2d_v8 fa = g2d_v8_add(alpha, g2d_v8_splat(1)), fb = g2d_v8_sub(g2d_v8_splat(31), alpha);
+	g2d_v8 r = g2d_v8_splat(0);
+
+	for (int k = 0; k < 3; k++) {
+		const g2d_v8 v = g2d_v8_shr(g2d_v8_add(g2d_v8_mul(g2d_v8_shl(CH5(a, k), 1), fa), g2d_v8_mul(g2d_v8_shl(CH5(b, k), 1), fb)), 5);
+
+		r = g2d_v8_or(r, g2d_v8_shl(g2d_v8_shr(v, 1), 5 * k));
+	}
+	return r;
+}
+
 /* BGR555 → RGBA5551 (gpu2d_to_5551) de ocho colores. */
 static inline g2d_v8 v8_to_5551(g2d_v8 c)
 {
@@ -1391,6 +1437,8 @@ static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out
 			draw_text(c, j, b);
 		else if (t >= BG_AFFINE && t <= BG_LARGE && j->aff_ok[b - 2])
 			draw_affine(c, j, b, p);
+		else if (t == BG_3D)
+			draw_3d(c, j, p);
 	}
 	obj_draw_ops(c, j, p, j->op_done);
 	{
@@ -1407,6 +1455,8 @@ static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out
 	}
 	if (use_win)
 		build_windows(c, j, p);
+	if (j->bg_type[0] == BG_3D && c->l3d_semi)
+		has_semi = 1; /* los píxeles 3D translúcidos se mezclan aunque BLDCNT no pida efectos */
 	need_fx = (emode != 0) || has_semi;
 	c->stats.fx_lines += need_fx ? 1u : 0u;
 	G2D_ACC(c, cl_layers, tl_);
@@ -1421,7 +1471,7 @@ static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out
 			for (int b = GPU2D_NBG - 1; b >= 0; b--) {
 				const int t = j->bg_type[b];
 
-				if ((t == BG_TEXT || (t >= BG_AFFINE && t <= BG_LARGE && j->aff_ok[b - 2])) &&
+				if ((t == BG_TEXT || t == BG_3D || (t >= BG_AFFINE && t <= BG_LARGE && j->aff_ok[b - 2])) &&
 				    (int)G2D_BGCNT_PRIO(j->regs[G2D_R_BGCNT + b]) == pr)
 					ent[nent++] = b;
 			}
@@ -1433,7 +1483,7 @@ static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out
 			const g2d_v8 mbf = g2d_v8_splat((uint16_t)g2d_ev(mb & 31));
 			const int mbmode = (mb >> 14) & 3;
 			const g2d_v8 t1v = g2d_v8_splat((uint16_t)t1), t2v = g2d_v8_splat((uint16_t)t2), one = g2d_v8_splat(1);
-			const g2d_v8 six = g2d_v8_splat(6), four = g2d_v8_splat(4);
+			const g2d_v8 six = g2d_v8_splat(6), four = g2d_v8_splat(4), seven = g2d_v8_splat(7);
 
 			for (int v = 0; v < 32; v++) {
 				g2d_v8 top = g2d_v8_splat(0), topl = g2d_v8_splat(5), sec = g2d_v8_splat(0), secl = g2d_v8_splat(5),
@@ -1454,8 +1504,17 @@ static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out
 							secl = g2d_v8_sel(secl, topl, m);
 						}
 						top = g2d_v8_sel(top, s, m);
-						topl = g2d_v8_sel(topl, g2d_v8_splat((uint16_t)e), m);
-						topm = g2d_v8_sel(topm, g2d_v8_splat(0), m);
+						if (e == 0 && j->bg_type[0] == BG_3D) {
+							/* 3D: translúcido (alfa < 31) = capa 7, con el alfa en el meta */
+							const g2d_v8 a3 = c->a3d[v];
+							const g2d_v8 lid = g2d_v8_sel(g2d_v8_splat(0), seven, g2d_v8_gt(g2d_v8_splat(31), a3));
+
+							topl = g2d_v8_sel(topl, lid, m);
+							topm = g2d_v8_sel(topm, a3, m);
+						} else {
+							topl = g2d_v8_sel(topl, g2d_v8_splat((uint16_t)e), m);
+							topm = g2d_v8_sel(topm, g2d_v8_splat(0), m);
+						}
 					} else {
 						const g2d_v8 om = c->omet[p][8 + v];
 						g2d_v8 semi, lid;
@@ -1479,9 +1538,12 @@ static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out
 				/* color final de los 8 píxeles */
 				col = colors_of(c, top);
 				if (need_fx) {
-					const g2d_v8 slk = g2d_v8_sel(secl, four, g2d_v8_eq(secl, six)); /* el 6 es un OBJ con mezcla propia: abajo vale como OBJ */
+					/* el 6 es un OBJ con mezcla propia y el 7 un píxel 3D translúcido: abajo valen como OBJ y como BG0 */
+					const g2d_v8 slk = g2d_v8_sel(g2d_v8_sel(secl, four, g2d_v8_eq(secl, six)), g2d_v8_splat(0),
+								      g2d_v8_eq(secl, seven));
 					const g2d_v8 fxok = use_win ? v8_nz(c->allow[5][v]) : ones;
-					const g2d_v8 isobj6 = g2d_v8_eq(topl, six);
+					const g2d_v8 is3d7 = g2d_v8_eq(topl, seven);
+					const g2d_v8 isobj6 = g2d_v8_or(g2d_v8_eq(topl, six), is3d7); /* los dos fuera del camino normal */
 					const g2d_v8 t1bit = v8_nz(g2d_v8_and(g2d_v8_shrv(t1v, topl), one));
 					const g2d_v8 t2bit = v8_nz(g2d_v8_and(g2d_v8_shrv(t2v, slk), one));
 					g2d_v8 res = col;
@@ -1498,19 +1560,32 @@ static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out
 						if (g2d_v8_any(m))
 							res = g2d_v8_sel(res, emode == 2 ? v8_bright_up(col, evy_v) : v8_bright_down(col, evy_v), m);
 					}
-					if (g2d_v8_any(isobj6)) {
+					if (g2d_v8_any(is3d7)) {
+						/* 3D translúcido: con el objetivo 2, mezcla con su alfa; si no, brillo si BG0 es objetivo 1 */
+						const g2d_v8 m7 = g2d_v8_and(is3d7, t2bit);
+
+						if (g2d_v8_any(m7))
+							res = g2d_v8_sel(res, v8_blend3d(col, colors_of(c, sec), topm), m7);
+						if ((t1 & 1) && emode >= 2) {
+							const g2d_v8 mr = g2d_v8_and(g2d_v8_andc(is3d7, t2bit), fxok);
+
+							res = g2d_v8_sel(res, emode == 2 ? v8_bright_up(col, evy_v) : v8_bright_down(col, evy_v), mr);
+						}
+					}
+					if (g2d_v8_any(g2d_v8_andc(isobj6, is3d7))) {
+						const g2d_v8 isobj6x = g2d_v8_andc(isobj6, is3d7);
 						/* OBJ con mezcla propia: su factor viene en el meta (si no, EVA/EVB), y si el de abajo no es objetivo 2,
 						 * puede subir o bajar el brillo si el OBJ es objetivo 1 y hay modo de brillo */
 						const g2d_v8 hasb = v8_nz(g2d_v8_and(topm, g2d_v8_splat(16)));
 						const g2d_v8 balp = g2d_v8_and(g2d_v8_shr(topm, 5), g2d_v8_splat(15));
 						const g2d_v8 a = g2d_v8_sel(eva_v, g2d_v8_add(balp, one), hasb);
 						const g2d_v8 bb = g2d_v8_sel(evb_v, g2d_v8_sub(g2d_v8_splat(16), a), hasb);
-						const g2d_v8 mb6 = g2d_v8_and(isobj6, t2bit);
+						const g2d_v8 mb6 = g2d_v8_and(isobj6x, t2bit);
 
 						if (g2d_v8_any(mb6))
 							res = g2d_v8_sel(res, v8_blend(col, colors_of(c, sec), a, bb), mb6);
 						if ((t1 & 0x10) && emode >= 2) {
-							const g2d_v8 mr = g2d_v8_and(g2d_v8_andc(isobj6, t2bit), fxok);
+							const g2d_v8 mr = g2d_v8_and(g2d_v8_andc(isobj6x, t2bit), fxok);
 
 							res = g2d_v8_sel(res, emode == 2 ? v8_bright_up(col, evy_v) : v8_bright_down(col, evy_v), mr);
 						}

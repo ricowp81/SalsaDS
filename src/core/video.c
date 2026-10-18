@@ -122,11 +122,18 @@ void nds_video_init(struct nds *n)
 {
 	struct nds_video *v = &n->vid;
 	struct nds_video_ops ops = v->ops;
-	const int use_ref = v->use_ref;
+	const int use_ref = v->use_ref, use_ref3d = v->use_ref3d, vs_ref3d = v->vs_ref3d;
+	const uint32_t band = v->r3d_band, units = v->r3d_units;
+	uint64_t (*clk)(void) = v->clock;
 
 	memset(v, 0, sizeof *v);
 	v->ops = ops;
 	v->use_ref = use_ref;
+	v->use_ref3d = use_ref3d;
+	v->vs_ref3d = vs_ref3d;
+	v->r3d_band = band ? band : 16u;
+	v->r3d_units = units ? units : 1u;
+	v->clock = clk;
 	v->cur = 1;
 	v->last = -1;
 	v->dirty[0] = v->dirty[1] = (1ull << NDS_VPAGES) - 1;
@@ -136,6 +143,77 @@ void nds_video_init(struct nds *n)
 static uint32_t ext_slot(unsigned bank, unsigned slot)
 {
 	return nds_vram_bank_offset(bank) + 0x2000u * slot;
+}
+
+/* ---- capa 3D (Fase 3.2) ------------------------------------------------------------------------------------- */
+
+/* Rasteriza en el host el trabajo de `s` (con el código del SPE o con la referencia). */
+static void render3d_host(struct nds *n, struct nds_vset *s)
+{
+	struct nds_video *v = &n->vid;
+	const r3d_job *jb = &s->r3d;
+	const gx_frame *f = (jb->flags & R3D_F_BLANK) ? NULL : (const gx_frame *)(uintptr_t)jb->frame_ea;
+	const uint64_t t0 = v->clock ? v->clock() : 0;
+
+	if (v->use_ref3d) {
+		r3d_render_ref(f, s->vram, jb->texslot, jb->palslot, jb->flags, s->img3d);
+	} else {
+		for (uint32_t u = 0; u < jb->nunits; u++) {
+			r3d_job j = *jb;
+			r3d_stats st;
+
+			j.unit = u;
+			r3d_core_render(&v->r3c, &j, &st);
+			{
+				uint32_t *dst = (uint32_t *)(void *)&v->r3d_sum;
+				const uint32_t *src = (const uint32_t *)(const void *)&st;
+
+				for (size_t k = 0; k < sizeof(r3d_stats) / 4; k++)
+					dst[k] += src[k];
+			}
+		}
+	}
+	if (v->clock)
+		v->r3d_ticks += v->clock() - t0;
+	v->r3d_frames++;
+	if (v->vs_ref3d && !v->use_ref3d) {
+		r3d_render_ref(f, s->vram, jb->texslot, jb->palslot, jb->flags, v->r3d_tmp);
+		if (memcmp(v->r3d_tmp, s->img3d, sizeof v->r3d_tmp) != 0)
+			v->r3d_diff_frames++;
+	}
+}
+
+/* Línea 0: el cuadro que el motor de geometría entregó en el último SWAP_BUFFERS se dibuja durante este (como en la DS,
+ * que lo rasteriza mientras barre la pantalla), con la VRAM de texturas de la instantánea que se acaba de tomar. */
+static void frame_begin_3d(struct nds *n, struct nds_vset *s)
+{
+	struct nds_video *v = &n->vid;
+	gpu2d_engine *ga = &s->frame.eng[0];
+	const uint32_t dc = g2d_dispcnt(ga);
+	const gx_frame *f = gx_front(&n->gx);
+	r3d_job *j = &s->r3d;
+	uint32_t boff[7];
+
+	s->has3d = (dc & G2D_DC_BG(0)) && ((dc & G2D_DC_3D) || G2D_DC_BGMODE(dc) == 6);
+	ga->img3d_ea = s->has3d ? (uint64_t)(uintptr_t)s->img3d : 0;
+	if (!s->has3d)
+		return;
+	memset(j, 0, sizeof *j);
+	for (unsigned b = 0; b < 7; b++)
+		boff[b] = nds_vram_bank_offset(b);
+	r3d_slots_from_vramcnt(n->vramcnt, boff, j->texslot, j->palslot);
+	j->frame_ea = (uint64_t)(uintptr_t)f;
+	j->vram_ea = (uint64_t)(uintptr_t)s->vram;
+	j->out_ea = (uint64_t)(uintptr_t)s->img3d;
+	j->nunits = v->r3d_units;
+	j->band = v->r3d_band;
+	/* sin cuadro entregado o con el motor de render apagado (POWCNT1 bit 2): transparente */
+	if (!f || !(n->powcnt1 & 4u))
+		j->flags |= R3D_F_BLANK;
+	if (v->ops.submit3d)
+		v->ops.submit3d(v->ops.ctx, v->cur, j);
+	else
+		render3d_host(n, s);
 }
 
 void nds_video_frame_begin(struct nds *n)
@@ -216,6 +294,7 @@ void nds_video_frame_begin(struct nds *n)
 			if ((n->vramcnt[b] & 0x80u) && (n->vramcnt[b] & 7u) == 0)
 				ga->vdisp[b] = nds_vram_bank_offset(b);
 	}
+	frame_begin_3d(n, s);
 	v->mpos = 0;
 	v->recording = 1;
 }
