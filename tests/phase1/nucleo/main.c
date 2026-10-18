@@ -874,7 +874,7 @@ static spukit_worker *wk_geom;
 static int geom_on;
 static uint32_t geom_collect_seq = 1, geom_last_seq;
 static struct {
-	uint64_t jobs, ticks, cmds, puts, wait_us, waits, posts;
+	uint64_t jobs, ticks, cmds, puts, wait_us, waits, posts, prof[5];
 	uint32_t ticks_max, errors;
 } geom_acc;
 static uint64_t acc_evn[EV_COUNT], acc_evt[EV_COUNT]; /* eventos del planificador por tipo: cuántos y ticks (cuadros con perfil) */
@@ -1030,10 +1030,14 @@ static void log_stats(void)
 			const double nf = acc_frames ? (double)acc_frames : 1.0, hz = (double)spukit_tick_hz();
 
 			salsads_log("DATO geometria-spe: por cuadro: %.1f trabajos (%.0f órdenes, %.1f subidas DMA), SPE %.2f ms (máx por trabajo %.2f ms), "
-				    "el PPE esperando al SPE %.2f ms (%.1f esperas); errores %u",
+				    "el PPE esperando al SPE %.2f ms (%.1f esperas); errores %u; SPE por etapa (ms por cuadro): matrices %.2f, vértices %.2f "
+				    "(de eso armado de polígonos %.2f), normales y luces %.2f, otras %.2f",
 				    (double)geom_acc.jobs / nf, (double)geom_acc.cmds / nf, (double)geom_acc.puts / nf,
 				    (double)geom_acc.ticks * 1000.0 / hz / nf, (double)geom_acc.ticks_max * 1000.0 / hz,
-				    (double)geom_acc.wait_us / 1000.0 / nf, (double)geom_acc.waits / nf, geom_acc.errors);
+				    (double)geom_acc.wait_us / 1000.0 / nf, (double)geom_acc.waits / nf, geom_acc.errors,
+				    (double)geom_acc.prof[0] * 1000.0 / hz / nf, (double)geom_acc.prof[1] * 1000.0 / hz / nf,
+				    (double)geom_acc.prof[4] * 1000.0 / hz / nf, (double)geom_acc.prof[2] * 1000.0 / hz / nf,
+				    (double)geom_acc.prof[3] * 1000.0 / hz / nf);
 			memset(&geom_acc, 0, sizeof geom_acc);
 		}
 	}
@@ -1134,6 +1138,8 @@ static void geom_collect(int block_to)
 		geom_acc.ticks += r->ticks;
 		geom_acc.cmds += jr.cmds;
 		geom_acc.puts += jr.puts;
+		for (int k = 0; k < 5; k++)
+			geom_acc.prof[k] += jr.prof[k];
 		if (r->ticks > geom_acc.ticks_max)
 			geom_acc.ticks_max = r->ticks;
 		geom_collect_seq++;

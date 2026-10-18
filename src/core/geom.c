@@ -113,13 +113,15 @@ static void gx_poll_set(struct nds *n, uint64_t now, uint64_t first)
 
 void nds_gx_schedule(struct nds *n, uint32_t delay)
 {
-	const uint64_t now = nds_cpu_now(n, NDS_CPU9);
+	uint64_t now;
 
-	if (!gx_needs_poll(n))
+	/* con una mirada ya pendiente no hace falta nada: lo que escribe la CPU no adelanta el instante en que el nivel de la FIFO
+	 * puede cambiar (la mirada pendiente, si llega antes de tiempo, recalcula) */
+	if (n->ev[EV_GX] != NDS_NEVER || !gx_needs_poll(n))
 		return;
+	now = nds_cpu_now(n, NDS_CPU9);
 	gx_advance(&n->gx, now); /* el nivel de la FIFO tiene que ser el de ahora */
-	if (n->ev[EV_GX] == NDS_NEVER)
-		n->gx_anchor = now + delay;
+	n->gx_anchor = now + delay;
 	gx_poll_set(n, now, n->gx_anchor);
 }
 

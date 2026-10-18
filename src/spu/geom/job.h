@@ -24,6 +24,7 @@ typedef struct job_geom_result {
 	uint32_t ctx_bytes;
 	uint32_t cmds;       /* órdenes ejecutadas en este trabajo */
 	uint32_t puts;       /* subidas DMA de vértices y polígonos */
+	uint32_t prof[5];    /* ticks del decrementador en este trabajo: matrices, vértices (incluye el armado), normales y luces, otras órdenes, armado de polígonos */
 	int32_t rc;
 } job_geom_result;
 

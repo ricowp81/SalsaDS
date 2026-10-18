@@ -34,6 +34,7 @@ void gx_init(gx_t *g)
 	gx_exec_init(&g->ex);
 	g->pk_idx = 4;
 	g->front = -1;
+	g->nxt = GX_NEVER;
 	exec_point_at_frame(g);
 	if (deferred) {
 		g->mats_valid = 1;
@@ -172,12 +173,10 @@ static void log_append(gx_t *g, uint32_t cmd, const uint32_t *p, unsigned np)
 		g->dirty_test = 1;
 }
 
-void gx_advance(gx_t *g, uint64_t now)
+void gx_advance_run(gx_t *g, uint64_t now)
 {
 	const uint64_t c0 = g->clock ? g->clock() : 0;
 
-	if (now > g->now)
-		g->now = now;
 	for (;;) {
 		uint32_t p[32];
 		uint64_t start;
@@ -211,6 +210,7 @@ void gx_advance(gx_t *g, uint64_t now)
 		if (cmd >= 0x70 && cmd <= 0x72)
 			g->test_busy_until = g->cycle_free;
 	}
+	g->nxt = gx_next_start(g);
 	if (g->deferred && g->log_wr - g->log_sub >= GX_KICK_WORDS)
 		gx_kick(g);
 	if (g->clock)
@@ -242,6 +242,8 @@ static uint64_t q_push(gx_t *g, uint64_t now, uint8_t cmd, uint32_t param)
 		if (cmd >= 0x70 && cmd <= 0x72)
 			g->test_pending++;
 	}
+	if (g->nxt == GX_NEVER) /* con la orden de la cabeza completa, otra entrada no cambia cuándo empieza */
+		g->nxt = gx_next_start(g);
 	return t;
 }
 
@@ -423,6 +425,7 @@ const gx_frame *gx_swap(gx_t *g, uint64_t now, const gx_regs *regs)
 	g->bld ^= 1;
 	g->swap_pending = 0;
 	g->st.swaps++;
+	g->nxt = gx_next_start(g);
 	gx_exec_newframe(&g->ex); /* el contador de RAM_COUNT vuelve a 0 (en el modo diferido, también el espejo) */
 	exec_point_at_frame(g);
 	if (g->deferred)

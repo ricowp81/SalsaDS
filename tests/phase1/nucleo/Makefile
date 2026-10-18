@@ -10,7 +10,7 @@ RSXKIT  := 1
 SPUKIT  := 1
 
 # Tiempos por etapa del compositor 2D en los SPE (línea DATO spe-etapas del log)
-SPU_EXTRA_CFLAGS := -DG2D_PROF
+SPU_EXTRA_CFLAGS := -DG2D_PROF -DGX_PROF -DGX_VEC
 
 # Composición 2D: un SPE por pantalla (src/spu/gpu2d)
 SPU_PROGS    := gpu2d snd raster3d geom
@@ -26,7 +26,7 @@ raster3d_STACK_ARGS := --ignore __call_exitprocs --ignore __do_global_ctors_aux 
 # Motor de geometría (Fase 3.5): un SPE (src/spu/geom + src/gpu3d/gx_exec.c)
 geom_SRCS := ../../../src/spu/geom/geom.c ../../../src/gpu3d/gx_exec.c
 geom_STACK_MIN := 4096
-geom_STACK_ARGS := --edge emit_poly:job_flush --edge job_flush:put_verts --edge job_flush:put_polys --edge gx_job_run:fetch --ignore __call_exitprocs --ignore __do_global_ctors_aux --ignore exit --ignore register_tm_clones
+geom_STACK_ARGS := --edge emit_poly_inner:job_flush --edge job_flush:put_verts --edge job_flush:put_polys --edge gx_job_run:fetch --ignore __call_exitprocs --ignore __do_global_ctors_aux --ignore exit --ignore register_tm_clones
 
 # Mezclador de sonido: un SPE (src/spu/snd + src/audio)
 snd_SRCS     := ../../../src/spu/snd/snd.c ../../../src/audio/snd_mix.c
