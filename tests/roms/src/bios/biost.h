@@ -268,29 +268,35 @@ static void group_decomp(void)
 	sds_group("DESCOMPRIME");
 	/* LZ77 desde memoria, escritura de 8 bits */
 	guard_clear(OUT, 316);
+	sds_progress("SWI 0x11");
 	swi4((uint32_t)(uintptr_t)v_lz77, (uint32_t)(uintptr_t)OUT, 0, 0, NULL, 0x11);
 	SDS_CHECK(same(OUT, v_plain, 316), 1);
 	SDS_CHECK(guard_ok(OUT, 316), 1);
 	/* LZ77 por callbacks (escritura de 16 bits) */
 	guard_clear(OUT, 316);
+	sds_progress("SWI 0x12");
 	swi4((uint32_t)(uintptr_t)v_lz77, (uint32_t)(uintptr_t)OUT, 0, (uint32_t)(uintptr_t)cb_table, NULL, 0x12);
 	SDS_CHECK(same(OUT, v_plain, 316), 1);
 	SDS_CHECK(guard_ok(OUT, 316), 1);
 	/* RLE desde memoria y por callbacks */
 	guard_clear(OUT, 316);
+	sds_progress("SWI 0x14");
 	swi4((uint32_t)(uintptr_t)v_rle, (uint32_t)(uintptr_t)OUT, 0, 0, NULL, 0x14);
 	SDS_CHECK(same(OUT, v_plain, 316), 1);
 	SDS_CHECK(guard_ok(OUT, 316), 1);
 	guard_clear(OUT, 316);
+	sds_progress("SWI 0x15");
 	swi4((uint32_t)(uintptr_t)v_rle, (uint32_t)(uintptr_t)OUT, 0, (uint32_t)(uintptr_t)cb_table, NULL, 0x15);
 	SDS_CHECK(same(OUT, v_plain, 316), 1);
 	SDS_CHECK(guard_ok(OUT, 316), 1);
 	/* Huffman de 8 y de 4 bits (por callbacks; r2 llega al callback de apertura: libnds pasa 0. GBATEK habla de un
 	 * búfer temporal en r2, pero la BIOS libre de melonDS no escribe con él y libnds no lo usa) */
 	guard_clear(OUT, 316);
+	sds_progress("SWI 0x13");
 	swi4((uint32_t)(uintptr_t)v_huff8, (uint32_t)(uintptr_t)OUT, 0, (uint32_t)(uintptr_t)cb_table, NULL, 0x13);
 	huff_check(OUT, 316);
 	guard_clear(OUT, 316);
+	sds_progress("SWI 0x13");
 	swi4((uint32_t)(uintptr_t)v_huff4, (uint32_t)(uintptr_t)OUT, 0, (uint32_t)(uintptr_t)cb_table, NULL, 0x13);
 	huff_check(OUT, 316);
 	/* BitUnPack */
@@ -299,6 +305,7 @@ static void group_decomp(void)
 		info[2] = (uint8_t)bu[k].sw;
 		info[3] = (uint8_t)bu[k].dw;
 		wr32le_(info + 4, bu[k].off | (bu[k].zero << 31));
+		sds_progress("SWI 0x10 BitUnPack");
 		guard_clear(OUT, bu[k].nbytes);
 		swi4((uint32_t)(uintptr_t)bu[k].src, (uint32_t)(uintptr_t)OUT, (uint32_t)(uintptr_t)info, 0, NULL, 0x10);
 		SDS_CHECK_ID(same(OUT, bu[k].expect, bu[k].nbytes), 1, 9000 + k);
@@ -307,13 +314,16 @@ static void group_decomp(void)
 #if IS_ARM9
 	/* filtros de diferencias (solo ARM9) */
 	guard_clear(OUT, 316);
+	sds_progress("SWI 0x16");
 	swi4((uint32_t)(uintptr_t)v_diff8, (uint32_t)(uintptr_t)OUT, 0, 0, NULL, 0x16);
 	SDS_CHECK(same(OUT, v_plain, 316), 1);
 	SDS_CHECK(guard_ok(OUT, 316), 1);
 	guard_clear(OUT, 316);
+	sds_progress("SWI 0x17");
 	swi4((uint32_t)(uintptr_t)v_diff8, (uint32_t)(uintptr_t)OUT, 0, 0, NULL, 0x17); /* no figura en la lista de la DS */
 	SDS_DIVERGE(same(OUT, v_plain, 316), 1);
 	guard_clear(OUT, 316);
+	sds_progress("SWI 0x18");
 	swi4((uint32_t)(uintptr_t)v_diff16, (uint32_t)(uintptr_t)OUT, 0, 0, NULL, 0x18);
 	SDS_CHECK(same(OUT, v_plain, 316), 1);
 	SDS_CHECK(guard_ok(OUT, 316), 1);

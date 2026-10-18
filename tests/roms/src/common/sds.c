@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <fat.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 
@@ -172,6 +173,7 @@ static struct {
 static uint32_t nslog, nslog_total;
 static int sd_state; /* 0 = no se intentó, 1 = montada, -1 = sin SD / falló */
 static char sd_path[64];
+static FILE *logf; /* abierto desde el montaje: el progreso se anota y sincroniza en cada paso */
 static uint32_t sd_run;
 
 static struct sds_fail *const FAILLOG = (struct sds_fail *)(SDS_RESULTS_ADDR + SDS_FAILLOG_OFFSET);
@@ -179,6 +181,31 @@ static struct sds_fail *const FAILLOG = (struct sds_fail *)(SDS_RESULTS_ADDR + S
 static void publish(void)
 {
 	flush_range(R, SDS_DIVERGE_OFFSET + SDS_DIVERGE_MAX * sizeof(struct sds_fail));
+}
+
+static void sd_sync(void)
+{
+	if (!logf)
+		return;
+	if (fflush(logf) != 0) {
+		sd_state = -1;
+		return;
+	}
+	fsync(fileno(logf));
+}
+
+/* Progreso: una línea en el log (sincronizada) y en la fila 14 de la pantalla; si la ROM se cuelga, ahí queda el último paso. */
+void sds_progress(const char *text)
+{
+	char line[40] = "> ";
+
+	if (logf && sd_state == 1) {
+		fprintf(logf, "[progreso] %s\n", text);
+		sd_sync();
+	}
+	append(line, text);
+	clear_row(14, C_BG);
+	draw_text(14, 0, line, C_WARN, C_BG);
 }
 
 /* Monta la SD (DLDI del flashcart) al principio, antes de que las pruebas muevan registros. Sin SD o si falla,
@@ -202,12 +229,12 @@ static void sd_mount(void)
 		fclose(f);
 	}
 	sd_run++;
-	/* comprobar que se puede escribir */
-	f = fopen(sd_path, "a");
-	if (!f)
+	logf = fopen(sd_path, "a");
+	if (!logf)
 		return;
-	fclose(f);
+	fprintf(logf, "=== corrida %lu ===\nROM: %s  version (commit): %s\n", (unsigned long)sd_run, SDS_ROM_NAME, SDS_GITREV);
 	sd_state = 1;
+	sd_sync();
 }
 
 void sds_init(const char *title)
@@ -302,11 +329,15 @@ static void close_group(void)
 		dec(num, group_checks);
 		append(line, num);
 	}
-	if (group_row <= ROW_LAST_GROUP) {
-		clear_row((int)group_row, C_BG);
-		draw_text((int)group_row, 0, line, group_failed ? C_BAD : C_OK, C_BG);
-		group_row++;
+	if (group_row > ROW_LAST_GROUP) { /* sin filas: subir la lista una fila (se ven los últimos grupos) */
+		for (int j = (ROW_FIRST_GROUP + 1) * 12; j < (ROW_LAST_GROUP + 1) * 12; j++)
+			for (int i = 0; i < 256; i++)
+				FB[(j - 12) * 256 + i] = FB[j * 256 + i];
+		group_row = ROW_LAST_GROUP;
 	}
+	clear_row((int)group_row, C_BG);
+	draw_text((int)group_row, 0, line, group_failed ? C_BAD : C_OK, C_BG);
+	group_row++;
 	group_name = 0;
 	publish();
 }
@@ -316,6 +347,12 @@ void sds_group(const char *name)
 	close_group();
 	group_name = name;
 	group_checks = group_failed = 0;
+	{
+		char t[40] = "GRUPO ";
+
+		append(t, name);
+		sds_progress(t);
+	}
 }
 
 void sds_check(uint32_t got, uint32_t want, uint32_t id)
@@ -427,20 +464,15 @@ static void write_log(void)
 	int have7;
 	char a[12], b[12], c[12];
 
-	if (sd_state != 1)
+	if (sd_state != 1 || !logf)
 		return;
-	f = fopen(sd_path, "a");
-	if (!f) {
-		sd_state = -1;
-		return;
-	}
+	f = logf;
 	/* el ARM7 escribió aparte: invalidar la caché de datos de esas líneas antes de leer */
 	for (uint32_t a2 = SDS_X7_ADDR; a2 < SDS_X7_ADDR + sizeof(struct sds_x7); a2 += 32)
 		__asm__ volatile("mcr p15, 0, %0, c7, c6, 1" : : "r"(a2) : "memory");
 	have7 = x->magic == SDS_X7_MAGIC;
 
-	fprintf(f, "=== corrida %lu ===\n", (unsigned long)sd_run);
-	fprintf(f, "ROM: %s  version (commit): %s\n", SDS_ROM_NAME, SDS_GITREV);
+	fprintf(f, "--- fin de la ROM ---\n");
 	fprintf(f, "Veredicto: %s  comprobaciones: %lu  fallos: %lu  divergencias respecto de la doc: %lu\n",
 		R->failed ? "FALLO" : "OK", (unsigned long)R->total, (unsigned long)R->failed, (unsigned long)R->diverge);
 	for (uint32_t i = 0; i < nnotes; i++)
@@ -503,8 +535,10 @@ static void write_log(void)
 				(unsigned long)SDS_X7_SITES);
 	}
 	fprintf(f, "\n");
+	sd_sync();
 	if (fclose(f) != 0)
 		sd_state = -1;
+	logf = 0;
 }
 
 /* Pantalla de divergencias (solo las que difieren de la doc en ESTE hardware): A/derecha siguiente, B/izquierda anterior. */

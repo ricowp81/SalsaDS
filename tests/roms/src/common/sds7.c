@@ -114,6 +114,11 @@ void sds_diverge_at(uint32_t got, uint32_t doc, uint32_t melon, uint32_t id, con
 	sds_diverge(got, doc, id);
 }
 
+void sds_progress(const char *text)
+{
+	(void)text;
+}
+
 void sds_note(const char *text)
 {
 	(void)text;

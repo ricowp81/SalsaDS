@@ -105,7 +105,11 @@ Las ROMs de pruebas (`hola`, `cpu9`, `cpuarm`, `mem`, `irq`, `dma`, `ipc`, `bios
    `hw=` (este hardware), `doc=` (GBATEK o manual de ARM) y `melon=` (melonDS 1.1, `?` si no está medido), más a qué
    coincide el hardware. Esto incluye los casos en que el hardware coincide con la documentación (melonDS equivocado), que
    son los que más interesa saber.
-6. En un flashcart los grupos `CARTUCHO` y `CART ARM7` de `periph` miden el R4, no el cartucho de la ROM: si el chip ID
+6. **Si la ROM se cuelga**: cada grupo y cada paso delicado (`sds_progress`, por ejemplo cada SWI de descompresión en `bios`)
+   se anota en el log (`[progreso] ...`, con `fflush` + `fsync`) y se muestra en la fila 14 de la pantalla (`> GRUPO X`
+   o `> SWI 0x13`; la franja final la sustituye). Tras un cuelgue el último `[progreso]` del log, o esa fila en una
+   foto, dicen dónde se quedó. Si hay más de 10 grupos, la lista sube una fila y se ven los últimos.
+7. En un flashcart los grupos `CARTUCHO` y `CART ARM7` de `periph` miden el R4, no el cartucho de la ROM: si el chip ID
    (B8) es 0/FFFFFFFF o B7 no devuelve los bytes conocidos, sus comprobaciones pasan a informativas y el log lo anota
    (`NOTA: ... no aplican en flashcart`). La lectura de SQRTCNT justo tras escribir también es informativa: en hardware el
    cálculo (13 ciclos) puede haber terminado ya.

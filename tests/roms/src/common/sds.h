@@ -119,6 +119,8 @@ struct sds_x7 {
 
 /* Una nota de texto para el log de la SD (p. ej. "no aplica en flashcart"); en el ARM7 no hace nada. */
 void sds_note(const char *text);
+/* Anota un paso en el log de la SD (sincronizado) y en la fila 14 de la pantalla: si la ROM se cuelga, queda el último. */
+void sds_progress(const char *text);
 
 #define SDS_CHECK(got, want) sds_check((uint32_t)(got), (uint32_t)(want), __LINE__)
 /* Informativa: no falla, solo se registra si difiere. */
