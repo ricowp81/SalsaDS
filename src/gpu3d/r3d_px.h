@@ -389,7 +389,7 @@ static __attribute__((noinline)) void r3d_end_at(r3d_end *e, const r3d_v *a, con
 
 /* w y z de la arista en la línea `ypos` (0..len) de su recorrido en y, con la corrección por w. Para las aristas x-mayores con
  * perspectiva: la línea siguiente (ypos = y + 1 - a.y), medido contra melonDS con las escenas 28 a 33 de gx3d. */
-static inline void r3d_end_wz(r3d_end *e, const r3d_v *a, const r3d_v *b, uint32_t ypos, uint32_t len)
+static __attribute__((noinline)) void r3d_end_wz(r3d_end *e, const r3d_v *a, const r3d_v *b, uint32_t ypos, uint32_t len)
 {
 	uint32_t f;
 
