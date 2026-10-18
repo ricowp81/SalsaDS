@@ -9,6 +9,9 @@
 #include "gpu3d/gx_exec.h"
 
 #include <string.h>
+#ifdef GX_PROF
+#include <spu_intrinsics.h>
+#endif
 
 #if defined(__SIZEOF_INT128__)
 typedef __int128 gx_wide;
@@ -16,51 +19,159 @@ typedef __int128 gx_wide;
 typedef int64_t gx_wide;
 #endif
 
+
+/* ---- aritmética de 64 bits barata en el SPE ----------------------------------------------------------------------- *
+ * El SPU solo multiplica 16x16 y no divide: un int64 * int64 es una llamada a __muldi3 y una división de 64 bits cuesta cientos de
+ * ciclos. Aquí van las versiones exactas (mismos bits que la aritmética de 64 bits) que usan solo multiplicaciones de 32 bits, y
+ * la versión vectorial (cuatro columnas a la vez) de las matrices y las transformaciones. En el PPE y en el host se queda lo
+ * simple (GX_VEC no se define) y las pruebas comparan las dos versiones. */
+
+#if defined(__SPU__) || defined(GX_VEC)
+#define GX_VEC 1
+#endif
+
+/* a * b sin signo, 32 x 32 -> 64 */
+static inline uint64_t mulu32(uint32_t a, uint32_t b)
+{
+#if defined(__SPU__) || defined(GX_SPLIT_MUL)
+	const uint32_t ah = a >> 16, al = a & 0xFFFFu, bh = b >> 16, bl = b & 0xFFFFu;
+	const uint32_t hh = ah * bh, m1 = ah * bl, m2 = al * bh, ll = al * bl;
+	uint32_t lo = ll + (m1 << 16);
+	uint32_t hi = hh + (m1 >> 16) + (lo < ll);
+	const uint32_t lo2 = lo + (m2 << 16);
+
+	hi += (m2 >> 16) + (lo2 < lo);
+	return ((uint64_t)hi << 32) | lo2;
+#else
+	return (uint64_t)a * b;
+#endif
+}
+
+/* a * b con signo, 32 x 32 -> 64 */
+static inline int64_t muls32(int32_t a, int32_t b)
+{
+#if defined(__SPU__) || defined(GX_SPLIT_MUL)
+	/* (a + 2^32 * (a < 0)) * (b + 2^32 * (b < 0)) mod 2^64: a producto sin signo menos b * 2^32 si a < 0 y a * 2^32 si b < 0 */
+	uint64_t p = mulu32((uint32_t)a, (uint32_t)b);
+	uint32_t hi = (uint32_t)(p >> 32);
+
+	hi -= (a < 0 ? (uint32_t)b : 0u) + (b < 0 ? (uint32_t)a : 0u);
+	return (int64_t)(((uint64_t)hi << 32) | (uint32_t)p);
+#else
+	return (int64_t)a * b;
+#endif
+}
+
+/* a * b de 64 bits (envuelve como la aritmética de C): con operandos de 32 bits, una multiplicación de 32 */
+static inline int64_t mul_i64(int64_t a, int64_t b)
+{
+	if (a == (int32_t)a && b == (int32_t)b)
+		return muls32((int32_t)a, (int32_t)b);
+	return (int64_t)((uint64_t)a * (uint64_t)b);
+}
+
+/* a (64 bits sin signo, < 2^40) * b (32 bits) */
+static inline uint64_t mulu64_32(uint64_t a, uint32_t b)
+{
+	return mulu32((uint32_t)a, b) + (mulu32((uint32_t)(a >> 32), b) << 32);
+}
+
+#ifdef GX_VEC
+/* Cociente n / d con n >= 0, d > 0, cuando cabe en 22 bits (en las coordenadas de pantalla y la profundidad siempre cabe: la
+ * posición está dentro del volumen de vista). Estima en coma flotante y corrige con enteros: el resultado es exacto. 0 = no
+ * aplica (quien llama usa la división de 64 bits). */
+static inline int udiv_small(uint64_t n, uint64_t d, uint32_t *q)
+{
+	float fn, fd;
+	uint32_t q0;
+	int64_t r;
+
+	if ((n >> 22) >= d)
+		return 0;
+	fn = (float)(uint32_t)(n >> 32) * 4294967296.0f + (float)(uint32_t)n;
+	fd = (float)(uint32_t)(d >> 32) * 4294967296.0f + (float)(uint32_t)d;
+	q0 = (uint32_t)(fn / fd);
+	r = (int64_t)(n - (mulu32(q0, (uint32_t)d) + (mulu32(q0, (uint32_t)(d >> 32)) << 32)));
+	while (r < 0) {
+		q0--;
+		r += (int64_t)d;
+	}
+	while (r >= (int64_t)d) {
+		q0++;
+		r -= (int64_t)d;
+	}
+	*q = q0;
+	return 1;
+}
+
+/* n / d sin signo con d > 0 cuando el cociente cabe en 32 bits (n >> 32 < d): estimaciones en coma flotante que siempre quedan
+ * por debajo y se afinan en dos o tres vueltas; exacto. */
+static inline uint64_t udiv_q32(uint64_t n, uint64_t d)
+{
+	uint64_t q = 0;
+	float fd;
+
+	if ((n >> 32) == 0 && (d >> 32) == 0)
+		return (uint32_t)n / (uint32_t)d;
+	fd = (float)(uint32_t)(d >> 32) * 4294967296.0f + (float)(uint32_t)d;
+	while (n >= d) {
+		const float fn = (float)(uint32_t)(n >> 32) * 4294967296.0f + (float)(uint32_t)n;
+		const float e = fn / fd * 0.99999f; /* por debajo del cociente real (el error relativo de la coma flotante es ~2^-22) */
+		uint32_t qe = e >= 4294967040.0f ? 0xFFFFFF00u : (uint32_t)e;
+
+		if (qe == 0)
+			qe = 1; /* queda menos de un cociente de margen: el resto se resuelve restando d */
+		q += qe;
+		n -= mulu32(qe, (uint32_t)d) + (mulu32(qe, (uint32_t)(d >> 32)) << 32);
+	}
+	return q;
+}
+
+#endif
+
+/* n / d truncando hacia cero (d > 0) como la división de C */
+static inline int64_t div_trunc(int64_t n, int64_t d)
+{
+#ifdef GX_VEC
+	uint32_t q;
+
+	if (n >= 0) {
+		if (udiv_small((uint64_t)n, (uint64_t)d, &q))
+			return (int64_t)q;
+	} else if (udiv_small((uint64_t)-n, (uint64_t)d, &q)) {
+		return -(int64_t)q;
+	}
+#endif
+	return n / d;
+}
+
 /* ---- orden -> parámetros y coste (en ciclos del motor, 33,5 MHz) ------------------------------------------------ */
 
-#define NP_BAD 0xFFu
+#define NP_BAD GX_NP_BAD
 
-static uint8_t g_np[0x80];
-static int g_np_ready;
+/* Parámetros por orden (255 = no existe), generada de la tabla de GBATEK */
+const uint8_t gx_np_tab[0x80] = {
+	0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+	1, 0, 1, 1, 1, 0, 16, 12, 16, 12, 9, 3, 3, 255, 255, 255,
+	1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 255, 255, 255, 255,
+	1, 1, 1, 1, 32, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+	1, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+	1, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+	1, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+	3, 2, 1, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+};
 
-static void np_init(void)
-{
-	if (g_np_ready)
-		return;
-	memset(g_np, NP_BAD, sizeof g_np);
-	static const struct {
-		uint8_t cmd, np;
-	} t[] = {
-		{ 0x00, 0 }, { 0x10, 1 }, { 0x11, 0 }, { 0x12, 1 }, { 0x13, 1 }, { 0x14, 1 }, { 0x15, 0 }, { 0x16, 16 },
-		{ 0x17, 12 }, { 0x18, 16 }, { 0x19, 12 }, { 0x1A, 9 }, { 0x1B, 3 }, { 0x1C, 3 }, { 0x20, 1 }, { 0x21, 1 },
-		{ 0x22, 1 }, { 0x23, 2 }, { 0x24, 1 }, { 0x25, 1 }, { 0x26, 1 }, { 0x27, 1 }, { 0x28, 1 }, { 0x29, 1 },
-		{ 0x2A, 1 }, { 0x2B, 1 }, { 0x30, 1 }, { 0x31, 1 }, { 0x32, 1 }, { 0x33, 1 }, { 0x34, 32 }, { 0x40, 1 },
-		{ 0x41, 0 }, { 0x50, 1 }, { 0x60, 1 }, { 0x70, 3 }, { 0x71, 2 }, { 0x72, 1 },
-	};
-	for (unsigned i = 0; i < sizeof t / sizeof t[0]; i++)
-		g_np[t[i].cmd] = t[i].np;
-	g_np_ready = 1;
-}
-
-/* Parámetros de una orden (0 si no lleva; NP_BAD si no existe). */
-unsigned gx_cmd_np(uint32_t cmd)
-{
-	np_init();
-	return cmd < 0x80 ? g_np[cmd] : NP_BAD;
-}
-
-/* Entradas de la FIFO que ocupa una orden: sus parámetros, o una si no tiene. */
-unsigned gx_cmd_entries(uint32_t cmd)
-{
-	const unsigned np = gx_cmd_np(cmd & 0x7Fu);
-
-	return np && np != NP_BAD ? np : 1u;
-}
-
-int gx_cmd_valid(uint32_t cmd)
-{
-	return gx_cmd_np(cmd) != NP_BAD;
-}
+/* Coste base en ciclos del motor (33,5 MHz, tabla de GBATEK); MULT en el modo 2 suma 30 y NORMAL suma una por luz encendida. */
+const uint16_t gx_cost_tab[0x80] = {
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	1, 17, 36, 17, 36, 19, 34, 30, 35, 31, 28, 22, 22, 0, 0, 0,
+	1, 9, 1, 9, 8, 8, 8, 8, 8, 1, 1, 1, 0, 0, 0, 0,
+	4, 4, 6, 1, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	392, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	103, 9, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+};
 
 /* ---- matrices ----------------------------------------------------------------------------------------------- */
 
@@ -70,12 +181,81 @@ static void mat_ident(gx_mat *m)
 	m->m[0] = m->m[5] = m->m[10] = m->m[15] = 0x1000;
 }
 
+#ifdef GX_VEC
+typedef int32_t vi4 __attribute__((vector_size(16)));
+typedef uint32_t vu4 __attribute__((vector_size(16)));
+typedef vi4 vi4_a __attribute__((may_alias));
+
+typedef struct v64 {
+	vu4 hi; /* sin signo: las sumas envuelven módulo 2^64 como las de C con enteros de 64 bits */
+	vu4 lo;
+} v64;
+
+static inline vi4 vsplat(int32_t x)
+{
+	return (vi4){ x, x, x, x };
+}
+
+static inline vi4 vload(const int32_t *p)
+{
+	return *(const vi4_a *)p;
+}
+
+/* producto con signo de cada carril, 32 x 32 -> 64 (hi, lo): cuatro multiplicaciones de 16 bits por carril */
+static inline v64 v_mul(vi4 a, vi4 b)
+{
+	const vi4 ah = a >> 16, bh = b >> 16;
+	const vu4 al = (vu4)a & 0xFFFFu, bl = (vu4)b & 0xFFFFu;
+	const vi4 m1 = ah * (vi4)bl, m2 = (vi4)al * bh;
+	vu4 lo = al * bl, t = (vu4)m1 << 16;
+	vu4 hi = (vu4)(ah * bh + (m1 >> 16) + (m2 >> 16));
+
+	lo += t;
+	hi -= (vu4)(lo < t);
+	t = (vu4)m2 << 16;
+	lo += t;
+	hi -= (vu4)(lo < t);
+	return (v64){ hi, lo };
+}
+
+static inline v64 v_add(v64 a, v64 b)
+{
+	const vu4 lo = a.lo + b.lo;
+
+	return (v64){ a.hi + b.hi - (vu4)(lo < a.lo), lo };
+}
+
+/* (suma >> 12) truncada a 32 bits */
+static inline vi4 v_shr12(v64 a)
+{
+	return (vi4)((a.lo >> 12) | (a.hi << 20));
+}
+
+/* fila 3 por 4096 como entero de 64 bits */
+static inline v64 v_row_x4096(vi4 r)
+{
+	return (v64){ (vu4)(r >> 20), (vu4)r << 12 };
+}
+#endif
+
 /* out = a x b (a por la izquierda: v' = v x a x b con v fila). Cada elemento suma cuatro productos en 64 bits y trunca
  * con >> 12 (aritmético); el resultado se guarda en 32 bits. */
 static void mat_mul(gx_mat *out, const gx_mat *a, const gx_mat *b)
 {
 	gx_mat r;
 
+#ifdef GX_VEC
+	const vi4 b0 = vload(&b->m[0]), b1 = vload(&b->m[4]), b2 = vload(&b->m[8]), b3 = vload(&b->m[12]);
+
+	for (int i = 0; i < 4; i++) {
+		v64 s = v_mul(vsplat(a->m[i * 4]), b0);
+
+		s = v_add(s, v_mul(vsplat(a->m[i * 4 + 1]), b1));
+		s = v_add(s, v_mul(vsplat(a->m[i * 4 + 2]), b2));
+		s = v_add(s, v_mul(vsplat(a->m[i * 4 + 3]), b3));
+		*(vi4_a *)&r.m[i * 4] = v_shr12(s);
+	}
+#else
 	for (int i = 0; i < 4; i++)
 		for (int j = 0; j < 4; j++) {
 			int64_t s = 0;
@@ -84,7 +264,52 @@ static void mat_mul(gx_mat *out, const gx_mat *a, const gx_mat *b)
 				s += (int64_t)a->m[i * 4 + k] * b->m[k * 4 + j];
 			r.m[i * 4 + j] = (int32_t)(s >> 12);
 		}
+#endif
 	*out = r;
+}
+
+/* (x, y, z, 1) x m, cada componente en 64 bits y >> 12 (truncado a 32 bits): matriz clip por un vértice */
+static void xform_point(const int32_t *m, int32_t x, int32_t y, int32_t z, int32_t out[4])
+{
+#ifdef GX_VEC
+	v64 s = v_mul(vsplat(x), vload(&m[0]));
+	int32_t t[4] __attribute__((aligned(16)));
+
+	s = v_add(s, v_mul(vsplat(y), vload(&m[4])));
+	s = v_add(s, v_mul(vsplat(z), vload(&m[8])));
+	s = v_add(s, v_row_x4096(vload(&m[12])));
+	*(vi4_a *)t = v_shr12(s);
+	out[0] = t[0]; out[1] = t[1]; out[2] = t[2]; out[3] = t[3];
+#else
+	const int64_t px = x, py = y, pz = z;
+
+	out[0] = (int32_t)((px * m[0] + py * m[4] + pz * m[8] + ((int64_t)m[12] * 4096)) >> 12);
+	out[1] = (int32_t)((px * m[1] + py * m[5] + pz * m[9] + ((int64_t)m[13] * 4096)) >> 12);
+	out[2] = (int32_t)((px * m[2] + py * m[6] + pz * m[10] + ((int64_t)m[14] * 4096)) >> 12);
+	out[3] = (int32_t)((px * m[3] + py * m[7] + pz * m[11] + ((int64_t)m[15] * 4096)) >> 12);
+#endif
+}
+
+/* normal (1.0.9) por la matriz vectorial 3x3 (>> 12), saturada a 1.0.9. La suma cabe en 32 bits después del desplazamiento
+ * (|n| <= 512, 3 productos): se trunca sin perder nada. */
+static void xform_normal(const int32_t *m, const int32_t n[3], int32_t t[3])
+{
+#ifdef GX_VEC
+	v64 s = v_mul(vsplat(n[0]), vload(&m[0]));
+	int32_t r[4] __attribute__((aligned(16)));
+
+	s = v_add(s, v_mul(vsplat(n[1]), vload(&m[4])));
+	s = v_add(s, v_mul(vsplat(n[2]), vload(&m[8])));
+	*(vi4_a *)r = v_shr12(s);
+	for (int i = 0; i < 3; i++)
+		t[i] = r[i] < -512 ? -512 : r[i] > 511 ? 511 : r[i];
+#else
+	for (int i = 0; i < 3; i++) {
+		const int64_t v = ((int64_t)n[0] * m[i] + (int64_t)n[1] * m[4 + i] + (int64_t)n[2] * m[8 + i]) >> 12;
+
+		t[i] = (int32_t)(v < -512 ? -512 : v > 511 ? 511 : v);
+	}
+#endif
 }
 
 static void clip_update(gx_exec *g)
@@ -198,7 +423,25 @@ static unsigned outcode(const gx_cvtx *v)
 
 static int32_t lerp_field(int32_t a, int32_t b, int64_t da, int64_t db)
 {
-	return (int32_t)(a + (gx_wide)((int64_t)b - a) * da / (da - db));
+	const int64_t x = (int64_t)b - a, d = da - db;
+	const uint64_t ax = (uint64_t)(x < 0 ? -x : x);
+
+	/* a + (b - a) * da / (da - db) con la división truncada hacia cero. Con los factores de 32 bits (lo normal) el producto cabe
+	 * en 64 bits y el cociente en 32: sin la división de 128 bits (en el SPE; el PPE divide de 64 bits en una instrucción) */
+#ifdef GX_VEC
+	if (da >= 0 && d > 0 && (ax >> 32) == 0 && ((uint64_t)da >> 32) == 0) {
+		const uint64_t prod = mulu32((uint32_t)ax, (uint32_t)da);
+
+		if ((prod >> 32) < (uint64_t)d) {
+			const int64_t q = (int64_t)udiv_q32(prod, (uint64_t)d);
+
+			return (int32_t)(a + (x < 0 ? -q : q));
+		}
+	}
+#else
+	(void)ax;
+#endif
+	return (int32_t)(a + (gx_wide)x * da / d);
 }
 
 static void clip_edge(gx_cvtx *o, const gx_cvtx *a, const gx_cvtx *b, int64_t da, int64_t db)
@@ -267,23 +510,38 @@ static int clip_polygon(const gx_cvtx *in, int n, gx_cvtx *out, unsigned mask)
 
 /* ---- viewport y pantalla -------------------------------------------------------------------------------------- */
 
-/* Pantalla de un vértice con `sh` bits fraccionarios extra (para decidir la cara con más precisión). Con w <= 0
- * (detrás del ojo, sólo si el polígono no se recortó) devuelve el origen del viewport. */
-static void screen_pos(const gx_exec *g, const gx_cvtx *v, unsigned sh, int64_t *sx, int64_t *sy)
+/* (a * b) con b en 1..256 y |a| < 2^40, como entero de 64 bits con signo */
+static inline int64_t mul_small(int64_t a, int64_t b)
+{
+	return a >= 0 ? (int64_t)mulu64_32((uint64_t)a, (uint32_t)b) : -(int64_t)mulu64_32((uint64_t)-a, (uint32_t)b);
+}
+
+/* Pantalla de un vértice, a la vez con 8 bits fraccionarios extra (sx8, sy8: para decidir la cara con más precisión) y sin ellos
+ * (sx0, sy0: lo que se guarda). Con w <= 0 (detrás del ojo, sólo si el polígono no se recortó) devuelve el origen del viewport.
+ * Una sola división por coordenada: la de 8 bits fraccionarios, y la entera sale de ella (truncar el cociente truncado da el
+ * cociente truncado del cociente: igual que dividir sin los 8 bits). */
+static void screen_both(const gx_exec *g, const gx_cvtx *v, int64_t *sx0, int64_t *sy0, int64_t *sx8, int64_t *sy8)
 {
 	const int64_t x1 = g->viewport & 0xFF, y1 = (g->viewport >> 8) & 0xFF;
 	const int64_t x2 = (g->viewport >> 16) & 0xFF, y2 = (g->viewport >> 24) & 0xFF;
 	const int64_t vw = x2 - x1 + 1, vh = y2 - y1 + 1; /* anchura y altura (pueden ser <= 0 si x2 < x1; entonces 0) */
 	const int64_t w = v->w;
+	int64_t tx, ty;
 
 	if (w <= 0 || vw <= 0 || vh <= 0) {
-		*sx = x1 * ((int64_t)1 << sh);
-		*sy = (191 - y2) * ((int64_t)1 << sh);
+		*sx0 = x1;
+		*sy0 = 191 - y2;
+		*sx8 = x1 * 256;
+		*sy8 = (191 - y2) * 256;
 		return;
 	}
 	/* y se mide desde abajo (y = 191 - y); la y de recorte positiva va hacia arriba */
-	*sx = (((int64_t)v->x + w) * vw * ((int64_t)1 << sh)) / (2 * w) + (x1 * ((int64_t)1 << sh));
-	*sy = ((w - (int64_t)v->y) * vh * ((int64_t)1 << sh)) / (2 * w) + ((191 - y2) * ((int64_t)1 << sh));
+	tx = div_trunc(mul_small((int64_t)v->x + w, vw) * 256, 2 * w);
+	ty = div_trunc(mul_small(w - (int64_t)v->y, vh) * 256, 2 * w);
+	*sx8 = tx + x1 * 256;
+	*sy8 = ty + (191 - y2) * 256;
+	*sx0 = (tx >= 0 ? tx >> 8 : -((-tx) >> 8)) + x1;
+	*sy0 = (ty >= 0 ? ty >> 8 : -((-ty) >> 8)) + (191 - y2);
 }
 
 static int16_t clamp16(int64_t v)
@@ -291,15 +549,14 @@ static int16_t clamp16(int64_t v)
 	return (int16_t)(v < -32768 ? -32768 : v > 32767 ? 32767 : v);
 }
 
-static void make_out(const gx_exec *g, const gx_cvtx *v, gx_vertex *o)
+static void make_out(const gx_cvtx *v, gx_vertex *o, int64_t sx, int64_t sy)
 {
-	int64_t sx, sy, z;
+	int64_t z;
 
-	screen_pos(g, v, 0, &sx, &sy);
 	o->sx = clamp16(sx);
 	o->sy = clamp16(sy);
 	if (v->w > 0) {
-		z = ((int64_t)v->z * 0x4000) / v->w + 0x3FFF;
+		z = div_trunc((int64_t)v->z * 0x4000, v->w) + 0x3FFF;
 		z = z < 0 ? 0 : z > 0x7FFF ? 0x7FFF : z;
 	} else {
 		z = 0;
@@ -320,7 +577,20 @@ static void make_out(const gx_exec *g, const gx_cvtx *v, gx_vertex *o)
 /* Recorta, descarta por cara y guarda un polígono de `n` vértices. Cada polígono lleva sus vértices propios en la RAM de
  * vértices (sin compartir los de las tiras): 6144 = 2048 triángulos x 3; sólo cuentan los polígonos que llegan a la
  * lista (los descartados por cara o por recorte no gastan RAM). */
+static void emit_poly_inner(gx_exec *g, gx_cvtx *const *src, int n);
 static void emit_poly(gx_exec *g, gx_cvtx *const *src, int n)
+{
+#ifdef GX_PROF
+	const uint32_t t0 = spu_readch(SPU_RdDec);
+
+	emit_poly_inner(g, src, n);
+	g->prof[4] += t0 - spu_readch(SPU_RdDec);
+#else
+	emit_poly_inner(g, src, n);
+#endif
+}
+
+static void emit_poly_inner(gx_exec *g, gx_cvtx *const *src, int n)
 {
 	gx_cvtx pv[CLIP_BUF];
 	const uint32_t attr = g->polyattr_cur;
@@ -332,6 +602,7 @@ static void emit_poly(gx_exec *g, gx_cvtx *const *src, int n)
 	int16_t xmin = 32767, xmax = -32768, ymin = 32767, ymax = -32768;
 
 	gx_cvtx in[4];
+	int64_t s0x[CLIP_BUF], s0y[CLIP_BUF], s8x[CLIP_BUF], s8y[CLIP_BUF];
 
 	for (int i = 0; i < n; i++) {
 		unsigned c;
@@ -365,12 +636,12 @@ static void emit_poly(gx_exec *g, gx_cvtx *const *src, int n)
 	}
 	/* Cara: signo del área en pantalla (con 8 bits fraccionarios extra). Frontal = antihorario a la vista = área < 0
 	 * con y hacia abajo. Área 0 cuenta como frontal. [sin contrastar] */
+	for (int i = 0; i < m; i++)
+		screen_both(g, &pv[i], &s0x[i], &s0y[i], &s8x[i], &s8y[i]);
 	for (int i = 0; i < m; i++) {
-		int64_t ax, ay, bx, by;
+		const int j = i + 1 == m ? 0 : i + 1;
 
-		screen_pos(g, &pv[i], 8, &ax, &ay);
-		screen_pos(g, &pv[(i + 1) % m], 8, &bx, &by);
-		area2 += ax * by - bx * ay;
+		area2 += mul_i64(s8x[i], s8y[j]) - mul_i64(s8x[j], s8y[i]);
 	}
 	front = area2 <= 0;
 	if (front ? !(attr & 0x80u) : !(attr & 0x40u)) {
@@ -424,7 +695,7 @@ static void emit_poly(gx_exec *g, gx_cvtx *const *src, int n)
 		} else {
 			id = g->out.nverts++;
 			o = &g->vtx[id - g->vbase];
-			make_out(g, &pv[i], o);
+			make_out(&pv[i], o, s0x[i], s0y[i]);
 			sx = o->sx;
 			sy = o->sy;
 			if (!clipped) {
@@ -550,18 +821,18 @@ static uint32_t expand6(uint32_t c5)
 
 static void vertex_submit(gx_exec *g, int32_t x, int32_t y, int32_t z)
 {
-	const int64_t px = x, py = y, pz = z;
 	gx_cvtx c;
 
 	g->vx = x; g->vy = y; g->vz = z;
 	clip_update(g);
 	{
-		const int32_t *m = g->clip.m;
+		int32_t r[4];
 
-		c.x = (int32_t)((px * m[0] + py * m[4] + pz * m[8] + ((int64_t)m[12] * 4096)) >> 12);
-		c.y = (int32_t)((px * m[1] + py * m[5] + pz * m[9] + ((int64_t)m[13] * 4096)) >> 12);
-		c.z = (int32_t)((px * m[2] + py * m[6] + pz * m[10] + ((int64_t)m[14] * 4096)) >> 12);
-		c.w = (int32_t)((px * m[3] + py * m[7] + pz * m[11] + ((int64_t)m[15] * 4096)) >> 12);
+		xform_point(g->clip.m, x, y, z, r);
+		c.x = r[0];
+		c.y = r[1];
+		c.z = r[2];
+		c.w = r[3];
 	}
 	if ((g->texparam >> 30) == 3)
 		tex_mode3(g);
@@ -631,14 +902,14 @@ static void light_color(gx_exec *g, const int32_t n[3])
 
 static void clip_vertex_of(const gx_exec *g, int32_t x, int32_t y, int32_t z, gx_cvtx *c)
 {
-	const int32_t *m = g->clip.m;
-	const int64_t px = x, py = y, pz = z;
+	int32_t r[4];
 
 	memset(c, 0, sizeof *c);
-	c->x = (int32_t)((px * m[0] + py * m[4] + pz * m[8] + ((int64_t)m[12] * 4096)) >> 12);
-	c->y = (int32_t)((px * m[1] + py * m[5] + pz * m[9] + ((int64_t)m[13] * 4096)) >> 12);
-	c->z = (int32_t)((px * m[2] + py * m[6] + pz * m[10] + ((int64_t)m[14] * 4096)) >> 12);
-	c->w = (int32_t)((px * m[3] + py * m[7] + pz * m[11] + ((int64_t)m[15] * 4096)) >> 12);
+	xform_point(g->clip.m, x, y, z, r);
+	c->x = r[0];
+	c->y = r[1];
+	c->z = r[2];
+	c->w = r[3];
 }
 
 static int box_visible(gx_exec *g, const uint32_t *p)
@@ -837,7 +1108,6 @@ static void mtx_restore(gx_exec *g, uint32_t param)
 static void do_normal(gx_exec *g, uint32_t p)
 {
 	int32_t n[3], t[3];
-	const int32_t *m = g->vec.m;
 
 	n[0] = sext(p, 10);
 	n[1] = sext(p >> 10, 10);
@@ -846,14 +1116,33 @@ static void do_normal(gx_exec *g, uint32_t p)
 	if ((g->texparam >> 30) == 2)
 		tex_mode2(g);
 	/* se transforma con la matriz vectorial (3x3) y se satura a 1.0.9 */
-	t[0] = clamp_s(((int64_t)n[0] * m[0] + (int64_t)n[1] * m[4] + (int64_t)n[2] * m[8]) >> 12, -512, 511);
-	t[1] = clamp_s(((int64_t)n[0] * m[1] + (int64_t)n[1] * m[5] + (int64_t)n[2] * m[9]) >> 12, -512, 511);
-	t[2] = clamp_s(((int64_t)n[0] * m[2] + (int64_t)n[1] * m[6] + (int64_t)n[2] * m[10]) >> 12, -512, 511);
+	xform_normal(g->vec.m, n, t);
 	light_color(g, t);
 }
 
+#ifdef GX_PROF
+#define PROF_T() spu_readch(SPU_RdDec)
+#else
+#define PROF_T() 0u
+#endif
+
+static void gx_exec_cmd_inner(gx_exec *g, uint32_t cmd, const uint32_t *p);
+
 /* Ejecuta una orden con sus parámetros. El coste en ciclos lo da gx_cmd_cost. */
 void gx_exec_cmd(gx_exec *g, uint32_t cmd, const uint32_t *p)
+{
+#ifdef GX_PROF
+	const uint32_t t0 = PROF_T();
+	const unsigned cls = (cmd >= 0x10 && cmd <= 0x1C) ? 0u : (cmd >= 0x23 && cmd <= 0x28) ? 1u : (cmd == 0x21 || cmd == 0x20 || cmd == 0x22) ? 2u : 3u;
+
+	gx_exec_cmd_inner(g, cmd, p);
+	g->prof[cls] += t0 - PROF_T();
+#else
+	gx_exec_cmd_inner(g, cmd, p);
+#endif
+}
+
+static void gx_exec_cmd_inner(gx_exec *g, uint32_t cmd, const uint32_t *p)
 {
 	gx_mat m;
 
@@ -1072,7 +1361,6 @@ void gx_exec_newframe(gx_exec *g)
 
 void gx_exec_init(gx_exec *g)
 {
-	np_init();
 	memset(g, 0, sizeof *g);
 	mat_ident(&g->proj);
 	mat_ident(&g->pos);
@@ -1089,54 +1377,6 @@ void gx_exec_init(gx_exec *g)
 	g->color5[0] = g->color5[1] = g->color5[2] = 31u;
 	g->vcap = GX_MAX_VERTS;
 	g->pcap = GX_MAX_POLYS;
-}
-
-/* Coste de una orden en ciclos del motor (33,5 MHz) según la tabla de GBATEK. NORMAL suma una por luz encendida. */
-unsigned gx_cmd_cost(uint32_t cmd, uint32_t mode, uint32_t polyattr)
-{
-	const unsigned m2 = mode == 2 ? 30u : 0u;
-
-	switch (cmd) {
-	case 0x10: return 1;
-	case 0x11: return 17;
-	case 0x12: return 36;
-	case 0x13: return 17;
-	case 0x14: return 36;
-	case 0x15: return 19;
-	case 0x16: return 34;
-	case 0x17: return 30;
-	case 0x18: return 35 + m2;
-	case 0x19: return 31 + m2;
-	case 0x1A: return 28 + m2;
-	case 0x1B: return 22;
-	case 0x1C: return 22 + m2;
-	case 0x20: return 1;
-	case 0x21: {
-		unsigned c = 9, en = polyattr & 0xFu;
-
-		while (en) {
-			c += en & 1u;
-			en >>= 1;
-		}
-		return c;
-	}
-	case 0x22: return 1;
-	case 0x23: return 9;
-	case 0x24: case 0x25: case 0x26: case 0x27: case 0x28: return 8;
-	case 0x29: case 0x2A: case 0x2B: return 1;
-	case 0x30: case 0x31: return 4;
-	case 0x32: return 6;
-	case 0x33: return 1;
-	case 0x34: return 32;
-	case 0x40: return 1;
-	case 0x41: return 1;
-	case 0x50: return 392;
-	case 0x60: return 1;
-	case 0x70: return 103;
-	case 0x71: return 9;
-	case 0x72: return 5;
-	default: return 0;
-	}
 }
 
 /* ---- trabajos ---------------------------------------------------------------------------------------------- */
@@ -1203,3 +1443,16 @@ void gx_job_run(gx_exec *ex, uint32_t flags, uint32_t nwords, const gx_job_io *i
 	if (flags & GX_JOB_MATS)
 		gx_exec_flush_mats(ex);
 }
+
+#ifdef GX_TEST
+/* ganchos de las pruebas unitarias (tests/unit/test_gx_math.c): la aritmética barata contra la de 64 bits */
+uint64_t gx_t_mulu32(uint32_t a, uint32_t b) { return mulu32(a, b); }
+int64_t gx_t_muls32(int32_t a, int32_t b) { return muls32(a, b); }
+int gx_t_udiv_small(uint64_t n, uint64_t d, uint32_t *q) { return udiv_small(n, d, q); }
+uint64_t gx_t_udiv_q32(uint64_t n, uint64_t d) { return udiv_q32(n, d); }
+int64_t gx_t_div_trunc(int64_t n, int64_t d) { return div_trunc(n, d); }
+int32_t gx_t_lerp(int32_t a, int32_t b, int64_t da, int64_t db) { return lerp_field(a, b, da, db); }
+void gx_t_mat_mul(gx_mat *o, const gx_mat *a, const gx_mat *b) { mat_mul(o, a, b); }
+void gx_t_xform_point(const int32_t *m, int32_t x, int32_t y, int32_t z, int32_t out[4]) { xform_point(m, x, y, z, out); }
+void gx_t_xform_normal(const int32_t *m, const int32_t n[3], int32_t t[3]) { xform_normal(m, n, t); }
+#endif

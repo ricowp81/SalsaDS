@@ -64,7 +64,7 @@ typedef struct gx gx_t;
 
 /* Registro de órdenes: palabras `cmd, p0..pn-1` (como las lee gx_exec_run). */
 #define GX_LOG_WORDS 32768u
-#define GX_KICK_WORDS 2048u /* a partir de cuántas palabras anotadas se publica un trabajo sin esperar */
+#define GX_KICK_WORDS 4096u /* a partir de cuántas palabras anotadas se publica un trabajo sin esperar */
 
 
 /* Ejecutor externo (modo diferido). `post` publica un trabajo: ejecutar log[0..nwords) escribiendo en el cuadro `f`, y dejar
@@ -101,6 +101,7 @@ struct gx {
 	uint64_t stack_busy_until, test_busy_until;
 	uint32_t test_pending; /* BOX/POS/VEC_TEST en la cola, sin ejecutar */
 	uint64_t now;          /* el instante más tardío observado */
+	uint64_t nxt;          /* caché de gx_next_start: hasta ese instante gx_advance no tiene nada que ejecutar */
 
 	/* estado de GXSTAT y lo que el tiempo necesita saber de las órdenes (se sigue aquí, sin ejecutarlas) */
 	uint32_t err, irqmode;
@@ -140,7 +141,15 @@ uint64_t gx_fifo_write(gx_t *g, uint64_t now, uint32_t w);
 uint64_t gx_port_write(gx_t *g, uint64_t now, uint32_t off, uint32_t w);
 
 /* Ejecuta los comandos que ya empezaron antes de `now`. */
-void gx_advance(gx_t *g, uint64_t now);
+void gx_advance_run(gx_t *g, uint64_t now);
+static inline void gx_advance(gx_t *g, uint64_t now)
+{
+	if (now > g->now)
+		g->now = now;
+	if (g->nxt > now) /* lo normal: ninguna orden empieza todavía (se llama en cada acceso a la FIFO) */
+		return;
+	gx_advance_run(g, now);
+}
 /* Instante en que empieza el siguiente comando de la cola, o GX_NEVER (cola vacía, incompleta o parada en un SWAP). */
 uint64_t gx_next_start(const gx_t *g);
 

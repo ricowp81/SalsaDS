@@ -6,7 +6,7 @@
  *
  * Presupuesto del local store (256 KB; lo mide el enlace: `spu-size` y tools/spu-stack.py):
  *   contexto gx_exec ≈ 6 KB (matrices y pilas 4,4 KB, ensamblado, luces, contadores de órdenes 1 KB), ventana de vértices
- *   192 × 32 B = 6 KB, de polígonos 96 × 48 B = 4,5 KB, tramo del registro 2048 palabras = 8 KB y su búfer de DMA 8 KB,
+ *   512 × 32 B = 16 KB, de polígonos 256 × 48 B = 12 KB, tramo del registro 4096 palabras = 16 KB y su búfer de DMA 16 KB,
  *   código ≈ 20 KB; la pila, lo que queda (mínimo 4 KB).
  */
 #include <spukit/spu.h>
@@ -20,9 +20,9 @@ _Static_assert(sizeof(job_geom_result) <= 112, "el resultado de un trabajo de sp
 _Static_assert(sizeof(gx_exec_out) % 16 == 0, "gx_exec_out se sube por DMA");
 _Static_assert(sizeof(gx_vertex) % 16 == 0 && sizeof(gx_poly) % 16 == 0, "los vértices y polígonos se suben por DMA");
 
-#define VCAP 192u
-#define PCAP 96u
-#define CHUNK 2048u
+#define VCAP 512u
+#define PCAP 256u
+#define CHUNK 4096u
 #define TAG_PUT 1u
 #define TAG_GET 2u
 
@@ -91,13 +91,19 @@ static int handler(void *user, const spukit_job *job, spukit_result *res)
 		gio.fetch = fetch;
 		gio.put_verts = put_verts;
 		gio.put_polys = put_polys;
-		if (!(j.flags & GX_JOB_RESET))
+		uint32_t pbefore[5] = { 0, 0, 0, 0, 0 };
+
+		if (!(j.flags & GX_JOB_RESET)) {
 			for (unsigned c = 0; c < 0x80; c++)
 				before += ex.by_cmd[c];
+			memcpy(pbefore, ex.prof, sizeof pbefore);
+		}
 		gx_job_run(&ex, j.flags, j.nwords, &gio, vstage, VCAP, pstage, PCAP, chunk, CHUNK);
 		for (unsigned c = 0; c < 0x80; c++)
 			after += ex.by_cmd[c];
 		out.cmds = (uint32_t)(after - before);
+		for (unsigned k = 0; k < 5; k++)
+			out.prof[k] = ex.prof[k] - pbefore[k];
 		out.puts = io.puts;
 		out_ls = ex.out;
 		spukit_dma_put(&out_ls, j.out_ea, (uint32_t)sizeof out_ls, TAG_PUT);

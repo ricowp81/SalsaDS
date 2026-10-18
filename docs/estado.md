@@ -4,6 +4,17 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-18 — Geometría: segunda vuelta (3.5b)
+
+- **Medido en la PS3**: SPE 35,3 ms por cuadro en NSMB (26 363 órdenes, 1227 polígonos), PPE 13,1 ms anotando + 6 ms esperando; con la
+  geometría directa en el PPE la cinemática de NSMB cuesta 22,4 ms. Ver `docs/fase3.md`, 3.5b.
+- **Hecho**: el cuello era el motor de tiempo (`gx_advance` ≈ 4 veces por palabra de FIFO recalculando la siguiente orden): caché `nxt`,
+  salida inmediata, `nds_gx_schedule` sin trabajo con una mirada pendiente, tablas de órdenes estáticas (host: emulación completa de NSMB
+  −13 %). Armado con una división por coordenada. En el SPE: matrices, vértices y normales en vectores de cuatro, productos de 32 × 32 → 64
+  con multiplicaciones de 16 bits, cocientes con coma flotante y corrección, sin `__muldi3`/`__divti3`; ventanas y trabajos más grandes;
+  medición por etapa (`DATO geometria-spe`). Mismos bits (unitarias con la versión del SPE en el host, hash de cuadros igual).
+- Pendiente: medir en la PS3 (con y sin `geometria-spe`); decidir el valor por omisión con ese número.
+
 ## 2026-10-18 — Eventos y geometría en un SPE (Fase 3.5)
 
 - **Medido en la PS3 con el JIT** (SM64DS en juego): emulación 26,6 ms = ARM9 13,3 + ARM7 2,3 + eventos 10,4 + planificador 0,6; en otras

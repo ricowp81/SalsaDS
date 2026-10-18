@@ -95,7 +95,7 @@ typedef struct gx_frame {
 
 typedef struct gx_mat {
 	int32_t m[16]; /* fila mayor: m[4 * fila + columna]; la traslación va en la fila 3 */
-} gx_mat;
+} __attribute__((aligned(16))) gx_mat;
 
 /* Vértice en el espacio de recorte (interno). */
 typedef struct gx_cvtx {
@@ -176,6 +176,7 @@ typedef struct gx_exec {
 
 	gx_exec_out out;
 	uint64_t by_cmd[0x80];      /* órdenes ejecutadas, por código (solo para medir) */
+	uint32_t prof[6];           /* con GX_PROF (SPE): ticks del decrementador en matrices, vértices, normales/luces, otras y armado de polígonos */
 } gx_exec;
 
 void gx_exec_init(gx_exec *ex);
@@ -207,11 +208,38 @@ typedef struct gx_job_io {
 void gx_job_run(gx_exec *ex, uint32_t flags, uint32_t nwords, const gx_job_io *io, gx_vertex *vstage, uint32_t vcap,
 		gx_poly *pstage, uint32_t pcap, uint32_t *chunk, uint32_t chunk_words);
 
-/* Tabla de órdenes: parámetros (0 si no lleva), entradas de FIFO, validez y coste en ciclos del motor (depende del modo de
- * matriz y de las luces encendidas en POLYGON_ATTR). */
-unsigned gx_cmd_np(uint32_t cmd);
-unsigned gx_cmd_entries(uint32_t cmd);
-int gx_cmd_valid(uint32_t cmd);
-unsigned gx_cmd_cost(uint32_t cmd, uint32_t mtx_mode, uint32_t polyattr);
+/* Tabla de órdenes: parámetros (0 si no lleva; GX_NP_BAD si no existe), entradas de FIFO, validez y coste en ciclos del motor
+ * (depende del modo de matriz y de las luces encendidas en POLYGON_ATTR). En línea: el motor de tiempo las consulta por cada orden. */
+#define GX_NP_BAD 0xFFu
+extern const uint8_t gx_np_tab[0x80];
+extern const uint16_t gx_cost_tab[0x80];
+
+static inline unsigned gx_cmd_np(uint32_t cmd)
+{
+	return cmd < 0x80 ? gx_np_tab[cmd] : GX_NP_BAD;
+}
+
+static inline unsigned gx_cmd_entries(uint32_t cmd)
+{
+	const unsigned np = gx_np_tab[cmd & 0x7Fu];
+
+	return np && np != GX_NP_BAD ? np : 1u;
+}
+
+static inline int gx_cmd_valid(uint32_t cmd)
+{
+	return gx_cmd_np(cmd) != GX_NP_BAD;
+}
+
+static inline unsigned gx_cmd_cost(uint32_t cmd, uint32_t mtx_mode, uint32_t polyattr)
+{
+	unsigned c = gx_cost_tab[cmd & 0x7Fu];
+
+	if (mtx_mode == 2 && (cmd == 0x18 || cmd == 0x19 || cmd == 0x1A || cmd == 0x1C))
+		c += 30u;
+	else if (cmd == 0x21)
+		c += (0x4332322132212110ull >> (4u * (polyattr & 0xFu))) & 0xFu; /* luces encendidas */
+	return c;
+}
 
 #endif

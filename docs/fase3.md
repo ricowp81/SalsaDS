@@ -651,3 +651,39 @@ El motor se parte en dos (`docs/fase3.md` 3.1 describe la geometría; el código
   que espera el PPE y cuántas esperas) además de `DATO geometria` (el tiempo que el PPE gasta ahora, anotando y publicando) y `DATO
   eventos`. Expectativa: el PPE pasa de ≈ 7 ms a ≈ 1 ms por cuadro (anotar 3-4 palabras por orden y el costo de spukit_post) y el SPE
   tarda alrededor de lo que el PPE tardaba dividido por la velocidad de un SPE en este código (sin vectorizar: enteros de 64 bits).
+
+## 3.5b — Medido en la PS3 y la segunda vuelta
+
+Medido con el paquete de la primera vuelta (NSMB, 1227 polígonos, 26 363 órdenes por cuadro): el SPE tardaba **35,3 ms** por cuadro y el PPE
+seguía gastando 13,1 ms anotando y publicando (más 6 ms esperando al SPE); con la geometría directa en el PPE, la cinemática inicial de NSMB
+(1243 polígonos, 2323 vértices) cuesta **22,4 ms** (≈ 18 µs por polígono). La geometría vuelve al PPE por omisión (`geometria-spe` la manda al SPE).
+
+**Dónde se iba el tiempo** (muestreo del host con `sample`, NSMB con pulsaciones): el motor de tiempo, no la ejecución. `gx_advance` se
+llamaba ≈ 4 veces por palabra escrita a la FIFO (escritura, DMA de modo 7, `nds_gx_schedule`...), cada vez recalculando cuándo empieza la
+siguiente orden, además de `pk_advance`, `gx_poll_set` y `dma_waits_for`: ≈ 3/4 del tiempo de la geometría; `gx_exec_cmd`, `emit_poly` y
+`vertex_submit` el resto. En el SPE, el compilador resolvía cada `int64 * int64` con una llamada a `__muldi3` (66 en `gx_exec.c`), cada
+división de 64 bits con `__divdi3` y las interpolaciones del recorte con `__divti3`.
+
+Cambios (los mismos bits; `test-host`, hash de cuadros y autoprueba iguales):
+
+- **Motor de tiempo** (PPE, también en el modo directo): `gx_advance` es en línea y sale de inmediato mientras no haya una orden que empiece
+  (`gx_t.nxt`, caché de `gx_next_start`, que se renueva al empujar o ejecutar); `nds_gx_schedule` no hace nada si ya hay una mirada pendiente;
+  tablas estáticas para parámetros, entradas y coste de las órdenes (antes funciones con inicialización perezosa).
+  Host, NSMB 3000 cuadros: emulación completa 4135 → 3598 µs por cuadro.
+- **Armado de polígonos**: una sola división por coordenada de pantalla: la de 8 bits fraccionarios que ya hacía falta para la cara; la
+  coordenada entera sale de ella (truncar el cociente truncado). Antes eran cinco por vértice (el área recalculaba cada vértice dos veces
+  y `make_out` otra más).
+- **SPE** (`GX_VEC`, siempre en el SPU): producto de matrices, transformación de vértices (`xform_point`) y de normales (`xform_normal`) con
+  vectores de cuatro (una fila de la matriz por multiplicación), cada producto de 32 × 32 → 64 con cuatro multiplicaciones de 16 bits por
+  carril y acumulación de 64 bits con acarreo; multiplicaciones de 32 bits sueltas con trozos de 16 (`mulu32`, `muls32`); cocientes de
+  pantalla y profundidad con estimación en coma flotante corregida con enteros (`udiv_small`, el cociente cabe en 22 bits porque la
+  posición está dentro del volumen de vista); interpolación del recorte con cociente de 32 bits en lugar de `__divti3` (`udiv_q32`).
+  Ventanas de salida de 512 vértices y 256 polígonos, tramos de 4096 palabras, trabajos de 4096 palabras: menos esperas de DMA y menos
+  trabajos por cuadro. El PPE y el host conservan la aritmética simple de 64 bits (allí es una instrucción).
+- `test_gx_math`: las funciones baratas contra la aritmética de 64 bits (300 000 casos al azar y de borde cada una, incluido `INT32_MIN`),
+  más toda la batería de geometría con `-DGX_VEC -DGX_SPLIT_MUL` (la versión del SPE corriendo en el host).
+- **Medición por etapa en el SPE** (`GX_PROF`, línea `DATO geometria-spe`): ms por cuadro en matrices, vértices (con el armado de polígonos
+  aparte), normales y luces y otras órdenes.
+- Sin medir en la PS3 el efecto en el SPE: en RPCS3 (no concluyente) el mismo registro de prueba pasa de 18,8 a 12,4 ms; la meta de ≤ 6 ms para
+  1200 polígonos se confirma o no con el `DATO geometria-spe` del paquete nuevo. Pendiente si no alcanza: `outcode` y la copia de `gx_cvtx`
+  (56 bytes) en el armado, y el recorte en vectores.
