@@ -4,6 +4,26 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-17 — Motor de geometría (Fase 3.1)
+
+- **El motor de geometría real** (`src/gpu3d`, C portable y sin dependencias; pegamento en `src/core/geom.c`) sustituye a la
+  FIFO «siempre vacía»: GXFIFO empaquetada y puertos de órdenes, FIFO de 256 entradas con tubería de 4 y GXSTAT con niveles,
+  ocupado e IRQ 21 por nivel; DMA de modo 7 que respeta la mitad de la FIFO; matrices (modos 0 a 3, pilas con error), vértices,
+  BEGIN/END con los cuatro tipos de primitiva, iluminación, coordenadas de textura, recorte contra los seis planos, viewport,
+  BOX/POS/VEC_TEST, RAM_COUNT y SWAP_BUFFERS en el VBlank. Deja por cuadro una lista de polígonos en pantalla (`gx_frame`, doble
+  búfer, 32 B por vértice y 48 por polígono, sin punteros) lista para los SPE de la 3.2. Detalle, formatos y redondeos en
+  `docs/fase3.md`.
+- **Contrastado con melonDS** (sólo ejecutándolo): la ROM `geom` (2878 comprobaciones) da lo mismo en los dos salvo el tiempo de la
+  FIFO, las lecturas de 32 bits de VEC_RESULT y la pila de proyección tras errores repetidos. Matrices (≈ 2000 comprobaciones
+  aleatorias), pilas, recorte, caras y la cuenta de vértices de las tiras (se comparten) coinciden. Pruebas unitarias del motor en
+  LE y BE.
+- **Juegos**: New Super Mario Bros. (menú, archivo, mapa y 1-1), Mario Kart DS y Super Mario 64 DS siguen llegando adonde
+  llegaban; NSMB manda ≈ 480 polígonos por cuadro en 1-1 (máximo 1895) y la geometría cuesta ≈ 0,64 ms por cuadro en la Mac.
+- Paquete «SalsaDS núcleo» con `DATO geometria` (tiempo del motor en el PPE con el reloj de perfil): construido, **falta medirlo
+  en la PS3**; el PPE es varias veces más lento que la Mac y la decisión PPE/SPE del motor depende de ese número.
+- Pendiente: la 3.2 (rasterizador en SPE sobre `gx_frame`, texturas y paletas, orden de translúcidos, SWAP_BUFFERS con rasterizador
+  asíncrono); medir el motor en la PS3; el modelo de iluminación y el recorte están sin contrastar con una DS real (correr `geom` ahí).
+
 ## 2026-10-17 — FIFO de geometría, sonido y compositor rápido (Fase 2.2)
 
 - **New Super Mario Bros. ya entra a un nivel en el host.** El bucle de 620 883 instrucciones por cuadro no era el sonido: el

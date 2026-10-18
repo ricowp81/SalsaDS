@@ -3,7 +3,7 @@ TITLE   := SalsaDS núcleo
 APPID   := SLDS00008
 SRCS    := main.c
 COMMON  := src/platform/ps3/log.c src/platform/ps3/audio_out.c src/frontend/dspad.c src/frontend/layout.c \
-           $(patsubst $(abspath ../../..)/%,%,$(wildcard $(abspath ../../..)/src/core/*.c $(abspath ../../..)/src/bios/*.c $(abspath ../../..)/src/cpu/*.c $(abspath ../../..)/src/gpu2d/gpu2d_ref.c $(abspath ../../..)/src/gpu2d/gpu2d_compose.c $(abspath ../../..)/src/audio/snd_mix.c))
+           $(patsubst $(abspath ../../..)/%,%,$(wildcard $(abspath ../../..)/src/core/*.c $(abspath ../../..)/src/bios/*.c $(abspath ../../..)/src/cpu/*.c $(abspath ../../..)/src/gpu2d/gpu2d_ref.c $(abspath ../../..)/src/gpu2d/gpu2d_compose.c $(abspath ../../..)/src/gpu3d/gx.c $(abspath ../../..)/src/audio/snd_mix.c))
 LIBS    := -lrsx -lgcm_sys -lio -lsysutil -lnet -lsysmodule -lrt -llv2 -laudio -lm
 RSXKIT  := 1
 SPUKIT  := 1

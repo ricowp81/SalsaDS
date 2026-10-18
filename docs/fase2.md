@@ -92,7 +92,7 @@ Fase 3 y la FIFO no existía: `GXSTAT` leía lo que se había escrito (0x8000800
 ITCM del ARM9 (`--dump` ahora ve las TCM, como `--trace`), desensamblando con el objdump de la imagen de BlocksDS y mirando qué dirección
 leía el bucle; la bandera que lo cerraba se vigiló con `--watch9`.
 
-Lo que se hizo (sin interpretar comandos, eso es la Fase 3): GXFIFO (0x04000400) y los puertos de órdenes (0x04000440…) se tragan
+(Superado por la Fase 3.1, `docs/fase3.md`: la FIFO ya interpreta los comandos.) Lo que se hizo (sin interpretar comandos, eso es la Fase 3): GXFIFO (0x04000400) y los puertos de órdenes (0x04000440…) se tragan
 lo que reciben; `GXSTAT` dice FIFO vacía (bits 25 y 26) y motor libre; el DMA en modo 7 arranca al armarse (la FIFO siempre tiene
 sitio); y la IRQ 21 de los modos «menos de la mitad» y «vacía» se pide **por nivel**, cada 1024 ciclos del ARM9, mientras el modo
 esté activo. Al principio se pedía una sola vez tras escribir la FIFO y no bastaba: el manejador de NitroSDK confirma la IRQ al

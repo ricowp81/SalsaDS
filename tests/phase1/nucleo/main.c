@@ -832,6 +832,7 @@ static uint32_t nbuf[M_COUNT];
 static uint32_t stat_n;
 static uint64_t last_begin_us;
 static struct stats cur_stats;
+static uint64_t acc_gx_ticks, acc_gx_cycles, acc_gx_polys, acc_gx_verts, acc_gx_swaps, acc_frames;
 static uint64_t acc_slices, acc_jumps, acc_events, acc_i9, acc_i7, acc_emu_ticks, acc_a9_ticks, acc_a7_ticks, acc_prof_n;
 static uint64_t acc_i9p, acc_i7p; /* instrucciones de los cuadros con perfil (para los MIPS dentro de cada CPU) */
 
@@ -954,6 +955,17 @@ static void log_stats(void)
 		mips9_tot = (double)acc_i9 / ((double)acc_emu_ticks / (double)tb_hz) / 1e6;
 		mips7_tot = (double)acc_i7 / ((double)acc_emu_ticks / (double)tb_hz) / 1e6;
 	}
+	{
+		const uint64_t gx_us = acc_prof_n ? acc_gx_ticks * 1000000u / tb_hz / acc_prof_n : 0;
+
+		salsads_log("DATO geometria: %u cuadros, %llu SWAP_BUFFERS; por cuadro entregado %u polígonos y %u vértices; motor de geometría "
+			    "ocupado %u%% del tiempo de la DS; en el PPE, con reloj: %u.%03u ms por cuadro (%u cuadros con perfil)",
+			    (unsigned)acc_frames, (unsigned long long)acc_gx_swaps,
+			    acc_gx_swaps ? (unsigned)(acc_gx_polys / acc_gx_swaps) : 0u,
+			    acc_gx_swaps ? (unsigned)(acc_gx_verts / acc_gx_swaps) : 0u,
+			    acc_frames ? (unsigned)(100u * acc_gx_cycles / (acc_frames * NDS_FRAME_CYCLES)) : 0u,
+			    (unsigned)(gx_us / 1000u), (unsigned)(gx_us % 1000u), (unsigned)acc_prof_n);
+	}
 	salsads_log("DATO MIPS: ARM9 %.2f, ARM7 %.2f (instrucciones entre el tiempo dentro de cada CPU: %u cuadros con perfil); "
 		    "sobre el tiempo total de emulación: ARM9 %.2f, ARM7 %.2f, juntas %.2f",
 		    mips9_cpu, mips7_cpu, (unsigned)acc_prof_n, mips9_tot, mips7_tot, mips9_tot + mips7_tot);
@@ -962,6 +974,7 @@ static void log_stats(void)
 	stat_n = 0;
 	for (int m = 0; m < M_COUNT; m++)
 		nbuf[m] = 0;
+	acc_gx_ticks = acc_gx_cycles = acc_gx_polys = acc_gx_verts = acc_gx_swaps = acc_frames = 0;
 	acc_slices = acc_jumps = acc_events = acc_i9 = acc_i7 = acc_emu_ticks = acc_a9_ticks = acc_a7_ticks = acc_prof_n = 0;
 	acc_i9p = acc_i7p = 0;
 }
@@ -1005,11 +1018,22 @@ static void render_frame(void)
 		const uint64_t s0 = nds->st.slices, j0 = nds->st.jumps, e0 = nds->st.events;
 		const uint64_t pa9 = nds->st.prof_a9, pa7 = nds->st.prof_a7, pev = nds->st.prof_ev;
 
+		const uint64_t gt0 = nds->gx.st.host_ticks, gc0 = nds->gx.st.cycles, gs0 = nds->gx.st.swaps;
+		const uint64_t gp0 = nds->gx.st.frame_polys, gv0 = nds->gx.st.frame_verts;
+
 		nds->prof_clock = profiled ? tb_clock : NULL;
+		nds->gx.clock = profiled ? tb_clock : NULL; /* motor de geometría: su tiempo sale en «DATO geometria» */
 		tb2 = tb_clock();
 		nds_run_frame(nds);
 		tb3 = tb_clock();
 		nds->prof_clock = NULL;
+		nds->gx.clock = NULL;
+		acc_gx_ticks += nds->gx.st.host_ticks - gt0;
+		acc_gx_cycles += nds->gx.st.cycles - gc0;
+		acc_gx_swaps += nds->gx.st.swaps - gs0;
+		acc_gx_polys += nds->gx.st.frame_polys - gp0;
+		acc_gx_verts += nds->gx.st.frame_verts - gv0;
+		acc_frames++;
 		acc_slices += nds->st.slices - s0;
 		acc_jumps += nds->st.jumps - j0;
 		acc_events += nds->st.events - e0;
