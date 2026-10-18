@@ -71,6 +71,9 @@
 #include "jit/arec.h"
 #include "rec_cache.h"
 #define NOJIT_FLAG SALSADS_DATA_DIR "/nucleo-jit-nojit"
+/* Con este archivo la geometría se ejecuta en el sexto SPE; sin él, en el PPE (medido en la PS3: el SPE escalar
+ * tardaba 35 ms por cuadro con ~1200 polígonos contra ~7 del PPE). */
+#define GEOM_SPE_FLAG SALSADS_DATA_DIR "/geometria-spe"
 #define JIT_MARKER SALSADS_DATA_DIR "/nucleo-jit.marker"
 /* Tramo del planificador con el recompilador (ciclos del ARM9 entre los cambios de CPU; el intérprete usa 128). Cada
  * tramo es una entrada al código generado, y lo que cuesta en la PS3 es el cambio de CPU (cachés), no las instrucciones:
@@ -1796,8 +1799,12 @@ int main(void)
 			salsads_log("render 3D: los SPE no arrancaron (spukit %d): rasteriza el PPE", spukit_last_error());
 		}
 	}
-	/* Motor de geometría en el sexto SPE; si no arranca o la autoprueba falla, el PPE ejecuta las órdenes (modo directo) */
-	if (spu_on) {
+	/* Motor de geometría en el sexto SPE (solo con GEOM_SPE_FLAG); si no arranca o la autoprueba falla, el PPE ejecuta
+	 * las órdenes (modo directo) */
+	struct stat gst;
+	if (spu_on && stat(GEOM_SPE_FLAG, &gst) != 0)
+		salsads_log("geometría: en el PPE (crear %s para ejecutarla en un SPE)", GEOM_SPE_FLAG);
+	else if (spu_on) {
 		wk_geom = spukit_worker_start(spu_geom_bin, "geom", 0);
 		if (wk_geom && geom_selftest() == 0) {
 			static const gx_exec_ops gops = { NULL, geom_post, geom_wait };
