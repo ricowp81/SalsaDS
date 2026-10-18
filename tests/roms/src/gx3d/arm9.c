@@ -1218,10 +1218,107 @@ static void s_dirt2(void)
 	cmd(SWAP, 2u);
 }
 
+/* 38 (texturado) y 39 (sin textura, colores alternos): el tallo inclinado de una plataforma de hongo de New Super Mario Bros. (nivel 1-3) tal cual
+ * (pantalla y texel de cada vértice) de un cuadro del juego: la pila se inclina tanto que las aristas de arriba y de abajo quedan
+ * casi horizontales (pendiente 1/4 a 1/8). En la PS3 los segmentos de arriba, junto a la cabeza, salían con dientes y huecos. */
+static void s_stem_tilt(int tex)
+{
+	static const int a[8][2] = { { 34, 123 }, { 35, 129 }, { 36, 134 }, { 37, 140 }, { 38, 146 }, { 39, 152 }, { 39, 158 }, { 39, 165 } };
+	static const int b[8][2] = { { 65, 115 }, { 66, 122 }, { 68, 129 }, { 69, 136 }, { 70, 143 }, { 70, 150 }, { 71, 157 }, { 71, 164 } };
+
+	ident_all();
+	if (tex)
+		use_tex(texparam(T_256, 2, 2, 4, 1, 0, 0), P_256 >> 4);
+	cmd(POLY_ATTR, 0x001F0080u);
+	for (int q = 0; q < 7; q++) {
+		const uint32_t s0 = (uint32_t)(94 + 103 * q) & 0xFFFFu, s1 = (uint32_t)(94 + 103 * (q + 1)) & 0xFFFFu;
+
+		cmd(BEGIN, 1);
+		cmd(COLOR, tex ? WHITE : (q & 1 ? RED : GREEN));
+		cmd(TEXCOORD, s0 | ((uint32_t)(-8) << 16));
+		sv(b[q][0], b[q][1], 0);
+		cmd(TEXCOORD, s0 | (504u << 16));
+		sv(a[q][0], a[q][1], 0);
+		cmd(TEXCOORD, s1 | (504u << 16));
+		sv(a[q + 1][0], a[q + 1][1], 0);
+		cmd(TEXCOORD, s1 | ((uint32_t)(-8) << 16));
+		sv(b[q + 1][0], b[q + 1][1], 0);
+		cmd(END, 0);
+	}
+	cmd(SWAP, 0);
+}
+
+/* 40: el parche de tierra del mapa de New Super Mario Bros. con su suelo, de otro cuadro del mismo recorrido (la cámara se mueve hacia el nodo 1-1) con
+ * TODOS los polígonos que tocan la zona, en el orden del juego (pantalla y w de cada vértice; sin textura, un color por clase): el suelo son
+ * triángulos y cuadriláteros opacos del mismo id que el parche (alfa 30, W-buffer, orden manual). El polígono del parche recortado por el borde izquierdo
+ * se reconstruyó como cuadrilátero. En la PS3 el camino sale con rayas verdes de 10 a 30 píxeles. */
+static void s_dirt3(void)
+{
+	static const struct {
+		uint32_t attr;
+		uint16_t col;
+		int n;
+		int32_t v[5][3];
+	} poly[] = {
+	{ 0x031f0080U, WHITE, 3, { { 29, 154, 1194124 }, { 57, 134, 1258324 }, { 38, 115, 1322524 } } },
+	{ 0x031f0080U, BLUE, 4, { { 0, 143, 1250595 }, { 33, 143, 1250595 }, { 28, 100, 1185868 }, { 0, 100, 1185868 } } },
+	{ 0x031f0080U, RED, 4, { { 64, 129, 1297157 }, { 100, 129, 1297157 }, { 99, 95, 1245342 }, { 61, 95, 1245342 } } },
+	{ 0x031f0080U, GREEN, 3, { { 101, 123, 1318641 }, { 132, 93, 1437009 }, { 42, 123, 1318641 } } },
+	{ 0x031f0080U, GREEN, 3, { { 101, 123, 1318641 }, { 42, 123, 1318641 }, { 96, 136, 1275841 } } },
+	{ 0x031f0080U, GREEN, 3, { { 96, 136, 1275841 }, { 42, 123, 1318641 }, { 83, 145, 1244493 } } },
+	{ 0x031f0080U, GREEN, 3, { { 0, 116, 1343141 }, { 106, 72, 1528377 }, { 0, 62, 1580951 } } },
+	{ 0x031f0080U, GREEN, 3, { { 83, 145, 1244493 }, { 42, 123, 1318641 }, { 67, 149, 1233041 } } },
+	{ 0x031f0080U, GREEN, 3, { { 67, 149, 1233041 }, { 42, 123, 1318641 }, { 4, 149, 1233041 } } },
+	{ 0x031f0080U, GREEN, 4, { { 4, 149, 1233041 }, { 42, 123, 1318641 }, { 0, 141, 1257369 }, { 0, 148, 1236984 } } },
+	{ 0x031f0080U, GREEN, 3, { { 0, 141, 1257369 }, { 42, 123, 1318641 }, { 0, 132, 1287899 } } },
+	{ 0x031f0080U, GREEN, 3, { { 0, 132, 1287899 }, { 42, 123, 1318641 }, { 0, 123, 1318641 } } },
+	{ 0x031f0080U, GREEN, 4, { { 0, 123, 1318641 }, { 42, 123, 1318641 }, { 106, 72, 1528377 }, { 0, 116, 1343141 } } },
+	{ 0x031f0080U, GREEN, 3, { { 132, 93, 1437009 }, { 105, 89, 1451304 }, { 42, 123, 1318641 } } },
+	{ 0x031f0080U, GREEN, 3, { { 42, 123, 1318641 }, { 105, 89, 1451304 }, { 106, 72, 1528377 } } },
+	{ 0x031f0080U, RED, 3, { { 70, 54, 1586921 }, { 59, 113, 1330121 }, { 105, 81, 1458521 } } },
+	{ 0x031e0080U, YELLOW, 3, { { 69, 89, 1439286 }, { 66, 110, 1353686 }, { 89, 89, 1439286 } } },
+	{ 0x031e0080U, YELLOW, 3, { { 89, 89, 1439286 }, { 66, 110, 1353686 }, { 102, 99, 1396486 } } },
+	{ 0x031e0080U, YELLOW, 3, { { 101, 110, 1353686 }, { 102, 99, 1396486 }, { 66, 110, 1353686 } } },
+	{ 0x031e0080U, YELLOW, 5, { { 16, 71, 1528763 }, { 0, 117, 1336165 }, { 0, 135, 1271963 }, { 84, 135, 1271963 }, { 92, 71, 1528763 } } },
+	{ 0x001f0080U, BLUE, 3, { { 78, 85, 1438913 }, { 82, 83, 1447356 }, { 77, 72, 1394415 } } },
+	{ 0x001f0080U, WHITE, 3, { { 76, 83, 1447356 }, { 78, 85, 1438913 }, { 77, 72, 1394415 } } },
+	{ 0x001f0080U, WHITE, 4, { { 33, 106, 1355293 }, { 55, 106, 1355293 }, { 59, 90, 1422168 }, { 37, 90, 1422168 } } },
+	};
+	static const int32_t m[16] = { 0x1000 * 48, 0, 0, 0, 0, 0x1555 * 48, 0, 0, 0, 0, -0x1000 * 24, -0x1000 * 48, 0, 0, 0, 0 };
+
+	ident_all();
+	cmd(MTX_MODE, 0);
+	for (int i = 0; i < 16; i++)
+		GXP(MTX_LOAD_4x4) = (uint32_t)m[i];
+	cmd(MTX_MODE, 2);
+	cmd(MTX_IDENTITY, 0);
+	for (unsigned p = 0; p < sizeof poly / sizeof poly[0]; p++) {
+		cmd(POLY_ATTR, poly[p].attr);
+		if (poly[p].n == 5) { /* el polígono recortado por el borde izquierdo: abanico de tres triángulos con los mismos vértices */
+			for (int t = 0; t < 3; t++) {
+				const int idx[3] = { 0, t + 1, t + 2 };
+
+				cmd(BEGIN, 0);
+				cmd(COLOR, poly[p].col);
+				for (int k = 0; k < 3; k++)
+					wv48(poly[p].v[idx[k]][0], poly[p].v[idx[k]][1], poly[p].v[idx[k]][2]);
+				cmd(END, 0);
+			}
+			continue;
+		}
+		cmd(BEGIN, poly[p].n == 4 ? 1 : 0);
+		cmd(COLOR, poly[p].col);
+		for (int k = 0; k < poly[p].n; k++)
+			wv48(poly[p].v[k][0], poly[p].v[k][1], poly[p].v[k][2]);
+		cmd(END, 0);
+	}
+	cmd(SWAP, 2u);
+}
+
 int main(void)
 {
 	scene = *(volatile uint32_t *)0x027FFE0Cu & 0xFFFFu;
-	if (scene > 37)
+	if (scene > 40)
 		scene = 0;
 	sds_init_quiet();
 	REG16(R_POWCNT1) = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 9) | (1 << 15);
@@ -1272,6 +1369,9 @@ int main(void)
 	case 35: s_stem(0); break;
 	case 36: s_stem(1); break;
 	case 37: s_dirt2(); break;
+	case 38: s_stem_tilt(1); break;
+	case 39: s_stem_tilt(0); break;
+	case 40: s_dirt3(); break;
 	case 29: s_wdepth(1, 0); break;
 	}
 	if (scene < 26 && scene != 4 && scene != 5 && scene != 6)

@@ -16,6 +16,21 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 - **Paquete «SalsaDS núcleo» con el JIT (SLDS00009)** del commit `80f3332`: `build/salsads-nucleo-jit-fase46.pkg`, SHA-256 `1582a43f383eee6a1dded47dafe54438f0cca5beff2e5d7a75eff9aa13c06eed`. Sin probar en la PS3: medir la carga del título de NSMB.
 - No se tocó la latencia emulada del cartucho: acortarla sería adelantar la carga respecto a la DS real (opción posterior, con interruptor).
 
+## 2026-10-18 — Tallos inclinados de NSMB (3.7)
+
+- **Tallo inclinado, dientes de los segmentos de arriba: arreglado** (escenas 38 y 39 de `gx3d`, nuevas; la 38 pasa de 234 píxeles distintos
+  con melonDS a 0). La partida del autor lleva el host al 1-3 con el guion de 3.6 y, desde el cuadro 2780, la plataforma se inclina (volcado
+  con `--frame-dump`). Causa: en las líneas donde la arista derecha es x-mayor y va hacia la izquierda el denominador de la interpolación contaba solo hasta el final del tramo
+  dibujado; melonDS cuenta hasta el extremo de afuera del tramo (`r3d_row_at`, solo ortográfica). De paso: escena 1: 828 → 10, 14: 616 → 399,
+  20: 299 → 42, 21: 3629 → 2144; las demás igual (`docs/fase3.md`, 3.7).
+- **Mapa con cámara en movimiento (rayas verdes): sin arreglar.** Reproducido (guion sin entrar al nivel: izquierda desde el 1400 y derecha desde el
+  1700; rayas en el cuadro 1755) y trasladado entero (23 polígonos en orden) a la escena 40 de `gx3d`: melonDS esconde el parche donde el suelo
+  es casi coplanar y la DS real no (foto), así que melonDS no sirve de referencia ahí; no se tocó la profundidad. Siguiente: volcar profundidad por píxel en
+  la PS3 o usar otro emulador de la DS real.
+- **Paquete «SalsaDS núcleo» con el JIT (SLDS00009)** del commit `97d0337` (más este renglón): `build/salsads-nucleo-jit-fase37.pkg`, SHA-256
+  `e3c5bc7cc2a9cc0ea42e3ba847d459a9f083883b5a6c0f2f2360d9598073c250`; holgura de pila del SPE del 3D 12272 bytes. Sin probar en la PS3: mirar el tallo inclinado del 1-3.
+- Pruebas: `gx3d.golden` con 41 escenas (1, 14, 20 y 21 cambiadas; 38, 39 y 40 nuevas), ROM `gx3d.nds` reconstruida.
+
 ## 2026-10-18 — NSMB 1-3: tallos y nubes (3.6)
 
 - **La partida del autor** (`A2DE.sav`, la de las 20:13; la de las 13:42 estaba recién formateada y no servía) lleva el host al 1-3:

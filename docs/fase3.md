@@ -767,3 +767,35 @@ y SalsaDS lo dibuja entero (337 píxeles distintos); en la DS real el parche sal
 fiel (falta algún polígono del cuadro o la regla de profundidad de las aristas x-mayores con w distintas). Con las w del volcado el parche
 va **por delante** del suelo (≈ 12 000 de w de 1 440 000) en cualquier interpolación; la divergencia con melonDS está en cómo interpola el
 suelo (aristas x-mayores) a la izquierda del parche.
+
+# Fase 3.7 — Tallos inclinados de NSMB y el mapa con la cámara en movimiento
+
+**Tallo inclinado (los dientes y huecos de los segmentos de arriba, junto a la cabeza del hongo)**: la foto de la PS3 con el paquete de 3.6
+mostraba el tallo de la plataforma que se inclina con los segmentos de arriba aún dentados. Reproducido en el host (partida del autor, 1-3, cuadro
+≈ 2900) y volcado (`--frame-dump`): son siete cuadriláteros apilados cuyas aristas de arriba y de abajo quedan casi horizontales (dx 31, dy 6-8,
+pendiente 1/4 a 1/5). Se tomaron tal cual (pantalla y texel de cada vértice) como las escenas 38 (texturada) y 39 (sin textura, colores
+alternos) de `gx3d`: la 39 ya coincidía con melonDS (la cobertura estaba bien) y la 38 daba 234 píxeles distintos.
+
+Con la textura de prueba (índice = s + 4t, módulo 32 al decodificar el color) el paso de la textura por píxel en cada línea sale de la
+secuencia de índices: en melonDS es constante entre las líneas del cuadrilátero (3,8 por píxel), y en SalsaDS era un 15 % más rápido en la
+primera línea de la arista de abajo (4,4): el denominador de la interpolación a lo largo de la línea era `xr - xl` con `xr` el final del
+tramo dibujado de la arista derecha (x de la línea siguiente), y melonDS cuenta hasta el **extremo de afuera del tramo de la arista**, la x de
+esta línea redondeada (66 en vez de 62 en la línea 122). La regla: **derecha x-mayor que va hacia la izquierda (ortográfica): `den = redondeo(X(y)) - xl`** si es mayor que `xr - xl`
+(`r3d_row_at`). Solo ortográfica: en perspectiva la misma regla mejora las escenas 29 y 32 (−16 y −73) pero empeora la 28 y la 33 (+25 y +3),
+así que no se aplica.
+
+Diferencias con melonDS (píxeles de 49 152) antes → después: 38 (nueva): 234 → **0**, 1: 828 → **10**, 14: 616 → 399, 20: 299 → 42, 21:
+3629 → 2144; ninguna otra escena cambia (0, 36: 962 y 37: 337 igual). Quedan en la 21 (triángulos con tres aristas x-mayores) las líneas con la
+izquierda x-mayor que va hacia la derecha, y en la 36 la textura junto a las uniones de los tallos casi verticales.
+
+**Mapa del mundo 1 con la cámara en movimiento (rayas verdes en el parche de tierra): sin arreglar.** Reproducido de nuevo en el host con otro
+guion (la partida en el mapa, sin entrar al nivel: `--press 1400:20` (izquierda) hasta el nodo 1-1 y `--press 1700:10` de vuelta; las rayas salen
+en el cuadro 1755, no en 1752 ni 1784: dependen de la posición subpíxel de la cámara). Del cuadro 1755 (volcado con `--frame-dump 1755:fd`) se
+tomaron **todos** los polígonos que tocan la zona (23, en el orden del juego: el suelo de la zona son un abanico de triángulos opacos con id 3 y
+el parche cuatro polígonos translúcidos con alfa 30 e id 3, W-buffer) como la escena 40 de `gx3d`. En SalsaDS el parche gana casi en todos
+los píxeles (quedan unas manchas verdes pequeñas, las rayas de la PS3); melonDS, en cambio, **esconde el parche entero** donde el suelo es
+casi coplanar (3438 píxeles distintos), también sin los polígonos de objetos (3391) y con cualquier modo de orden de los translúcidos
+(SWAP_BUFFERS 2 o 3). Como en la DS real el parche sale completo (foto `ds-real-mapa-mundo1.jpg`), melonDS no es aquí la referencia fiable de la
+profundidad de los polígonos casi coplanares y no se cambió ninguna regla de profundidad: con las w interpoladas de las aristas el parche va por
+delante del suelo en ≈ 14 000 de w de 1 400 000 (≈ 55 escalones de 16 bits). Siguiente paso: medir en la PS3 con un cuadro fijo (volcado de
+profundidad por píxel del suelo y del parche) o contrastar con otro emulador de la DS real.
