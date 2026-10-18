@@ -13,6 +13,9 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
   −13 %). Armado con una división por coordenada. En el SPE: matrices, vértices y normales en vectores de cuatro, productos de 32 × 32 → 64
   con multiplicaciones de 16 bits, cocientes con coma flotante y corrección, sin `__muldi3`/`__divti3`; ventanas y trabajos más grandes;
   medición por etapa (`DATO geometria-spe`). Mismos bits (unitarias con la versión del SPE en el host, hash de cuadros igual).
+- **Paquete «SalsaDS núcleo» con el JIT (SLDS00009)** del commit `9b4f0f3`: `build/salsads-nucleo-jit-fase35b.pkg`, SHA-256
+  `0fdf76ac421e880d59ad90fd607ecbcfa35ea1af78cb523e1445869a91a28a34`. Geometría en el PPE por omisión; con el archivo
+  `/dev_hdd0/salsads/geometria-spe` va al SPE y el log trae el desglose por etapa. En RPCS3: `RESULTADO nucleo: OK`; autoprueba del SPE igual.
 - Pendiente: medir en la PS3 (con y sin `geometria-spe`); decidir el valor por omisión con ese número.
 
 ## 2026-10-18 — Eventos y geometría en un SPE (Fase 3.5)
