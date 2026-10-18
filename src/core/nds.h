@@ -237,8 +237,9 @@ struct nds_video_ops {
 	/* Antes de volver a llenar la instantánea `set`: el renderizador tiene que haber terminado con ella (opcional). */
 	void (*wait)(void *ctx, int set);
 	/* Render 3D (Fase 3.2). Línea 0: el trabajo del cuadro `set` está listo (la capa 3D sale en set->img3d); el
-	 * renderizador lo lanza en segundo plano. Línea 192 (antes del SWAP_BUFFERS y de entregar el 2D): tiene que haber
-	 * terminado. NULL = el host rasteriza en la línea 0. */
+	 * renderizador lo lanza en segundo plano. Línea 262 (antes de entregar el 2D de ese cuadro) o, si el cuadro captura
+	 * la pantalla (DISPCAPCNT), línea 192: tiene que haber terminado. Con `wait3d` el 2D se entrega (`submit`) en la
+	 * línea 262 en lugar de la 192. NULL = el host rasteriza en la línea 0. */
 	void (*submit3d)(void *ctx, int set, r3d_job *job);
 	void (*wait3d)(void *ctx);
 	void *ctx;
@@ -251,6 +252,7 @@ struct nds_video {
 	int recording;     /* 1 entre la línea 0 y la 192 */
 	int last;          /* último juego completo (línea 192 pasada), o -1 */
 	int rendered;      /* el host ya dibujó `last` en `img` */
+	int submit_pending; /* el 2D de `last` se entrega en la línea 262, tras esperar el render 3D (solo con ops.wait3d) */
 	uint32_t mpos;     /* posición (píxel del cuadro) de la FIFO de memoria principal */
 	uint32_t frames;
 	struct nds_video_ops ops;
@@ -265,6 +267,7 @@ struct nds_video {
 	int vs_ref3d;       /* comparar los dos en cada cuadro (diagnóstico; cuenta las diferencias) */
 	uint32_t r3d_band;  /* líneas por banda (16) y unidades simuladas (1) */
 	uint32_t r3d_units;
+	int r3d_alt;        /* reparto alterno de las bandas (diagnóstico) en lugar del reparto por costo */
 	uint32_t r3d_frames, r3d_diff_frames;
 	uint64_t r3d_ticks; /* tiempo del host rasterizando (con `clock`) */
 	uint64_t (*clock)(void);

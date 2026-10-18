@@ -174,12 +174,10 @@ void nds_gx_vblank(struct nds *n, uint64_t t)
 {
 	gx_t *g = &n->gx;
 
-	/* El motor avanza hasta aquí solo escribe el cuadro en construcción, no el entregado que lee el render 3D en segundo
-	 * plano (PS3): se adelanta mientras los SPE terminan. Después sí hay que esperar: el render tiene que terminar antes
-	 * de que el SWAP_BUFFERS devuelva ese cuadro al motor y de que el motor A lo componga (docs/fase3.md, 3.2). */
+	/* El motor solo escribe el cuadro en construcción, no el que lee el render 3D en segundo plano (PS3). Con tres cuadros
+	 * el SWAP_BUFFERS no devuelve al motor el que se está rasterizando, así que aquí no se espera al render: la espera pasa
+	 * a la línea 262 (`nds_video_submit_pending`), antes de entregar el 2D (docs/fase3.md, 3.2). */
 	gx_advance(g, t);
-	if (n->vid.ops.wait3d)
-		n->vid.ops.wait3d(n->vid.ops.ctx);
 	if (gx_swap_pending(g)) {
 		gx_regs regs;
 

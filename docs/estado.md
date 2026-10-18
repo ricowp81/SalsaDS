@@ -513,3 +513,9 @@ detalle y fuentes en `docs/fase0.md`, 0.2).
   SWAP_BUFFERS), esperar el render en la línea 262 y enviar el 2D (`vid_submit`) allí, con el reparto `prev/sub` del bucle
   principal desplazado un cuadro; y repartir mejor las bandas (SPE1 trabaja 25 % más que SPE0). ARM7 en el hilo 1: sin
   hacer (ARM7 4,5 ms; exige sincronía por tramos con el ARM9 y la ruta lenta del JIT compartida).
+- Rama fase47 (hecho, sin medir en la PS3): tercer `gx_frame` (`gx.c`: `bld = (bld + 1) % 3`); `nds_gx_vblank` ya no espera el 3D; la espera
+  (`wait3d`) y la entrega del 2D (`submit`) pasan a la línea 262 (`nds_video_submit_pending`); una captura DISPCAPCNT con 3D visible sigue
+  esperando en la 192. La imagen es la misma (la latencia del 3D no cambió); el bucle principal toma el 2D entregado en esta pasada
+  (`prev = sub` al principio) y dibuja el mismo cuadro de antes. Bandas del 3D repartidas por costo estimado (`r3d_balance`, `r3d_job.bandsel`);
+  archivo `reparto-alterno` para comparar con el reparto alterno. Esperado: la espera de ~9,2 ms baja a ~4–5 ms (el render pasa de 12 a 16,3 ms de
+  margen) y el SPE1 deja de ir un 25 % por encima del SPE0; medir con `DATO raster3d` / `raster3d-latencia` y con `reparto-alterno` para el A/B.

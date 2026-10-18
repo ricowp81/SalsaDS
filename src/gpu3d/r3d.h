@@ -60,8 +60,18 @@ typedef struct r3d_job {
 	uint32_t nunits, unit;
 	uint32_t band;     /* líneas por banda: 8, 16 (normal), 32 o 64; divisor de 192 */
 	uint32_t flags;    /* R3D_F_* */
-	uint32_t pad[2];
+	/* Reparto por costo (r3d_balance): si nunits == 2 y alguna máscara es distinta de cero, la unidad `u` dibuja las bandas
+	 * cuyo bit está en bandsel[u] (bit b = banda b). Todo en cero: el reparto alterno de arriba. */
+	uint32_t bandsel[2];
 } __attribute__((aligned(16))) r3d_job;
+
+/* ¿La unidad del trabajo dibuja la banda `b`? */
+static inline int r3d_job_has_band(const r3d_job *j, uint32_t b)
+{
+	if (j->nunits == 2 && (j->bandsel[0] | j->bandsel[1]))
+		return (int)((j->bandsel[j->unit] >> b) & 1u);
+	return b >= j->unit && ((b - j->unit) % j->nunits) == 0;
+}
 
 /* Contadores de un trabajo (una unidad) */
 typedef struct r3d_stats {
@@ -109,5 +119,66 @@ void r3d_slots_from_vramcnt(const uint8_t vramcnt[7], const uint32_t bank_off[7]
 
 /* FNV-1a de 64 bits sobre los valores (no los bytes) de una imagen: igual en LE y en BE */
 uint64_t r3d_hash_image(const uint32_t *img);
+
+/* ---- Reparto de bandas por costo -------------------------------------------------------------------------- */
+/* Estima el costo de cada banda con las extensiones en pantalla de los polígonos del cuadro (por banda y polígono: la
+ * preparación; por línea: las aristas; por píxel de la caja, la mitad cubierto: el color, más si lleva textura) y reparte
+ * las bandas entre dos unidades de mayor a menor costo, cada una a la unidad menos cargada (LPT). Resultado en
+ * `job->bandsel`. Los pesos son estimaciones; el resultado de la imagen no depende del reparto (cada banda es
+ * independiente), solo el tiempo. */
+static inline void r3d_balance(const gx_frame *f, uint32_t band, r3d_job *job)
+{
+	uint32_t cost[R3D_H / 8];
+	uint32_t order[R3D_H / 8];
+	uint32_t load[2] = { 0, 0 }, nb, n;
+
+	job->bandsel[0] = job->bandsel[1] = 0;
+	if (!f || band == 0 || band > 64 || (R3D_H % band) != 0)
+		return;
+	nb = R3D_H / band;
+	for (uint32_t b = 0; b < nb; b++)
+		cost[b] = 0;
+	n = f->npolys > GX_MAX_POLYS ? GX_MAX_POLYS : f->npolys;
+	for (uint32_t i = 0; i < n; i++) {
+		const gx_poly *p = &f->poly[i];
+		int32_t y0 = p->ymin, y1 = p->ymax, x0 = p->xmin, x1 = p->xmax;
+		uint32_t w, ppx;
+
+		if (y1 < 0 || y0 >= (int32_t)R3D_H || x1 < 0 || x0 >= (int32_t)R3D_W)
+			continue;
+		if (y0 < 0)
+			y0 = 0;
+		if (y1 > (int32_t)R3D_H - 1)
+			y1 = (int32_t)R3D_H - 1;
+		if (x0 < 0)
+			x0 = 0;
+		if (x1 > (int32_t)R3D_W - 1)
+			x1 = (int32_t)R3D_W - 1;
+		w = (uint32_t)(x1 - x0 + 1);
+		ppx = ((p->texparam >> 26) & 7u) ? 5u : 2u;
+		for (uint32_t b = (uint32_t)y0 / band; b <= (uint32_t)y1 / band; b++) {
+			const int32_t ra = (int32_t)(b * band) > y0 ? (int32_t)(b * band) : y0;
+			const int32_t rb = (int32_t)(b * band + band - 1) < y1 ? (int32_t)(b * band + band - 1) : y1;
+			const uint32_t rows = (uint32_t)(rb - ra + 1);
+
+			cost[b] += 120u + rows * (14u + (w * ppx) / 2u);
+		}
+	}
+	for (uint32_t b = 0; b < nb; b++) {
+		uint32_t k = b;
+
+		while (k > 0 && cost[order[k - 1]] < cost[b]) { /* inserción: de mayor a menor, estable */
+			order[k] = order[k - 1];
+			k--;
+		}
+		order[k] = b;
+	}
+	for (uint32_t k = 0; k < nb; k++) {
+		const uint32_t b = order[k], u = load[1] < load[0] ? 1u : 0u;
+
+		load[u] += cost[b] + 1u;
+		job->bandsel[u] |= 1u << b;
+	}
+}
 
 #endif

@@ -422,7 +422,7 @@ const gx_frame *gx_swap(gx_t *g, uint64_t now, const gx_regs *regs)
 	g->swaps++;
 	f->seq = g->swaps;
 	g->front = g->bld;
-	g->bld ^= 1;
+	g->bld = (g->bld + 1) % 3; /* ni el entregado ni el anterior (que el render 3D todavía lee) */
 	g->swap_pending = 0;
 	g->st.swaps++;
 	g->nxt = gx_next_start(g);

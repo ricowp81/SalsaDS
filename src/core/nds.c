@@ -43,6 +43,7 @@ void nds_init(struct nds *n)
 	const struct nds_video_ops vops = n->vid.ops;
 	const int use_ref = n->vid.use_ref, use_ref3d = n->vid.use_ref3d, vs_ref3d = n->vid.vs_ref3d;
 	const uint32_t r3d_band = n->vid.r3d_band, r3d_units = n->vid.r3d_units;
+	const int r3d_alt = n->vid.r3d_alt;
 	uint64_t (*vclock)(void) = n->vid.clock;
 	const uint32_t quantum = n->quantum;
 	const uint32_t dbg = n->dbg;
@@ -63,6 +64,7 @@ void nds_init(struct nds *n)
 	n->vid.vs_ref3d = vs_ref3d;
 	n->vid.r3d_band = r3d_band;
 	n->vid.r3d_units = r3d_units;
+	n->vid.r3d_alt = r3d_alt;
 	n->vid.clock = vclock;
 	n->snd.ops = sops;
 	acore_init(&n->a9, ACORE_ARM9, &nds_bus9, n);

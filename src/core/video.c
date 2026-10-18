@@ -207,6 +207,8 @@ static void frame_begin_3d(struct nds *n, struct nds_vset *s)
 	j->out_ea = (uint64_t)(uintptr_t)s->img3d;
 	j->nunits = v->r3d_units;
 	j->band = v->r3d_band;
+	if (f && !v->r3d_alt)
+		r3d_balance(f, j->band, j); /* reparto por costo para dos unidades (si hay más o menos, el alterno) */
 	/* sin cuadro entregado o con el motor de render apagado (POWCNT1 bit 2): transparente */
 	if (!f || !(n->powcnt1 & 4u))
 		j->flags |= R3D_F_BLANK;
@@ -415,14 +417,34 @@ void nds_video_frame_end(struct nds *n)
 	if (!v->recording)
 		return;
 	v->recording = 0;
-	if (s->frame.eng[0].regs[G2D_R_DISPCAP + 1] & 0x8000u)
+	if (s->frame.eng[0].regs[G2D_R_DISPCAP + 1] & 0x8000u) {
+		if (s->has3d && v->ops.wait3d)
+			v->ops.wait3d(v->ops.ctx); /* la captura lee la capa 3D: aquí sí hay que esperarla */
 		capture_frame(n, s);
+	}
 	s->powcnt1 = n->powcnt1;
 	v->last = v->cur;
 	v->rendered = 0;
 	v->frames++;
-	if (v->ops.submit)
+	if (v->ops.submit && v->ops.wait3d)
+		v->submit_pending = 1; /* se entrega en la línea 262, cuando el render 3D de este cuadro ya terminó */
+	else if (v->ops.submit)
 		v->ops.submit(v->ops.ctx, v->cur, &s->frame);
+}
+
+/* Línea 262: se espera el render 3D del cuadro que cerró la línea 192 y se entrega su 2D. El render tuvo el cuadro entero
+ * en lugar de 192 líneas; la imagen es la misma (el 3D sigue siendo el del SWAP_BUFFERS anterior, como en la DS). */
+void nds_video_submit_pending(struct nds *n)
+{
+	struct nds_video *v = &n->vid;
+
+	if (!v->submit_pending)
+		return;
+	v->submit_pending = 0;
+	if (v->ops.wait3d)
+		v->ops.wait3d(v->ops.ctx);
+	if (v->ops.submit)
+		v->ops.submit(v->ops.ctx, v->last, &v->set[v->last].frame);
 }
 
 const gpu2d_frame *nds_video_last_frame(const struct nds *n, int *set)
