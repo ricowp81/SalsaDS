@@ -4,6 +4,38 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-18 — Rendimiento del 3D y juntas entre triángulos (Fase 3.4)
+
+- **Medido en la PS3 antes** (`DATO raster3d`, 178 muestras): New Super Mario Bros. (nivel) 26,7 ms por SPE, Super Mario 64 DS
+  36–37 ms (el PPE esperaba 29–32 ms al 3D), Mario Kart DS 6,6–15 ms. Un ajuste de las columnas da **210 ns por píxel** (≈ 670
+  ciclos, el bucle de la línea escalar con ~10 saltos sin predicción por píxel), **73 µs por bloque de texturas decodificado** y 3,7 µs
+  por polígono·banda; los fijos eran ≈ 1 ms. No era un costo por banda: esas escenas dibujan 130–180 mil píxeles por cuadro.
+- **Hecho**: línea del 3D en vectores de 4 píxeles (`src/gpu3d/r3d_vrow.h`, mismos bits que `r3d_draw_row`, que sigue de referencia),
+  decodificación de bloques de texturas por tramos con la paleta convertida en el local store (el formato 4x4 por tile), z de las
+  aristas sin aritmética de 64 bits y cadena de aristas sin módulo, borrado con vectores, y el `DATO raster3d` con líneas de polígono
+  y el reparto `polígonos / aristas / píxeles`. Local store: texto 56 032 B, pila con 18 768 B libres (holgura 12 048 B). **Esperado en la
+  PS3: 3,5–6 ms por SPE en SM64DS y NSMB (meta ≤ 8); sin medir.** En el host SM64DS 1,63 → 0,83 ms, MKDS 2,44 → 1,94 ms.
+- **Juntas entre triángulos**: la causa era el **recorte** (`gx.c`), no las reglas de relleno: el vértice nuevo se interpolaba en el
+  sentido en que cada polígono recorría la arista (dos polígonos que comparten una arista recortada sacaban vértices a un píxel de
+  distancia) y no quedaba exactamente sobre el plano. Ahora se interpola de adentro a afuera y queda en ±w. Mario Kart DS: de 34 908
+  píxeles con agujeros en 1 283 cuadros a 19 en 3; escena nueva 25 de `gx3d` (malla en perspectiva recortada) contra melonDS de 458
+  píxeles distintos (358 sin dibujar) a 27 (ninguno sin dibujar). Las reglas de relleno no dan juntas: 17 millones de píxeles de
+  1 200 mallas al azar, 0 sin cubrir. De paso: las aristas de 45° hacia la izquierda son x-mayores (escena 14 de 930 a 647 píxeles
+  distintos con melonDS). Detalle en `docs/fase3.md`, 3.4. **Falta confirmar en la PS3 que SM64DS ya no muestra juntas** (en el host
+  no se llega a una zona de juego sin entrada).
+- **Pruebas**: `test-host` (LE con sanitizadores y BE; la línea vectorial contra la escalar en 392 000 líneas, mallas sin juntas, recorte
+  con aristas compartidas, bloques de texturas contra `r3d_decode` texel a texel, ROM `gx3d` con 26 semillas); juegos con `--vs-ref3d`
+  iguales (SM64DS, MKDS, NSMB) y 0 diferencias de bloques; RPCS3: autoprueba 3D igual y `RESULTADO nucleo: OK`. Cambió el hash de la
+  semilla 7 de `test_render3d.c`, `gx3d.golden` (escenas 0, 5, 6, 13, 14, 20 y las nuevas 23 a 25) y la ROM `gx3d`.
+- Herramientas: `gfx-compare.py --mel-cache`, `CPURUN_OUT`/`CPURUN_CFLAGS` en `cpurun.sh`, `salsads-cpurun --holes/--frame-dump`,
+  `tools/ppm-png.py`.
+- **Paquete** «SalsaDS núcleo» (SLDS00008) `build/salsads-nucleo-fase34.pkg` del commit `2945dba`, SHA-256
+  `73e6e3783dd1816c85645aa0bb70b518e23d2af98c73fdae50aaa58d09b566fe`. En RPCS3: autoprueba 3D igual (sondas y 4 escenas) y
+  `RESULTADO nucleo: OK` con SM64DS, MKDS y NSMB.
+- **Queda**: medir en la PS3; si el número de `píxeles` o `aristas` sigue alto, desplegar dos grupos de píxeles por vuelta (la cadena
+  de factor → textura → color es larga) o calcular las aristas una vez por polígono·banda; el borde y la niebla (`posproceso`) siguen
+  escalares (≈ 0,4 ms por SPE con edge marking).
+
 ## 2026-10-18 — Fidelidad del 3D (Fase 3.3)
 
 - **La estrella de «Touch to start» de Super Mario 64 DS**: dos errores del motor de geometría (`gx.c`). VTX_DIFF sumaba la
