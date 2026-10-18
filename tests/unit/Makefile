@@ -20,7 +20,7 @@ LDLIBS  := -lm
 R3D       := $(ROOT)/tests/phase0/spe-raster3d
 TEST_SRCS := $(wildcard $(CURDIR)/*.c) $(ROOT)/tests/phase0/ppe-bench/kernels.c \
              $(ROOT)/tests/phase0/ppe-bench/interp.c \
-             $(wildcard $(ROOT)/src/gpu2d/*.c) $(wildcard $(ROOT)/src/audio/*.c) $(wildcard $(ROOT)/src/frontend/*.c) $(wildcard $(ROOT)/src/jit/*.c) \
+             $(wildcard $(ROOT)/src/gpu2d/*.c) $(wildcard $(ROOT)/src/gpu3d/*.c) $(wildcard $(ROOT)/src/audio/*.c) $(wildcard $(ROOT)/src/frontend/*.c) $(wildcard $(ROOT)/src/jit/*.c) \
              $(wildcard $(ROOT)/src/cpu/*.c) \
              $(R3D)/r3d_core.c $(R3D)/r3d_ref.c $(R3D)/r3d_scene.c $(R3D)/r3d_io_mem.c \
              $(R3D)/r3d_selftest.c

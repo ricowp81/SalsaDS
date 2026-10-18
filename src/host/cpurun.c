@@ -52,6 +52,70 @@ static double now(void)
 	return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
 }
 
+static uint64_t clock_ns(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+/* Motor de geometría (Fase 3.1): resumen por cuadro y, con --gx-dump, el último cuadro entregado en texto. */
+static void print_gx_stats(uint64_t frames)
+{
+	const gx_stats *s = &M.gx.st;
+	const double nf = frames ? (double)frames : 1.0;
+
+	printf("geometría: %llu SWAP_BUFFERS en %llu cuadros; por cuadro entregado %.1f polígonos y %.1f vértices (máximos %u y %u); "
+	       "%llu órdenes, %llu polígonos, %llu cara, %llu recortados, %llu fuera, %llu sin sitio (polígonos), %llu sin sitio (vértices), "
+	       "%llu escrituras perdidas\n",
+	       (unsigned long long)s->swaps, (unsigned long long)frames,
+	       s->swaps ? (double)s->frame_polys / (double)s->swaps : 0.0, s->swaps ? (double)s->frame_verts / (double)s->swaps : 0.0,
+	       s->max_polys, s->max_verts, (unsigned long long)s->cmds, (unsigned long long)s->polys, (unsigned long long)s->culled,
+	       (unsigned long long)s->clipped, (unsigned long long)s->rejected, (unsigned long long)s->dropped_poly,
+	       (unsigned long long)s->dropped_vert, (unsigned long long)s->fifo_overflow);
+	printf("geometría: rechazados: %llu fuera de un plano, %llu cruzan el plano lejano, %llu vacíos tras recortar\n",
+	       (unsigned long long)s->rej_outside, (unsigned long long)s->rej_far, (unsigned long long)s->rej_empty);
+	printf("geometría: motor ocupado %.1f%% del tiempo (%.0f ciclos del motor por cuadro); en el host %.1f us por cuadro (%.1f us por cuadro entregado)\n",
+	       100.0 * (double)s->cycles / ((double)NDS_FRAME_CYCLES * nf), (double)s->cycles / 2.0 / nf,
+	       (double)s->host_ticks / 1000.0 / nf, s->swaps ? (double)s->host_ticks / 1000.0 / (double)s->swaps : 0.0);
+}
+
+static void gx_cmds(void)
+{
+	printf("geometría, órdenes:");
+	for (unsigned c = 0; c < 0x80; c++)
+		if (M.gx.st.by_cmd[c])
+			printf(" %02x=%llu", c, (unsigned long long)M.gx.st.by_cmd[c]);
+	printf("\n");
+}
+
+static void gx_dump(const char *path)
+{
+	const gx_frame *f = nds_gx_front(&M);
+	FILE *o = fopen(path, "w");
+
+	if (!o || !f) {
+		fprintf(stderr, "--gx-dump: no hay cuadro de geometría entregado\n");
+		if (o)
+			fclose(o);
+		return;
+	}
+	fprintf(o, "cuadro %u: %u polígonos, %u vértices, swap %u\n", f->seq, f->npolys, f->nverts, f->swap_params);
+	for (uint32_t i = 0; i < f->npolys; i++) {
+		const gx_poly *p = &f->poly[i];
+
+		fprintf(o, "poly %u attr=%08x tex=%08x pltt=%04x n=%u flags=%02x wshift=%u y=%d..%d\n", i, p->attr, p->texparam, p->pltt,
+			p->nverts, p->flags, p->wshift, p->ymin, p->ymax);
+		for (unsigned k = 0; k < p->nverts; k++) {
+			const gx_vertex *v = &f->vtx[p->vidx[k]];
+
+			fprintf(o, "  v %5d %5d z=%06x w=%d st=%d,%d rgb=%u,%u,%u\n", v->sx, v->sy, v->z, v->w, v->s, v->t, v->r, v->g, v->b);
+		}
+	}
+	fclose(o);
+}
+
 /* Salida de audio a 48 kHz (estéreo): se junta en memoria y se escribe como WAV de 16 bits al terminar. */
 static float *wav_buf;
 static size_t wav_n, wav_cap;
@@ -281,6 +345,7 @@ int main(int argc, char **argv)
 	uint32_t trace_from = 0;
 	const char *wav_path = NULL;
 	int snd_original = 0, g2d_stats = 0;
+	const char *gxdump_path = NULL;
 	struct { uint64_t frame; uint32_t keys, x, y; } press[64];
 	struct { uint64_t frame; const char *file; } shot[32];
 	uint32_t npress = 0, nshot = 0;
@@ -299,6 +364,8 @@ int main(int argc, char **argv)
 			wav_path = argv[++i];
 		else if (!strcmp(argv[i], "--g2d-stats"))
 			g2d_stats = 1;
+		else if (!strcmp(argv[i], "--gx-dump") && i + 1 < argc)
+			gxdump_path = argv[++i];
 		else if (!strcmp(argv[i], "--snd-original"))
 			snd_original = 1;
 		else if (!strcmp(argv[i], "--cycles") && i + 1 < argc)
@@ -409,6 +476,7 @@ int main(int argc, char **argv)
 	M.dbg = dbg;
 	M.vid.use_ref = use_ref;
 	nds_init(&M);
+	M.gx.clock = clock_ns;
 	if (wav_path)
 		M.snd.ops.sink = wav_sink;
 	if (snd_original)
@@ -605,6 +673,10 @@ int main(int argc, char **argv)
 			printf("planificador: %.1f tramos, %.1f saltos ociosos y %.1f eventos por cuadro; %.1f us por cuadro\n",
 			       (double)M.st.slices / (double)frames, (double)M.st.jumps / (double)frames,
 			       (double)M.st.events / (double)frames, (t1 - t0) * 1e6 / (double)frames);
+		if (stats)
+			print_gx_stats(M.frames), gx_cmds();
+		if (gxdump_path)
+			gx_dump(gxdump_path);
 		if (screens_path)
 			save_ppm(screens_path);
 		if (unmapped) {
@@ -714,6 +786,10 @@ int main(int argc, char **argv)
 			       (unsigned long long)M.a7.icount, (unsigned long long)M.a7.cycles, secs, mips,
 			       (unsigned long long)M.frames);
 		}
+		if (stats)
+			print_gx_stats(M.frames), gx_cmds();
+		if (gxdump_path)
+			gx_dump(gxdump_path);
 		if (screens_path)
 			save_ppm(screens_path);
 		if (unmapped) {

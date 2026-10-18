@@ -71,6 +71,7 @@ void nds_init(struct nds *n)
 	nds_sched_init(n);
 	nds_video_init(n);
 	nds_snd_init(n);
+	nds_gx_init(n);
 	n->snd.mode = smode;
 }
 

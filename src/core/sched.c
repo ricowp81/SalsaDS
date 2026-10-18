@@ -263,8 +263,17 @@ static void dma_run(struct nds *n, int cpu, int ch, int one_unit)
 
 	if (one_unit && count > 1)
 		count = 1;
+	const int gxmode = cpu == NDS_CPU9 && dma_mode(cpu, ctl) == NDS_DMA_GXFIFO;
+	uint32_t done = 0;
+
 	for (uint32_t i = 0; i < count; i++) {
-		const uint32_t v = nds_bus_read(n, cpu, d->src & ~(uint32_t)(unit - 1), unit);
+		uint32_t v;
+
+		/* FIFO de geometría: la DMA sólo avanza mientras tenga menos de la mitad; cada palabra cuesta 4 ciclos del
+		 * ARM9 y el motor sigue ejecutando mientras tanto */
+		if (gxmode && !nds_gx_dma_ok(n, c->cycles))
+			break;
+		v = nds_bus_read(n, cpu, d->src & ~(uint32_t)(unit - 1), unit);
 
 		nds_bus_write(n, cpu, d->dst & ~(uint32_t)(unit - 1), unit, v);
 		if (sctl == 0 || sctl == 3)
@@ -275,9 +284,13 @@ static void dma_run(struct nds *n, int cpu, int ch, int one_unit)
 			d->dst += (uint32_t)unit;
 		else if (dctl == 1)
 			d->dst -= (uint32_t)unit;
+		done++;
+		if (gxmode)
+			c->cycles += 4u;
 	}
-	c->cycles += (uint64_t)count * (cpu == NDS_CPU9 ? 4u : 2u);
-	d->left -= count;
+	if (!gxmode)
+		c->cycles += (uint64_t)count * (cpu == NDS_CPU9 ? 4u : 2u);
+	d->left -= done;
 	if (d->left)
 		return;
 	if ((ctl & 0x200u) && dma_mode(cpu, ctl) != 0) { /* repetir: recarga la cuenta (y el destino con 3) */
@@ -367,6 +380,7 @@ static void ev_line(struct nds *n, uint64_t t)
 	if (line == 0)
 		nds_video_frame_begin(n);
 	if (line == 192) {
+		nds_gx_vblank(n, t);
 		nds_video_frame_end(n);
 		nds_snd_frame(n);
 		n->frames++;
@@ -452,13 +466,9 @@ static void run_events(struct nds *n)
 			nds_spi_event(n);
 			break;
 		case EV_GX:
-			/* la IRQ 21 se pide por nivel: mientras GXSTAT diga «menos de la mitad» o «vacía» (la FIFO sin motor
-			 * siempre cumple las dos) se vuelve a pedir, como en melonDS, aunque el programa la confirme */
-			n->ev[EV_GX] = NDS_NEVER;
-			if (n->gx_irqmode) {
-				nds_irq_raise(n, NDS_CPU9, NDS_IRQ_GXFIFO);
-				nds_event_set(n, EV_GX, bt + NDS_GX_PERIOD);
-			}
+			/* el motor de geometría: IRQ 21 por nivel (mientras GXSTAT diga «menos de la mitad» o «vacía» se
+			 * vuelve a pedir aunque el programa la confirme) y avisos a la DMA de modo 7 */
+			nds_gx_event(n, bt);
 			break;
 		default: {
 			const int cpu = best >= EV_TM7;

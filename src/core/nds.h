@@ -27,6 +27,7 @@
 #include "gpu2d/gpu2d.h"
 #include "gpu2d/gpu2d_compose.h"
 #include "audio/snd.h"
+#include "gpu3d/gx.h"
 
 #define NDS_CPU9 0
 #define NDS_CPU7 1
@@ -92,7 +93,7 @@ enum nds_ev {
 	EV_TM7 = EV_TM9 + 4,
 	EV_CART = EV_TM7 + 4,
 	EV_SPI,
-	EV_GX, /* la FIFO de geometría (vacía de mentira) avisa que bajó de la mitad */
+	EV_GX, /* el motor de geometría: empieza una orden (baja el nivel de la FIFO) o toca repetir la IRQ 21 por nivel */
 	EV_COUNT
 };
 #define NDS_NEVER UINT64_MAX
@@ -315,9 +316,9 @@ struct nds {
 	uint16_t touch_x, touch_y; /* en píxeles de la pantalla de abajo */
 	uint16_t powcnt1, powcnt2;
 	struct nds_math math;
-	/* Motor de geometría (Fase 3 todavía no): la FIFO se traga las órdenes y siempre está vacía. */
-	uint8_t gx_irqmode, gx_err, gx_logged;
-	uint32_t gx_words;
+	/* Motor de geometría (Fase 3.1): src/gpu3d/gx.c; el pegamento con la máquina, en src/core/geom.c. */
+	gx_t gx;
+	uint64_t gx_frames; /* cuadros entregados por SWAP_BUFFERS */
 	uint32_t ipcsync_out[2]; /* bits 8-11 de cada CPU */
 	uint8_t ipcsync_irqen[2];
 	struct nds_fifo fifo[2]; /* cola que envía cada CPU */
@@ -408,6 +409,9 @@ void nds_video_frame_end(struct nds *n);
 const gpu2d_frame *nds_video_last_frame(const struct nds *n, int *set);
 /* Dibuja en el host el último cuadro cerrado (a las imágenes `vid.img`); no hace nada si ya está dibujado. */
 void nds_video_render_host(struct nds *n);
+
+/* Último cuadro de geometría entregado por SWAP_BUFFERS (lista de polígonos en pantalla para la rasterización 3D), o NULL. */
+const gx_frame *nds_gx_front(const struct nds *n);
 
 /* Acceso de depuración a la memoria vista por una CPU (sin efectos; 0 si no hay nada). */
 uint32_t nds_peek32(struct nds *n, int cpu, uint32_t addr);

@@ -48,7 +48,7 @@ fi
 # (qemu-ppc64), y deben dar OK como con melonDS (tools/melonds-run.py). Además se repiten con otros tamaños de tramo
 # del planificador (la frontera para el ARM7 en otro hilo: docs/fase1.md) y se corre la demostración, que no termina:
 # se comprueba que sus dos CPUs viven.
-ROMS="hola cpu9 cpuarm mem irq dma ipc bios periph tablas gx"
+ROMS="hola cpu9 cpuarm mem irq dma ipc bios periph tablas gx geom"
 check_rom() { # orden rom log
 	if grep -q "^OK " "$3"; then
 		printf '%-4s OK     %s\n' "$1" "$(grep '^OK ' "$3")"
@@ -204,7 +204,7 @@ if tools/build.sh -C src/host >build/logs/build-host-run.log 2>&1; then
 	check_snd LE build/logs/snd-le.bin
 	gfx_group LE le tools/build.sh --sh build/host-run/salsads-cpurun
 	# las ROMs otra vez con ASan y UBSan (errores de memoria en el mapa, la VRAM por bancos o la E/S)
-	if tools/build.sh --sh "gcc -std=gnu11 -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -Wall -Wextra -Isrc src/host/cpurun.c src/core/*.c src/bios/*.c src/cpu/*.c src/gpu2d/*.c src/audio/*.c -o build/host-run/cpurun-san -lm" >build/logs/build-cpurun-san.log 2>&1; then
+	if tools/build.sh --sh "gcc -std=gnu11 -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -Wall -Wextra -Isrc src/host/cpurun.c src/core/*.c src/bios/*.c src/cpu/*.c src/gpu2d/*.c src/gpu3d/*.c src/audio/*.c -o build/host-run/cpurun-san -lm" >build/logs/build-cpurun-san.log 2>&1; then
 		for rom in $ROMS; do
 			tools/build.sh --sh "build/host-run/cpurun-san tests/roms/homebrew/$rom.nds" >"build/logs/rom-$rom-san.log" 2>&1
 			check_rom "SAN" "$rom" "build/logs/rom-$rom-san.log"

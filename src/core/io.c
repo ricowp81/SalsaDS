@@ -125,10 +125,8 @@ static uint16_t rd16(struct nds *n, int cpu, uint32_t o)
 		break;
 	}
 	if (cpu == NDS_CPU9) {
-		if (o == 0x600) /* GXSTAT: FIFO vacía (bits 25 y 26), motor libre */
-			return (uint16_t)(n->gx_err ? 0x8000u : 0);
-		if (o == 0x602)
-			return (uint16_t)(0x0600u | ((unsigned)n->gx_irqmode << 14));
+		if (o >= 0x600u && o < 0x6A8u && o != 0x610u) /* motor de geometría: GXSTAT, RAM_COUNT, resultados y matrices */
+			return (uint16_t)(nds_gx_read32(n, o & ~3u) >> ((o & 2u) * 8u));
 		if (o == 0x304)
 			return n->powcnt1;
 	} else {
@@ -263,25 +261,14 @@ static void wr16(struct nds *n, int cpu, uint32_t o, uint16_t v, uint16_t mask)
 		break;
 	}
 	if (cpu == NDS_CPU9) {
-		if (o >= 0x400u && o < 0x600u) { /* GXFIFO y puertos de órdenes: se descartan (la geometría es de la Fase 3) */
-			n->gx_words += (o & 2u) ? 0u : 1u;
-			if (!n->gx_logged) {
-				n->gx_logged = 1;
-				nds_logf(n, "ARM9: primera orden a la FIFO de geometría (se descarta hasta la Fase 3)");
-			}
+		if (o >= 0x400u && o < 0x600u) /* GXFIFO y puertos de órdenes: se atienden completos en nds_io_write */
+			return;
+		if (o == 0x600u) {
+			nds_gx_gxstat_write(n, v & mask, mask);
 			return;
 		}
-		if (o == 0x600) {
-			if ((mask & 0xFF00u) && (v & 0x8000u))
-				n->gx_err = 0;
-			return;
-		}
-		if (o == 0x602) {
-			if (mask & 0xC000u) {
-				n->gx_irqmode = (uint8_t)((v >> 14) & 3u);
-				if (n->gx_irqmode && n->ev[EV_GX] == NDS_NEVER)
-					nds_event_set(n, EV_GX, nds_cpu_now(n, NDS_CPU9) + 64u);
-			}
+		if (o == 0x602u) {
+			nds_gx_gxstat_write(n, (uint32_t)(v & mask) << 16, (uint32_t)mask << 16);
 			return;
 		}
 		if (o == 0x304) {
@@ -316,6 +303,15 @@ void nds_io_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v)
 	NDS_TRACE(n, NDS_DBG_IO, "ARM%d escribe E/S 0x%08x (%d) = 0x%08x", cpu ? 7 : 9, a, sz, v);
 	if (o >= 0x100000u)
 		return;
+	if (cpu == NDS_CPU9 && o >= 0x400u && o < 0x600u) { /* GXFIFO (0x400-0x43F) y puertos de órdenes (0x440-0x5CC) */
+		if (sz == 4 && !(o & 3u)) {
+			if (o < 0x440u)
+				nds_gx_fifo_write(n, v);
+			else
+				nds_gx_port_write(n, o, v);
+		}
+		return;
+	}
 	if (o == 0x188u && sz == 4) {
 		nds_ipcfifo_send(n, cpu, v);
 		return;
