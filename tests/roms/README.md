@@ -105,10 +105,15 @@ Las ROMs de pruebas (`hola`, `cpu9`, `cpuarm`, `mem`, `irq`, `dma`, `ipc`, `bios
    `hw=` (este hardware), `doc=` (GBATEK o manual de ARM) y `melon=` (melonDS 1.1, `?` si no está medido), más a qué
    coincide el hardware. Esto incluye los casos en que el hardware coincide con la documentación (melonDS equivocado), que
    son los que más interesa saber.
-6. **Si la ROM se cuelga**: cada grupo y cada paso delicado (`sds_progress`, por ejemplo cada SWI de descompresión en `bios`)
-   se anota en el log (`[progreso] ...`, con `fflush` + `fsync`) y se muestra en la fila 14 de la pantalla (`> GRUPO X`
-   o `> SWI 0x13`; la franja final la sustituye). Tras un cuelgue el último `[progreso]` del log, o esa fila en una
-   foto, dicen dónde se quedó. Si hay más de 10 grupos, la lista sube una fila y se ven los últimos.
+6. **Durante las pruebas no se toca la SD.** El log y el progreso se acumulan en un búfer de RAM (32 KB) y solo al final,
+   tras restaurar el estado de libnds (`restore_libnds`: DMA y temporizadores parados, IRQ enmascaradas, EXMEMCNT, WRAMCNT,
+   TCM, PU y cachés como al arrancar la ROM), se monta la SD y se escribe. Motivo: escribir a la SD con el PU y las cachés
+   apagados hizo caer `bios` en la pantalla de excepción de libnds. **Si la ROM se cuelga, el búfer se pierde**: lo que
+   queda es la fila 14 de la pantalla (`> GRUPO X` o `> SWI 0x13`, cada paso delicado usa `sds_progress`); no hay perro
+   guardián (los temporizadores y las IRQ los usan las propias pruebas, y un cuelgue dentro de la BIOS no se puede
+   interrumpir). Si hay más de 10 grupos, la lista sube una fila y se ven los últimos.
+   La SWI 0x17 (Diff8bitUnFilterVram) es de la GBA y no está en la BIOS de la DS: `bios` no la llama (solo con
+   `-DBIOS_SWI17`, para comparar emuladores).
 7. En un flashcart los grupos `CARTUCHO` y `CART ARM7` de `periph` miden el R4, no el cartucho de la ROM: si el chip ID
    (B8) es 0/FFFFFFFF o B7 no devuelve los bytes conocidos, sus comprobaciones pasan a informativas y el log lo anota
    (`NOTA: ... no aplican en flashcart`). La lectura de SQRTCNT justo tras escribir también es informativa: en hardware el

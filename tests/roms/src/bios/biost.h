@@ -319,9 +319,14 @@ static void group_decomp(void)
 	SDS_CHECK(same(OUT, v_plain, 316), 1);
 	SDS_CHECK(guard_ok(OUT, 316), 1);
 	guard_clear(OUT, 316);
+#ifdef BIOS_SWI17
+	/* La SWI 0x17 (Diff8bitUnFilterVram) es de la GBA y no figura en la BIOS de la DS: en una DS real una SWI sin
+	 * implementar salta fuera de la BIOS y la ROM cae en la excepción de libnds. Solo se llama si se construye con
+	 * -DBIOS_SWI17 (para comparar emuladores entre sí); las ROMs que van a la DS no la llaman. */
 	sds_progress("SWI 0x17");
-	swi4((uint32_t)(uintptr_t)v_diff8, (uint32_t)(uintptr_t)OUT, 0, 0, NULL, 0x17); /* no figura en la lista de la DS */
+	swi4((uint32_t)(uintptr_t)v_diff8, (uint32_t)(uintptr_t)OUT, 0, 0, NULL, 0x17);
 	SDS_DIVERGE(same(OUT, v_plain, 316), 1);
+#endif
 	guard_clear(OUT, 316);
 	sds_progress("SWI 0x18");
 	swi4((uint32_t)(uintptr_t)v_diff16, (uint32_t)(uintptr_t)OUT, 0, 0, NULL, 0x18);

@@ -10,7 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <fat.h>
-#include <unistd.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 
@@ -173,7 +173,6 @@ static struct {
 static uint32_t nslog, nslog_total;
 static int sd_state; /* 0 = no se intentó, 1 = montada, -1 = sin SD / falló */
 static char sd_path[64];
-static FILE *logf; /* abierto desde el montaje: el progreso se anota y sincroniza en cada paso */
 static uint32_t sd_run;
 
 static struct sds_fail *const FAILLOG = (struct sds_fail *)(SDS_RESULTS_ADDR + SDS_FAILLOG_OFFSET);
@@ -183,39 +182,99 @@ static void publish(void)
 	flush_range(R, SDS_DIVERGE_OFFSET + SDS_DIVERGE_MAX * sizeof(struct sds_fail));
 }
 
-static void sd_sync(void)
+/* Durante las pruebas NO se toca la SD: el log y el progreso se acumulan en este búfer de RAM y se escriben al final,
+ * con el estado de libnds restaurado (restore_libnds). En hardware, escribir a la SD con el PU, las cachés y los
+ * registros movidos por las pruebas hizo caer la ROM `bios` en la pantalla de excepción de libnds. */
+#define LOGBUF_SIZE 32768
+static char logbuf[LOGBUF_SIZE];
+static uint32_t loglen;
+
+static void lprintf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void lprintf(const char *fmt, ...)
 {
-	if (!logf)
+	va_list ap;
+	int n;
+
+	if (loglen >= LOGBUF_SIZE - 1)
 		return;
-	if (fflush(logf) != 0) {
-		sd_state = -1;
-		return;
-	}
-	fsync(fileno(logf));
+	va_start(ap, fmt);
+	n = vsnprintf(logbuf + loglen, LOGBUF_SIZE - loglen, fmt, ap);
+	va_end(ap);
+	if (n > 0)
+		loglen += (uint32_t)n < LOGBUF_SIZE - loglen ? (uint32_t)n : LOGBUF_SIZE - loglen - 1;
 }
 
-/* Progreso: una línea en el log (sincronizada) y en la fila 14 de la pantalla; si la ROM se cuelga, ahí queda el último paso. */
+/* Progreso: una línea en el búfer del log y en la fila 14 de la pantalla (lo único que queda si la ROM se cuelga). */
 void sds_progress(const char *text)
 {
 	char line[40] = "> ";
 
-	if (logf && sd_state == 1) {
-		fprintf(logf, "[progreso] %s\n", text);
-		sd_sync();
-	}
+	lprintf("[progreso] %s\n", text);
 	append(line, text);
 	clear_row(14, C_BG);
 	draw_text(14, 0, line, C_WARN, C_BG);
 }
 
-/* Monta la SD (DLDI del flashcart) al principio, antes de que las pruebas muevan registros. Sin SD o si falla,
- * sd_state = -1 y la ROM sigue igual. */
-static void sd_mount(void)
+/* Estado de libnds al arrancar la ROM (antes de que las pruebas apaguen el PU o muevan registros), para restaurarlo al
+ * final y poder usar la SD (DLDI) como libnds espera. */
+#define MRC(crn, crm, op2) ({ uint32_t v_; __asm__ volatile("mrc p15, 0, %0, " #crn ", " #crm ", " #op2 : "=r"(v_)); v_; })
+#define MCRW(crn, crm, op2, val) __asm__ volatile("mcr p15, 0, %0, " #crn ", " #crm ", " #op2 : : "r"(val) : "memory")
+static struct {
+	uint32_t ctrl, dtcm, itcm, exmem, auxspi;
+	uint8_t wramcnt;
+} snap;
+
+static void __attribute__((constructor, used)) snapshot_libnds(void)
+{
+	snap.ctrl = MRC(c1, c0, 0);
+	snap.dtcm = MRC(c9, c1, 0);
+	snap.itcm = MRC(c9, c1, 1);
+	snap.exmem = *(volatile uint16_t *)0x04000204;
+	snap.auxspi = *(volatile uint16_t *)0x040001A0;
+	snap.wramcnt = *(volatile uint8_t *)0x04000247;
+}
+
+/* Devuelve la ARM9 al estado de libnds: DMA y temporizadores parados, IRQ enmascaradas (el DLDI sondea; así ninguna IRQ
+ * cae en un manejador que las pruebas dejaron), ranura de cartucho y WRAM como estaban, TCM, PU y cachés como estaban. */
+static void restore_libnds(void)
+{
+	uint32_t now;
+
+	__asm__ volatile("msr cpsr_c, #0xDF" : : : "cc");
+	*(volatile uint32_t *)0x04000208 = 0;          /* IME */
+	*(volatile uint32_t *)0x04000210 = 0;          /* IE */
+	*(volatile uint32_t *)0x04000214 = 0xFFFFFFFFu; /* IF */
+	for (int i = 0; i < 4; i++) {
+		*(volatile uint16_t *)(0x040000BA + 12 * i) = 0; /* DMAxCNT_H */
+		*(volatile uint16_t *)(0x04000102 + 4 * i) = 0;  /* TMxCNT_H */
+	}
+	*(volatile uint16_t *)0x04000204 = (uint16_t)snap.exmem;
+	*(volatile uint8_t *)0x04000247 = snap.wramcnt;
+	*(volatile uint16_t *)0x040001A0 = (uint16_t)(snap.auxspi & 0xFF);
+	now = MRC(c1, c0, 0);
+	if (MRC(c9, c1, 0) != snap.dtcm)
+		MCRW(c9, c1, 0, snap.dtcm);
+	if (MRC(c9, c1, 1) != snap.itcm)
+		MCRW(c9, c1, 1, snap.itcm);
+	if (now != snap.ctrl) {
+		/* con la caché apagada no hay datos sucios: se invalida la de datos y la de instrucciones antes de reactivarlas */
+		if (!(now & 4u)) {
+			MCRW(c7, c6, 0, 0);
+		}
+		if (!(now & 0x1000u))
+			MCRW(c7, c5, 0, 0);
+		MCRW(c1, c0, 0, snap.ctrl);
+	}
+}
+
+/* Monta la SD (DLDI del flashcart) y escribe el búfer. Sin SD o si falla, sd_state = -1 y la ROM sigue igual. */
+static void sd_flush(void)
 {
 	char line[96];
 	FILE *f;
 
 	sd_state = -1;
+	restore_libnds();
 	if (!fatInitDefault())
 		return;
 	mkdir("/SalsaDS-pruebas", 0777);
@@ -229,12 +288,17 @@ static void sd_mount(void)
 		fclose(f);
 	}
 	sd_run++;
-	logf = fopen(sd_path, "a");
-	if (!logf)
+	f = fopen(sd_path, "a");
+	if (!f)
 		return;
-	fprintf(logf, "=== corrida %lu ===\nROM: %s  version (commit): %s\n", (unsigned long)sd_run, SDS_ROM_NAME, SDS_GITREV);
-	sd_state = 1;
-	sd_sync();
+	fprintf(f, "=== corrida %lu ===\nROM: %s  version (commit): %s\n", (unsigned long)sd_run, SDS_ROM_NAME, SDS_GITREV);
+	if (fwrite(logbuf, 1, loglen, f) != loglen) {
+		fclose(f);
+		return;
+	}
+	fprintf(f, "\n");
+	if (fclose(f) == 0)
+		sd_state = 1;
 }
 
 void sds_init(const char *title)
@@ -247,7 +311,6 @@ void sds_init(const char *title)
 	R->version = 1;
 	publish();
 
-	sd_mount();
 	REG_POWCNT1 = (1 << 0) | (1 << 1) | (1 << 9) | (1 << 15); /* LCD, motor A, motor B, A arriba */
 	REG_VRAMCNT_A = 0x80;                                     /* banco A: LCDC */
 	REG_DISPCNT_B = 0;                                        /* la de abajo, apagada */
@@ -459,39 +522,35 @@ static void fmt_val(char *out, uint32_t v)
 
 static void write_log(void)
 {
-	FILE *f;
 	const struct sds_x7 *x = (const struct sds_x7 *)SDS_X7_ADDR;
 	int have7;
 	char a[12], b[12], c[12];
 
-	if (sd_state != 1 || !logf)
-		return;
-	f = logf;
 	/* el ARM7 escribió aparte: invalidar la caché de datos de esas líneas antes de leer */
 	for (uint32_t a2 = SDS_X7_ADDR; a2 < SDS_X7_ADDR + sizeof(struct sds_x7); a2 += 32)
 		__asm__ volatile("mcr p15, 0, %0, c7, c6, 1" : : "r"(a2) : "memory");
 	have7 = x->magic == SDS_X7_MAGIC;
 
-	fprintf(f, "--- fin de la ROM ---\n");
-	fprintf(f, "Veredicto: %s  comprobaciones: %lu  fallos: %lu  divergencias respecto de la doc: %lu\n",
+	lprintf("--- fin de la ROM ---\n");
+	lprintf("Veredicto: %s  comprobaciones: %lu  fallos: %lu  divergencias respecto de la doc: %lu\n",
 		R->failed ? "FALLO" : "OK", (unsigned long)R->total, (unsigned long)R->failed, (unsigned long)R->diverge);
 	for (uint32_t i = 0; i < nnotes; i++)
-		fprintf(f, "NOTA: %s\n", notes[i]);
-	fprintf(f, "Grupos (ARM9):\n");
+		lprintf("NOTA: %s\n", notes[i]);
+	lprintf("Grupos (ARM9):\n");
 	for (uint32_t i = 0; i < nglog && i < MAXG; i++)
-		fprintf(f, "  ARM9 %-12s total %lu fallos %lu\n", glog[i].name, (unsigned long)glog[i].checks,
+		lprintf("  ARM9 %-12s total %lu fallos %lu\n", glog[i].name, (unsigned long)glog[i].checks,
 			(unsigned long)glog[i].failed);
 	if (have7) {
-		fprintf(f, "Grupos (ARM7):\n");
+		lprintf("Grupos (ARM7):\n");
 		for (uint32_t i = 0; i < x->ngroups && i < SDS_X7_GROUPS; i++)
-			fprintf(f, "  ARM7 %-12s total %lu fallos %lu\n", x->g[i].name, (unsigned long)x->g[i].checks,
+			lprintf("  ARM7 %-12s total %lu fallos %lu\n", x->g[i].name, (unsigned long)x->g[i].checks,
 				(unsigned long)x->g[i].failed);
 	}
 	if (R->failed) {
-		fprintf(f, "Primer fallo (ARM9): grupo %s id L%lu obtenido %08lX esperado %08lX\n", grp_name(R->first_fail_group),
+		lprintf("Primer fallo (ARM9): grupo %s id L%lu obtenido %08lX esperado %08lX\n", grp_name(R->first_fail_group),
 			(unsigned long)R->first_fail_id, (unsigned long)R->first_fail_got, (unsigned long)R->first_fail_want);
 		for (uint32_t i = 0; i < R->failed && i < SDS_FAILLOG_MAX; i++)
-			fprintf(f, "  FALLO ARM9 grupo %s id L%lu obtenido %08lX esperado %08lX\n", grp_name(FAILLOG[i].group),
+			lprintf("  FALLO ARM9 grupo %s id L%lu obtenido %08lX esperado %08lX\n", grp_name(FAILLOG[i].group),
 				(unsigned long)FAILLOG[i].id, (unsigned long)FAILLOG[i].got, (unsigned long)FAILLOG[i].want);
 	}
 	{
@@ -501,29 +560,29 @@ static void write_log(void)
 		for (uint32_t a2 = SDS_ARM7_RESULTS_ADDR; a2 < SDS_ARM7_RESULTS_ADDR + 0x340; a2 += 32)
 			__asm__ volatile("mcr p15, 0, %0, c7, c6, 1" : : "r"(a2) : "memory");
 		if (have7 && R7->magic == SDS_MAGIC) {
-			fprintf(f, "ARM7: total %lu fallos %lu\n", (unsigned long)R7->total, (unsigned long)R7->failed);
+			lprintf("ARM7: total %lu fallos %lu\n", (unsigned long)R7->total, (unsigned long)R7->failed);
 			for (uint32_t i = 0; i < R7->failed && i < SDS_FAILLOG_MAX; i++)
-				fprintf(f, "  FALLO ARM7 grupo %lu id L%lu obtenido %08lX esperado %08lX\n", (unsigned long)F7[i].group,
+				lprintf("  FALLO ARM7 grupo %lu id L%lu obtenido %08lX esperado %08lX\n", (unsigned long)F7[i].group,
 					(unsigned long)F7[i].id, (unsigned long)F7[i].got, (unsigned long)F7[i].want);
 		}
 	}
-	fprintf(f, "Divergencias (hw = este hardware, doc = GBATEK/manual, melon = melonDS 1.1; ? = sin dato):\n");
+	lprintf("Divergencias (hw = este hardware, doc = GBATEK/manual, melon = melonDS 1.1; ? = sin dato):\n");
 	for (uint32_t i = 0; i < nslog && i < MAXS; i++) {
 		fmt_val(a, slog[i].got);
 		fmt_val(b, slog[i].doc);
 		fmt_val(c, slog[i].melon);
-		fprintf(f, "  DIV ARM9 %s:%lu grupo %s hw=%s doc=%s melon=%s -> %s\n", slog[i].file, (unsigned long)slog[i].id,
+		lprintf("  DIV ARM9 %s:%lu grupo %s hw=%s doc=%s melon=%s -> %s\n", slog[i].file, (unsigned long)slog[i].id,
 			grp_name(slog[i].group), a, b, c,
 			slog[i].got == slog[i].doc ? "coincide con la doc" : slog[i].got == slog[i].melon ? "coincide con melonDS" : "ninguno");
 	}
 	if (nslog_total > MAXS)
-		fprintf(f, "  (ARM9: %lu llamadas, solo las primeras %d)\n", (unsigned long)nslog_total, MAXS);
+		lprintf("  (ARM9: %lu llamadas, solo las primeras %d)\n", (unsigned long)nslog_total, MAXS);
 	if (have7) {
 		for (uint32_t i = 0; i < x->nsites && i < SDS_X7_SITES; i++) {
 			fmt_val(a, x->s[i].got);
 			fmt_val(b, x->s[i].doc);
 			fmt_val(c, x->s[i].melon);
-			fprintf(f, "  DIV ARM7 %.20s:%lu grupo %.12s hw=%s doc=%s melon=%s -> %s\n", x->s[i].file,
+			lprintf("  DIV ARM7 %.20s:%lu grupo %.12s hw=%s doc=%s melon=%s -> %s\n", x->s[i].file,
 				(unsigned long)x->s[i].id,
 				x->s[i].group >= 1 && x->s[i].group <= x->ngroups && x->s[i].group <= SDS_X7_GROUPS ? x->g[x->s[i].group - 1].name : "?",
 				a, b, c,
@@ -531,14 +590,10 @@ static void write_log(void)
 				: x->s[i].got == x->s[i].melon ? "coincide con melonDS" : "ninguno");
 		}
 		if (x->nsites_total > SDS_X7_SITES)
-			fprintf(f, "  (ARM7: %lu llamadas, solo las primeras %lu)\n", (unsigned long)x->nsites_total,
+			lprintf("  (ARM7: %lu llamadas, solo las primeras %lu)\n", (unsigned long)x->nsites_total,
 				(unsigned long)SDS_X7_SITES);
 	}
-	fprintf(f, "\n");
-	sd_sync();
-	if (fclose(f) != 0)
-		sd_state = -1;
-	logf = 0;
+
 }
 
 /* Pantalla de divergencias (solo las que difieren de la doc en ESTE hardware): A/derecha siguiente, B/izquierda anterior. */
@@ -647,8 +702,11 @@ void sds_finish(void)
 	draw_text(ROW_BANNER, 1, line, C_FG, R->failed ? C_BAD : C_OK);
 
 	write_log();
+	draw_text(1, 13, "SD:...", C_DIM, C_BG);
+	sd_flush();
+	fill_rect(13 * 8, 12, 9 * 8, 12, C_BG);
 	draw_text(1, 13, sd_state == 1 ? "SD:LOG OK" : "SD:NO", sd_state == 1 ? C_OK : C_WARN, C_BG);
-	draw_text(1, 23, "START=MENU", C_DIM, C_BG);
+	draw_text(1, 22, "START=MENU", C_DIM, C_BG);
 
 	for (uint32_t a2 = SDS_X7_ADDR; a2 < SDS_X7_ADDR + sizeof(struct sds_x7); a2 += 32)
 		__asm__ volatile("mcr p15, 0, %0, c7, c6, 1" : : "r"(a2) : "memory");
