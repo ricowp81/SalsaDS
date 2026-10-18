@@ -20,7 +20,12 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
   espalda) podría arreglarlo; **sin confirmar**. Si no, las pistas del autor (nube solo arriba y el resto cielo) apuntan a una
   capa que se repite en vertical o a una ventana: revisar con `tools/gfx-bisect.py` sobre el cuadro de esa escena.
 - Herramientas: `--press` admite 512 entradas (antes 64). Escenas 26 a 34 de la ROM `gx3d`.
-- Pruebas: `tools/build.sh test-host` verde; `gx3d.golden` con 35 escenas.
+- Pruebas: `tools/build.sh test-host` verde (LE, BE y sanitizadores); `gx3d.golden` con 35 escenas; MKDS, SM64DS y NSMB con `--vs-ref3d`
+  y `--vs-ref` iguales. SPE del 3D: texto 58 296 B, pila con 16 464 B libres (holgura 9 696 B; `r3d_end_wz` va fuera de línea: en
+  línea la holgura bajaba a 7 392 y el enlace lo rechazaba).
+- **Paquete «SalsaDS JIT núcleo» (SLDS00009)** con el recompilador, del commit e13daba: `build/salsads-nucleo-jit-fase24.pkg`
+  (copia de `build/salsads-nucleo-jit/salsads-nucleo-jit.pkg`), SHA-256 `cbf36d479d932a3afb647bd4e859a7f856ee107248536016c747178a6a0b8ae1`.
+  **Sin probar en la PS3** (ni en RPCS3): falta confirmar que el mapa del mundo 1 ya no tiene líneas y mirar el nivel 1-3.
 
 ## 2026-10-18 — Recompilador del ARM9 (Fase 4)
 
