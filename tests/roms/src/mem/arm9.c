@@ -9,6 +9,7 @@
  * El banco A es el framebuffer de sds.c: sus pruebas solo tocan la cola (desplazamientos 0x1F000-0x1FFFF) y
  * lo restauran como LCDC antes de volver a escribir en la pantalla.
  */
+#include <stdio.h>
 #include "../common/hw.h"
 
 #define LCDC 0x06800000u
@@ -319,6 +320,18 @@ static void group_misc(void)
 		sds_notef("ranura de GBA: %s (0x080000B2 = %02lX, 0x08000000 = %04lX)", fixed == 0x96 ? "hay un cartucho/flashcard" : "sin cabecera GBA (vacia?)",
 			  (unsigned long)fixed, (unsigned long)MEM16(0x08000000));
 		sds_print_row(0, msg);
+	}
+	/* los primeros 16 bytes de la ROM (0x08000000) y de la SRAM (0x0A000000) de la ranura, para comparar corridas con y sin
+	 * cartucho o flashcard (la cabecera 0x96 no los distingue) */
+	{
+		char rom[40], ram[40];
+
+		for (int i = 0; i < 16; i++) {
+			snprintf(rom + 2 * i, 3, "%02X", (unsigned)MEM8(0x08000000 + i));
+			snprintf(ram + 2 * i, 3, "%02X", (unsigned)MEM8(0x0A000000 + i));
+		}
+		sds_notef("ranura de GBA, 16 bytes de 0x08000000: %s", rom);
+		sds_notef("ranura de GBA, 16 bytes de 0x0A000000: %s", ram);
 	}
 	/* la ranura de GBA: lo que lee el ARM9 (informativo; GBATEK no lo dice). Con una flashcard de GBA insertada leyó 0 en
 	 * 0x08000000 (16 bits) y 0x0A000000 (8 bits); falta medir con la ranura vacía. SalsaDS lee unos y melonDS 0xFE08 */

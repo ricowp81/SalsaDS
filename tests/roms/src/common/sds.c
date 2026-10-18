@@ -12,6 +12,7 @@
 #include <fat.h>
 #include <nds/exceptions.h>
 #include <stdarg.h>
+#include <unistd.h>
 #include <sys/stat.h>
 
 #ifndef SDS_ROM_NAME
@@ -308,6 +309,13 @@ static void sd_flush(void)
 		return;
 	}
 	fprintf(f, "\n");
+	/* volcar todo antes de dar la SD por escrita: fflush y fsync (libnds mantiene una caché de páginas del FAT y las versiones
+	 * que dependían de exit(0) para vaciarla dejaban el archivo sin cambios en la SD), luego fclose, y otra vez fsync por
+	 * si la caché sigue sucia */
+	if (fflush(f) != 0 || fsync(fileno(f)) != 0) {
+		fclose(f);
+		return;
+	}
 	if (fclose(f) == 0)
 		sd_state = 1;
 }
