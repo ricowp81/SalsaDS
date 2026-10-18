@@ -3,9 +3,11 @@
  * Lo que sale del mezclador se compara muestra a muestra con melonDS con la ROM `snd` (tools/snd-compare.py); aquí
  * se prueba lo que se puede decir sin él y que da igual en little y big endian. */
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "audio/snd.h"
+#include "audio/snd_rate.h"
 #include "check.h"
 #include "util/endian.h"
 
@@ -312,10 +314,128 @@ static void test_resample(void)
 	}
 }
 
+/* Emulación lenta: un anillo simulado (consumo continuo a 48 kHz, un cuadro de 547 ticks cada `frame_ms`) con el control de
+ * razón real. Cuenta las muestras de silencio (faltas) pasados los primeros 3 s. */
+static uint32_t sim_slow(double frame_ms, float *peak_out, float *adj_end)
+{
+	static snd_state st;
+	static int16_t nat[2 * SND_TICKS_MAX];
+	static float out[2 * SND_OUT_MAX], ring[16384];
+	enum { TARGET = 3072 };
+	snd_rate rate = { 0.0f, 0.0f };
+	double t = 0.0, tn = 0.0, consumed = 0.0;
+	uint32_t level = 0, miss = 0, nring = 0, started = 0;
+	float peak = 0.0f;
+
+	reset();
+	for (uint32_t i = 0; i < 128; i++)
+		wr16le(mem + 0x100 + 2 * i, (uint16_t)(int16_t)(30000.0 * sin(2.0 * M_PI * 16.0 * i / 128.0)));
+	snd_reset(&st);
+	w16(0x100, 0x807F);
+	chan(0, CNT(127, 0, 0, 1, 1), 0x02000100u, P512, 0, 64);
+	(void)ring;
+	for (int frame = 0; frame < 900; frame++) {
+		uint32_t n = 0;
+		const double t1 = t + frame_ms;
+
+		st.ratio_adj = snd_rate_update(&rate, level, TARGET);
+		snd_run(&st, log_buf, nlog, 547, &bus, nat, out, SND_OUT_MAX, &n);
+		nlog = 0;
+		for (uint32_t i = 0; i < 2 * n; i++) {
+			const float a = fabsf(out[i]);
+			peak = a > peak ? a : peak;
+		}
+		level += n;
+		nring += n;
+		/* el consumidor avanza hasta el siguiente cuadro (empieza a sonar con 2048 acumuladas) */
+		if (!started && level >= 2048)
+			started = 1, tn = t;
+		if (started) {
+			const double want = (t1 - tn) * 48.0 - consumed;
+			const uint32_t take = want > 0.0 ? (uint32_t)want : 0;
+
+			if (take > level) {
+				if (t > 3000.0)
+					miss += take - level;
+				consumed += take;
+				level = 0;
+			} else {
+				consumed += take;
+				level -= take;
+			}
+		}
+		t = t1;
+	}
+	*peak_out = peak;
+	*adj_end = rate.out;
+	return miss;
+}
+
+static void test_slow(void)
+{
+	float peak, adj;
+	uint32_t miss_fast = sim_slow(16.667, &peak, &adj), miss_slow;
+
+	CHECK_EQ(miss_fast, 0);
+	CHECK(peak < 1.0f);
+	miss_slow = sim_slow(23.0, &peak, &adj);
+	printf("  emulacion a 23 ms/cuadro: faltas %u, ajuste final %.3f, pico %.4f\n", miss_slow, adj, peak);
+	CHECK_EQ(miss_slow, 0);
+	CHECK(adj < -0.2f && adj > -0.35f);
+	CHECK(peak < 1.0f);
+	miss_slow = sim_slow(40.0, &peak, &adj); /* demasiado lenta (25 cuadros/s): el estiramiento no alcanza */
+	printf("  emulacion a 40 ms/cuadro: faltas %u, ajuste final %.3f\n", miss_slow, adj);
+	CHECK(adj <= SND_ADJ_MIN + 0.001f);
+}
+
+/* El limitador no recorta: una senoide casi a fondo de escala sale por debajo de 1.0 y el tono estirado conserva su
+ * pureza (relación señal/residuo alta con un ajuste fijo de -27 %). */
+static void test_stretch_spectrum(void)
+{
+	static snd_state st;
+	static int16_t nat[2 * SND_TICKS_MAX];
+	static float out[2 * SND_OUT_MAX];
+	const double fout = (16.0 / 128.0) * (SND_RATE_NATIVE / SND_RATE_OUT) * (1.0 - 0.27) * SND_RATE_OUT;
+	double re = 0, im = 0, tot = 0;
+	uint32_t n = 0, cnt = 0, peak_hit = 0;
+
+	reset();
+	for (uint32_t i = 0; i < 128; i++)
+		wr16le(mem + 0x100 + 2 * i, (uint16_t)(int16_t)(24000.0 * sin(2.0 * M_PI * 16.0 * i / 128.0)));
+	snd_reset(&st);
+	w16(0x100, 0x807F);
+	chan(0, CNT(127, 0, 0, 1, 1), 0x02000100u, P512, 0, 64);
+	st.ratio_adj = -0.27f;
+	for (int k = 0; k < 8; k++) {
+		snd_run(&st, log_buf, nlog, 547, &bus, nat, out, SND_OUT_MAX, &n);
+		nlog = 0;
+		if (k < 2)
+			continue;
+		for (uint32_t i = 0; i < n; i++, cnt++) {
+			const double x = out[2 * i], ph = 2.0 * M_PI * fout * cnt / SND_RATE_OUT;
+
+			re += x * cos(ph);
+			im += x * sin(ph);
+			tot += x * x;
+			peak_hit |= fabsf(out[2 * i]) >= 1.0f;
+		}
+	}
+	{
+		const double sig = 2.0 * (re * re + im * im) / (double)cnt;
+		const double snr = 10.0 * log10((sig > 0 ? sig : 1e-30) / (tot - sig + 1e-30));
+
+		printf("  tono estirado -27 %%: relacion senal/residuo %.1f dB, muestras %u\n", snr, cnt);
+		CHECK(snr > 30.0);
+	}
+	CHECK_EQ(peak_hit, 0);
+}
+
 void test_snd(void)
 {
 	test_model();
 	test_capture();
 	test_split();
 	test_resample();
+	test_slow();
+	test_stretch_spectrum();
 }

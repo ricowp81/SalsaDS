@@ -142,8 +142,10 @@ de la PS3 dan lo mismo (la ROM da igual en little-endian, big-endian, y con sani
   escriben leyendo y devolviendo el tramo de 16 bytes que los contiene. Local store: texto 14,4 KB, bss 49,4 KB, pila 190 KB libres.
 - `src/platform/ps3/audio_out.c`: el puerto de audio de la PS3 (2 canales, 48 kHz, bloques de 256 muestras, hilo de prioridad 100),
   un anillo de 16 384 muestras (340 ms), antes de empezar a sonar se juntan 2048 (43 ms); si faltan datos se completa con silencio y
-  se cuenta; el hilo de la emulación consulta `audio_out_ratio_adj()` antes de cada cuadro (control proporcional de la razón de
-  remuestreo, ±2 %, para mantener ≈ 64 ms en el anillo). Si el puerto no se abre, el núcleo sigue sin sonido.
+  se cuenta; el hilo de la emulación consulta `audio_out_ratio_adj()` antes de cada cuadro (`audio/snd_rate.h`: control proporcional-integral de
+  la razón de remuestreo, de -40 % a +3 %, con pendiente máxima de 1 % por cuadro, para mantener ≈ 64 ms en el anillo; con la
+  emulación lenta el audio se estira en vez de rellenar con silencio, hasta ≈ 1,67x, es decir emulación hasta ≈ 36 cuadros/s;
+  tras el FIR, un limitador suave (rodilla en 0,92) evita el recorte). Si el puerto no se abre, el núcleo sigue sin sonido.
 - Autoprueba al arrancar (en RPCS3 y en la PS3): el mismo trabajo en el SPE y en el PPE sobre una memoria de prueba propia, dos
   trabajos seguidos, con las muestras de 16 bits, el estado y lo capturado idénticos y la salida flotante con tolerancia (el
   SPU redondea distinto): RPCS3 da 0 diferencias. Si falla, mezcla el PPE.
@@ -275,7 +277,7 @@ SHA-256 `cce7721a908a362ee3aed51d673348361a34bb10a5fd9a33b20f67de0e37a601`. En R
 Paquete «SalsaDS núcleo» (SLDS00008), con NSMB como `/dev_hdd0/salsads/rom.nds` (respaldo propio ya desencriptado): en el log
 (`nucleo.log`) cada 120 cuadros, `DATO spe` (tiempo de cada pantalla), `DATO spe-etapas` (ms por pantalla y cuadro en cada etapa;
 `plan (espera)` y `compone (espera)` son los bloqueos de DMA) y `DATO audio` (tiempo del SPE de audio, anillo, faltas, pico). Con
-audio real: si hay faltas con la emulación más lenta que 60 cuadros por segundo es lo esperado (no se estira); `audio.cfg` con
+audio real: con la emulación más lenta que 60 cuadros por segundo el audio se estira (hasta ≈ 36 cuadros/s); faltas solo por debajo de eso o durante el arranque del control; `audio.cfg` con
 `original = si` activa el modo de 10 bits.
 
 ## Qué falta
