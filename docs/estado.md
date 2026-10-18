@@ -19,6 +19,8 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 - **Precisión del tramo de 1024**: las CPUs se ven hasta ~1000 ciclos tarde; los bucles de sondeo dan más vueltas (lecturas
   lentas ×1,5–3, ARM9 +2–10 % de instrucciones). En NSMB y SM64DS los tramos los cortan los eventos (~5100 por cuadro, del motor
   de geometría): solo bajan a la mitad. El siguiente paso para eso es del planificador (no se tocó `src/core/sched.c`).
+- **Paquete «SalsaDS JIT núcleo» (SLDS00009)**: `build/salsads-nucleo-jit/salsads-nucleo-jit.pkg` del commit 5f2f3ce, SHA-256
+  `a5788b65e1b2e252c7face21f40180e25b420448da24196139064b88970b85ae`.
 - Pendiente: medir en la consola (mismas escenas, y `nucleo-jit-tramo` con 128 para comparar); LDM/STM a la E/S, CMP
   condicionales, entrada y salida más baratas.
 
