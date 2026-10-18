@@ -18,6 +18,7 @@ extern uint32_t probe_div(void), probe_sqrt(void), probe_waitloop(void), probe_i
 extern uint32_t probe_cpuset(uint32_t src, uint32_t dst, uint32_t cnt);
 
 static uint8_t *const OUT = (uint8_t *)BUF;
+static uint8_t *const HUFF_TMP = (uint8_t *)(BUF + 0x6000); /* 0x200 bytes alineados para la SWI 0x13 */
 static uint8_t *const TMP = (uint8_t *)(BUF + 0x2000);
 
 static inline uint32_t rd16le_(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8); }
@@ -106,10 +107,11 @@ static uint32_t cb_open(const uint8_t *src, uint8_t *dst, uint32_t param)
 	(void)param;
 	return *(const uint32_t *)(const void *)src;
 }
+static uint32_t cb_close(void) { return 0; } /* GBATEK: la BIOS puede llamar a Close al terminar; con 0 saltaría a la dirección 0 */
 static uint32_t cb_get8(const uint8_t *src) { return *src; }
 static uint32_t cb_get16(const uint8_t *src) { return *(const uint16_t *)(const void *)src; }
 static uint32_t cb_get32(const uint8_t *src) { return *(const uint32_t *)(const void *)src; }
-static const uint32_t cb_table[5] = { (uint32_t)(uintptr_t)cb_open, 0, (uint32_t)(uintptr_t)cb_get8,
+static const uint32_t cb_table[5] = { (uint32_t)(uintptr_t)cb_open, (uint32_t)(uintptr_t)cb_close, (uint32_t)(uintptr_t)cb_get8,
 				      (uint32_t)(uintptr_t)cb_get16, (uint32_t)(uintptr_t)cb_get32 };
 
 static volatile uint32_t n_tm;
@@ -289,16 +291,21 @@ static void group_decomp(void)
 	swi4((uint32_t)(uintptr_t)v_rle, (uint32_t)(uintptr_t)OUT, 0, (uint32_t)(uintptr_t)cb_table, NULL, 0x15);
 	SDS_CHECK(same(OUT, v_plain, 316), 1);
 	SDS_CHECK(guard_ok(OUT, 316), 1);
+#ifdef BIOS_SWI13
+	/* PENDIENTE (la ROM bios no la llama; se prueba aparte en bios13): en una DS real la SWI 0x13 por callbacks no volvía.
+	 * Hipótesis: la BIOS usa r2 como búfer temporal de 0x200 bytes para el árbol (con r2 = 0 escribía en la
+	 * dirección 0) y llama a Close (antes 0). Aquí r2 apunta a un búfer y Close es una función vacía. */
 	/* Huffman de 8 y de 4 bits (por callbacks; r2 llega al callback de apertura: libnds pasa 0. GBATEK habla de un
 	 * búfer temporal en r2, pero la BIOS libre de melonDS no escribe con él y libnds no lo usa) */
 	guard_clear(OUT, 316);
 	sds_progress("SWI 0x13");
-	swi4((uint32_t)(uintptr_t)v_huff8, (uint32_t)(uintptr_t)OUT, 0, (uint32_t)(uintptr_t)cb_table, NULL, 0x13);
+	swi4((uint32_t)(uintptr_t)v_huff8, (uint32_t)(uintptr_t)OUT, (uint32_t)(uintptr_t)HUFF_TMP, (uint32_t)(uintptr_t)cb_table, NULL, 0x13);
 	huff_check(OUT, 316);
 	guard_clear(OUT, 316);
 	sds_progress("SWI 0x13");
-	swi4((uint32_t)(uintptr_t)v_huff4, (uint32_t)(uintptr_t)OUT, 0, (uint32_t)(uintptr_t)cb_table, NULL, 0x13);
+	swi4((uint32_t)(uintptr_t)v_huff4, (uint32_t)(uintptr_t)OUT, (uint32_t)(uintptr_t)HUFF_TMP, (uint32_t)(uintptr_t)cb_table, NULL, 0x13);
 	huff_check(OUT, 316);
+#endif
 	/* BitUnPack */
 	for (unsigned k = 0; k < sizeof bu / sizeof bu[0]; k++) {
 		wr16le_(info, 8);
