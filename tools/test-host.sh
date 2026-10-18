@@ -174,9 +174,29 @@ gfx_group() { # orden etiqueta runner...
 		"$@" --frames 14 $GFX_OPT_R "build/logs/gfxrand-$sd.nds" >"build/logs/gfx-rand$sd-$lab.log" 2>&1
 		check_gfx "$o" "rand$sd" "build/logs/gfx-rand$sd-$lab.log" '^REF: IGUAL$'
 	done
+	# render 3D (Fase 3.2): la ROM gx3d, una escena por semilla. El código del SPE (r3d_core.c) igual a la referencia en
+	# cada cuadro (REF3D), los píxeles de prueba (EXPECT), el compositor 2D igual a su referencia (REF) y la imagen igual a la
+	# de referencia guardada en gx3d.golden (la misma en LE, BE y con sanitizadores; contra melonDS: tools/gfx-compare.py)
+	for sd in $GX3D_SEEDS; do
+		rm -f "build/logs/gx3d-$sd-$lab.ppm"
+		"$@" --frames 12 --expect --vs-ref --vs-ref3d --screens "build/logs/gx3d-$sd-$lab.ppm" "build/logs/gx3d-$sd.nds" >"build/logs/gfx-gx3d$sd-$lab.log" 2>&1
+		check_gfx "$o" "gx3d$sd" "build/logs/gfx-gx3d$sd-$lab.log" '^EXPECT: .* 0 fallos$' '^REF: IGUAL$' '^REF3D: IGUAL'
+		got=$(shasum -a 256 "build/logs/gx3d-$sd-$lab.ppm" 2>/dev/null | cut -d' ' -f1)
+		want=$(sed -n "s/^$sd //p" tests/roms/homebrew/gx3d.golden 2>/dev/null)
+		if [ -n "$got" ] && [ "$got" = "$want" ]; then
+			printf '%-4s OK     gx3d %s: imagen igual a gx3d.golden\n' "$o" "$sd"
+		else
+			printf '%-4s FALLO  gx3d %s: imagen %s, esperada %s\n' "$o" "$sd" "$got" "$want"
+			fail=1
+		fi
+	done
 }
 for sd in $GFX_SEEDS; do
 	python3 tools/rom-seed.py tests/roms/homebrew/gfxrand.nds "build/logs/gfxrand-$sd.nds" "$sd" >/dev/null
+done
+GX3D_SEEDS="0 1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+for sd in $GX3D_SEEDS; do
+	python3 tools/rom-seed.py tests/roms/homebrew/gx3d.nds "build/logs/gx3d-$sd.nds" "$sd" >/dev/null
 done
 if tools/build.sh -C src/host >build/logs/build-host-run.log 2>&1; then
 	for rom in $ROMS; do
