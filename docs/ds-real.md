@@ -54,3 +54,15 @@ tanda: 2026-10-17 (ROMs del commit `728113c`). Lo que sigue marcado «pendiente�
 7. **Intérprete, MSR con T**: impredecible en el manual; si se quiere fidelidad, un `msr cpsr_c` que ponga T cambia a Thumb.
 8. Seguir con la documentación donde melonDS se equivoca y el hardware coincide con ella: FIFO de IPC vacía, TMxCNT_H/SQRTCNT con
    bits sin uso, el DMA de 14 bits del ARM7 y el Halt del ARM7 que conserva los registros.
+
+## Escritura del log en el R4 (historial)
+
+- Hasta `ccd1a17` el log solo llegaba a la SD tras pulsar START (`exit(0)`); al quitar `exit` el archivo no cambiaba aunque `fclose`
+  y `fsync` devolvían 0. Hipótesis (sin confirmar): el DLDI del R4 solo confirma las escrituras al cerrarse el dispositivo o con
+  las IRQ habilitadas, que es lo que hacía `exit`.
+- Cambios para probarlo: `fatInit(1)` (caché de páginas mínima), IME/IE como los dejó libnds y bit I del CPSR limpio al escribir,
+  `shutdown()` del DLDI al terminar, archivo testigo `resultados/_arranque-<rom>-NNN.txt` escrito al arrancar y verificación tras cerrar
+  (reabrir, tamaño y marca `=== fin corrida N ===`); la pantalla muestra `SD OK T=n A=+` o `SD ERR ...`.
+- Interpretación: `A=+` y `SD ERR` = el testigo se escribió al arrancar pero el log final no (estado de las pruebas);
+  `A=-` y `SD ERR` = la escritura no funciona sin `exit` en ese flashcart; `SD OK` y el archivo sin cambios en la SD = el flashcart
+  confirma la escritura solo al apagarse o reiniciarse.

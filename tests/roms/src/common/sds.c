@@ -11,6 +11,7 @@
 #include <string.h>
 #include <fat.h>
 #include <nds/exceptions.h>
+#include <nds/arm9/dldi.h>
 #include <stdarg.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -232,7 +233,7 @@ void sds_progress(const char *text)
 #define MRC(crn, crm, op2) ({ uint32_t v_; __asm__ volatile("mrc p15, 0, %0, " #crn ", " #crm ", " #op2 : "=r"(v_)); v_; })
 #define MCRW(crn, crm, op2, val) __asm__ volatile("mcr p15, 0, %0, " #crn ", " #crm ", " #op2 : : "r"(val) : "memory")
 static struct {
-	uint32_t ctrl, dtcm, itcm, exmem, auxspi;
+	uint32_t ctrl, dtcm, itcm, exmem, auxspi, ime, ie;
 	uint8_t wramcnt;
 } snap;
 
@@ -244,6 +245,8 @@ static void __attribute__((constructor, used)) snapshot_libnds(void)
 	snap.exmem = *(volatile uint16_t *)0x04000204;
 	snap.auxspi = *(volatile uint16_t *)0x040001A0;
 	snap.wramcnt = *(volatile uint8_t *)0x04000247;
+	snap.ime = *(volatile uint32_t *)0x04000208;
+	snap.ie = *(volatile uint32_t *)0x04000210;
 }
 
 /* Devuelve la ARM9 al estado de libnds: DMA y temporizadores parados, IRQ enmascaradas (el DLDI sondea; así ninguna IRQ
@@ -254,7 +257,7 @@ static void restore_libnds(void)
 
 	__asm__ volatile("msr cpsr_c, #0xDF" : : : "cc");
 	*(volatile uint32_t *)0x04000208 = 0;          /* IME */
-	*(volatile uint32_t *)0x04000210 = 0;          /* IE */
+	*(volatile uint32_t *)0x04000210 = snap.ie;    /* IE como lo dejó libnds */
 	*(volatile uint32_t *)0x04000214 = 0xFFFFFFFFu; /* IF */
 	for (int i = 0; i < 4; i++) {
 		*(volatile uint16_t *)(0x040000BA + 12 * i) = 0; /* DMAxCNT_H */
@@ -277,47 +280,138 @@ static void restore_libnds(void)
 			MCRW(c7, c5, 0, 0);
 		MCRW(c1, c0, 0, snap.ctrl);
 	}
+	/* IRQ como las tenía libnds (IME e IE, bit I del CPSR limpio): tras exit(0) la escritura pendiente se completaba con las
+	 * IRQ habilitadas y sin ellas el log no llegaba a la SD en el R4 (hipótesis; ver docs/ds-real.md) */
+	*(volatile uint32_t *)0x04000208 = snap.ime;
+	__asm__ volatile("msr cpsr_c, #0x1F" : : : "cc");
 }
 
-/* Monta la SD (DLDI del flashcart) y escribe el búfer. Sin SD o si falla, sd_state = -1 y la ROM sigue igual. */
+static int sd_mounted, boot_state; /* boot_state: 1 = el archivo testigo del arranque se escribió, -1 = falló, 0 = no se intentó */
+static uint32_t sd_tam;
+#define SD_DIR "/SalsaDS-pruebas/resultados"
+
+/* Monta la SD una sola vez: caché de páginas mínima (fatInit(1)) y, si no, la de por defecto. */
+static int sd_mount(void)
+{
+	if (sd_mounted)
+		return 1;
+	if (!fatInit(1, true) && !fatInitDefault())
+		return 0;
+	mkdir("/SalsaDS-pruebas", 0777);
+	mkdir(SD_DIR, 0777);
+	sd_mounted = 1;
+	return 1;
+}
+
+/* Primer nombre libre `<dir>/<base>-NNN.txt` (NNN desde 001): en el R4 crear archivos funciona y agregar a uno existente no, así que
+ * cada corrida es un archivo nuevo. Devuelve el número elegido (0 si no hay libre). */
+static uint32_t sd_free_name(char *out, size_t n, const char *base)
+{
+	for (uint32_t i = 1; i < 1000; i++) {
+		FILE *t;
+
+		snprintf(out, n, SD_DIR "/%s-%03lu.txt", base, (unsigned long)i);
+		t = fopen(out, "r");
+		if (!t)
+			return i;
+		fclose(t);
+	}
+	return 0;
+}
+
+/* Escribe `text` al final de `path`, lo vuelca (fflush + fsync) y lo cierra; devuelve el tamaño del archivo al cerrar o -1. */
+static long sd_append(const char *path, const char *text, size_t len, const char *head)
+{
+	FILE *f = fopen(path, "a");
+	long pos;
+
+	if (!f)
+		return -1;
+	if (head && fputs(head, f) < 0)
+		goto bad;
+	if (len && fwrite(text, 1, len, f) != len)
+		goto bad;
+	if (fflush(f) != 0 || fsync(fileno(f)) != 0)
+		goto bad;
+	pos = ftell(f);
+	if (fclose(f) != 0)
+		return -1;
+	return pos;
+bad:
+	fclose(f);
+	return -1;
+}
+
+/* Archivo testigo al ARRANCAR (antes de las pruebas, con el estado de libnds intacto): dice si la escritura funciona entonces. */
+static void sd_boot_witness(void)
+{
+	char head[96], path[64], base[40];
+
+	if (boot_state)
+		return;
+	boot_state = -1;
+	if (!sd_mount())
+		return;
+	snprintf(base, sizeof base, "_arranque-%s", SDS_ROM_NAME);
+	if (!sd_free_name(path, sizeof path, base))
+		return;
+	snprintf(head, sizeof head, "arranque %s %s\n", SDS_ROM_NAME, SDS_GITREV);
+	if (sd_append(path, "", 0, head) > 0)
+		boot_state = 1;
+}
+
+/* Escribe el búfer en la SD y VERIFICA: reabre el archivo, mide su tamaño y busca la marca final de esta corrida. Sin SD o si
+ * falla, sd_state = -1; si el tamaño no creció o falta la marca, sd_state = -2. */
 static void sd_flush(void)
 {
-	char line[96];
+	char line[96], tail[64], mark[48];
 	FILE *f;
+	long pos, size;
 
 	sd_state = -1;
 	restore_libnds();
-	if (!fatInitDefault())
+	if (!sd_mount())
 		return;
-	mkdir("/SalsaDS-pruebas", 0777);
-	mkdir("/SalsaDS-pruebas/resultados", 0777);
-	snprintf(sd_path, sizeof sd_path, "/SalsaDS-pruebas/resultados/%s.txt", SDS_ROM_NAME);
-	f = fopen(sd_path, "r");
-	if (f) {
-		while (fgets(line, sizeof line, f))
-			if (!strncmp(line, "=== corrida ", 12))
-				sd_run++;
-		fclose(f);
-	}
-	sd_run++;
-	f = fopen(sd_path, "a");
+	sd_run = sd_free_name(sd_path, sizeof sd_path, SDS_ROM_NAME);
+	if (!sd_run)
+		return;
+	snprintf(line, sizeof line, "=== corrida %lu ===\nROM: %s  version (commit): %s\n", (unsigned long)sd_run, SDS_ROM_NAME,
+		 SDS_GITREV);
+	snprintf(mark, sizeof mark, "=== fin corrida %lu ===\n", (unsigned long)sd_run);
+	f = fopen(sd_path, "w");
 	if (!f)
 		return;
-	fprintf(f, "=== corrida %lu ===\nROM: %s  version (commit): %s\n", (unsigned long)sd_run, SDS_ROM_NAME, SDS_GITREV);
-	if (fwrite(logbuf, 1, loglen, f) != loglen) {
+	if (fputs(line, f) < 0 || fwrite(logbuf, 1, loglen, f) != loglen || fputs("\n", f) < 0 || fputs(mark, f) < 0 ||
+	    fflush(f) != 0 || fsync(fileno(f)) != 0) {
 		fclose(f);
 		return;
 	}
-	fprintf(f, "\n");
-	/* volcar todo antes de dar la SD por escrita: fflush y fsync (libnds mantiene una caché de páginas del FAT y las versiones
-	 * que dependían de exit(0) para vaciarla dejaban el archivo sin cambios en la SD), luego fclose, y otra vez fsync por
-	 * si la caché sigue sucia */
-	if (fflush(f) != 0 || fsync(fileno(f)) != 0) {
-		fclose(f);
+	pos = ftell(f);
+	if (fclose(f) != 0)
 		return;
+	/* verificar: tamaño y última línea */
+	f = fopen(sd_path, "r");
+	if (!f)
+		return;
+	fseek(f, 0, SEEK_END);
+	size = ftell(f);
+	sd_tam = (uint32_t)size;
+	sd_state = -2;
+	if (size >= pos && size >= (long)strlen(mark) && fseek(f, size - (long)strlen(mark), SEEK_SET) == 0) {
+		size_t n = fread(tail, 1, strlen(mark), f);
+
+		tail[n] = 0;
+		if (n == strlen(mark) && !strcmp(tail, mark))
+			sd_state = 1;
 	}
-	if (fclose(f) == 0)
-		sd_state = 1;
+	fclose(f);
+	/* cerrar el dispositivo del DLDI: algunos controladores solo confirman las escrituras al apagarlo */
+	{
+		const DISC_INTERFACE *d = dldiGetInternal();
+
+		if (d && d->shutdown)
+			d->shutdown();
+	}
 }
 
 /* Manejador de excepciones propio (ARM9): en vez de la pantalla de libnds en la de abajo, pinta en la de arriba el grupo, el PC
@@ -417,6 +511,7 @@ void sds_init(const char *title)
 	publish();
 
 	setExceptionHandler(exc_handler);
+	sd_boot_witness();
 	REG_POWCNT1 = (1 << 0) | (1 << 1) | (1 << 9) | (1 << 15); /* LCD, motor A, motor B, A arriba */
 	REG_VRAMCNT_A = 0x80;                                     /* banco A: LCDC */
 	REG_DISPCNT_B = 0;                                        /* la de abajo, apagada */
@@ -810,9 +905,20 @@ void sds_finish(void)
 	write_log();
 	draw_text(1, 13, "SD:...", C_DIM, C_BG);
 	sd_flush();
-	fill_rect(13 * 8, 12, 9 * 8, 12, C_BG);
-	draw_text(1, 13, sd_state == 1 ? "SD:LOG OK" : "SD:NO", sd_state == 1 ? C_OK : C_WARN, C_BG);
-	draw_text(1, 22, "START=MENU", C_DIM, C_BG);
+	fill_rect(13 * 8, 12, 19 * 8, 12, C_BG);
+	{
+		char st[28], num[12];
+
+		st[0] = 0;
+		append(st, sd_state == 1 ? "SD OK" : sd_state == -2 ? "SD ERR" : "SD NO");
+		if (sd_state == 1 || sd_state == -2) {
+			append(st, " T=");
+			dec(num, sd_tam);
+			append(st, num);
+		}
+		append(st, boot_state == 1 ? " A=+" : " A=-");
+		draw_text(1, 13, st, sd_state == 1 ? C_OK : C_WARN, C_BG);
+	}
 
 	for (uint32_t a2 = SDS_X7_ADDR; a2 < SDS_X7_ADDR + sizeof(struct sds_x7); a2 += 32)
 		__asm__ volatile("mcr p15, 0, %0, c7, c6, 1" : : "r"(a2) : "memory");

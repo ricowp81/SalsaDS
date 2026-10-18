@@ -310,33 +310,38 @@ static void group_misc(void)
 		MEM32(0xFFFF0000) = 0;
 		SDS_CHECK(MEM32(0xFFFF0000), v); /* y no se escribe */
 	}
-	/* la ranura de GBA vacía: lo que lee el ARM9 (informativo; GBATEK no lo dice) */
-	/* ¿hay algo en la ranura de GBA? La cabecera de un cartucho de GBA tiene 0x96 en 0x080000B2. Se anota en el log y en la
-	 * pantalla: lo que lee la ranura depende de si hay un cartucho (o una flashcard de GBA) o está vacía. */
-	{
-		const uint32_t fixed = MEM8(0x080000B2);
-		const char *msg = fixed == 0x96 ? "GBA SLOT: CART" : "GBA SLOT: VACIA?";
-
-		sds_notef("ranura de GBA: %s (0x080000B2 = %02lX, 0x08000000 = %04lX)", fixed == 0x96 ? "hay un cartucho/flashcard" : "sin cabecera GBA (vacia?)",
-			  (unsigned long)fixed, (unsigned long)MEM16(0x08000000));
-		sds_print_row(0, msg);
-	}
-	/* los primeros 16 bytes de la ROM (0x08000000) y de la SRAM (0x0A000000) de la ranura, para comparar corridas con y sin
-	 * cartucho o flashcard (la cabecera 0x96 no los distingue) */
+	/* SOLO LECTURA: ninguna ROM de prueba escribe en 0x08000000-0x0AFFFFFF (ROM y SRAM de la ranura de GBA); aquí solo se lee. */
+	/* La ranura de GBA. El ARM9 tiene que ser su dueño (EXMEMCNT bit 7 = 0) y la temporización lenta (bits 0-4 = 0x0F: SRAM 18
+	 * ciclos, ROM 18 y 6): con la ranura en manos del ARM7 todo se lee 0, también con un cartucho. Se anota el EXMEMCNT antes y
+	 * después y lo leído en las dos situaciones; las lecturas informativas van con el dueño ya corregido. Con una flashcard de GBA
+	 * (el ARM9 sin ser dueño) se leyó 0 en 0x08000000 y 0x0A000000; falta medir con el dueño corregido y con la ranura vacía.
+	 * SalsaDS lee unos y melonDS 0xFE08. */
 	{
 		char rom[40], ram[40];
+		volatile uint16_t *const exmem = (volatile uint16_t *)0x04000204;
+		const uint16_t exmem0 = *exmem;
+		const uint32_t before = MEM8(0x080000B2), before16 = MEM16(0x08000000);
+		uint32_t fixed;
 
+		*exmem = (uint16_t)((exmem0 & ~0x009Fu) | 0x0F);
+		for (volatile int w = 0; w < 100000; w++)
+			;
+		fixed = MEM8(0x080000B2);
+		sds_notef("EXMEMCNT antes=%04X despues=%04X; 0x080000B2 antes=%02X despues=%02X; 0x08000000 antes=%04X despues=%04X",
+			  (unsigned)exmem0, (unsigned)*exmem, (unsigned)before, (unsigned)fixed, (unsigned)before16,
+			  (unsigned)MEM16(0x08000000));
+		sds_notef("ranura de GBA: %s", fixed == 0x96 ? "hay un cartucho/flashcard (cabecera 0x96)" : "sin cabecera GBA (vacia?)");
+		sds_print_row(0, fixed == 0x96 ? "GBA SLOT: CART" : "GBA SLOT: VACIA?");
 		for (int i = 0; i < 16; i++) {
 			snprintf(rom + 2 * i, 3, "%02X", (unsigned)MEM8(0x08000000 + i));
 			snprintf(ram + 2 * i, 3, "%02X", (unsigned)MEM8(0x0A000000 + i));
 		}
 		sds_notef("ranura de GBA, 16 bytes de 0x08000000: %s", rom);
 		sds_notef("ranura de GBA, 16 bytes de 0x0A000000: %s", ram);
+		SDS_DIVERGE_M(MEM16(0x08000000), 0xFFFF, 0xFE08);
+		SDS_DIVERGE_M(MEM8(0x0A000000), 0xFF, 0xFF);
+		*exmem = exmem0;
 	}
-	/* la ranura de GBA: lo que lee el ARM9 (informativo; GBATEK no lo dice). Con una flashcard de GBA insertada leyó 0 en
-	 * 0x08000000 (16 bits) y 0x0A000000 (8 bits); falta medir con la ranura vacía. SalsaDS lee unos y melonDS 0xFE08 */
-	SDS_DIVERGE_M(MEM16(0x08000000), 0xFFFF, 0xFE08);
-	SDS_DIVERGE_M(MEM8(0x0A000000), 0xFF, 0xFF);
 }
 
 int main(void)

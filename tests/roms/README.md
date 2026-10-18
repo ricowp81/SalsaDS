@@ -92,21 +92,20 @@ Las ROMs de pruebas (`hola`, `cpu9`, `cpuarm`, `mem`, `irq`, `dma`, `ipc`, `bios
    flashcart. Las ROMs usan el DLDI de libnds: el cargador del flashcart lo parchea al arrancar (lo normal en R4 con
    kernel Wood R4, Lazy, Akaio, etc.); si el kernel no lo hace, no hay SD para la ROM y la prueba corre igual, solo sin log.
 2. Esperar a que termine (la mayoría, segundos; `cpu9` y `cpuarm` más). En la pantalla de arriba salen los grupos, la
-   franja verde/roja y, en la fila 2, `SD:LOG OK` o `SD:NO` (sin SD o montaje fallido).
+   franja verde/roja y, en la fila 1, el estado de la SD: `SD OK T=<tamaño> A=+` (el archivo se reabrió tras cerrarlo, creció y termina con la marca de esta corrida), `SD ERR T=...` (no creció o falta la marca) o `SD NO` (sin SD o montaje fallido); `A=+` dice que el archivo testigo `resultados/_arranque-<rom>-NNN.txt`, escrito al arrancar con libnds intacto, se pudo escribir (`A=-` si no).
 3. Si hubo divergencias en ESTE hardware (valor distinto del documentado), aparece `A: VER DIVERGENCIAS N`: **A / derecha**
    pasa de página y **B / izquierda** vuelve. Cada divergencia son dos filas: `DIV <grupo> L<línea> ARM9|ARM7` y
    `H<hw> D<doc> M<melonDS>` (amarillo si el hardware coincide con melonDS, rojo si con ninguno; `M?` = sin dato de melonDS).
    Sirve para leerlas en una foto si el log falla.
 4. **START** muestra «Apaga la consola para volver al menú» y se queda esperando: no llama a `exit(0)` porque en el R4 (sin
    bootstub) reiniciaba la ROM una y otra vez y cada vuelta añadía otra corrida al log (40 en una prueba).
-5. El log queda en `/SalsaDS-pruebas/resultados/<rom>.txt` (carpeta creada si no existe). Cada corrida se **añade** al
-   final con `=== corrida N ===`. Contiene: ROM y commit con el que se construyó (`SDS_GITREV`, `+` si había cambios sin
+5. El log queda en `/SalsaDS-pruebas/resultados/<rom>-NNN.txt` (carpeta creada si no existe): **un archivo por corrida** (NNN = primer número libre desde 001; en el R4 crear archivos funciona pero agregar a uno existente no), más `_arranque-<rom>-NNN.txt` escrito al arrancar. Contiene: ROM y commit con el que se construyó (`SDS_GITREV`, `+` si había cambios sin
    commitear), veredicto, los grupos de cada CPU (`ARM9`/`ARM7`) con total y fallos, el primer fallo y el registro de los
    16 primeros (grupo, identificador = línea de la fuente, obtenido, esperado) y **todas** las llamadas de divergencia con
    `hw=` (este hardware), `doc=` (GBATEK o manual de ARM) y `melon=` (melonDS 1.1, `?` si no está medido), más a qué
    coincide el hardware. Esto incluye los casos en que el hardware coincide con la documentación (melonDS equivocado), que
    son los que más interesa saber.
-6. **Durante las pruebas no se toca la SD.** El log y el progreso se acumulan en un búfer de RAM (32 KB) y solo al final,
+6. **Durante las pruebas no se toca la SD** (salvo el testigo del arranque). El log y el progreso se acumulan en un búfer de RAM (32 KB) y solo al final,
    tras restaurar el estado de libnds (`restore_libnds`: DMA y temporizadores parados, IRQ enmascaradas, EXMEMCNT, WRAMCNT,
    TCM, PU y cachés como al arrancar la ROM), se monta la SD y se escribe. Motivo: escribir a la SD con el PU y las cachés
    apagados hizo caer `bios` en la pantalla de excepción de libnds. **Si la ROM se cuelga, el búfer se pierde**: lo que
@@ -133,6 +132,8 @@ DLDI: el montaje falla, `SD:NO` y todo lo demás (bloque de resultados en RAM, `
 igual. Las ROMs se construyen con `tools/build-roms.sh` (que pasa el commit a `SDS_GITREV`).
 
 Los hallazgos de las corridas en hardware real y lo que SalsaDS debe cambiar están en `docs/ds-real.md`.
+
+Ninguna ROM escribe en 0x08000000-0x0AFFFFFF (ROM y SRAM de la ranura de GBA): `mem` solo lee ahí (revisado el código fuente de todas las ROMs).
 
 ## ROMs de gráficos 2D (`gfx*`, `src/gfx`)
 
