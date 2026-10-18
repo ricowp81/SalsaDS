@@ -15,7 +15,7 @@
  *
  * Formatos de punto fijo (GBATEK) y sus anchos:
  *   matriz   1.19.12  (s32, 12 bits fraccionarios); el producto de matrices suma en 64 bits y trunca (>> 12)
- *   vértice  1.3.12   (s16) y VTX_10 1.3.6 (se lleva a 1.3.12 con << 6), VTX_DIFF 1.0.9 (<< 3)
+ *   vértice  1.3.12   (s16) y VTX_10 1.3.6 (se lleva a 1.3.12 con << 6), VTX_DIFF 10 bits con signo sumados tal cual (1/4096)
  *   normal / luz  1.0.9 (s10)
  *   textura  1.11.4   (s16)
  *   color    RGB555 (5 bits por canal); en la salida se expande a 6 bits: c6 = (c5 << 1) + ((c5 + 31) >> 5)
@@ -170,6 +170,7 @@ typedef struct gx {
 	int32_t vx, vy, vz;         /* último vértice (1.3.12) */
 	uint32_t color5[3];         /* color actual (5 bits) */
 	int32_t tex_s, tex_t;       /* TEXCOORD sin transformar */
+	int32_t cur_s, cur_t;       /* coordenadas que llevará el próximo vértice (ya transformadas según el modo) */
 	int32_t normal[3];          /* última normal, tal como se mandó (1.0.9) */
 	uint32_t polyattr, polyattr_cur; /* pendiente y la del BEGIN_VTXS vigente */
 	uint32_t texparam, pltt;

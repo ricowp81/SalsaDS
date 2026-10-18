@@ -474,39 +474,36 @@ static int32_t clamp_s(int64_t v, int32_t lo, int32_t hi)
 	return (int32_t)(v < lo ? lo : v > hi ? hi : v);
 }
 
-/* Transformación de coordenadas de textura (TEXIMAGE_PARAM bits 30-31). Con modos 2 y 3 se suma la coordenada que
- * mandó TEXCOORD. Las unidades de salida son 1.11.4. [sin contrastar fuera del modo 0] */
-static void tex_transform(const gx_t *g, int32_t *so, int32_t *to)
+/* Coordenadas de textura (TEXIMAGE_PARAM bits 30-31). `tex_s/t` son las de TEXCOORD sin transformar y `cur_s/t` las que
+ * llevará el próximo vértice. Modo 0: las crudas. Modo 1: TEXCOORD las transforma por la matriz de textura al llegar.
+ * Modo 2: NORMAL las calcula (crudas + normal x matriz); un TEXCOORD posterior las pisa con las crudas. Modo 3: cada
+ * vértice las calcula (crudas + vértice x matriz). Orden de los efectos medido contra melonDS (docs/fase3.md, 3.3).
+ * Unidades: 1.11.4. [Modos 1 y 3 en la traslación: ver docs/fase3.md] */
+static void tex_mode1(gx_t *g)
 {
-	const int32_t s = g->tex_s, t = g->tex_t;
 	const int32_t *m = g->tex.m;
+	const int64_t s = g->tex_s, t = g->tex_t;
 
-	switch (g->texparam >> 30) {
-	case 1: /* coordenada de textura x matriz: (s, t, 1.0, 1.0) con 1.0 = 0x10 en 1.11.4 */
-		*so = (int32_t)(((int64_t)s * m[0] + (int64_t)t * m[4] + ((int64_t)m[8] + m[12]) * 16) >> 12);
-		*to = (int32_t)(((int64_t)s * m[1] + (int64_t)t * m[5] + ((int64_t)m[9] + m[13]) * 16) >> 12);
-		break;
-	case 2: { /* normal (1.0.9) x matriz, más la coordenada */
-		const int64_t nx = g->normal[0], ny = g->normal[1], nz = g->normal[2];
+	g->cur_s = (int16_t)((s * m[0] + t * m[4] + (int64_t)m[8] + m[12]) >> 12);
+	g->cur_t = (int16_t)((s * m[1] + t * m[5] + (int64_t)m[9] + m[13]) >> 12);
+}
 
-		*so = (int32_t)(s + ((nx * m[0] + ny * m[4] + nz * m[8]) >> 17) + (m[12] >> 8));
-		*to = (int32_t)(t + ((nx * m[1] + ny * m[5] + nz * m[9]) >> 17) + (m[13] >> 8));
-		break;
-	}
-	case 3: { /* vértice (1.3.12) x matriz, más la coordenada */
-		const int64_t vx = g->vx, vy = g->vy, vz = g->vz;
+static void tex_mode2(gx_t *g)
+{
+	const int32_t *m = g->tex.m;
+	const int64_t nx = g->normal[0], ny = g->normal[1], nz = g->normal[2];
 
-		*so = (int32_t)(s + ((vx * m[0] + vy * m[4] + vz * m[8]) >> 20) + (m[12] >> 8));
-		*to = (int32_t)(t + ((vx * m[1] + vy * m[5] + vz * m[9]) >> 20) + (m[13] >> 8));
-		break;
-	}
-	default:
-		*so = s;
-		*to = t;
-		break;
-	}
-	*so = (int16_t)*so;
-	*to = (int16_t)*to;
+	g->cur_s = (int16_t)(g->tex_s + ((nx * m[0] + ny * m[4] + nz * m[8]) >> 21));
+	g->cur_t = (int16_t)(g->tex_t + ((nx * m[1] + ny * m[5] + nz * m[9]) >> 21));
+}
+
+static void tex_mode3(gx_t *g)
+{
+	const int32_t *m = g->tex.m;
+	const int64_t vx = g->vx, vy = g->vy, vz = g->vz;
+
+	g->cur_s = (int16_t)(g->tex_s + ((vx * m[0] + vy * m[4] + vz * m[8]) >> 24));
+	g->cur_t = (int16_t)(g->tex_t + ((vx * m[1] + vy * m[5] + vz * m[9]) >> 24));
 }
 
 static uint32_t expand6(uint32_t c5)
@@ -529,7 +526,10 @@ static void vertex_submit(gx_t *g, int32_t x, int32_t y, int32_t z)
 		c.z = (int32_t)((px * m[2] + py * m[6] + pz * m[10] + ((int64_t)m[14] * 4096)) >> 12);
 		c.w = (int32_t)((px * m[3] + py * m[7] + pz * m[11] + ((int64_t)m[15] * 4096)) >> 12);
 	}
-	tex_transform(g, &c.s, &c.t);
+	if ((g->texparam >> 30) == 3)
+		tex_mode3(g);
+	c.s = g->cur_s;
+	c.t = g->cur_t;
 	c.r = (int32_t)expand6(g->color5[0]);
 	c.g = (int32_t)expand6(g->color5[1]);
 	c.b = (int32_t)expand6(g->color5[2]);
@@ -780,6 +780,8 @@ static void do_normal(gx_t *g, uint32_t p)
 	n[1] = sext(p >> 10, 10);
 	n[2] = sext(p >> 20, 10);
 	g->normal[0] = n[0]; g->normal[1] = n[1]; g->normal[2] = n[2];
+	if ((g->texparam >> 30) == 2)
+		tex_mode2(g);
 	/* se transforma con la matriz vectorial (3x3) y se satura a 1.0.9 */
 	t[0] = clamp_s(((int64_t)n[0] * m[0] + (int64_t)n[1] * m[4] + (int64_t)n[2] * m[8]) >> 12, -512, 511);
 	t[1] = clamp_s(((int64_t)n[0] * m[1] + (int64_t)n[1] * m[5] + (int64_t)n[2] * m[9]) >> 12, -512, 511);
@@ -872,6 +874,12 @@ static unsigned exec_cmd(gx_t *g, uint32_t cmd, const uint32_t *p, uint64_t star
 	case 0x22:
 		g->tex_s = (int16_t)p[0];
 		g->tex_t = (int16_t)(p[0] >> 16);
+		if ((g->texparam >> 30) == 1) {
+			tex_mode1(g);
+		} else {
+			g->cur_s = g->tex_s;
+			g->cur_t = g->tex_t;
+		}
 		return 1;
 	case 0x23:
 		vertex_submit(g, (int16_t)p[0], (int16_t)(p[0] >> 16), (int16_t)p[1]);
@@ -889,7 +897,7 @@ static unsigned exec_cmd(gx_t *g, uint32_t cmd, const uint32_t *p, uint64_t star
 		vertex_submit(g, g->vx, (int16_t)p[0], (int16_t)(p[0] >> 16));
 		return 8;
 	case 0x28:
-		vertex_submit(g, g->vx + sext(p[0], 10) * 8, g->vy + sext(p[0] >> 10, 10) * 8, g->vz + sext(p[0] >> 20, 10) * 8);
+		vertex_submit(g, g->vx + sext(p[0], 10), g->vy + sext(p[0] >> 10, 10), g->vz + sext(p[0] >> 20, 10));
 		return 8;
 	case 0x29:
 		g->polyattr = p[0];

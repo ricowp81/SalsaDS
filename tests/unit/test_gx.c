@@ -645,6 +645,109 @@ static void test_clip_interp(void)
 	}
 }
 
+/* Coordenadas de textura generadas (TEXIMAGE_PARAM bits 30-31) y VTX_DIFF: las reglas medidas contra melonDS con la ROM
+ * gx3d (escena 15, docs/fase3.md 3.3). Un triángulo cuyo primer vértice lleva lo que se prueba; se lee su (s, t). */
+static void texmat(int32_t d0, int32_t d1, int32_t d4, int32_t d5, int32_t d8, int32_t d9, int32_t t12, int32_t t13)
+{
+	const int32_t m[16] = { d0, d1, 0, 0, d4, d5, 0, 0, d8, d9, 0x1000, 0, t12, t13, 0, 0x1000 };
+
+	w(0x10, 3);
+	for (int i = 0; i < 16; i++)
+		w(0x16, (uint32_t)m[i]);
+	w(0x10, 2);
+}
+
+static const gx_vertex *first_vertex(const gx_frame **fo)
+{
+	const gx_frame *f;
+
+	w(0x23, 0x0800u | (0xF800u << 16)); w(0x23, 0); /* los dos vértices que completan el triángulo */
+	w(0x23, 0u | (0x0800u << 16)); w(0x23, 0);
+	w(0x41, 0);
+	w(0x50, 0);
+	idle();
+	f = gx_swap(&G, T, NULL);
+	*fo = f;
+	return f->npolys ? &f->vtx[f->poly[0].vidx[0]] : NULL;
+}
+
+static void test_texgen(void)
+{
+	const gx_frame *f;
+	const gx_vertex *v;
+
+	/* VTX_DIFF: la diferencia de 10 bits con signo se suma tal cual (1/4096), no por 8 */
+	reset();
+	ident_all();
+	w(0x60, 0u | (0u << 8) | (255u << 16) | (191u << 24));
+	w(0x2A, 0);
+	w(0x29, BOTH);
+	w(0x40, 0);
+	w(0x23, 0xF800u | (0xF800u << 16)); w(0x23, 0);
+	w(0x23, 0x0800u | (0xF800u << 16)); w(0x23, 0);
+	w(0x28, (uint32_t)(-300 & 0x3FF) | ((uint32_t)(400 & 0x3FF) << 10)); /* (0x0800 - 300, -0x0800 + 400) */
+	w(0x41, 0);
+	w(0x50, 0);
+	idle();
+	f = gx_swap(&G, T, NULL);
+	CHECK_EQ(f->npolys, 1u);
+	CHECK_EQ(f->vtx[f->poly[0].vidx[2]].sx, (int16_t)(((0x800 - 300 + 0x1000) * 256) / 0x2000));
+	CHECK_EQ(f->vtx[f->poly[0].vidx[2]].sy, (int16_t)(((0x1000 - (-0x800 + 400)) * 192) / 0x2000));
+
+	/* modo 1: (s, t, 1, 1) por la matriz: s' = (s·m0 + t·m4 + m8 + m12) >> 12, sin multiplicar la traslación por 16 */
+	reset();
+	ident_all();
+	texmat(0x2000, 0x0800, 0x1000, 0x3000, 0x0400, 0x0200, 0x5000, 0x2000);
+	w(0x2A, 1u << 30);
+	w(0x29, BOTH);
+	w(0x40, 0);
+	w(0x22, 0x0030u | (0x0050u << 16)); /* s = 3, t = 5 texeles */
+	w(0x23, 0xF800u | (0xF800u << 16)); w(0x23, 0);
+	v = first_vertex(&f);
+	CHECK(v != NULL);
+	CHECK_EQ(v->s, (int16_t)((0x30 * 0x2000 + 0x50 * 0x1000 + 0x0400 + 0x5000) >> 12));
+	CHECK_EQ(v->t, (int16_t)((0x30 * 0x0800 + 0x50 * 0x3000 + 0x0200 + 0x2000) >> 12));
+
+	/* modo 2: NORMAL calcula (crudas + normal x matriz >> 21, sin traslación); un TEXCOORD posterior las pisa */
+	reset();
+	ident_all();
+	texmat(0x100000, 0x20000, 0x40000, 0x100000, 0x10000, 0x8000, 0x70000, 0x70000);
+	w(0x2A, 2u << 30);
+	w(0x29, BOTH);
+	w(0x40, 0);
+	w(0x22, 0x0030u | (0x0050u << 16));
+	w(0x21, (uint32_t)(300 & 0x3FF) | ((uint32_t)(-200 & 0x3FF) << 10) | ((uint32_t)(100 & 0x3FF) << 20));
+	w(0x23, 0xF800u | (0xF800u << 16)); w(0x23, 0);
+	v = first_vertex(&f);
+	CHECK_EQ(v->s, (int16_t)(0x30 + ((300LL * 0x100000 + -200LL * 0x40000 + 100LL * 0x10000) >> 21)));
+	CHECK_EQ(v->t, (int16_t)(0x50 + ((300LL * 0x20000 + -200LL * 0x100000 + 100LL * 0x8000) >> 21)));
+	reset();
+	ident_all();
+	texmat(0x100000, 0, 0, 0x100000, 0, 0, 0, 0);
+	w(0x2A, 2u << 30);
+	w(0x29, BOTH);
+	w(0x40, 0);
+	w(0x21, 300);
+	w(0x22, 0x0030u | (0x0050u << 16));
+	w(0x23, 0xF800u | (0xF800u << 16)); w(0x23, 0);
+	v = first_vertex(&f);
+	CHECK_EQ(v->s, 0x30);
+	CHECK_EQ(v->t, 0x50);
+
+	/* modo 3: crudas + vértice x matriz >> 24, sin traslación */
+	reset();
+	ident_all();
+	texmat(0x100000, 0x10000, 0x20000, 0x100000, 0, 0, 0x300000, 0x300000);
+	w(0x2A, 3u << 30);
+	w(0x29, BOTH);
+	w(0x40, 0);
+	w(0x22, 0x0030u | (0x0050u << 16));
+	w(0x23, 0xF800u | (0xF800u << 16)); w(0x23, 0);
+	v = first_vertex(&f);
+	CHECK_EQ(v->s, (int16_t)(0x30 + ((-0x800LL * 0x100000 + -0x800LL * 0x20000) >> 24)));
+	CHECK_EQ(v->t, (int16_t)(0x50 + ((-0x800LL * 0x10000 + -0x800LL * 0x100000) >> 24)));
+}
+
 void test_gx(void)
 {
 	test_matrices();
@@ -658,4 +761,5 @@ void test_gx(void)
 	test_lighting();
 	test_limits();
 	test_clip_interp();
+	test_texgen();
 }
