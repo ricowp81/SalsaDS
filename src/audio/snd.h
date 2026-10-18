@@ -16,10 +16,10 @@
  *    recorta a 16 bits: eso es lo que captura SNDCAP. El volumen general (SOUNDCNT) se aplica después, y de ahí sale
  *    el audio (la captura no lo ve).
  *
- * Salida: las muestras de 16 bits a 32,7 kHz se convierten a flotante y se remuestrean a 48 kHz. Hoy: interpolación
- * lineal. PUNTO DE ENGANCHE PARA UN FILTRO FIR POLIFÁSICO: `snd_resample()` (snd_mix.c) es la única función que sabe
- * del filtro; para cambiarlo hay que sustituir su cuerpo (el estado que arrastra entre trabajos está en
- * `snd_state.hist`, con sitio para 32 muestras por canal de salida). La opción `SND_MODE_ORIGINAL` reproduce la
+ * Salida: las muestras de 16 bits a 32,7 kHz se convierten a flotante y se remuestrean a 48 kHz. FIR polifásico
+ * de 32 coeficientes (snd_fir.h, de tools/gen-snd-fir.py; pasabajos de 15 kHz): `snd_resample()` (snd_mix.c) es la única
+ * función que sabe del filtro; arrastra entre trabajos las últimas 32 muestras nativas por canal (`snd_state.hist`) y
+ * `frac`, y la salida va retrasada 16 muestras nativas. La opción `SND_MODE_ORIGINAL` reproduce la
  * cuantización a 10 bits con el sesgo (SOUNDBIAS) de la salida de la DS real.
  */
 #ifndef SALSADS_AUDIO_SND_H
@@ -76,7 +76,7 @@ typedef struct snd_state {
 	snd_cap cap[2];
 	uint64_t tick;                   /* ticks ya generados */
 	/* remuestreo */
-	float hist[2][SND_HIST];         /* muestras previas de cada canal de salida (la lineal usa la última) */
+	float hist[2][SND_HIST];         /* últimas SND_HIST muestras nativas de cada canal (la ventana del FIR) */
 	float frac;                      /* fase dentro de la muestra nativa, [0, 1) */
 	float ratio_adj;                 /* corrección de la razón de remuestreo (control de deriva), 0 = ninguna */
 	uint32_t mode;
