@@ -21,8 +21,8 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 - **Pruebas**: `test-host` verde (LE con sanitizadores y BE; ROM `gx3d` con 23 semillas e imágenes de referencia nuevas); juegos sin
   regresión (`--vs-ref3d` igual en SM64DS, MKDS y NSMB). Cambió la ROM `gx3d` (escenas 15 a 22), no `geom`.
 - **PS3**: el SPE del 3D usa las mismas reglas (texto 47,1 KB, pila libre 23,9 KB; `r3d_end_at` y `r3d_dda_init` salieron de línea para
-  no inflar el bucle). Paquete «SalsaDS núcleo» (SLDS00008) `build/salsads-nucleo-fase33.pkg` del commit PAQUETE_COMMIT, SHA-256
-  PAQUETE_SHA. En RPCS3: autoprueba 3D igual y MKDS 400 cuadros `RESULTADO nucleo: OK`. **Sin medir en la PS3** (el bucle sigue escalar).
+  no inflar el bucle). Paquete «SalsaDS núcleo» (SLDS00008) `build/salsads-nucleo-fase33.pkg` del commit 9ce969d, SHA-256
+  `8cb4badd2f5921f5dae7af47b0d9d4eb111ac15a91aa2429e6c461455ac6ea2b`. En RPCS3: autoprueba 3D igual y MKDS 400 cuadros `RESULTADO nucleo: OK`. **Sin medir en la PS3** (el bucle sigue escalar).
 - Aparte: `tests/unit/core` (volcado de memoria de qemu, 1,8 MB) está commiteado por error en `main`; lo regeneran las corridas BE.
 
 ## 2026-10-18 — Motor de render 3D (Fase 3.2)
