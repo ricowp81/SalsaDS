@@ -268,6 +268,35 @@ if tools/build-ppc64.sh host >build/logs/build-ppc64-run.log 2>&1; then
 	tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun $SND_ARGS --dump 0x02300400:0xE400:build/logs/snd-be.bin tests/roms/homebrew/snd.nds >build/logs/rom-snd-be.log 2>&1
 	check_snd BE build/logs/snd-be.bin
 	gfx_group BE be tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun
+	# --- Recompilador del ARM9 (Fase 4) ------------------------------------------------------------------------------
+	# El código generado es PowerPC64 big-endian: solo aquí (qemu). Las ROMs de CPU, memoria, IRQ, DMA, IPC, BIOS y
+	# periféricos con el recompilador (modo rápido: bloques que pueden pasarse del final del tramo), con llamadas a C por
+	# CTR y sin enlaces, y --lockstep (modo estricto contra una segunda máquina con el intérprete, comparadas después de
+	# cada bloque y de cada tramo: docs/fase4.md).
+	for rom in $ROMS carga; do
+		args=""
+		[ "$rom" = carga ] && args="$CARGA_ARGS"
+		tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --jit $args tests/roms/homebrew/$rom.nds >"build/logs/rom-$rom-jit.log" 2>&1
+		if [ "$rom" = carga ]; then
+			check_carga JIT build/logs/rom-carga-jit.log
+		else
+			check_rom "JIT" "$rom" "build/logs/rom-$rom-jit.log"
+		fi
+	done
+	for rom in cpu9 cpuarm irq; do
+		tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --jit --jit-far --jit-nojl tests/roms/homebrew/$rom.nds >"build/logs/rom-$rom-jitfar.log" 2>&1
+		check_rom "JITf" "$rom" "build/logs/rom-$rom-jitfar.log"
+	done
+	for rom in $ROMS; do
+		tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --lockstep tests/roms/homebrew/$rom.nds >"build/logs/rom-$rom-lockstep.log" 2>&1
+		if grep -q '^LOCKSTEP: sin diferencias' "build/logs/rom-$rom-lockstep.log"; then
+			check_rom "LOCK" "$rom" "build/logs/rom-$rom-lockstep.log"
+		else
+			printf '%-4s FALLO  lockstep %s (ver %s)\n' LOCK "$rom" "build/logs/rom-$rom-lockstep.log"
+			grep '^LOCKSTEP' "build/logs/rom-$rom-lockstep.log" | head -3
+			fail=1
+		fi
+	done
 else
 	echo "BE   FALLO  la compilación ppc64 de src/host (build/logs/build-ppc64-run.log)"
 	fail=1

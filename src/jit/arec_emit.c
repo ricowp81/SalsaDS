@@ -182,6 +182,13 @@ static void b_abs(struct em *e, uint32_t word)
 	E(e, ppc_b(0));
 }
 
+/* bl a una rutina común de la caché */
+static void bl_abs(struct em *e, uint32_t word)
+{
+	addfix(e, 4, word);
+	E(e, ppc_bl(0));
+}
+
 /* ---- constantes y llamadas ---------------------------------------------------------------------------- */
 
 /* rt = v (32 bits, extendido con ceros) */
@@ -217,31 +224,6 @@ static void call_fn(struct em *e, unsigned k)
 	E(e, PPC_BCTRL);
 }
 
-/* c->cycles = límite + (r29 >> 16) + k, antes de una llamada a C */
-/* (r8 y r9: r0 como base de addi vale 0) */
-static void cyc_store(struct em *e, unsigned k)
-{
-	E(e, ppc_sradi(8, RCYC, 16));
-	E(e, ppc_ld(9, RST, OFF_UNTIL));
-	E(e, ppc_add(8, 8, 9));
-	if (k)
-		E(e, ppc_addi(8, 8, (int32_t)k));
-	E(e, ppc_std(8, RST, OFF_CYCLES));
-}
-
-/* r29 = (c->cycles − límite − k) << 16 | instrucciones, después de la llamada */
-static void cyc_load(struct em *e, unsigned k)
-{
-	E(e, ppc_ld(8, RST, OFF_CYCLES));
-	E(e, ppc_ld(9, RST, OFF_UNTIL));
-	E(e, ppc_subf(8, 9, 8));
-	if (k)
-		E(e, ppc_addi(8, 8, -(int32_t)k));
-	E(e, ppc_sldi(8, 8, 16));
-	E(e, ppc_rldimi(8, RCYC, 0, 48));
-	E(e, ppc_mr(RCYC, 8));
-}
-
 /* Modo estricto, después de una llamada lenta: si lo que queda del bloque ya no cabe antes del límite (el bus sumó
  * ciclos), saltar a `l`. `k` = ciclos hasta el final de la instrucción (desde el valor de r29). */
 static void strict_overrun(struct em *e, unsigned k, unsigned l)
@@ -250,18 +232,6 @@ static void strict_overrun(struct em *e, unsigned k, unsigned l)
 	E(e, ppc_addi(10, 10, (int32_t)(k + e->rem_max[e->i])));
 	E(e, ppc_cmpdi(0, 10, 0));
 	bc_to(e, BO_T, CRB(0, GT), l);
-}
-
-static void guest_store_all(struct em *e)
-{
-	for (unsigned r = 0; r < 15; r++)
-		E(e, ppc_stw(G(r), RST, OFF_R(r)));
-}
-
-static void guest_load_all(struct em *e)
-{
-	for (unsigned r = 0; r < 15; r++)
-		E(e, ppc_lwz(G(r), RST, OFF_R(r)));
 }
 
 /* suma a r29 (sin tocar lo pendiente) */
@@ -329,7 +299,7 @@ static void exit_indirect(struct em *e, unsigned xc, unsigned xi, unsigned live)
 		const unsigned miss = newlab(e);
 
 		E(e, ppc_ld(4, RST, OFF_JL));
-		E(e, ppc_rlwinm(5, 3, 3, 16, 27));
+		E(e, ppc_rlwinm(5, 3, 3, 14, 27)); /* ((pc >> 1) & (AREC_JL_SIZE - 1)) * 16 */
 		E(e, ppc_add(4, 4, 5));
 		E(e, ppc_lwz(5, 4, 0));
 		E(e, ppc_cmplw(0, 5, 3));
@@ -1022,15 +992,11 @@ static void emit_call(struct em *e, const struct ai *x, unsigned P)
 
 	if (!x->call_ro)
 		flags_to_mem_cr(e, F_ALL); /* las que no dejó la instrucción que las fijó (no debería pasar) */
-	guest_store_all(e);
-	cyc_store(e, P + 1);
-	E(e, ppc_mr(3, RST));
 	li32(e, 4, x->raw);
 	li32(e, 5, at);
 	li32(e, 6, e->strict ? e->rem_max[e->i] : 0xFFFFu);
-	call_fn(e, AH_CALL);
-	guest_load_all(e);
-	cyc_load(e, P + 1);
+	E(e, ppc_li(7, (int32_t)(P + 1)));
+	bl_abs(e, e->j->ent_call);
 	E(e, ppc_cmpwi(0, 3, 0));
 	bc_to(e, BO_F, CRB(0, EQ), ex);
 	{
@@ -1285,6 +1251,9 @@ static void emit_dp(struct em *e, const struct ai *x)
 
 	/* resultado: con S o con rd = r15, en r3; si no, directo en el registro guest */
 	rt = (s || x->rd == 15 || test) ? 3u : G(x->rd);
+	/* con S, directo en el registro guest si no es uno de los operandos (las banderas los necesitan después) */
+	if (s && !test && x->rd != 15 && (!uses_rn || G(x->rd) != ra) && (bimm >= 0 || G(x->rd) != rb))
+		rt = G(x->rd);
 
 	/* inmediatos: llevarlos a registro si la operación no tiene forma con inmediato */
 	if (bimm >= 0) {
@@ -1336,9 +1305,9 @@ static void emit_dp(struct em *e, const struct ai *x)
 		}
 		/* SUB/CMP con S e inmediato: la resta en 64 bits y las vistas con inmediato */
 		if (s && (op == 2 || op == 10) && v <= 0x8000) {
-			E(e, ppc_addi(3, ra, -(int32_t)v));
-			E(e, ppc_clrldi(3, 3, 32));
-			flags_sub(e, ra, 0, (int64_t)v, 3);
+			E(e, ppc_addi(rt, ra, -(int32_t)v));
+			E(e, ppc_clrldi(rt, rt, 32));
+			flags_sub(e, ra, 0, (int64_t)v, rt);
 			goto store_result;
 		}
 		li32(e, 6, v);
@@ -1368,38 +1337,34 @@ static void emit_dp(struct em *e, const struct ai *x)
 		break;
 	case 2: case 10: /* SUB, CMP */
 		E(e, ppc_subf(rt, rb, ra));
-		if (s) {
-			E(e, ppc_clrldi(3, 3, 32));
-			flags_sub(e, ra, rb, -1, 3);
-		} else {
-			E(e, ppc_clrldi(rt, rt, 32));
-		}
+		E(e, ppc_clrldi(rt, rt, 32));
+		if (s)
+			flags_sub(e, ra, rb, -1, rt);
 		goto store_result;
 	case 3: /* RSB */
 		E(e, ppc_subf(rt, ra, rb));
-		if (s) {
-			E(e, ppc_clrldi(3, 3, 32));
-			flags_sub(e, rb, ra, -1, 3);
-		} else {
-			E(e, ppc_clrldi(rt, rt, 32));
-		}
+		E(e, ppc_clrldi(rt, rt, 32));
+		if (s)
+			flags_sub(e, rb, ra, -1, rt);
 		goto store_result;
 	case 4: case 11: /* ADD, CMN */
 		if (s) {
+			const unsigned i = e->i, need = e->need_flags[i], need_cond = e->need_cond[i];
+			const int wantC = NEEDC(C_CSCC | C_HILS) || (need & F_C) || e->need_cdata[i];
+			const int wantV = NEEDC(C_VSVC | C_GELT | C_GTLE) || (need & F_V);
+
 			E(e, ppc_add(8, ra, rb)); /* 64 bits: el acarreo en el bit 32 */
-			E(e, ppc_clrldi(3, 8, 32));
-			E(e, ppc_eqv(5, ra, rb));
-			E(e, ppc_xor(9, ra, 3));
-			E(e, ppc_and(5, 5, 9));
+			E(e, ppc_clrldi(rt, 8, 32));
+			if (wantV || e->mat[i]) {
+				E(e, ppc_eqv(5, ra, rb));
+				E(e, ppc_xor(9, ra, rt));
+				E(e, ppc_and(5, 5, 9));
+			}
 			{
 				/* acarreo: cmplw res, a → LT = C; V en cr4 */
-				const unsigned i = e->i, need = e->need_flags[i], need_cond = e->need_cond[i];
-				const int wantC = NEEDC(C_CSCC | C_HILS) || (need & F_C) || e->need_cdata[i];
-				const int wantV = NEEDC(C_VSVC | C_GELT | C_GTLE) || (need & F_V);
-
-				E(e, ppc_cmpwi(2, 3, 0));
+				E(e, ppc_cmpwi(2, rt, 0));
 				if (wantC)
-					E(e, ppc_cmplw(3, 3, ra));
+					E(e, ppc_cmplw(3, rt, ra));
 				if (wantV)
 					E(e, ppc_cmpwi(4, 5, 0));
 				e->sc_hi = e->sc_lt = e->sc_gt = -1;
@@ -1411,7 +1376,7 @@ static void emit_dp(struct em *e, const struct ai *x)
 				e->in_mem = 0;
 				if (e->mat[i]) {
 					E(e, ppc_rldicl(8, 8, 32, 63));
-					nz_gpr(e, 7, 3);
+					nz_gpr(e, 7, rt);
 					store_flags(e, 7, 8, 5);
 					e->in_mem = F_ALL;
 				}
@@ -1581,22 +1546,29 @@ static void emit_mem(struct em *e, const struct ai *x, unsigned P)
 	const unsigned mk = x->load ? (x->msz == 4 ? MK_W : x->msz == 2 ? (x->msign ? MK_SH : MK_H) : (x->msign ? MK_SB : MK_B))
 				    : (x->msz == 4 ? MK_W : x->msz == 2 ? MK_H : MK_B);
 	/* destino de la carga: r3 si va al pc o si rd = rn con escritura de vuelta (gana la carga) */
-	const unsigned dst = x->load ? ((x->rd == 15 || (x->wb && x->rd == x->rn)) ? 3u : G(x->rd)) : 0u;
+	const unsigned dst = x->load ? ((x->rd == 15 || (x->wb && x->rd == x->rn) || (x->o2 != O2_IMM && x->rd == x->rm)) ? 3u : G(x->rd)) : 0u;
 	unsigned base, off = 0, ra, rv = 0;
+
+	const int zero_off = x->o2 == O2_IMM && x->imm == 0;
+	int wb = x->wb;
 
 	base = rget(e, x, x->rn, 4);
 	if (x->o2 != O2_IMM)
 		off = shift_imm(e, 5, G(x->rm), x->sht, x->sha);
-	/* nb = base ± desplazamiento en r11 (escritura de vuelta); ra = dirección del acceso */
-	if (x->o2 == O2_IMM) {
-		const int32_t d = x->up ? (int32_t)x->imm : -(int32_t)x->imm;
-
-		E(e, ppc_addi(11, base, d));
+	/* nb = base ± desplazamiento en r11 (escritura de vuelta); ra = dirección del acceso (32 bits bajos válidos) */
+	if (zero_off) {
+		wb = 0; /* la base no cambia */
+		ra = base;
 	} else {
-		E(e, x->up ? ppc_add(11, base, off) : ppc_subf(11, off, base));
+		if (x->o2 == O2_IMM) {
+			const int32_t d = x->up ? (int32_t)x->imm : -(int32_t)x->imm;
+
+			E(e, ppc_addi(11, base, d));
+		} else {
+			E(e, x->up ? ppc_add(11, base, off) : ppc_subf(11, off, base));
+		}
+		ra = x->pre ? 11u : base; /* sin pre, la base es G(rn): no cambia hasta la escritura de vuelta */
 	}
-	E(e, ppc_clrldi(11, 11, 32));
-	ra = x->pre ? 11u : base; /* sin pre, la base es G(rn): no cambia hasta la escritura de vuelta */
 	if (!x->load)
 		rv = x->rd == 15 ? (li32(e, 10, x->pcv + 4), 10u) : G(x->rd);
 
@@ -1629,8 +1601,8 @@ static void emit_mem(struct em *e, const struct ai *x, unsigned P)
 	}
 	bind(e, join);
 	/* escritura de vuelta y destino (si rd = rn gana la carga) */
-	if (x->wb)
-		E(e, ppc_mr(G(x->rn), 11));
+	if (wb)
+		E(e, ppc_clrldi(G(x->rn), 11, 32));
 	if (x->load && dst == 3 && x->rd != 15)
 		E(e, ppc_mr(G(x->rd), 3));
 
@@ -1641,8 +1613,6 @@ static void emit_mem(struct em *e, const struct ai *x, unsigned P)
 
 		e->sec = SEC_COLD;
 		bind(e, cold);
-		E(e, ppc_std(11, RST, (int32_t)offsetof(struct acore, jit_spill)));
-		cyc_store(e, P + 1);
 		E(e, ppc_clrldi(4, ra, 32));
 		if (x->load) {
 			E(e, ppc_li(5, (int32_t)mk));
@@ -1650,10 +1620,8 @@ static void emit_mem(struct em *e, const struct ai *x, unsigned P)
 			E(e, ppc_mr(5, rv));
 			E(e, ppc_li(6, (int32_t)mk));
 		}
-		E(e, ppc_mr(3, RST));
-		call_fn(e, x->load ? AH_RD : AH_WR);
-		E(e, ppc_ld(11, RST, (int32_t)offsetof(struct acore, jit_spill)));
-		cyc_load(e, P + 1);
+		E(e, ppc_li(7, (int32_t)(P + 1)));
+		bl_abs(e, x->load ? e->j->ent_rd : e->j->ent_wr);
 		if (x->load) {
 			/* bit 32: hay que salir después de la instrucción (una IRQ que levantó la lectura) */
 			E(e, ppc_srdi(10, 3, 32));
@@ -1667,8 +1635,8 @@ static void emit_mem(struct em *e, const struct ai *x, unsigned P)
 			b_to(e, join);
 			bind(e, mx);
 			if (!x->ends) {
-				if (x->wb)
-					E(e, ppc_mr(G(x->rn), 11));
+				if (wb)
+					E(e, ppc_clrldi(G(x->rn), 11, 32));
 				if (dst == 3 && x->rd != 15)
 					E(e, ppc_mr(G(x->rd), 3));
 				emit_cold_exit_mem(e, live, (x->addr + x->size) | x->thumb, P + x->cyc, e->ipend);
@@ -1679,8 +1647,8 @@ static void emit_mem(struct em *e, const struct ai *x, unsigned P)
 			E(e, ppc_cmpwi(0, 3, 0));
 			bc_to(e, BO_T, CRB(0, EQ), join);
 			bind(e, mx);
-			if (x->wb)
-				E(e, ppc_mr(G(x->rn), 11));
+			if (wb)
+				E(e, ppc_clrldi(G(x->rn), 11, 32));
 			emit_cold_exit_mem(e, live, (x->addr + x->size) | x->thumb, P + x->cyc, e->ipend);
 		}
 		e->sec = save;
@@ -1759,15 +1727,14 @@ static void emit_block(struct em *e, const struct ai *x, unsigned P)
 
 		e->sec = SEC_COLD;
 		bind(e, cold);
-		guest_store_all(e);
-		cyc_store(e, P + 1);
-		E(e, ppc_mr(3, RST));
 		li32(e, 4, x->raw & (x->thumb ? 0xFFFFu : 0xFFFFFFFFu));
 		li32(e, 5, x->addr | x->thumb);
 		li32(e, 6, e->strict ? (uint32_t)e->rem_max[e->i] : 0xFFFFu);
-		call_fn(e, AH_CALL);
-		guest_load_all(e);
-		cyc_load(e, P + x->cyc);
+		/* r29 queda para que r29 + P + cyc sea c->cycles: K = P + cyc (el intérprete suma la captación y el resto) */
+		E(e, ppc_li(7, (int32_t)(P + 1)));
+		bl_abs(e, e->j->ent_call);
+		if (x->cyc > 1)
+			E(e, ppc_addis(RCYC, RCYC, -(int32_t)(x->cyc - 1)));
 		E(e, ppc_cmpwi(0, 3, 0));
 		if (!pcload)
 			bc_to(e, BO_T, CRB(0, EQ), join);
@@ -2017,7 +1984,7 @@ static int emit_try(struct arec *j, const struct ai *ins, unsigned n, struct abl
 			const uint32_t at = final_pos(e, f->sec, f->at);
 			int64_t d;
 
-			if (f->kind == 2) {
+			if (f->kind == 2 || f->kind == 4) {
 				d = ((int64_t)f->lab - (int64_t)(e->base + at)) * 4;
 				dst[at] = (dst[at] & ~0x03FFFFFCu) | ((uint32_t)d & 0x03FFFFFCu);
 				continue;
@@ -2116,6 +2083,60 @@ int arec_emit_common(struct arec *j)
 	p[n++] = ppc_lwz(0, 1, 8);
 	p[n++] = ppc_mtcrf(0x38, 0);
 	p[n++] = PPC_BLR;
+
+	/* Caminos lentos compartidos: los llama el camino frío de cada acceso con bl (LR libre en el código generado).
+	 * Entrada: r4 = dirección, r7 = K (ciclos del bloque hasta la captación de la instrucción: c->cycles = límite +
+	 * (r29 >> 16) + K, como los deja el intérprete), y según la rutina r5/r6. Guardan r11 (la escritura de vuelta del
+	 * acceso), r7 y LR en c->jit_spill; dejan r29 como corresponde al c->cycles que haya dejado el ayudante. */
+	{
+		const int32_t SP0 = (int32_t)offsetof(struct acore, jit_spill);
+		const unsigned kinds[3] = { AH_RD, AH_WR, AH_CALL };
+		uint32_t *ents[3] = { &j->ent_rd, &j->ent_wr, &j->ent_call };
+
+		for (unsigned q = 0; q < 3; q++) {
+			*ents[q] = n;
+			p[n++] = ppc_mflr(0);
+			p[n++] = ppc_std(0, RST, SP0 + 16);
+			p[n++] = ppc_std(11, RST, SP0);
+			p[n++] = ppc_std(7, RST, SP0 + 8);
+			if (kinds[q] == AH_CALL) /* el intérprete trabaja con los registros en memoria */
+				for (unsigned r = 0; r < 15; r++)
+					p[n++] = ppc_stw(G(r), RST, OFF_R(r));
+			p[n++] = ppc_sradi(8, RCYC, 16);
+			p[n++] = ppc_ld(9, RST, OFF_UNTIL);
+			p[n++] = ppc_add(8, 8, 9);
+			p[n++] = ppc_add(8, 8, 7);
+			p[n++] = ppc_std(8, RST, OFF_CYCLES);
+			p[n++] = ppc_mr(3, RST);
+			{
+				const uint64_t target = j->c->jit_fn[kinds[q]];
+				const int64_t d = (int64_t)(target - (uint64_t)(uintptr_t)(p + n));
+
+				if (!j->cfg.far_calls && j->can_exec && d > -0x2000000 && d < 0x2000000) {
+					p[n++] = ppc_bl((int32_t)d);
+				} else {
+					p[n++] = ppc_ld(0, RST, OFF_FN(kinds[q]));
+					p[n++] = ppc_mtctr(0);
+					p[n++] = PPC_BCTRL;
+				}
+			}
+			if (kinds[q] == AH_CALL)
+				for (unsigned r = 0; r < 15; r++)
+					p[n++] = ppc_lwz(G(r), RST, OFF_R(r));
+			p[n++] = ppc_ld(7, RST, SP0 + 8);
+			p[n++] = ppc_ld(8, RST, OFF_CYCLES);
+			p[n++] = ppc_ld(9, RST, OFF_UNTIL);
+			p[n++] = ppc_subf(8, 9, 8);
+			p[n++] = ppc_subf(8, 7, 8);
+			p[n++] = ppc_sldi(8, 8, 16);
+			p[n++] = ppc_rldimi(8, RCYC, 0, 48);
+			p[n++] = ppc_mr(RCYC, 8);
+			p[n++] = ppc_ld(11, RST, SP0);
+			p[n++] = ppc_ld(0, RST, SP0 + 16);
+			p[n++] = ppc_mtlr(0);
+			p[n++] = PPC_BLR;
+		}
+	}
 	j->code_used = n;
 	j->code_base_used = n;
 	return (int)n;

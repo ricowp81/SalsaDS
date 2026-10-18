@@ -4,6 +4,26 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-18 — Recompilador del ARM9 (Fase 4)
+
+- **El ARM9 corre con un recompilador ARMv5TE (ARM y Thumb) → PowerPC64** propio (`src/jit/arec*`, conectado a la máquina en
+  `src/core/jit.c`): bloques por dirección y estado, enlace directo, tabla de destinos indirectos, presupuesto de ciclos en el
+  prólogo, banderas NZCV como comparaciones en cr2–cr4 (en memoria solo donde las lee una llamada al intérprete o una salida,
+  con vista adelante del código de destino), ruta rápida por una tabla de páginas de 16 KB (RAM, WRAM, DTCM, ITCM) y lenta por
+  el bus, invalidación por escrituras a código (bus, ITCM, DMA, HLE), CP15/MSR/SWI/LDRD/SWP… por el intérprete desde el bloque.
+  El ARM7 sigue con el intérprete. Diseño, pruebas y números en `docs/fase4.md`.
+- **Correcto contra el intérprete en qemu-ppc64**: 800 programas al azar de ARM y Thumb y casos dirigidos (`test_arec`); las 12
+  ROMs propias con `--jit` y con `--lockstep` (otra máquina con el intérprete, comparadas después de cada bloque); New Super
+  Mario Bros., Mario Kart DS y Super Mario 64 DS 1500 cuadros en `--lockstep` **sin diferencias** (99, 53 y 56 M comparaciones).
+- Modo rápido (el de la PS3): un bloque puede pasarse del final del tramo; para que eso no rompa las esperas por tiempo, los
+  desbordes de temporizadores vencidos se atienden al leer o escribir un temporizador (la ROM `irq` fallaba sin eso; con el
+  intérprete ningún resultado cambia).
+- **Paquete «SalsaDS JIT núcleo» (SLDS00009)**: `build/salsads-nucleo-jit/salsads-nucleo-jit.pkg` (`tests/phase4/nucleo-jit`),
+  con la línea `DATO jit` y el ARM9 en `DATO desglose`. En RPCS3 corre el respaldo (intérprete) y da `RESULTADO nucleo: OK`.
+  **Sin medir en la PS3**: la meta es el ARM9 bajo ~8 ms por cuadro (44–49 ms con el intérprete).
+- Pendiente: medir en la consola; el ARM7 en el recompilador; en línea las llamadas al intérprete frecuentes (CP15 de caché,
+  SWP, MRS/MSR); caché de código más grande o con desalojo parcial (SM64DS usa 2,8 de 4 MB en 1500 cuadros).
+
 ## 2026-10-18 — Fidelidad del 3D (Fase 3.3)
 
 - **La estrella de «Touch to start» de Super Mario 64 DS**: dos errores del motor de geometría (`gx.c`). VTX_DIFF sumaba la

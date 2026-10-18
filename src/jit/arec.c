@@ -23,6 +23,43 @@ static int dbg_left = -1;
 #define MAX_LINKS 65536u
 #define LIVE_FLAGS(r) ((unsigned)((r) >> 60) & 15u)
 
+const char *const arec_call_kind_name[AREC_CALL_KINDS] = {
+	"MRS", "MSR", "SWI", "CP15", "LDRD/STRD", "SWP", "Q/SMUL", "LDM/STM^", "LDM/STM lento", "condicional con S",
+	"indefinida", "SWI Thumb", "Thumb lento", "otra",
+};
+
+static unsigned call_kind(uint32_t insn, int thumb)
+{
+	if (thumb) {
+		if ((insn >> 8) == 0xDF)
+			return AREC_CK_TH_SWI;
+		if ((insn >> 12) == 0xC || (insn >> 12) == 0xB)
+			return AREC_CK_TH_SLOW;
+		return AREC_CK_OTHER;
+	}
+	if ((insn >> 28) == 0xF)
+		return AREC_CK_UNDEF;
+	if ((insn & 0x0F000000u) == 0x0F000000u)
+		return AREC_CK_SWI;
+	if ((insn & 0x0F000010u) == 0x0E000010u)
+		return AREC_CK_CP15;
+	if ((insn & 0x0FBF0FFFu) == 0x010F0000u)
+		return AREC_CK_MRS;
+	if ((insn & 0x0DB0F000u) == 0x0120F000u)
+		return AREC_CK_MSR;
+	if ((insn & 0x0E0000D0u) == 0x000000D0u)
+		return AREC_CK_LDRD;
+	if ((insn & 0x0FB00FF0u) == 0x01000090u)
+		return AREC_CK_SWP;
+	if ((insn & 0x0F900090u) == 0x01000080u || (insn & 0x0F900FF0u) == 0x01000050u)
+		return AREC_CK_QDSP;
+	if ((insn & 0x0E000000u) == 0x08000000u)
+		return (insn & (1u << 22)) ? AREC_CK_BLOCK_S : AREC_CK_BLOCK_SLOW;
+	if ((insn >> 28) != 0xE)
+		return AREC_CK_FLAGCOND;
+	return AREC_CK_OTHER;
+}
+
 /* ---- ayudantes que llama el código generado -------------------------------------------------------------- */
 
 static int must_exit(struct acore *c, struct arec *j)
@@ -110,6 +147,7 @@ static uint32_t h_call(struct acore *c, uint32_t insn, uint32_t at, uint32_t rem
 	const uint32_t r15 = addr + (thumb ? 4u : 8u);
 
 	j->pub.st.callouts++;
+	j->pub.st.call_by[call_kind(insn, thumb)]++;
 	j->exit_req = 0;
 	c->cpsr = (c->cpsr & 0x0FFFFFFFu & ~ACORE_T) | (c->jit_nzcv & 0xF0000000u) | (thumb ? ACORE_T : 0u);
 	c->r[15] = r15;

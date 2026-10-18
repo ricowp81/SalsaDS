@@ -22,7 +22,7 @@ Cifras en MB. **Previsto** = estimación de diseño (todavía no hay núcleo);
 | Tablas de páginas de punteros (sin fastmem) | 0,5 | | Por regiones; VRAM por bancos de 16 KB o más |
 | Cartucho (ROM) | 128 | | Hasta 512 MB de ROM física; tope práctico por decidir. Fuera del heap de newlib, en páginas de 1 MB (`docs/cell-desde-salsa64.md` §5) |
 | Caché del recompilador ARM → PPC64 | 32 | | Techo útil: `bl` alcanza ±32 MB (Fase 4). La prueba de la Fase 0.7 usa 4 MB (cola NOBITS del segmento de texto: se descuenta de la memoria de usuario) |
-| Estado del recompilador | 8 | | Mapa de bloques, banderas de código, enlaces |
+| Estado del recompilador | 8 | ≈ 12 (Fase 4) | Tablas de páginas de lectura y escritura (4 MB), páginas reales, físicas y su lista inversa (4 MB), 16 384 bloques (≈ 3,9 MB), 65 536 enlaces, destinos indirectos (256 KB), mapa de líneas de 64 B (66 KB); la caché de código es la de 4 MB de la cola del texto |
 | Búfer de comandos RSX + memoria mapeada | 16 | | `rsxkit_init` |
 | Registro de escrituras de video por línea (cuadro) | 1 | | Para los SPEs (2D/3D); doble búfer |
 | Texturas decodificadas (3D) | 8 | | |

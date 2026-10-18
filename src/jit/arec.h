@@ -30,6 +30,14 @@
 
 struct arec;
 
+/* Clases de instrucciones que ejecuta el intérprete desde un bloque (para las estadísticas). */
+enum {
+	AREC_CK_MRS, AREC_CK_MSR, AREC_CK_SWI, AREC_CK_CP15, AREC_CK_LDRD, AREC_CK_SWP, AREC_CK_QDSP, AREC_CK_BLOCK_S,
+	AREC_CK_BLOCK_SLOW, AREC_CK_FLAGCOND, AREC_CK_UNDEF, AREC_CK_TH_SWI, AREC_CK_TH_SLOW, AREC_CK_OTHER,
+	AREC_CALL_KINDS
+};
+extern const char *const arec_call_kind_name[AREC_CALL_KINDS];
+
 struct arec_cfg {
 	void *code;          /* memoria escribible y ejecutable para el código generado */
 	size_t code_bytes;
@@ -70,6 +78,7 @@ struct arec_stats {
 	uint64_t cold_flags;      /* banderas materializadas desde el CR en un camino frío */
 	uint64_t compile_ns;      /* tiempo traduciendo (si hay reloj) */
 	uint64_t bad_blocks;      /* bloques descartados por un error del análisis de banderas (deberían ser 0) */
+	uint64_t call_by[AREC_CALL_KINDS]; /* llamadas al intérprete por clase (arec_call_kind_name) */
 };
 
 struct arec_pub {

@@ -109,7 +109,7 @@ struct ajl {
 	uint32_t pad;
 	uint64_t code;      /* dirección del bloque */
 };
-#define AREC_JL_SIZE 4096u
+#define AREC_JL_SIZE 16384u
 
 #define AREC_HASH 16384u
 #define AREC_BUCKET_SHIFT 10u
@@ -123,6 +123,7 @@ struct arec {
 	uint32_t *code;      /* caché de código */
 	size_t code_words, code_used, code_base_used; /* code_base_used: trampolín y rutinas comunes */
 	uint32_t ent_enter, ent_exit;                  /* índices de las rutinas comunes */
+	uint32_t ent_rd, ent_wr, ent_call;             /* caminos lentos compartidos (llamadas con bl desde los bloques) */
 	uint64_t enter_opd[3];                         /* descriptor ELFv1 de la entrada */
 
 	struct ablock *blocks;

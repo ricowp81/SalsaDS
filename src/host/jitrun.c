@@ -259,6 +259,11 @@ void hj_print_stats(struct nds *n)
 	       (unsigned long long)s->no_code, (unsigned long long)s->slow_rd, (unsigned long long)s->slow_wr,
 	       (unsigned long long)s->code_wr, (unsigned long long)s->inval_blocks, (unsigned long long)s->flushes,
 	       (unsigned long long)s->cold_flags);
+	printf("recompilador, llamadas al intérprete por clase:");
+	for (int k = 0; k < AREC_CALL_KINDS; k++)
+		if (s->call_by[k])
+			printf(" %s %llu;", arec_call_kind_name[k], (unsigned long long)s->call_by[k]);
+	printf("\n");
 	if (ref)
 		printf("LOCKSTEP: %s, %llu comparaciones, %llu tramos\n", ls_failed ? "FALLO" : "sin diferencias",
 		       (unsigned long long)ls_checks, (unsigned long long)ls_slices);
