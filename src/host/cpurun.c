@@ -71,6 +71,16 @@ static uint8_t *slurp(const char *path, size_t *len)
 	return buf;
 }
 
+/* ROM por fragmentos (--rom-paged): lectura del archivo bajo demanda. */
+static int file_rd(void *user, uint64_t off, uint8_t *dst, size_t len)
+{
+	FILE *f = user;
+
+	if (fseek(f, (long)off, SEEK_SET) != 0)
+		return -1;
+	return (int)fread(dst, 1, len, f);
+}
+
 static double now(void)
 {
 	struct timespec ts;
@@ -498,6 +508,10 @@ int main(int argc, char **argv)
 	double t0, t1;
 	int rc_gfx = 0;
 	int jit_nolink = 0, jit_far = 0, jit_nojl = 0;
+	unsigned pg_shift = 18;           /* --rom-paged PAGE_KB,CACHE_KB: fuerza fragmentos (por omisión 256 KB y 32 MB) */
+	size_t pg_cache = (size_t)32 << 20, whole_max = (size_t)64 << 20; /* --rom-whole-max MB */
+	int force_paged = 0;
+	FILE *romf = NULL;
 
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	for (int i = 1; i < argc; i++) {
@@ -637,6 +651,17 @@ int main(int argc, char **argv)
 			jit_nojl = 1;
 		else if (!strcmp(argv[i], "--lockstep"))
 			lockstep = 1;
+		else if (!strcmp(argv[i], "--rom-paged") && i + 1 < argc) {
+			unsigned pk = 256, ck = 32768;
+
+			sscanf(argv[++i], "%u,%u", &pk, &ck);
+			pg_shift = 0;
+			while ((1u << pg_shift) < pk * 1024u)
+				pg_shift++;
+			pg_cache = (size_t)ck * 1024u;
+			force_paged = 1;
+		} else if (!strcmp(argv[i], "--rom-whole-max") && i + 1 < argc)
+			whole_max = (size_t)strtoul(argv[++i], NULL, 0) << 20;
 		else if (!strcmp(argv[i], "--peek") && i + 1 < argc && npeek < 8)
 			peek[npeek++] = strtoul(argv[++i], NULL, 0);
 		else
@@ -647,8 +672,20 @@ int main(int argc, char **argv)
 				"[--keys HEX] [--touch X,Y] [--screens FILE.ppm] [--ref] [--vs-ref] [--expect] [--same-ab] [--unmapped] [--peek ADDR] [--save FILE | --save-size N] ROM.nds\n");
 		return 2;
 	}
-	rom = slurp(rom_path, &len);
-	if (!rom) {
+	romf = fopen(rom_path, "rb");
+	if (romf) {
+		fseek(romf, 0, SEEK_END);
+		len = (size_t)ftell(romf);
+		fseek(romf, 0, SEEK_SET);
+	}
+	if (romf && (force_paged || len > whole_max)) {
+		rom = NULL;
+	} else {
+		if (romf)
+			fclose(romf), romf = NULL;
+		rom = slurp(rom_path, &len);
+	}
+	if (!rom && !romf) {
 		fprintf(stderr, "no puedo leer %s\n", rom_path);
 		return 2;
 	}
@@ -683,11 +720,16 @@ int main(int argc, char **argv)
 	} else if (jit_mode && hj_attach(&M, jit_mode == 2, jit_nolink, jit_far, jit_nojl, NULL)) {
 		return 2;
 	}
-	if (nds_load_rom(&M, rom, len) || nds_boot_direct(&M)) {
+	if (romf)
+		fprintf(stderr, "núcleo: ROM por fragmentos (%zu bytes, páginas de %u KB, caché %zu KB)\n", len, 1u << (pg_shift - 10),
+			pg_cache >> 10);
+	if ((romf ? nds_load_rom_paged(&M, file_rd, romf, len, pg_shift, pg_cache) : nds_load_rom(&M, rom, len)) ||
+	    nds_boot_direct(&M)) {
 		fprintf(stderr, "ROM inválida\n");
 		return 2;
 	}
-	if (lockstep && (nds_load_rom(&R, rom, len) || nds_boot_direct(&R)))
+	if (lockstep && ((romf ? nds_load_rom_paged(&R, file_rd, romf, len, pg_shift, pg_cache) : nds_load_rom(&R, rom, len)) ||
+			 nds_boot_direct(&R)))
 		return 2;
 	if (save_path) {
 		size_t sl;
@@ -910,6 +952,14 @@ int main(int argc, char **argv)
 			printf("planificador: %.1f tramos, %.1f saltos ociosos y %.1f eventos por cuadro; %.1f us por cuadro\n",
 			       (double)M.st.slices / (double)frames, (double)M.st.jumps / (double)frames,
 			       (double)M.st.events / (double)frames, (t1 - t0) * 1e6 / (double)frames);
+		if (M.cart.paged) {
+			uint64_t acc, miss, ra;
+
+			nds_rom_stats(&M, &acc, &miss, &ra);
+			printf("rom-paged: %llu ventanas, %llu fallos (%.3f por cuadro), %llu páginas por adelantado, %llu errores\n",
+			       (unsigned long long)acc, (unsigned long long)miss, (double)miss / (double)(frames ? frames : 1),
+			       (unsigned long long)ra, (unsigned long long)M.cart.pg.errs);
+		}
 		if (gxh_on)
 			printf("gx-hash: %llu cuadros de geometría, %016llx\n", (unsigned long long)gxh_n, (unsigned long long)gxh_all);
 		if (stats) {

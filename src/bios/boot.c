@@ -69,6 +69,19 @@ static void load_bin(struct nds *n, int cpu, uint32_t addr, const uint8_t *src, 
 	}
 }
 
+/* Copia un binario de la ROM (entera o por fragmentos) a la memoria de la CPU, en trozos de 4 KB. */
+static void load_bin_rom(struct nds *n, int cpu, uint32_t addr, uint32_t off, uint32_t size)
+{
+	uint8_t tmp[4096];
+
+	for (uint32_t i = 0; i < size; i += sizeof tmp) {
+		const uint32_t k = size - i < sizeof tmp ? size - i : (uint32_t)sizeof tmp;
+
+		nds_cart_pread(&n->cart, off + i, tmp, k);
+		load_bin(n, cpu, addr + i, tmp, k);
+	}
+}
+
 int nds_boot_direct(struct nds *n)
 {
 	const uint8_t *rom = n->cart.rom;
@@ -92,8 +105,8 @@ int nds_boot_direct(struct nds *n)
 	if ((uint64_t)a9_off + a9_size > len || (uint64_t)a7_off + a7_size > len)
 		return -1;
 
-	load_bin(n, NDS_CPU9, a9_ram, rom + a9_off, a9_size);
-	load_bin(n, NDS_CPU7, a7_ram, rom + a7_off, a7_size);
+	load_bin_rom(n, NDS_CPU9, a9_ram, a9_off, a9_size);
+	load_bin_rom(n, NDS_CPU7, a7_ram, a7_off, a7_size);
 	memcpy(ram + (0x027FFE00u & (NDS_RAM_SIZE - 1)), rom, 0x170);
 	memcpy(ram + (0x027FFC80u & (NDS_RAM_SIZE - 1)), user, 0x70);
 	wr32le(ram + (0x027FF800u & (NDS_RAM_SIZE - 1)), id);

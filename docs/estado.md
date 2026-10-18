@@ -4,6 +4,12 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-18 — ROM por fragmentos (fase48)
+
+- `src/core/cart.c`: `nds_load_rom_paged` lee la ROM por páginas (256 KB en la PS3, caché LRU de 32 MB, lectura adelantada síncrona de la página siguiente en acceso secuencial); cabecera, ARM9/ARM7 se leen al inicio sin caché. `nds_load_rom` (entera) no cambia. El host y `tests/phase1/nucleo/main.c` eligen fragmentos si la ROM pasa de 64 MB (`ROM_WHOLE_MAX_MB`) o con `/dev_hdd0/salsads/rom-paged`; host: `--rom-paged PAGE_KB,CACHE_KB`, `--rom-whole-max MB`. Presupuesto en `memory-budget.md`.
+- Prueba: NSMB, SM64DS y MKDS, 600 cuadros, páginas de 4 KB con caché de 64 KB y de 256 KB con 2 MB: misma imagen (md5) y mismo estado de las CPUs que con la ROM entera. Fallos por cuadro (1800 cuadros, 256 KB, 2 MB): NSMB 0,017, SM64DS 0,010, MKDS 0,014 (10–30 páginas en total, la mayoría de la carga inicial).
+- Sin probar en la PS3: ninguna ROM de más de 64 MB (no hay respaldo a mano); la lectura por adelantado es síncrona (hilo 1 / asíncrona queda abierta). `test-host` verde (LE, BE y SAN).
+
 ## 2026-10-18 — Pantallas de carga: sondeo del cartucho (fase46)
 
 - **Medido en el host** (NSMB, partida del autor): una carga de ~60 cuadros (título, cuadros 183–245) y las de los cuadros 1233–1300 y 1600–1700

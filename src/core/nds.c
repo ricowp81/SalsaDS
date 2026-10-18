@@ -107,6 +107,7 @@ int nds_load_rom(struct nds *n, const uint8_t *rom, size_t len)
 	if ((uint64_t)a9_off + a9_size > len || (uint64_t)a7_off + a7_size > len)
 		return -1;
 	shift = rom[0x14];
+	nds_rom_free(n);
 	n->cart.rom = rom;
 	n->cart.size = len;
 	n->cart.capacity = shift <= 14 ? 0x20000u << shift : 0;

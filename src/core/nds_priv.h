@@ -116,6 +116,7 @@ void nds_cart_write(struct nds *n, int cpu, uint32_t off, int sz, uint32_t v);
 uint32_t nds_cart_data(struct nds *n, int cpu); /* 0x04100010 */
 void nds_cart_event(struct nds *n);
 uint32_t nds_cart_chipid(const struct nds_cart *c);
+void nds_cart_pread(struct nds_cart *c, uint32_t off, uint8_t *dst, uint32_t len); /* binarios de arranque: sin pasar por la caché */
 
 /* save.c */
 void nds_save_default(struct nds *n);
