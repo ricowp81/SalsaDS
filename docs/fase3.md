@@ -575,3 +575,31 @@ de 179 a 171, 13 de 44 a 43, 25 de 34 a 27 (con la regla vieja y el recorte nuev
 Paquete «SalsaDS núcleo» (SLDS00008) de este commit (ruta y SHA-256 en `docs/estado.md`): SM64DS en una zona de juego, NSMB en un
 nivel y MKDS en carrera; la línea `DATO raster3d` ahora trae el reparto `polígonos / aristas / píxeles`. Y mirar si siguen viéndose
 juntas en SM64DS.
+
+# Fase 3.5 — Profundidad: empates y aristas x-mayores (líneas del mapa de New Super Mario Bros.)
+
+En la PS3 el mapa del mundo 1 de New Super Mario Bros. mostraba líneas verdes horizontales sobre el parche de tierra del camino. No
+eran del 2D: están en la capa 3D. Reproducidas en el host (mapa de mundos, cuadro ≈ 8000 con un guion de teclas: `--press`, partida
+nueva y la ROM del juego fuera del repositorio) y buscadas con un depurador temporal del render de referencia (qué polígonos
+tocan un píxel y con qué profundidad):
+
+- El parche de tierra es un cuadrilátero translúcido (alfa 30, W-buffer) casi en el mismo plano que el suelo (un triángulo opaco con
+  aristas x-mayores). Con la regla anterior la w de las aristas x-mayores con perspectiva se interpolaba por la x del píxel entero
+  de la línea: la w del suelo **saltaba** de una línea a otra por hasta 0x1300 unidades (el parche va 0x1388 por delante), y en
+  algunas líneas la profundidad de los dos caía en el mismo escalón de 256 (w >> 8 de 16 bits) y la prueba «menor» fallaba: en esas
+  líneas se veía el suelo verde.
+- **Arreglo (`r3d_end_wz`)**: la w y la z de la arista x-mayor con perspectiva se toman en la **línea siguiente de su recorrido en
+  y** (`y + 1 - a.y` de `dy`), no en la x entera del píxel; los colores y las coordenadas de textura siguen por la x (no se tocan).
+  Medido contra melonDS con escenas nuevas de `gx3d`: 28/29 (suelo + cuadrilátero casi coplanar, Z y W: 1207 → 1015 y 1171 → 973
+  píxeles distintos), 32/33 (dos triángulos opacos que se cruzan: 122 → 105 y 114 → 108), 2 (107 → 96) y 25 (27 → 24); ninguna escena
+  de las 35 empeora (las otras no cambian). En el mapa real las líneas desaparecen (`salsads-cpurun` con el guion, cuadro 8100).
+- **Empate de profundidad** (escenas 26 y 27, Z y W, iguales a melonDS ahora): con «menor» y la misma profundidad, un polígono
+  **frontal** gana sobre un píxel cuya profundidad es de un polígono de **espalda** (`AT_BACK` en el búfer de atributos, bit 16: lo
+  escribe cada opaco y los translúcidos con `PA_TDEPTH`); en cualquier otro caso un empate pierde. Antes los empates siempre
+  perdían. Es la regla de melonDS medida con 8 combinaciones (cara de abajo × cara de arriba × opaco o translúcido).
+- Queda abierto: la profundidad de las aristas x-mayores sigue sin coincidir con melonDS píxel por píxel (cruces de dos planos con
+  1–2 píxeles de diferencia, escenas 28 a 34; la 34 reproduce el mapa con sus pantallas y w pero con vértices enteros y no cruza
+  igual) y el **cuadrilátero con perspectiva** de la escena 30 (solo el cuadrilátero) tiene la arista derecha y la inferior un
+  píxel más cortas que melonDS (1249 píxeles); la 31 (solo el triángulo) da 17.
+- Pruebas: `test-host` verde; `r3d_math_probe` ahora también sortea `front` y el bit `AT_BACK`; `gx3d.golden` con las escenas 26 a 34
+  y la 2 y la 25 cambiadas.

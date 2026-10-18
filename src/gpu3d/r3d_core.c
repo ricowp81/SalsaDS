@@ -819,6 +819,7 @@ R3D_SMALL uint32_t r3d_math_probe(uint32_t seed, uint32_t which)
 			p.id = prnd() & 63;
 			p.mode = prnd() & 3;
 			p.wire = (prnd() & 15) == 0;
+			p.front = prnd() & 1;
 			p.wshift = (prnd() & 3) == 0 ? 4 : 0;
 			p.attr = (p.alpha << 16) | (p.id << 24) | (p.mode << 4) | ((prnd() & 1) ? PA_TDEPTH : 0u) | ((prnd() & 7) == 0 ? PA_DEQUAL : 0u) |
 				 ((prnd() & 1) ? PA_FOG : 0u);
@@ -846,7 +847,7 @@ R3D_SMALL uint32_t r3d_math_probe(uint32_t seed, uint32_t which)
 			for (int x = 0; x < R3D_W; x++) {
 				col[x] = prnd();
 				dep[x] = prnd() & 0xFFFFFF;
-				att[x] = prnd() & 0xFFFF;
+				att[x] = prnd() & 0x1FFFF;
 			}
 			memset(&row, 0, sizeof row);
 			memset(&st, 0, sizeof st);

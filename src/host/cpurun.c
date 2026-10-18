@@ -454,7 +454,7 @@ int main(int argc, char **argv)
 	const char *holes_dump = NULL, *fdump_prefix = NULL;
 	uint64_t fdump_frame = 0;
 	const char *img3d_path = NULL;
-	struct { uint64_t frame; uint32_t keys, x, y; } press[64];
+	struct { uint64_t frame; uint32_t keys, x, y; } press[512];
 	struct { uint64_t frame; const char *file; } shot[32];
 	uint32_t npress = 0, nshot = 0;
 	int watch_cpu = 0;
@@ -519,7 +519,7 @@ int main(int argc, char **argv)
 			show_arm7 = 1;
 		else if (!strcmp(argv[i], "--trace") && i + 1 < argc)
 			trace_n = strtoull(argv[++i], NULL, 0);
-		else if (!strcmp(argv[i], "--press") && i + 1 < argc && npress < 64) {
+		else if (!strcmp(argv[i], "--press") && i + 1 < argc && npress < 512) {
 			/* CUADRO:TECLAS_HEX[:X,Y] — desde ese cuadro se mantiene ese estado de botones (y del toque) */
 			char *e;
 

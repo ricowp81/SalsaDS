@@ -4,6 +4,24 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-18 — Dos fallos de New Super Mario Bros. vistos en la PS3 (rama fase24)
+
+- **Mapa del mundo 1, líneas verdes sobre el camino de tierra: arreglado** (no era del 2D; era el 3D). El parche de tierra (cuadrilátero
+  translúcido, W-buffer) y el suelo (triángulo opaco con aristas x-mayores) están casi en el mismo plano; la w de las aristas
+  x-mayores se interpolaba por la x del píxel entero y saltaba entre líneas, de modo que en unas líneas la profundidad de los dos
+  empataba y el parche perdía. Ahora la w y la z de esas aristas siguen la y (línea siguiente), medido contra melonDS; y los
+  empates de profundidad con «menor» los gana un polígono frontal sobre uno de espalda, como melonDS. Detalle, escenas nuevas de
+  `gx3d` (26 a 34) y lo que queda abierto: `docs/fase3.md`, 3.5.
+- **Nivel 1-3, nubes del fondo como un bloque claro con bordes rectos: sin reproducir.** El host llega al mapa con un guion de
+  teclas (`--press`, ahora hasta 512 entradas; el nivel 1-1 corre, con saltos y carrera), pero para llegar al 1-3 hay que pasar el 1-1
+  y el 1-2 jugando y el guion ciego muere antes. Hace falta la partida del autor (`/dev_hdd0/salsads/saves/` en la PS3, 8 KB):
+  con ella `salsads-cpurun --save PARTIDA --press ...` y `tools/melonds-shot.py` llevan a la escena. Lo único probable sin la
+  escena: el bloque es del 3D (las plataformas en forma de hongo del nivel son 3D) y la regla de empates nueva (frontal sobre
+  espalda) podría arreglarlo; **sin confirmar**. Si no, las pistas del autor (nube solo arriba y el resto cielo) apuntan a una
+  capa que se repite en vertical o a una ventana: revisar con `tools/gfx-bisect.py` sobre el cuadro de esa escena.
+- Herramientas: `--press` admite 512 entradas (antes 64). Escenas 26 a 34 de la ROM `gx3d`.
+- Pruebas: `tools/build.sh test-host` verde; `gx3d.golden` con 35 escenas.
+
 ## 2026-10-18 — Recompilador del ARM9 (Fase 4)
 
 - **El ARM9 corre con un recompilador ARMv5TE (ARM y Thumb) → PowerPC64** propio (`src/jit/arec*`, conectado a la máquina en

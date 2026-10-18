@@ -273,3 +273,13 @@ audio real: si hay faltas con la emulación más lenta que 60 cuadros por segund
   limitada por ellas: ≈ 11 µs por línea).
 
 Documentos relacionados: `docs/memory-budget.md`, `docs/perf-log.md`, `docs/estado.md`.
+
+## 2.3 — Fallos de New Super Mario Bros. vistos en la PS3 (2026-10-18)
+
+- Las líneas verdes del mapa del mundo 1 **no son del compositor 2D**: están en la imagen de la capa 3D (se comprobó con
+  `--frame-dump`, que vuelca esa capa sola) y eran un fallo de profundidad del 3D, arreglado (`docs/fase3.md`, 3.5).
+- Las nubes del nivel 1-3 (bloque claro con bordes rectos donde la DS real pinta cielo azul y una franja de nube arriba) siguen
+  sin reproducirse en el host: hace falta la partida del autor para llegar al nivel. Hipótesis a descartar con esa escena, en
+  este orden: ¿esa zona es de la capa 3D (la regla de empates de 3.5)?, ventanas (WIN0/WIN1/OBJ), vuelta vertical del mapa de un
+  fondo de texto de 256 × 512, BGxVOFS cambiado por línea, mezcla alfa. `tools/gfx-bisect.py` y `tools/melonds-shot.py` sirven
+  para aislar la capa.
