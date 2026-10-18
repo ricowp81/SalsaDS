@@ -4,6 +4,15 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-17 — Motores 2D A y B (Fase 2.1)
+
+El compositor de la 0.5 es ahora el renderizador de las dos pantallas: registro de cambios por línea en el núcleo
+(`src/core/video.c`), `src/gpu2d/gpu2d_compose.c` (SPE y host, mismos píxeles), referencia independiente y un SPE por
+pantalla en la PS3. Fondos de texto, afines y extendidos, OBJ de todos los tipos, ventanas, mezcla, brillo, mosaico,
+paletas extendidas y modos de pantalla 0/1/2/3. Detalle, pruebas y divergencias con melonDS en `docs/fase2.md`.
+Paquete «SalsaDS núcleo» (SLDS00008) con los SPE; New Super Mario Bros. llega al menú en el host. Pendiente: medirlo en la
+PS3 real, la captura de pantalla, la capa 3D (Fase 3) y el sonido (2.2).
+
 ## 2026-10-17 — Cierre de la Fase 1 (1.3)
 
 - **Cuadro ocioso**: el planificador cortaba el tiempo en 8753 tramos por cuadro aunque las dos CPUs estuvieran en HALT; eso eran los

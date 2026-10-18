@@ -89,3 +89,7 @@ texto en pantalla usa la fuente 8x13 de X11 (dominio público) que ya trae
 El rasterizador de `tests/phase0/spe-raster3d` (núcleo, referencia, escena y
 programa SPU) es código propio; usa `lib/spukit` como biblioteca.
 
+| Fuente | Para qué | Notas |
+|---|---|---|
+| GBATEK (Martin Korth), motores 2D, fondos, OBJ, ventanas, efectos de color, DISPCNT, captura y visualización de memoria principal | `src/gpu2d/` y `src/core/video.c` (Fase 2.1) | Solo hechos de hardware; ni texto ni código |
+| melonDS 1.1 (GPL-3.0), solo ejecutado | Comparar la imagen del motor A con la de las ROMs propias (`tools/gfx-compare.py`) y medir líneas y mosaico por caja negra | **No se copió ni se leyó su código**; las fórmulas de color y el mosaico salieron de ajustar el comportamiento observado. Sin NooDS ni DeSmuME |

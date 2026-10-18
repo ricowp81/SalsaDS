@@ -572,3 +572,4 @@ Mismo título y mismo APPID que el de la 1.2, construido desde el commit 9f2a177
 7. Contrastar en una DS real las divergencias de las tablas de la 1.1, la 1.2 y la de arriba (ninguna está verificada en hardware).
 8. El intérprete en el PPE es lento (≈ 150 ns por instrucción en la PS3, del orden de 470 ciclos): el recompilador (Fase 4) sigue siendo obligatorio; mientras tanto, la ruta de memoria por llamadas a funciones es el sospechoso principal (a verificar con el perfil, no se ha tocado).
 
+La fase siguiente (motores 2D reales) está en `docs/fase2.md`.
