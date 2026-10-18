@@ -124,6 +124,7 @@ static inline uint32_t ppc_lhbrx(unsigned rt, unsigned ra, unsigned rb) { return
 static inline uint32_t ppc_sthbrx(unsigned rs, unsigned ra, unsigned rb) { return ppc_x(31, 918, rs, ra, rb); }
 static inline uint32_t ppc_ldx(unsigned rt, unsigned ra, unsigned rb) { return ppc_x(31, 21, rt, ra, rb); }
 static inline uint32_t ppc_lwzx(unsigned rt, unsigned ra, unsigned rb) { return ppc_x(31, 23, rt, ra, rb); }
+static inline uint32_t ppc_stwx(unsigned rs, unsigned ra, unsigned rb) { return ppc_x(31, 151, rs, ra, rb); }
 
 /* rlwimi ra,rs,sh,mb,me y rlwnm ra,rs,rb,mb,me (sin punto) */
 static inline uint32_t ppc_rlwimi(unsigned ra, unsigned rs, unsigned sh, unsigned mb, unsigned me)

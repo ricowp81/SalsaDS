@@ -69,6 +69,11 @@
 #include "rec_cache.h"
 #define NOJIT_FLAG SALSADS_DATA_DIR "/nucleo-jit-nojit"
 #define JIT_MARKER SALSADS_DATA_DIR "/nucleo-jit.marker"
+/* Tramo del planificador con el recompilador (ciclos del ARM9 entre los cambios de CPU; el intérprete usa 128). Cada
+ * tramo es una entrada al código generado, y lo que cuesta en la PS3 es el cambio de CPU (cachés), no las instrucciones:
+ * con tramos más largos hay menos. El número en JIT_QUANTUM_FILE (de 16 a 20000) lo cambia sin compilar otra vez. */
+#define JIT_QUANTUM 1024u
+#define JIT_QUANTUM_FILE SALSADS_DATA_DIR "/nucleo-jit-tramo"
 static int jit_on;
 #endif
 #include "carga_bin.h"
@@ -1036,6 +1041,18 @@ static void log_stats(void)
 			    (unsigned long long)((js->inval_blocks - p->inval_blocks) / n), (unsigned)live, (unsigned)(used >> 10),
 			    (unsigned)(cap >> 10), (unsigned long long)js->flushes, (unsigned long long)js->bad_blocks,
 			    (unsigned long long)js->cold_flags);
+		{
+			/* las caídas al intérprete por clase (lo que queda después de los caminos rápidos en línea) */
+			char cl[512];
+			size_t o = 0;
+
+			for (unsigned k = 0; k < AREC_CALL_KINDS && o < sizeof cl - 48; k++)
+				if (js->call_by[k] != p->call_by[k])
+					o += (size_t)snprintf(cl + o, sizeof cl - o, "%s%s %llu", o ? ", " : "", arec_call_kind_name[k],
+							      (unsigned long long)((js->call_by[k] - p->call_by[k]) / n));
+			cl[o] = 0;
+			salsads_log("DATO jit-llamadas: por cuadro y clase: %s", o ? cl : "ninguna");
+		}
 		prev_js = *js;
 	}
 #endif
@@ -1493,6 +1510,19 @@ int main(void)
 				jc.code_bytes = REC_CACHE_BYTES;
 				jc.icache_flush = salsads_rec_flush;
 				if (nds_jit_attach(nds, &jc) == 0) {
+					FILE *qf = fopen(JIT_QUANTUM_FILE, "r");
+					unsigned q = JIT_QUANTUM;
+
+					if (qf) {
+						unsigned v = 0;
+
+						if (fscanf(qf, "%u", &v) == 1 && v >= 16 && v <= 20000)
+							q = v;
+						fclose(qf);
+					}
+					nds->quantum = q;
+					salsads_log("jit: tramo del planificador de %u ciclos del ARM9 (%s)", q,
+						    q == JIT_QUANTUM ? "el de omisión" : JIT_QUANTUM_FILE);
 					jit_on = 1;
 					arec_stats(nds->jit9); /* (las estadísticas empiezan en cero) */
 					((struct arec_pub *)(void *)nds->jit9)->clock_ns = jit_clock_ns;

@@ -247,12 +247,13 @@ void hj_print_stats(struct nds *n)
 		return;
 	s = arec_stats(j);
 	arec_usage(j, &blocks, &used, &cap);
-	printf("recompilador: %llu bloques traducidos (%llu instr., %.1f palabras PPC por instr.), %u vivos, código %zu de %zu KB; "
+	printf("recompilador: %llu bloques traducidos (%llu instr., %.1f palabras PPC por instr., %.1f calientes), %u vivos, código %zu de %zu KB; "
 	       "%llu entradas, %llu enlaces; salidas: %llu pc, %llu enlace, %llu estado, %llu presupuesto, %llu tras almacenamiento; "
 	       "%llu llamadas al intérprete, %llu pasos interpretados (%llu sin código); lentos %llu lect. %llu escr.; "
 	       "%llu escrituras a código, %llu bloques invalidados, %llu vaciados; %llu banderas en frío\n",
 	       (unsigned long long)s->blocks_made, (unsigned long long)s->guest_made,
-	       s->guest_made ? (double)s->host_words / (double)s->guest_made : 0.0, blocks, used >> 10, cap >> 10,
+	       s->guest_made ? (double)s->host_words / (double)s->guest_made : 0.0,
+	       s->guest_made ? (double)s->host_hot / (double)s->guest_made : 0.0, blocks, used >> 10, cap >> 10,
 	       (unsigned long long)s->enters, (unsigned long long)s->links, (unsigned long long)s->exits_pc,
 	       (unsigned long long)s->exits_link, (unsigned long long)s->exits_state, (unsigned long long)s->exits_budget,
 	       (unsigned long long)s->mem_exits, (unsigned long long)s->callouts, (unsigned long long)s->interp_steps,

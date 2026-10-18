@@ -231,6 +231,45 @@ static uint32_t gen_arm(uint32_t addr, unsigned left)
 	const unsigned k = rn(100);
 	const uint32_t cond = arm_cond() << 28;
 
+	if (k < 5) { /* lo que el recompilador hace en línea con el intérprete de respaldo (FK_* de arec_priv.h) */
+		const unsigned rd = rn(10), rm = rn(10), q = rn(13);
+
+		switch (q) {
+		case 0:
+			return cond | 0x01000090u | (rn(2) << 22) | 12u << 16 | rd << 12 | rm;           /* SWP(B) rd, rm, [r12] */
+		case 1:
+			return cond | 0x01000090u | (rn(2) << 22) | 11u << 16 | rd << 12 | rm;           /* SWP(B) con la E/S */
+		case 2:
+		case 3: { /* LDRD / STRD con inmediato (a veces no alineado o sobre la E/S) */
+			const unsigned base = rn(5) == 0 ? 11 : 12, pre = rn(4) != 0, up = rn(2), wb = pre ? rn(4) == 0 : 0;
+			const uint32_t off = rn(4) ? rn(32) * 8 : rn(256);
+
+			return cond | pre << 24 | up << 23 | 1u << 22 | wb << 21 | base << 16 | (rn(5) * 2) << 12 |
+			       ((off >> 4) & 0xF) << 8 | (q == 2 ? 0xDu : 0xFu) << 4 | (off & 0xF);
+		}
+		case 4: /* LDRD / STRD con registro (r10: desplazamiento chico) */
+			return cond | 1u << 24 | rn(2) << 23 | 12u << 16 | (rn(5) * 2) << 12 | (rn(2) ? 0xDu : 0xFu) << 4 | 10u;
+		case 5:
+			return cond | 0x0E070F3Eu | rd << 12;                                         /* MCR p15, c7, c14, 1 */
+		case 6:
+			return cond | 0x0E070F9Au | rd << 12;                                         /* MCR p15, c7, c10, 4 */
+		case 7:
+			return cond | (rn(2) ? 0x0E190F11u : 0x0E110F10u) | rd << 12;                  /* MRC c9,c1,0 / c1,c0,0 */
+		case 8:
+			return cond | 0x010F0000u | rn(2) << 22 | rd << 12;                           /* MRS rd, CPSR / SPSR */
+		case 9: { /* MSR CPSR_c, #imm: sistema con I/F al azar, a veces IRQ (cambio de modo: el intérprete) */
+			const uint32_t mode = rn(6) ? 0x1Fu : 0x12u;
+
+			return cond | 0x0321F000u | (rnd() & 0xC0u) | mode;
+		}
+		case 10:
+			return cond | 0x0121F000u | rm;                                               /* MSR CPSR_c, rm */
+		case 11:
+			return cond | 0x016FF000u | rm;                                               /* MSR SPSR_fsxc, rm */
+		default:
+			return cond | 0x0169F000u | rm;                                               /* MSR SPSR_fc, rm */
+		}
+	}
 	if (k < 40) { /* datos */
 		const unsigned op = rn(16), s = rn(2), rd = rn(10), rnr = rn(4) ? rn(13) : 15;
 		const unsigned form = rn(3);
@@ -474,6 +513,8 @@ static int fuzz_arm_n(unsigned seed, int strict, unsigned cut)
 	for (unsigned i = 0; i <= n; i++) {
 		uint8_t b[4];
 
+		if (getenv("AREC_LIST"))
+			printf("  %08x: %08x\n", AM_CODE + 4 * i, prog[i]);
 		wr32le(b, prog[i]);
 		put_both(AM_CODE + 4 * i, b, 4);
 	}
@@ -613,6 +654,41 @@ static void test_irq_mid_block(void)
 	CHECK(same_state("IRQ a mitad de bloque", 0));
 	CHECK_EQ(MJ.c.cpsr & ACORE_MODE_MASK, ACORE_MODE_IRQ);
 	CHECK_EQ(MJ.c.r[2], 0);
+}
+
+/* MSR CPSR_c en línea que habilita la IRQ con la línea ya levantada: se toma en la instrucción siguiente. */
+static void test_msr_irq(void)
+{
+	static const uint32_t prog[] = {
+		0xE321F09Fu, /* msr cpsr_c, #0x9F (I puesto) */
+		0xE3A00001u, /* mov r0, #1 */
+		0xE3A01301u, /* mov r1, #0x04000000 */
+		0xE2811C01u, /* add r1, r1, #0x100 */
+		0xE5810000u, /* str r0, [r1] -> IRQ (enmascarada) */
+		0xE2822001u, /* add r2, r2, #1 */
+		0xE10F3000u, /* mrs r3, cpsr */
+		0xE321F01Fu, /* msr cpsr_c, #0x1F -> se toma la IRQ */
+		0xE2822001u, /* add r2, r2, #1 */
+		0xEAFFFFFEu, /* b . */
+	};
+
+	setup_both(1);
+	if (!MJ.j)
+		return;
+	load_prog(prog, 10, AM_CODE);
+	{
+		uint8_t b[4];
+
+		wr32le(b, 0xEAFFFFFEu);
+		memcpy(MJ.itcm + 0x18, b, 4);
+		memcpy(MI.itcm + 0x18, b, 4);
+	}
+	acore_set_pc(&MJ.c, AM_CODE);
+	acore_set_pc(&MI.c, AM_CODE);
+	run_both(100);
+	CHECK(same_state("MSR que habilita la IRQ", 0));
+	CHECK_EQ(MJ.c.cpsr & ACORE_MODE_MASK, ACORE_MODE_IRQ);
+	CHECK_EQ(MJ.c.r[2], 1);
 }
 
 /* El programa reescribe una instrucción que viene después en el mismo bloque y en un bucle. */
@@ -771,6 +847,7 @@ void test_arec(void)
 		return;
 	}
 	test_irq_mid_block();
+	test_msr_irq();
 	test_smc();
 	test_calls();
 	test_waits();

@@ -65,6 +65,7 @@ struct arec_stats {
 	uint64_t blocks_made;     /* bloques traducidos */
 	uint64_t guest_made;      /* instrucciones guest traducidas */
 	uint64_t host_words;      /* palabras PowerPC emitidas */
+	uint64_t host_hot;        /* de esas, en la sección caliente (lo que corre sin caminos lentos) */
 	uint64_t links;           /* enlaces parcheados */
 	uint64_t interp_steps;    /* instrucciones que corrió el intérprete desde el despachador */
 	uint64_t no_code;         /* de esas: código que no se puede traducir (fuera de RAM/ITCM/BIOS) */
