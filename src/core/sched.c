@@ -368,6 +368,7 @@ static void ev_line(struct nds *n, uint64_t t)
 		nds_video_frame_begin(n);
 	if (line == 192) {
 		nds_video_frame_end(n);
+		nds_snd_frame(n);
 		n->frames++;
 		for (int cpu = 0; cpu < 2; cpu++) {
 			if (n->io[cpu].dispstat & 0x08u)

@@ -132,6 +132,8 @@ static uint16_t rd16(struct nds *n, int cpu, uint32_t o)
 		if (o == 0x304)
 			return n->powcnt1;
 	} else {
+		if (o >= 0x400u && o < 0x520u)
+			return nds_snd_read(n, o - 0x400u);
 		switch (o) {
 		case 0x136:
 			return n->extkeyin;
@@ -287,6 +289,10 @@ static void wr16(struct nds *n, int cpu, uint32_t o, uint16_t v, uint16_t mask)
 			return;
 		}
 	} else {
+		if (o >= 0x400u && o < 0x520u) {
+			nds_snd_write(n, o - 0x400u, v, mask);
+			return;
+		}
 		switch (o) {
 		case 0x138:
 			nds_rtc_write(n, v, mask & 0xFFu);

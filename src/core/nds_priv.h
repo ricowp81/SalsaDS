@@ -43,6 +43,10 @@ void nds_video_vram_dirty(struct nds *n, uint32_t vram_off);
 void nds_video_mmem_push(struct nds *n, uint16_t px);
 void nds_video_line_start(struct nds *n, uint32_t line);
 
+/* sound.c */
+uint16_t nds_snd_read(struct nds *n, uint32_t off);
+void nds_snd_write(struct nds *n, uint32_t off, uint16_t v, uint16_t mask);
+
 /* io.c */
 uint32_t nds_io_read(struct nds *n, int cpu, uint32_t a, int sz);
 void nds_io_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v);

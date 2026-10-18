@@ -44,6 +44,8 @@ void nds_init(struct nds *n)
 	const int use_ref = n->vid.use_ref;
 	const uint32_t quantum = n->quantum;
 	const uint32_t dbg = n->dbg;
+	const struct nds_snd_ops sops = n->snd.ops;
+	const uint32_t smode = n->snd.mode;
 
 	memset(n, 0, sizeof *n);
 	n->log = log;
@@ -52,6 +54,7 @@ void nds_init(struct nds *n)
 	n->dbg = dbg;
 	n->vid.ops = vops;
 	n->vid.use_ref = use_ref;
+	n->snd.ops = sops;
 	acore_init(&n->a9, ACORE_ARM9, &nds_bus9, n);
 	acore_attach_tcm(&n->a9, n->itcm, n->dtcm);
 	acore_init(&n->a7, ACORE_ARM7, &nds_bus7, n);
@@ -67,6 +70,8 @@ void nds_init(struct nds *n)
 	nds_bios_init(n);
 	nds_sched_init(n);
 	nds_video_init(n);
+	nds_snd_init(n);
+	n->snd.mode = smode;
 }
 
 int nds_load_rom(struct nds *n, const uint8_t *rom, size_t len)

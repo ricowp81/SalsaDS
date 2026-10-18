@@ -26,6 +26,7 @@
 #include "cpu/acore.h"
 #include "gpu2d/gpu2d.h"
 #include "gpu2d/gpu2d_compose.h"
+#include "audio/snd.h"
 
 #define NDS_CPU9 0
 #define NDS_CPU7 1
@@ -232,6 +233,55 @@ struct nds_video {
 	uint16_t img[2][GPU2D_W * GPU2D_H]; /* host: RGBA5551 de los motores A y B del cuadro `last` */
 	int use_ref;        /* host: dibujar con la referencia píxel por píxel (1) o con el compositor por líneas (0) */
 	gpu2d_ctx comp;     /* espacio de trabajo del compositor del host */
+	gpu2d_stats stat_sum[2]; /* host: suma de los contadores del compositor por motor (diagnóstico) */
+	uint32_t stat_frames;
+};
+
+/* ---- Sonido (Fase 2.2): el mezclador de src/audio recibe cada cuadro las escrituras a los registros de sonido del
+ * ARM7 con su instante y genera las muestras del cuadro. Hay dos trabajos que se turnan; el resultado de uno se recoge
+ * al cerrar el cuadro siguiente (un cuadro de latencia, igual en el host y con el SPE de la PS3). */
+struct nds_snd_rgn {
+	uint64_t rd, wr; /* dirección del inicio de la región (lectura y escritura) o 0 */
+	uint32_t mask;
+	uint32_t pad;
+};
+
+struct nds_snd_job {
+	snd_ent log[SND_LOG_MAX] __attribute__((aligned(128)));
+	int16_t nat[2 * SND_TICKS_MAX] __attribute__((aligned(128)));
+	float out[2 * SND_OUT_MAX] __attribute__((aligned(128)));
+	struct nds_snd_rgn rgn[4]; /* regiones de 8 MB 4..7 del ARM7 (RAM principal y WRAM) */
+	uint32_t nlog, nticks, out_n, used;
+	uint32_t mode;      /* SND_MODE_* */
+	float ratio_adj;    /* corrección de la razón de remuestreo de este trabajo */
+};
+
+struct nds_snd_ops {
+	/* Manda el trabajo `set` al mezclador (PS3: a un SPE) ; NULL = el núcleo lo corre en el acto. */
+	void (*submit)(void *ctx, int set, struct nds_snd_job *job, snd_state *st);
+	/* Espera a que el trabajo `set` termine (si submit no es NULL). */
+	void (*wait)(void *ctx, int set);
+	/* Entrega lo que salió del trabajo recogido: la salida estéreo a 48 kHz y las muestras nativas. */
+	void (*sink)(void *ctx, const float *out, uint32_t n, const int16_t *nat, uint32_t nticks);
+	void *ctx;
+};
+
+struct nds_snd {
+	snd_state st __attribute__((aligned(128)));
+	struct nds_snd_job job[2];
+	int cur, prev; /* trabajo que se arma / el que está en vuelo (-1 = ninguno) */
+	snd_ent plog[SND_LOG_MAX]; /* escrituras todavía sin mandar */
+	uint32_t nplog, dropped;
+	uint64_t tick_sub; /* ticks ya mandados */
+	/* lo que lee el ARM7 de vuelta */
+	uint32_t cnt[SND_NCH]; /* SOUNDxCNT sin el bit 31 */
+	uint32_t busy;         /* bit c: canal c encendido; 16 y 17: capturas (lo último que dijo el mezclador + arranques) */
+	uint16_t soundcnt, bias;
+	uint8_t capcnt[2];
+	struct nds_snd_ops ops;
+	uint32_t mode;   /* SND_MODE_* (se pasa en cada trabajo, no vive en el estado que el mezclador reescribe) */
+	float ratio_adj; /* idem */
+	uint64_t tasks, applied;
 };
 
 struct nds {
@@ -239,9 +289,9 @@ struct nds {
 
 	/* memoria */
 	uint8_t itcm[ACORE_ITCM_SIZE], dtcm[ACORE_DTCM_SIZE];
-	uint8_t ram[NDS_RAM_SIZE];
-	uint8_t swram[NDS_SWRAM_SIZE];
-	uint8_t wram7[NDS_WRAM7_SIZE];
+	uint8_t ram[NDS_RAM_SIZE] __attribute__((aligned(128)));    /* alineadas: el SPE de audio las lee por DMA */
+	uint8_t swram[NDS_SWRAM_SIZE] __attribute__((aligned(128)));
+	uint8_t wram7[NDS_WRAM7_SIZE] __attribute__((aligned(128)));
 	uint8_t vram[NDS_VRAM_SIZE];
 	uint8_t pal[NDS_PAL_SIZE], oam[NDS_OAM_SIZE];
 	uint8_t bios9[NDS_BIOS9_SIZE], bios7[NDS_BIOS7_SIZE];
@@ -304,6 +354,7 @@ struct nds {
 	} st;
 	uint64_t (*prof_clock)(void);
 	struct nds_video vid;
+	struct nds_snd snd;
 	uint32_t dbg; /* NDS_DBG_*: trazas de depuración por `log` (0 = ninguna; solo el corredor del host las activa) */
 };
 
@@ -325,6 +376,13 @@ int nds_boot_direct(struct nds *n);
 void nds_run(struct nds *n, uint64_t arm9_cycles);
 /* Corre hasta que empiece el siguiente VBlank (línea 192): un cuadro. */
 void nds_run_frame(struct nds *n);
+
+/* Sonido (src/core/sound.c). `nds_snd_frame` se llama al cerrar cada cuadro de video. */
+void nds_snd_init(struct nds *n);
+void nds_snd_frame(struct nds *n);
+/* Modo del mezclador (SND_MODE_*) y corrección de la razón de remuestreo (control de deriva). */
+void nds_snd_set_mode(struct nds *n, uint32_t mode);
+void nds_snd_set_ratio_adj(struct nds *n, float adj);
 
 /* Guardado del cartucho. El tipo por omisión sale del código de juego (nds_load_rom); `nds_save_attach` carga el
  * contenido de un archivo y fija el tipo por su tamaño (0 = bien, -1 = tamaño que no es de ningún chip).
