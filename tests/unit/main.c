@@ -5,6 +5,8 @@
  * qemu-ppc64), y termina con una línea «total: N comprobaciones, M fallos». */
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "check.h"
 
@@ -24,6 +26,7 @@ void test_acore_sys(void);
 void test_snd(void);
 void test_gx(void);
 void test_render3d(void);
+void test_r3d_vrow(void);
 
 int main(void)
 {
@@ -31,6 +34,13 @@ int main(void)
 	const char *order = *(const uint8_t *)&probe == 0x02 ? "LE" : "BE";
 
 	printf("host: %s\n", order);
+	/* UNIT_ONLY=r3d: solo las pruebas del render 3D (render3d y vrow), para iterar rápido */
+	if (getenv("UNIT_ONLY") && !strcmp(getenv("UNIT_ONLY"), "r3d")) {
+		test_render3d();
+		test_r3d_vrow();
+		printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);
+		return check_failed ? 1 : 0;
+	}
 	test_endian();
 	test_ppe_bench();
 	test_gpu2d();
@@ -45,6 +55,7 @@ int main(void)
 	test_snd();
 	test_gx();
 	test_render3d();
+	test_r3d_vrow();
 	printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);
 	return check_failed ? 1 : 0;
 }

@@ -82,6 +82,13 @@ static void print_r3d_stats(void)
 		       v->r3d_frames);
 	if (r3d_io_errors)
 		printf("render 3D: %u transferencias que el MFC rechazaría\n", r3d_io_errors);
+#ifdef R3D_VERIFY_DECODE
+	{
+		extern uint32_t r3d_decode_errors;
+
+		printf("render 3D: bloques de texturas contra r3d_decode: %u diferencias\n", r3d_decode_errors);
+	}
+#endif
 }
 
 /* La capa 3D del último cuadro como PPM (lo transparente, magenta) */
@@ -108,6 +115,28 @@ static void save_img3d(const char *path)
 		fwrite(rgb, 1, 3, f);
 	}
 	fclose(f);
+}
+
+/* Agujeros de la capa 3D: píxeles transparentes con vecinos opacos a los dos lados (izquierda y derecha, o arriba y abajo) */
+static uint32_t holes_total, holes_frames, holes_worst, holes_worst_frame;
+
+static uint32_t count_holes(void)
+{
+	const int set = M.vid.last;
+	uint32_t n = 0;
+
+	if (set < 0)
+		return 0;
+	for (int y = 1; y < R3D_H - 1; y++)
+		for (int x = 1; x < R3D_W - 1; x++) {
+			const uint32_t *p = &M.vid.set[set].img3d[y * R3D_W + x];
+
+			if (R3D_PX_A(*p))
+				continue;
+			if ((R3D_PX_A(p[-1]) && R3D_PX_A(p[1])) || (R3D_PX_A(p[-R3D_W]) && R3D_PX_A(p[R3D_W])))
+				n++;
+		}
+	return n;
 }
 
 static void print_gx_stats(uint64_t frames)
@@ -395,7 +424,9 @@ int main(int argc, char **argv)
 	const char *wav_path = NULL;
 	int snd_original = 0, g2d_stats = 0;
 	const char *gxdump_path = NULL;
-	int gx_clock = 0, r3d_stats_on = 0;
+	int gx_clock = 0, r3d_stats_on = 0, holes_on = 0;
+	const char *holes_dump = NULL, *fdump_prefix = NULL;
+	uint64_t fdump_frame = 0;
 	const char *img3d_path = NULL;
 	struct { uint64_t frame; uint32_t keys, x, y; } press[64];
 	struct { uint64_t frame; const char *file; } shot[32];
@@ -427,7 +458,17 @@ int main(int argc, char **argv)
 			M.vid.r3d_units = (uint32_t)strtoul(argv[++i], NULL, 0);
 		else if (!strcmp(argv[i], "--r3d-stats"))
 			r3d_stats_on = 1;
-		else if (!strcmp(argv[i], "--img3d") && i + 1 < argc)
+		else if (!strcmp(argv[i], "--holes"))
+			holes_on = 1; /* cuenta los agujeros de la capa 3D en cada cuadro */
+		else if (!strcmp(argv[i], "--holes-dump") && i + 1 < argc)
+			holes_dump = argv[++i], holes_on = 1; /* deja la imagen 3D del cuadro con más agujeros */
+		else if (!strcmp(argv[i], "--frame-dump") && i + 1 < argc) {
+			/* CUADRO:PREFIJO — antes de correr ese cuadro, vuelca el cuadro de geometría entregado (PREFIJO.gx); después, su capa 3D (PREFIJO.ppm) */
+			char *e;
+
+			fdump_frame = strtoull(argv[++i], &e, 0);
+			fdump_prefix = *e == ':' ? e + 1 : "cuadro";
+		} else if (!strcmp(argv[i], "--img3d") && i + 1 < argc)
 			img3d_path = argv[++i];
 		else if (!strcmp(argv[i], "--gx-dump") && i + 1 < argc)
 			gxdump_path = argv[++i];
@@ -720,7 +761,33 @@ int main(int argc, char **argv)
 			for (uint32_t k = 0; k < nshot; k++)
 				if (shot[k].frame == f)
 					save_ppm(shot[k].file);
+			if (fdump_prefix && f == fdump_frame) {
+				char path[512];
+
+				snprintf(path, sizeof path, "%s.gx", fdump_prefix);
+				gx_dump(path);
+			}
 			nds_run_frame(&M);
+			if (fdump_prefix && f == fdump_frame) {
+				char path[512];
+
+				snprintf(path, sizeof path, "%s.ppm", fdump_prefix);
+				save_img3d(path);
+			}
+			if (holes_on) {
+				const uint32_t h = count_holes();
+
+				if (h) {
+					holes_total += h;
+					holes_frames++;
+				}
+				if (h > holes_worst) {
+					holes_worst = h;
+					holes_worst_frame = (uint32_t)f;
+					if (holes_dump)
+						save_img3d(holes_dump);
+				}
+			}
 			if (g2d_stats)
 				nds_video_render_host(&M);
 			if (stuck_in_vector(&M, &who, &pc)) {
@@ -749,6 +816,9 @@ int main(int argc, char **argv)
 			save_img3d(img3d_path);
 		if (r3d_stats_on || M.vid.vs_ref3d)
 			print_r3d_stats();
+		if (holes_on)
+			printf("agujeros 3D: %u píxeles en %u cuadros de %llu; el peor, %u en el cuadro %u\n", holes_total, holes_frames,
+			       (unsigned long long)frames, holes_worst, holes_worst_frame);
 		if (screens_path)
 			save_ppm(screens_path);
 		if (unmapped) {

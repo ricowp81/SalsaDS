@@ -81,6 +81,8 @@ typedef struct r3d_stats {
 	uint32_t pad;
 	/* tiempos (ticks del decrementador del SPE, 79,8 MHz; en el host, ceros) */
 	uint32_t t_sort, t_list, t_fetch, t_raster, t_tex, t_post, t_out, t_total;
+	/* desglose de t_raster (Fase 3.4): preparar polígonos, calcular aristas de cada línea, dibujar píxeles (incluye texturas) */
+	uint32_t t_setup, t_rows, t_pix;
 } r3d_stats;
 
 /* ---- Referencia (r3d_ref.c) ------------------------------------------------------------------------- */

@@ -43,10 +43,19 @@ def run_one(rom, seed, args, tmp):
                        (["--ref"] if args.ref else []) + [src], capture_output=True, text=True)
     if r.returncode != 0 or not sds.exists():
         return 2, f"{tag}: SalsaDS no corrió ({r.stdout[-200:]}{r.stderr[-200:]})"
-    r = subprocess.run([sys.executable, HERE / "melonds-run.py", src, "--vram", mel, "--timeout", "40"],
-                       capture_output=True, text=True)
+    cached = pathlib.Path(args.mel_cache) / mel.name if args.mel_cache else None
+    if cached and cached.exists():
+        mel.write_bytes(cached.read_bytes())  # la imagen de melonDS de otra corrida (la ROM no cambió): sin volver a lanzarlo
+        r = None
+    else:
+        r = subprocess.run([sys.executable, HERE / "melonds-run.py", src, "--vram", mel, "--timeout", "40"],
+                           capture_output=True, text=True)
+        if cached and mel.exists():
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            cached.write_bytes(mel.read_bytes())
     if not mel.exists():
-        return 2, f"{tag}: melonDS no dio imagen ({r.stdout[-200:]}{r.stderr[-200:]})"
+        why = (r.stdout[-200:] + r.stderr[-200:]) if r else ""
+        return 2, f"{tag}: melonDS no dio imagen ({why})"
     if args.skip_unmapped:
         r2 = subprocess.run([HERE / "cpurun.sh", "--frames", str(args.frames), "--unmapped", src], capture_output=True, text=True)
         for line in r2.stdout.splitlines():
@@ -76,6 +85,7 @@ def main():
     ap.add_argument("seeds", nargs="*")
     ap.add_argument("--frames", type=int, default=6)
     ap.add_argument("--keep")
+    ap.add_argument("--mel-cache", help="carpeta donde guardar y reusar las imágenes de melonDS (mel-<semilla>.ppm): con la misma ROM, iterar sobre SalsaDS sin lanzar melonDS")
     ap.add_argument("--skip-unmapped", action="store_true", help="omite la escena si el motor A lee VRAM sin banco (melonDS espeja esas zonas)")
     ap.add_argument("--ref", action="store_true", help="SalsaDS dibuja con la referencia píxel por píxel (no con el compositor)")
     ap.add_argument("--dbg", help="banderas de depuración de gfxrand (byte 0x17 de la cabecera)")

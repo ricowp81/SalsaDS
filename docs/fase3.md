@@ -464,3 +464,114 @@ el bit 31 al terminar el cuadro. Pide que el SPE escriba VRAM (hoy solo la lee),
 `tests/unit/test_gx.c` (`test_texgen`): VTX_DIFF, los tres modos de textura generada, y que un TEXCOORD después de NORMAL pisa el
 modo 2. ROM `gx3d`: escenas 15 a 22 (en `test-host.sh` con imagen de referencia y `REF3D`), `gx3d.golden` con las 23 semillas. El
 hash de la semilla 7 de `test_render3d.c` cambió con las reglas (igual en LE y BE).
+
+
+# Fase 3.4 — Rendimiento del 3D en el SPE y juntas entre triángulos
+
+Dos problemas, los dos vistos en la PS3 con los respaldos del autor: el 3D tardaba 26–36 ms por SPE y cuadro en New Super Mario Bros.
+(un nivel) y Super Mario 64 DS (el PPE esperaba 29–32 ms al 3D en el VBlank), y en Super Mario 64 DS «a veces se ven juntas entre
+los triángulos».
+
+## Diagnóstico con las líneas `DATO raster3d` de la PS3 (`build/ps3-fase33/*.log`, 178 muestras)
+
+Un ajuste por mínimos cuadrados de las columnas del `DATO` (suma de los dos SPE, por cuadro) da el costo de cada cosa:
+
+| Qué | Costo medido | Dónde |
+|---|---|---|
+| Píxel dibujado (bucle de la línea escalar, sin texturas) | **210 ns** (≈ 670 ciclos) por píxel probado | 137 000 píxeles por cuadro en NSMB (un nivel) y 180 000 en SM64DS → 30–40 ms |
+| Bloque de texeles decodificado | **73 µs** (≈ 780 ciclos por texel) | 300–500 bloques por cuadro → 15–30 ms (`texturas` del `DATO`) |
+| Polígono en una banda (preparar + aristas) | 3,7 µs | 600–1500 pares banda·polígono: 2–6 ms |
+| Fijos por cuadro (orden, lista y borrado, DMA, salida) | ≈ 1 ms por SPE | — |
+
+No era un costo «por banda» ni un borrado: el tiempo es alto y casi constante porque esas dos escenas dibujan 130–180 mil píxeles
+por cuadro (fondos y suelos grandes) y cada píxel costaba unos 670 ciclos. El bucle de la línea era escalar (un píxel por vuelta,
+cinco interpoladores por línea con comparaciones, ~10 saltos sin predicción por píxel) y la decodificación de texturas leía cada
+byte de la VRAM por una función con búsqueda en la caché de líneas (≈ 8 búsquedas por texel en el formato 4x4).
+
+## Qué se hizo
+
+1. **Línea en vectores** (`src/gpu3d/r3d_vrow.h`): la misma regla de `r3d_draw_row`, cuatro píxeles por vuelta con vectores de
+   16 bytes (genéricos de GCC/clang; solo las multiplicaciones de 16 bits, las conversiones a coma flotante y la recíproca llevan
+   intrínsecos del SPU), sin saltos por píxel (máscaras de carril) y sin divisiones por píxel: `a + piso((b - a)·k / L)` se evalúa
+   como `a + q·k + piso(r·k / L)` y el factor en perspectiva es `r3d_pfac` en vectores (cociente en coma flotante y corrección
+   entera: no depende del redondeo del SPU). Cuatro variantes (w iguales o distintas × con o sin textura); sombras, alambre, decal,
+   toon, highlight, alpha test y translúcidos van dentro, con máscaras. La referencia (`r3d_ref.c`) sigue con `r3d_draw_row`.
+2. **Texturas por tramos** (`tc_fill`): el bloque de 256 texeles se decodifica leyendo la VRAM por tramos de la fila (copia desde
+   la caché de líneas de 128 bytes) y con la paleta ya convertida en el local store (se rehace solo al cambiar de paleta), en lugar
+   de texel a texel con una función por byte. El formato 4x4 va por tile (índices, palabra de modo y colores una vez por tile).
+   Ahora la caché de líneas de VRAM es de 32 + 8 líneas (antes 64 + 16): el espacio lo necesita el código nuevo.
+3. **El texel que no está en el bloque anterior** se busca por bloque (`tc_get`); el caso común (los cuatro píxeles en el bloque
+   anterior) es una comparación y cuatro cargas.
+4. **Aristas sin aritmética de 64 bits ni módulo**: la z de los extremos (`r3d_zlerp`: cociente y resto de 32 bits en lugar de una
+   división de 64 bits de software por extremo y línea) y el recorrido de la cadena de aristas (sin `%`). Mismos bits.
+5. **Borrado de la banda** con almacenamientos de 16 bytes.
+6. **Instrumentación nueva en el `DATO raster3d`**: líneas de polígono por cuadro, y dentro del tiempo de dibujo el reparto
+   `polígonos` (preparar), `aristas` (`r3d_row_at`) y `píxeles` (la línea, texturas incluidas), además de `texturas`.
+
+Local store del SPE (`raster3d`), medido al enlazar: texto 56 032 B (antes ≈ 47 000), bss 186 400 B (contexto 182 656 B, antes
+186 368), pila con 18 768 B libres (la cadena más honda usa 6 720 B: holgura 12 048 B, mínimo 8 192). `tc_fill`, `tc_fill5` y la sonda de la autoprueba se
+compilan con `-Os` en el SPE (son frías) para que quepa.
+
+## Estimación para la PS3 (no medida)
+
+- Línea vectorial: 25–40 ciclos por píxel (el prototipo de la 0.4, un relleno vectorial más simple, midió 152 ciclos por grupo de 4
+  píxeles): SM64DS (90 000 píxeles por SPE) ≈ 1,2–2 ms; NSMB nivel (65 000) ≈ 1–1,5 ms.
+- Decodificación: ≈ 2–3 µs por bloque en lugar de 73 → 0,3–0,6 ms por SPE.
+- Aristas y preparación: ≈ 1–1,5 µs por línea de polígono y ≈ 1 µs por polígono·banda: 0,5–1 ms por SPE en estas escenas.
+- Fijos: ≈ 1 ms. **Total esperado: 3,5–6 ms por SPE en SM64DS y NSMB (antes 36 y 27)**; la meta era ≤ 8 ms. En el host (Mac,
+  mismo código escalar): SM64DS 1,63 → 0,83 ms, MKDS 2,44 → 1,94 ms.
+- Si el número de la PS3 queda por encima de 8 ms, el `DATO` ya dice dónde: `píxeles` (la línea), `aristas`, `polígonos`, `texturas`.
+
+## Juntas entre triángulos
+
+**Causa: el recorte del motor de geometría** (`gx.c`, no las reglas de relleno). En Mario Kart DS (carrera, cuadro 3312) salían
+1 283 de 3 500 cuadros con píxeles transparentes entre polígonos, hasta 253 por cuadro, en líneas diagonales a lo largo de las
+aristas largas que cruzan el borde de la pantalla. Volcando el cuadro (`--frame-dump`) y rasterizando sus polígonos a mano: dos
+polígonos que comparten una arista recortada por el plano de abajo terminaban en (254, 191) el uno y (254, 192) el otro. El recorte
+(Sutherland-Hodgman) interpolaba el vértice nuevo en el sentido en que **cada polígono** recorría la arista (de `p` a `q`); los dos
+polígonos la recorren al revés uno del otro, el redondeo entero da vértices distintos, y además el vértice no quedaba exactamente
+sobre el plano (`w − y` = ±1), con lo que el viewport lo mandaba un píxel adentro: entre las dos aristas casi iguales queda una
+rendija de un cuarto de píxel que, con el truncamiento de las aristas, deja un píxel sin dibujar por línea. Dos arreglos:
+
+1. el vértice nuevo se interpola **siempre del lado de adentro al de afuera** (el mismo resultado para los dos polígonos);
+2. su coordenada del plano (x, y o z) queda **exactamente** en ±w (sin la unidad de redondeo).
+
+Con eso Mario Kart DS pasa de 34 908 píxeles con agujeros en 1 283 cuadros a 19 en 3 (los que quedan son texeles transparentes
+de recortes de textura: están cubiertos por un polígono). Super Mario 64 DS no llega a juego en el host sin entrada (solo el título
+y los menús, 0 agujeros antes y después); la causa es la misma, y falta confirmarlo en la PS3 con una zona de juego.
+
+**Reglas de relleno de aristas**: la prueba con mallas (`tests/unit/test_r3d_vrow.c`, 1 200 cuadrículas de vértices al azar con
+holgura de un cuarto de celda, ortográficas y en perspectiva, 17 millones de píxeles interiores) da **0 píxeles sin cubrir** y
+≈ 0,4 % cubiertos dos veces (las aristas «y-mayores» con pendiente negativa incluyen un píxel de más; así lo hace melonDS). No hay
+juntas por las reglas de relleno. Contra melonDS (`tools/gfx-compare.py`, escenas nuevas de `gx3d`):
+
+| Escena | Qué es | Antes | Después |
+|---|---|---|---|
+| 23 | malla de triángulos vecinos dentro de la pantalla | 89 píxeles distintos | 32, ninguno sin dibujar |
+| 24 | malla que sobrepasa la pantalla (aristas recortadas, ortográfica) | 61 | 62, ninguno sin dibujar |
+| 25 | malla en perspectiva (w distinta por vértice) que sobrepasa la pantalla | **458, 358 sin dibujar en SalsaDS y dibujados en melonDS** | **27, ninguno sin dibujar** |
+
+(la escena 25 con solo el sentido del recorte arreglado daba 546 y 351 sin dibujar: lo que faltaba era dejar el vértice sobre el
+plano). Además, midiendo las aristas de exactamente 45° (|dx| = dy) se vio que melonDS las trata como **x-mayores si van hacia la
+izquierda al bajar** y como y-mayores hacia la derecha (`r3d_ymajor`): escena 14 de 930 a 647 píxeles distintos, 20 de 544 a 404, 0
+de 179 a 171, 13 de 44 a 43, 25 de 34 a 27 (con la regla vieja y el recorte nuevo), sin empeorar ninguna. El resto de las escenas (1 a 22) sigue igual que en 3.3.
+
+## Herramientas y pruebas nuevas
+
+- `tests/unit/test_r3d_vrow.c`: la línea vectorial contra la escalar (392 000 líneas al azar sin textura, todos los modos) y las
+  mallas sin juntas; `UNIT_ONLY=r3d` corre solo las pruebas del 3D. Las pruebas unitarias compilan ahora `r3d_core.c` con
+  `-DR3D_VERIFY_DECODE`: cada bloque decodificado se compara texel a texel con `r3d_decode` (0 diferencias en las 40 escenas y en
+  los tres juegos con `salsads-cpurun`).
+- `test_gx.c`: dos polígonos con una arista recortada en sentidos contrarios sacan el mismo vértice (300 casos).
+- `tools/gfx-compare.py --mel-cache DIR` guarda y reutiliza las imágenes de melonDS (iterar una regla sin lanzar melonDS);
+  `tools/cpurun.sh` acepta `CPURUN_OUT` y `CPURUN_CFLAGS` (variantes de una regla en binarios separados).
+- `salsads-cpurun --holes` cuenta los agujeros de la capa 3D por cuadro, `--frame-dump N:prefijo` vuelca el cuadro de geometría
+  (`.gx`) y la capa 3D (`.ppm`) de un cuadro; `tools/ppm-png.py` convierte capturas.
+- La ROM `gx3d` tiene tres escenas más (23 a 25) y `gx3d.golden` cambió en las escenas 0, 5, 6, 13, 14 y 20 (regla de los 45°; el
+  hash de la semilla 7 de `test_render3d.c` también).
+
+## Qué probar en la PS3
+
+Paquete «SalsaDS núcleo» (SLDS00008) de este commit (ruta y SHA-256 en `docs/estado.md`): SM64DS en una zona de juego, NSMB en un
+nivel y MKDS en carrera; la línea `DATO raster3d` ahora trae el reparto `polígonos / aristas / píxeles`. Y mirar si siguen viéndose
+juntas en SM64DS.

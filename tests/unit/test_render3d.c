@@ -13,7 +13,7 @@
 #include "gpu3d/r3d_core.h"
 #include "gpu3d/r3d_scene.h"
 
-#define R3D_GOLDEN_SEED7 0x97fb8c1382a2b064ull /* calculado en LE; BE tiene que dar lo mismo (cambia si cambian las reglas de r3d_px.h) */
+#define R3D_GOLDEN_SEED7 0xde8c1672349e49afull /* calculado en LE; BE tiene que dar lo mismo (cambia si cambian las reglas de r3d_px.h) */
 
 static gx_t G;
 static uint8_t vram[R3D_VRAM_ZERO_OFF + 128] __attribute__((aligned(128)));
@@ -58,6 +58,10 @@ static int first_diff(void)
 			return i;
 	return -1;
 }
+
+#ifdef R3D_VERIFY_DECODE
+extern uint32_t r3d_decode_errors; /* r3d_core.c compilado con -DR3D_VERIFY_DECODE: bloques contra r3d_decode */
+#endif
 
 void test_render3d(void);
 void test_render3d(void)
@@ -104,6 +108,10 @@ void test_render3d(void)
 		CHECK_EQ(render_core(NULL, ts, ps, 16, 2, 0, &st), 0);
 		CHECK_EQ(out[0] | out[R3D_W * R3D_H - 1], 0);
 	}
+#ifdef R3D_VERIFY_DECODE
+	CHECK_EQ(r3d_decode_errors, 0);
+	printf("render 3D: bloques de texturas verificados texel a texel contra r3d_decode, %u diferencias\n", r3d_decode_errors);
+#endif
 	CHECK(evict > 0);   /* la caché de texturas se llenó y desalojó (y la imagen no cambió) */
 	CHECK(written > 0);
 	/* el mismo cuadro da el mismo valor en LE y en BE (r3d_px.h y el motor de geometría, en enteros) */

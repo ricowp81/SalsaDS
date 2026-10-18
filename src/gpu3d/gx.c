@@ -228,8 +228,27 @@ static int clip_polygon(const gx_cvtx *in, int n, gx_cvtx *out, unsigned mask)
 
 			if (dp >= 0)
 				o[on++] = *p;
-			if ((dp >= 0) != (dq >= 0) && on < (int)CLIP_BUF)
-				clip_edge(&o[on++], p, q, dp, dq);
+			/* El vértice nuevo se interpola siempre desde el lado de adentro hacia el de afuera, sin importar en qué sentido
+			 * recorra la arista este polígono: así dos polígonos que comparten una arista recortada obtienen el mismo vértice
+			 * (con el sentido del recorrido salían uno o dos píxeles distintos y quedaban juntas entre ellos). */
+			if ((dp >= 0) != (dq >= 0) && on < (int)CLIP_BUF) {
+				gx_cvtx *n = &o[on++];
+
+				if (dp >= 0)
+					clip_edge(n, p, q, dp, dq);
+				else
+					clip_edge(n, q, p, dq, dp);
+				/* y queda exactamente sobre el plano (la interpolación entera lo deja a veces una unidad dentro o fuera, y
+				 * el viewport lo mandaba a un píxel de más o de menos: el borde de la pantalla sin dibujar) */
+				switch (k) {
+				case 0: n->z = -n->w; break;
+				case 1: n->z = n->w; break;
+				case 2: n->x = -n->w; break;
+				case 3: n->x = n->w; break;
+				case 4: n->y = -n->w; break;
+				default: n->y = n->w; break;
+				}
+			}
 		}
 		cur ^= 1;
 		n = on;

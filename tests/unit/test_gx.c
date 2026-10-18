@@ -645,6 +645,76 @@ static void test_clip_interp(void)
 	}
 }
 
+/* Dos polígonos que comparten una arista recortada (la recorren en sentidos contrarios) tienen que sacar exactamente el
+ * mismo vértice nuevo: si no, quedan juntas entre ellos (Fase 3.4; en Mario Kart DS salían líneas de píxeles sin dibujar a
+ * lo largo de las aristas largas recortadas por el borde de la pantalla). */
+static void clip_vertex(int32_t x, int32_t y, uint32_t color, uint32_t st)
+{
+	w(0x20, color);
+	w(0x22, st);
+	w(0x23, ((uint32_t)x & 0xFFFFu) | ((uint32_t)y << 16));
+	w(0x23, 0);
+}
+
+static void test_clip_shared_edge(void)
+{
+	unsigned pairs = 0, same = 0;
+
+	for (int it = 0; it < 300; it++) {
+		/* A dentro; B fuera por la derecha, arriba o abajo; C y D dentro, a los dos lados de la arista A-B */
+		const int32_t ax = rnd(0x0C00), ay = rnd(0x0C00);
+		const int32_t bx = 0x1000 + 1 + (int32_t)((lcg >> 4) % 0x3000u), by = rnd(0x2000);
+		const uint32_t ca = (uint32_t)(lcg >> 3) & 0x7FFFu, cb = (uint32_t)(lcg >> 9) & 0x7FFFu;
+		const uint32_t sa = (uint32_t)(rnd(0x7000) & 0xFFFF) | ((uint32_t)rnd(0x7000) << 16);
+		const uint32_t sb = (uint32_t)(rnd(0x7000) & 0xFFFF) | ((uint32_t)rnd(0x7000) << 16);
+		const int32_t cx = rnd(0x0C00), cy = rnd(0x0C00), dx = rnd(0x0C00), dy = rnd(0x0C00);
+		const gx_frame *f;
+		const gx_vertex *va[16], *vb[16];
+		unsigned na, nb;
+
+		reset();
+		ident_all();
+		w(0x29, BOTH);
+		w(0x40, 0);
+		clip_vertex(ax, ay, ca, sa); /* A B C */
+		clip_vertex(bx, by, cb, sb);
+		clip_vertex(cx, cy, ca, sa);
+		w(0x41, 0);
+		w(0x40, 0);
+		clip_vertex(bx, by, cb, sb); /* B A D: la misma arista al revés */
+		clip_vertex(ax, ay, ca, sa);
+		clip_vertex(dx, dy, cb, sb);
+		w(0x41, 0);
+		w(0x50, 0);
+		idle();
+		f = gx_swap(&G, T, NULL);
+		if (f->npolys != 2u)
+			continue;
+		na = f->poly[0].nverts;
+		nb = f->poly[1].nverts;
+		for (unsigned i = 0; i < na; i++)
+			va[i] = &f->vtx[f->poly[0].vidx[i]];
+		for (unsigned i = 0; i < nb; i++)
+			vb[i] = &f->vtx[f->poly[1].vidx[i]];
+		/* los vértices que son de la arista: A y el nuevo; cuenta los que salen iguales en los dos */
+		pairs++;
+		{
+			unsigned eq = 0;
+
+			for (unsigned i = 0; i < na; i++)
+				for (unsigned j = 0; j < nb; j++)
+					if (va[i]->sx == vb[j]->sx && va[i]->sy == vb[j]->sy && va[i]->z == vb[j]->z && va[i]->w == vb[j]->w &&
+					    va[i]->s == vb[j]->s && va[i]->t == vb[j]->t && va[i]->r == vb[j]->r && va[i]->g == vb[j]->g &&
+					    va[i]->b == vb[j]->b)
+						eq++;
+			if (eq >= 2)
+				same++;
+		}
+	}
+	CHECK(pairs > 150);
+	CHECK_EQ(same, pairs);
+}
+
 /* Coordenadas de textura generadas (TEXIMAGE_PARAM bits 30-31) y VTX_DIFF: las reglas medidas contra melonDS con la ROM
  * gx3d (escena 15, docs/fase3.md 3.3). Un triángulo cuyo primer vértice lleva lo que se prueba; se lee su (s, t). */
 static void texmat(int32_t d0, int32_t d1, int32_t d4, int32_t d5, int32_t d8, int32_t d9, int32_t t12, int32_t t13)
@@ -761,5 +831,6 @@ void test_gx(void)
 	test_lighting();
 	test_limits();
 	test_clip_interp();
+	test_clip_shared_edge();
 	test_texgen();
 }

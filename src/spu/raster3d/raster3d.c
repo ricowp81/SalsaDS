@@ -5,11 +5,12 @@
  * al arrancar. Dos SPE comparten un cuadro (docs/fase3.md, 3.2: reparto de SPE).
  *
  * Presupuesto del local store (256 KB; lo mide el enlace: `spu-size` y tools/spu-stack.py):
- *   contexto r3d_ctx ≈ 184 KB: color 2 × 18 KB (doble búfer de salida; el segundo, mientras se ordena, guarda los trozos de
- *   polígonos y el auxiliar del radix), profundidad 18 KB, atributos 18 KB, caché de texturas 64 bloques decodificados de
- *   1 KB, líneas de VRAM 64 × 128 B, orden y extensiones de 2048 polígonos 16 KB, lista de la banda 4 KB, lotes de
- *   polígonos y vértices 2 × 11 KB;
- *   código ≈ 20-30 KB; la pila, lo que queda (mínimo 8 KB, raster3d_STACK_MIN).
+ *   contexto r3d_ctx ≈ 178 KB (182 656 B): color 2 × 18 KB (doble búfer de salida; el segundo, mientras se ordena, guarda los
+ *   trozos de polígonos y el auxiliar del radix), profundidad 18 KB, atributos 18 KB, caché de texturas 64 bloques
+ *   decodificados de 1 KB, líneas de VRAM 40 × 128 B, paleta convertida 1 KB, orden y extensiones de 2048 polígonos 16 KB,
+ *   lista de la banda 4 KB, lotes de polígonos y vértices 2 × 11 KB;
+ *   código ≈ 55 KB (la línea vectorial son cuatro variantes de ≈ 5-6 KB); la pila, lo que queda (mínimo 8 KB,
+ *   raster3d_STACK_MIN).
  */
 #include <spukit/spu.h>
 #include <sys/spu_thread.h>

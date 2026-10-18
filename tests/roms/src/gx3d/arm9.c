@@ -897,10 +897,83 @@ static void s_para(void)
 	}
 }
 
+/* 23/24: malla de triángulos vecinos (cada arista interior la comparten dos triángulos, colores planos distintos): los
+ * píxeles sin dibujar (el color de fondo entre triángulos) son las «juntas», y los dibujados dos veces se ven por el orden.
+ * 23: la malla cabe en la pantalla; 24: sobrepasa la pantalla por los cuatro lados, así que todas las aristas de afuera se
+ * recortan contra el volumen de vista (cada arista recortada la comparten dos polígonos). Vértices con holgura de un
+ * cuarto de celda: sin triángulos invertidos. */
+static void s_mesh(int over)
+{
+	enum { NX = 8, NY = 6 };
+	const int cell = over ? 48 : 30, ox = over ? -40 : 8, oy = over ? -40 : 8, jit = cell / 4 - 1;
+	int vx[NY + 1][NX + 1], vy[NY + 1][NX + 1];
+
+	ident_all();
+	lcg_state = 4321u + (uint32_t)over;
+	cmd(POLY_ATTR, ATTR(0, 31, 1));
+	for (int j = 0; j <= NY; j++)
+		for (int i = 0; i <= NX; i++) {
+			vx[j][i] = ox + i * cell + ((i == 0 || i == NX) ? 0 : rnd(2 * jit + 1) - jit);
+			vy[j][i] = oy + j * cell + ((j == 0 || j == NY) ? 0 : rnd(2 * jit + 1) - jit);
+		}
+	for (int j = 0; j < NY; j++)
+		for (int i = 0; i < NX; i++) {
+			const int d = rnd(2);
+			const int a[2][3][2] = { { { i, j }, { i + 1, j }, { i, j + 1 } }, { { i, j }, { i + 1, j }, { i + 1, j + 1 } } };
+			const int b[2][3][2] = { { { i + 1, j }, { i + 1, j + 1 }, { i, j + 1 } }, { { i, j }, { i + 1, j + 1 }, { i, j + 1 } } };
+
+			for (int h = 0; h < 2; h++) {
+				const int(*t)[2] = h ? b[d] : a[d];
+
+				cmd(BEGIN, 0);
+				cmd(COLOR, RGB5(6 + rnd(25), 6 + rnd(25), 6 + rnd(25)));
+				for (int k = 0; k < 3; k++)
+					sv(vx[t[k][1]][t[k][0]], vy[t[k][1]][t[k][0]], 0);
+				cmd(END, 0);
+			}
+		}
+}
+
+/* 25: la malla de 24, en perspectiva: un plano inclinado (z de -1,1 a -3,6) que sobrepasa el volumen de vista por los lados,
+ * con w distinta en cada vértice; las aristas recortadas contra x = ±w las comparten dos polígonos que las recorren al
+ * revés, y el vértice nuevo tiene que salir igual en los dos (si no quedan juntas entre ellos). */
+static void s_mesh_persp(void)
+{
+	enum { NX = 8, NY = 6 };
+	int vx[NY + 1][NX + 1], vy[NY + 1][NX + 1], vz[NY + 1][NX + 1];
+
+	ident_all();
+	persp();
+	lcg_state = 9876u;
+	cmd(POLY_ATTR, ATTR(0, 31, 1));
+	for (int j = 0; j <= NY; j++)
+		for (int i = 0; i <= NX; i++) {
+			vx[j][i] = -4 * 4096 + i * (8 * 4096 / NX) + ((i == 0 || i == NX) ? 0 : rnd(2 * 1200 + 1) - 1200);
+			vy[j][i] = -3 * 4096 + j * (6 * 4096 / NY) + ((j == 0 || j == NY) ? 0 : rnd(2 * 1200 + 1) - 1200);
+			vz[j][i] = -(4500 + j * 1500 + i * 150);
+		}
+	for (int j = 0; j < NY; j++)
+		for (int i = 0; i < NX; i++) {
+			const int d = rnd(2);
+			const int a[2][3][2] = { { { i, j }, { i + 1, j }, { i, j + 1 } }, { { i, j }, { i + 1, j }, { i + 1, j + 1 } } };
+			const int b[2][3][2] = { { { i + 1, j }, { i + 1, j + 1 }, { i, j + 1 } }, { { i, j }, { i + 1, j + 1 }, { i, j + 1 } } };
+
+			for (int h = 0; h < 2; h++) {
+				const int(*t)[2] = h ? b[d] : a[d];
+
+				cmd(BEGIN, 0);
+				cmd(COLOR, RGB5(6 + rnd(25), 6 + rnd(25), 6 + rnd(25)));
+				for (int k = 0; k < 3; k++)
+					vtx(vx[t[k][1]][t[k][0]], vy[t[k][1]][t[k][0]], vz[t[k][1]][t[k][0]]);
+				cmd(END, 0);
+			}
+		}
+}
+
 int main(void)
 {
 	scene = *(volatile uint32_t *)0x027FFE0Cu & 0xFFFFu;
-	if (scene > 22)
+	if (scene > 25)
 		scene = 0;
 	sds_init_quiet();
 	REG16(R_POWCNT1) = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 9) | (1 << 15);
@@ -937,6 +1010,9 @@ int main(void)
 	case 20: s_slope(0); break;
 	case 21: s_slope(1); break;
 	case 22: s_para(); break;
+	case 23: s_mesh(0); break;
+	case 24: s_mesh(1); break;
+	case 25: s_mesh_persp(); break;
 	}
 	if (scene != 4 && scene != 5 && scene != 6)
 		cmd(SWAP, 0);
