@@ -578,6 +578,15 @@ static inline int r3d_row_at(const r3d_poly *p, int32_t y, r3d_row *row)
 	/* Denominador de la interpolación a lo largo de la línea: xr - xl, y uno más cuando la arista derecha es inclinada y
 	 * y-mayor (medido contra melonDS con paralelogramos, escena 22 de gx3d; con la derecha vertical o x-mayor no cambia). */
 	row->den = row->xr - row->xl + ((rb->x != ra->x && abs32(rb->x - ra->x) <= rb->y - ra->y) ? 1 : 0);
+	/* Derecha x-mayor que va hacia la izquierda (ortográfica): la interpolación a lo largo de la línea cuenta hasta el extremo de afuera del tramo de la
+	 * arista (la x de esta línea, redondeada), no hasta donde acaba el tramo dibujado: sin esto, en los tallos inclinados de NSMB (aristas de pendiente 1/4)
+	 * la textura corría más rápido que en melonDS y salían dientes y huecos (3.7) */
+	if (ra->w == rb->w && !r3d_ymajor(rb->x - ra->x, rb->y - ra->y) && rb->x < ra->x) {
+		const int32_t xo = r3d_fx(r3d_xfix(ra, rb, y) + (1 << 17));
+
+		if (xo > xr)
+			row->den = xo - xl;
+	}
 	return 1;
 }
 

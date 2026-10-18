@@ -4,6 +4,19 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-18 — Tallos inclinados de NSMB (3.7)
+
+- **Tallo inclinado, dientes de los segmentos de arriba: arreglado** (escenas 38 y 39 de `gx3d`, nuevas; la 38 pasa de 234 píxeles distintos
+  con melonDS a 0). La partida del autor lleva el host al 1-3 con el guion de 3.6 y, desde el cuadro 2780, la plataforma se inclina (volcado
+  con `--frame-dump`). Causa: en las líneas donde la arista derecha es x-mayor y va hacia la izquierda el denominador de la interpolación contaba solo hasta el final del tramo
+  dibujado; melonDS cuenta hasta el extremo de afuera del tramo (`r3d_row_at`, solo ortográfica). De paso: escena 1: 828 → 10, 14: 616 → 399,
+  20: 299 → 42, 21: 3629 → 2144; las demás igual (`docs/fase3.md`, 3.7).
+- **Mapa con cámara en movimiento (rayas verdes): sin arreglar.** Reproducido (guion sin entrar al nivel: izquierda desde el 1400 y derecha desde el
+  1700; rayas en el cuadro 1755) y trasladado entero (23 polígonos en orden) a la escena 40 de `gx3d`: melonDS esconde el parche donde el suelo
+  es casi coplanar y la DS real no (foto), así que melonDS no sirve de referencia ahí; no se tocó la profundidad. Siguiente: volcar profundidad por píxel en
+  la PS3 o usar otro emulador de la DS real.
+- Pruebas: `gx3d.golden` con 41 escenas (1, 14, 20 y 21 cambiadas; 38, 39 y 40 nuevas), ROM `gx3d.nds` reconstruida.
+
 ## 2026-10-18 — NSMB 1-3: tallos y nubes (3.6)
 
 - **La partida del autor** (`A2DE.sav`, la de las 20:13; la de las 13:42 estaba recién formateada y no servía) lleva el host al 1-3:
