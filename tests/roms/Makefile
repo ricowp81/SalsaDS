@@ -9,6 +9,7 @@ OUT      := $(ROOT)/build/roms
 NDSTOOL  := $(BLOCKSDS)/tools/ndstool/ndstool
 CC       := arm-none-eabi-gcc
 ICON     := src/icon.bmp
+SDS_GITREV ?= desconocida
 
 ARM9_FLAGS := -marm -mcpu=arm946e-s+nofp -O2 -Wall -Wextra -ffunction-sections -fdata-sections \
               -D__NDS__ -D__BLOCKSDS__ -DARM9 -isystem $(BLOCKSDS)/libs/libnds/include -specs=$(BLOCKSDS)/sys/crts/ds_arm9.specs
@@ -220,7 +221,7 @@ define ROM_RULES
 $$(OUT)/$(1).elf: $$(SRCS_$(1)) $$(HDRS)
 	@mkdir -p $$(@D)
 	@echo "  ARM9    $$@"
-	@$$(CC) $$(ARM9_FLAGS) $$(FLAGS_$(1)) -Wl,-Map,$$(OUT)/$(1).map -Wl,--gc-sections $$(SRCS_$(1)) -o $$@ $$(ARM9_LIBS)
+	@$$(CC) $$(ARM9_FLAGS) $$(FLAGS_$(1)) -DSDS_ROM_NAME=\"$(1)\" -DSDS_GITREV=\"$$(SDS_GITREV)\" -Wl,-Map,$$(OUT)/$(1).map -Wl,--gc-sections $$(SRCS_$(1)) -o $$@ $$(ARM9_LIBS)
 $$(OUT)/$(1).nds: $$(OUT)/$(1).elf $$(OUT)/$(call ARM7_OF,$(1)).elf $$(ICON)
 	@echo "  NDSTOOL $$@"
 	@$$(NDSTOOL) -c $$@ -7 $$(OUT)/$(call ARM7_OF,$(1)).elf -9 $$(OUT)/$(1).elf -b $$(ICON) "$$(TITLE_$(1))" >/dev/null

@@ -93,11 +93,38 @@ void sds_finish_quiet(int ok) __attribute__((noreturn));
 /* screen 0 = motor A, 1 = motor B; color BGR555 que debe tener el píxel (x, y) de ese motor. */
 void sds_expect_pixel(int screen, int x, int y, uint16_t color);
 
+/* Registro ampliado para correr en una DS real (log en la SD, ver sds.c). Anota TODAS las llamadas a SDS_DIVERGE (también
+ * las que coinciden con la documentación) con el valor del hardware, el documentado y el de melonDS 1.1. Para las
+ * comprobaciones sin valor de melonDS conocido se usa SDS_MELON_NA. No toca el bloque de resultados en RAM. */
+#define SDS_MELON_NA 0xFFFFFFFEu
+void sds_diverge_at(uint32_t got, uint32_t doc, uint32_t melon, uint32_t id, const char *file);
+#define SDS_DIVERGE_M(got, doc, melon) sds_diverge_at((uint32_t)(got), (uint32_t)(doc), (uint32_t)(melon), __LINE__, __FILE__)
+
+/* El ARM7 deja su registro ampliado aquí (grupos y sitios de divergencia) para que el ARM9 lo añada al log. */
+#define SDS_X7_ADDR 0x023B0000u
+#define SDS_X7_MAGIC 0x37584453u /* "SDX7" */
+#define SDS_X7_GROUPS 24u
+#define SDS_X7_SITES 64u
+struct sds_x7 {
+	uint32_t magic, ngroups, nsites, nsites_total;
+	struct {
+		char name[12];
+		uint32_t checks, failed;
+	} g[SDS_X7_GROUPS];
+	struct {
+		uint32_t id, got, doc, melon, group;
+		char file[20];
+	} s[SDS_X7_SITES];
+};
+
+/* Una nota de texto para el log de la SD (p. ej. "no aplica en flashcart"); en el ARM7 no hace nada. */
+void sds_note(const char *text);
+
 #define SDS_CHECK(got, want) sds_check((uint32_t)(got), (uint32_t)(want), __LINE__)
 /* Informativa: no falla, solo se registra si difiere. */
 void sds_diverge(uint32_t got, uint32_t want, uint32_t id);
-#define SDS_DIVERGE(got, want) sds_diverge((uint32_t)(got), (uint32_t)(want), __LINE__)
-#define SDS_DIVERGE_ID(got, want, id) sds_diverge((uint32_t)(got), (uint32_t)(want), (id))
+#define SDS_DIVERGE(got, want) sds_diverge_at((uint32_t)(got), (uint32_t)(want), SDS_MELON_NA, __LINE__, __FILE__)
+#define SDS_DIVERGE_ID(got, want, id) sds_diverge_at((uint32_t)(got), (uint32_t)(want), SDS_MELON_NA, (id), __FILE__)
 #define SDS_CHECK_ID(got, want, id) sds_check((uint32_t)(got), (uint32_t)(want), (id))
 
 #endif

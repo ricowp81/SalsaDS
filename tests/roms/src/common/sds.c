@@ -7,6 +7,18 @@
  * doble de tamaño, dibujada aquí (no se usa libnds ni ninguna fuente ajena).
  */
 #include "sds.h"
+#include <stdio.h>
+#include <string.h>
+#include <fat.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+
+#ifndef SDS_ROM_NAME
+#define SDS_ROM_NAME "rom"
+#endif
+#ifndef SDS_GITREV
+#define SDS_GITREV "desconocida"
+#endif
 
 #define REG_DISPCNT_A (*(volatile uint32_t *)0x04000000)
 #define REG_DISPCNT_B (*(volatile uint32_t *)0x04001000)
@@ -27,6 +39,7 @@
 #define C_DIM RGB(18, 18, 24)
 #define C_OK RGB(4, 26, 8)
 #define C_BAD RGB(28, 4, 4)
+#define C_WARN RGB(28, 24, 2)
 
 /* Glifos de 3×5: cinco filas de tres bits (bit 2 = columna izquierda). */
 static const uint8_t font_digits[10][5] = {
@@ -144,11 +157,57 @@ static struct sds_results *const R = (struct sds_results *)SDS_RESULTS_ADDR;
 static const char *group_name;
 static uint32_t group_checks, group_failed, group_row = ROW_FIRST_GROUP;
 
+/* Registro ampliado (solo para el log y la pantalla de divergencias; no forma parte del bloque de resultados). */
+#define MAXG 32
+#define MAXS 128
+static struct {
+	const char *name;
+	uint32_t checks, failed;
+} glog[MAXG];
+static uint32_t nglog;
+static struct {
+	uint32_t id, got, doc, melon, group;
+	const char *file;
+} slog[MAXS];
+static uint32_t nslog, nslog_total;
+static int sd_state; /* 0 = no se intentó, 1 = montada, -1 = sin SD / falló */
+static char sd_path[64];
+static uint32_t sd_run;
+
 static struct sds_fail *const FAILLOG = (struct sds_fail *)(SDS_RESULTS_ADDR + SDS_FAILLOG_OFFSET);
 
 static void publish(void)
 {
 	flush_range(R, SDS_DIVERGE_OFFSET + SDS_DIVERGE_MAX * sizeof(struct sds_fail));
+}
+
+/* Monta la SD (DLDI del flashcart) al principio, antes de que las pruebas muevan registros. Sin SD o si falla,
+ * sd_state = -1 y la ROM sigue igual. */
+static void sd_mount(void)
+{
+	char line[96];
+	FILE *f;
+
+	sd_state = -1;
+	if (!fatInitDefault())
+		return;
+	mkdir("/SalsaDS-pruebas", 0777);
+	mkdir("/SalsaDS-pruebas/resultados", 0777);
+	snprintf(sd_path, sizeof sd_path, "/SalsaDS-pruebas/resultados/%s.txt", SDS_ROM_NAME);
+	f = fopen(sd_path, "r");
+	if (f) {
+		while (fgets(line, sizeof line, f))
+			if (!strncmp(line, "=== corrida ", 12))
+				sd_run++;
+		fclose(f);
+	}
+	sd_run++;
+	/* comprobar que se puede escribir */
+	f = fopen(sd_path, "a");
+	if (!f)
+		return;
+	fclose(f);
+	sd_state = 1;
 }
 
 void sds_init(const char *title)
@@ -161,6 +220,7 @@ void sds_init(const char *title)
 	R->version = 1;
 	publish();
 
+	sd_mount();
 	REG_POWCNT1 = (1 << 0) | (1 << 1) | (1 << 9) | (1 << 15); /* LCD, motor A, motor B, A arriba */
 	REG_VRAMCNT_A = 0x80;                                     /* banco A: LCDC */
 	REG_DISPCNT_B = 0;                                        /* la de abajo, apagada */
@@ -219,6 +279,12 @@ static void close_group(void)
 
 	if (!group_name)
 		return;
+	if (nglog < MAXG) {
+		glog[nglog].name = group_name;
+		glog[nglog].checks = group_checks;
+		glog[nglog].failed = group_failed;
+	}
+	nglog++;
 	R->groups++;
 	/* nombre en 12 columnas, luego estado y cuenta */
 	for (const char *p = group_name; *p && n < 12; p++)
@@ -301,6 +367,35 @@ void sds_diverge(uint32_t got, uint32_t want, uint32_t id)
 	R->diverge++;
 }
 
+void sds_diverge_at(uint32_t got, uint32_t doc, uint32_t melon, uint32_t id, const char *file)
+{
+	const char *b = file;
+
+	for (const char *p = file; *p; p++)
+		if (*p == '/')
+			b = p + 1;
+	if (nslog < MAXS) {
+		slog[nslog].id = id;
+		slog[nslog].got = got;
+		slog[nslog].doc = doc;
+		slog[nslog].melon = melon;
+		slog[nslog].group = R->groups + 1;
+		slog[nslog].file = b;
+		nslog++;
+	}
+	nslog_total++;
+	sds_diverge(got, doc, id);
+}
+
+static const char *notes[4];
+static uint32_t nnotes;
+
+void sds_note(const char *text)
+{
+	if (nnotes < 4)
+		notes[nnotes++] = text;
+}
+
 void sds_mark(uint32_t n)
 {
 	R->mark = n;
@@ -312,9 +407,190 @@ void sds_print_row(int row, const char *text)
 	draw_text(row, 0, text, C_FG, C_BG);
 }
 
+static const char *grp_name(uint32_t g)
+{
+	return g >= 1 && g <= nglog && g <= MAXG ? glog[g - 1].name : "?";
+}
+
+static void fmt_val(char *out, uint32_t v)
+{
+	if (v == SDS_MELON_NA)
+		strcpy(out, "?");
+	else
+		snprintf(out, 12, "%08lX", (unsigned long)v);
+}
+
+static void write_log(void)
+{
+	FILE *f;
+	const struct sds_x7 *x = (const struct sds_x7 *)SDS_X7_ADDR;
+	int have7;
+	char a[12], b[12], c[12];
+
+	if (sd_state != 1)
+		return;
+	f = fopen(sd_path, "a");
+	if (!f) {
+		sd_state = -1;
+		return;
+	}
+	/* el ARM7 escribió aparte: invalidar la caché de datos de esas líneas antes de leer */
+	for (uint32_t a2 = SDS_X7_ADDR; a2 < SDS_X7_ADDR + sizeof(struct sds_x7); a2 += 32)
+		__asm__ volatile("mcr p15, 0, %0, c7, c6, 1" : : "r"(a2) : "memory");
+	have7 = x->magic == SDS_X7_MAGIC;
+
+	fprintf(f, "=== corrida %lu ===\n", (unsigned long)sd_run);
+	fprintf(f, "ROM: %s  version (commit): %s\n", SDS_ROM_NAME, SDS_GITREV);
+	fprintf(f, "Veredicto: %s  comprobaciones: %lu  fallos: %lu  divergencias respecto de la doc: %lu\n",
+		R->failed ? "FALLO" : "OK", (unsigned long)R->total, (unsigned long)R->failed, (unsigned long)R->diverge);
+	for (uint32_t i = 0; i < nnotes; i++)
+		fprintf(f, "NOTA: %s\n", notes[i]);
+	fprintf(f, "Grupos (ARM9):\n");
+	for (uint32_t i = 0; i < nglog && i < MAXG; i++)
+		fprintf(f, "  ARM9 %-12s total %lu fallos %lu\n", glog[i].name, (unsigned long)glog[i].checks,
+			(unsigned long)glog[i].failed);
+	if (have7) {
+		fprintf(f, "Grupos (ARM7):\n");
+		for (uint32_t i = 0; i < x->ngroups && i < SDS_X7_GROUPS; i++)
+			fprintf(f, "  ARM7 %-12s total %lu fallos %lu\n", x->g[i].name, (unsigned long)x->g[i].checks,
+				(unsigned long)x->g[i].failed);
+	}
+	if (R->failed) {
+		fprintf(f, "Primer fallo (ARM9): grupo %s id L%lu obtenido %08lX esperado %08lX\n", grp_name(R->first_fail_group),
+			(unsigned long)R->first_fail_id, (unsigned long)R->first_fail_got, (unsigned long)R->first_fail_want);
+		for (uint32_t i = 0; i < R->failed && i < SDS_FAILLOG_MAX; i++)
+			fprintf(f, "  FALLO ARM9 grupo %s id L%lu obtenido %08lX esperado %08lX\n", grp_name(FAILLOG[i].group),
+				(unsigned long)FAILLOG[i].id, (unsigned long)FAILLOG[i].got, (unsigned long)FAILLOG[i].want);
+	}
+	{
+		const volatile struct sds_results *R7 = (const volatile struct sds_results *)SDS_ARM7_RESULTS_ADDR;
+		const volatile struct sds_fail *F7 = (const volatile struct sds_fail *)(SDS_ARM7_RESULTS_ADDR + SDS_FAILLOG_OFFSET);
+
+		for (uint32_t a2 = SDS_ARM7_RESULTS_ADDR; a2 < SDS_ARM7_RESULTS_ADDR + 0x340; a2 += 32)
+			__asm__ volatile("mcr p15, 0, %0, c7, c6, 1" : : "r"(a2) : "memory");
+		if (have7 && R7->magic == SDS_MAGIC) {
+			fprintf(f, "ARM7: total %lu fallos %lu\n", (unsigned long)R7->total, (unsigned long)R7->failed);
+			for (uint32_t i = 0; i < R7->failed && i < SDS_FAILLOG_MAX; i++)
+				fprintf(f, "  FALLO ARM7 grupo %lu id L%lu obtenido %08lX esperado %08lX\n", (unsigned long)F7[i].group,
+					(unsigned long)F7[i].id, (unsigned long)F7[i].got, (unsigned long)F7[i].want);
+		}
+	}
+	fprintf(f, "Divergencias (hw = este hardware, doc = GBATEK/manual, melon = melonDS 1.1; ? = sin dato):\n");
+	for (uint32_t i = 0; i < nslog && i < MAXS; i++) {
+		fmt_val(a, slog[i].got);
+		fmt_val(b, slog[i].doc);
+		fmt_val(c, slog[i].melon);
+		fprintf(f, "  DIV ARM9 %s:%lu grupo %s hw=%s doc=%s melon=%s -> %s\n", slog[i].file, (unsigned long)slog[i].id,
+			grp_name(slog[i].group), a, b, c,
+			slog[i].got == slog[i].doc ? "coincide con la doc" : slog[i].got == slog[i].melon ? "coincide con melonDS" : "ninguno");
+	}
+	if (nslog_total > MAXS)
+		fprintf(f, "  (ARM9: %lu llamadas, solo las primeras %d)\n", (unsigned long)nslog_total, MAXS);
+	if (have7) {
+		for (uint32_t i = 0; i < x->nsites && i < SDS_X7_SITES; i++) {
+			fmt_val(a, x->s[i].got);
+			fmt_val(b, x->s[i].doc);
+			fmt_val(c, x->s[i].melon);
+			fprintf(f, "  DIV ARM7 %.20s:%lu grupo %.12s hw=%s doc=%s melon=%s -> %s\n", x->s[i].file,
+				(unsigned long)x->s[i].id,
+				x->s[i].group >= 1 && x->s[i].group <= x->ngroups && x->s[i].group <= SDS_X7_GROUPS ? x->g[x->s[i].group - 1].name : "?",
+				a, b, c,
+				x->s[i].got == x->s[i].doc ? "coincide con la doc"
+				: x->s[i].got == x->s[i].melon ? "coincide con melonDS" : "ninguno");
+		}
+		if (x->nsites_total > SDS_X7_SITES)
+			fprintf(f, "  (ARM7: %lu llamadas, solo las primeras %lu)\n", (unsigned long)x->nsites_total,
+				(unsigned long)SDS_X7_SITES);
+	}
+	fprintf(f, "\n");
+	if (fclose(f) != 0)
+		sd_state = -1;
+}
+
+/* Pantalla de divergencias (solo las que difieren de la doc en ESTE hardware): A/derecha siguiente, B/izquierda anterior. */
+#define PER_PAGE 6
+static uint32_t ndiv_screen(const struct sds_x7 *x, int have7)
+{
+	uint32_t n = 0;
+
+	for (uint32_t i = 0; i < nslog && i < MAXS; i++)
+		n += slog[i].got != slog[i].doc;
+	if (have7)
+		for (uint32_t i = 0; i < x->nsites && i < SDS_X7_SITES; i++)
+			n += x->s[i].got != x->s[i].doc;
+	return n;
+}
+
+static void div_page(const struct sds_x7 *x, int have7, uint32_t page, uint32_t total)
+{
+	uint32_t k = 0, row = 1;
+	char line[40], num[12], t[12];
+
+	fill_rect(0, 0, 256, 192, C_BG);
+	line[0] = 0;
+	append(line, "DIV ");
+	dec(num, page + 1);
+	append(line, num);
+	append(line, "/");
+	dec(num, (total + PER_PAGE - 1) / PER_PAGE);
+	append(line, num);
+	append(line, " A=SIG B=ANT");
+	draw_text(0, 0, line, C_FG, C_BG);
+	for (int cpu = 0; cpu < 2; cpu++) {
+		uint32_t n = cpu ? (have7 ? x->nsites : 0) : nslog;
+
+		for (uint32_t i = 0; i < n; i++) {
+			uint32_t id = cpu ? x->s[i].id : slog[i].id, got = cpu ? x->s[i].got : slog[i].got,
+				 doc = cpu ? x->s[i].doc : slog[i].doc, mel = cpu ? x->s[i].melon : slog[i].melon;
+			uint16_t col;
+
+			if (got == doc)
+				continue;
+			if (k / PER_PAGE == page) {
+				const char *g = cpu ? x->g[0].name : grp_name(slog[i].group);
+				uint32_t gi = cpu ? x->s[i].group : 0;
+
+				if (cpu)
+					g = gi >= 1 && gi <= SDS_X7_GROUPS ? x->g[gi - 1].name : "?";
+				line[0] = 0;
+				append(line, "DIV ");
+				append(line, g);
+				append(line, " L");
+				dec(num, id);
+				append(line, num);
+				append(line, cpu ? " ARM7" : " ARM9");
+				draw_text((int)row, 0, line, C_FG, C_BG);
+				col = got == mel ? C_WARN : C_BAD;
+				line[0] = 0;
+				append(line, "H");
+				hex32(t, got);
+				append(line, t);
+				append(line, " D");
+				hex32(t, doc);
+				append(line, t);
+				append(line, " M");
+				if (mel == SDS_MELON_NA)
+					append(line, "?");
+				else {
+					hex32(t, mel);
+					append(line, t);
+				}
+				draw_text((int)row + 1, 0, line, col, C_BG);
+				row += 2;
+			}
+			k++;
+		}
+	}
+	draw_text(14, 0, "H=HW D=DOC M=MELONDS", C_DIM, C_BG);
+	draw_text(15, 0, "AMARILLO=COMO MELON", C_DIM, C_BG);
+}
+
 void sds_finish(void)
 {
 	char line[40] = "", num[12];
+	const struct sds_x7 *x = (const struct sds_x7 *)SDS_X7_ADDR;
+	int have7;
+	uint32_t total, page = 0, pages, prev = 0x3FF;
 
 	close_group();
 	R->verdict = R->failed ? SDS_VERDICT_FAIL : SDS_VERDICT_OK;
@@ -335,6 +611,45 @@ void sds_finish(void)
 		append(line, num);
 	}
 	draw_text(ROW_BANNER, 1, line, C_FG, R->failed ? C_BAD : C_OK);
-	for (;;)
-		;
+
+	write_log();
+	draw_text(1, 13, sd_state == 1 ? "SD:LOG OK" : "SD:NO", sd_state == 1 ? C_OK : C_WARN, C_BG);
+	draw_text(1, 23, "START=MENU", C_DIM, C_BG);
+
+	for (uint32_t a2 = SDS_X7_ADDR; a2 < SDS_X7_ADDR + sizeof(struct sds_x7); a2 += 32)
+		__asm__ volatile("mcr p15, 0, %0, c7, c6, 1" : : "r"(a2) : "memory");
+	have7 = x->magic == SDS_X7_MAGIC;
+	total = ndiv_screen(x, have7);
+	pages = (total + PER_PAGE - 1) / PER_PAGE;
+	if (total && !R->failed) {
+		line[0] = 0;
+		append(line, "A: VER DIVERGENCIAS ");
+		dec(num, total);
+		append(line, num);
+		draw_text(ROW_FAIL, 0, line, C_WARN, C_BG);
+	}
+	/* sin teclas (emuladores: KEYINPUT = 0x3FF) no pasa nada; en la DS A/B/izquierda/derecha cambian de página;
+	 * la página 0 es el resumen */
+	for (;;) {
+		uint32_t keys = *(volatile uint16_t *)0x04000130 & 0x3FF, pressed = prev & ~keys;
+
+		prev = keys;
+		if (pressed & (1u << 3)) { /* START: volver al menú del cargador (bootstub); si no hay, avisar */
+			fill_rect(0, 0, 256, 192, C_BG);
+			draw_text(6, 0, "APAGA LA CONSOLA PARA", C_FG, C_BG);
+			draw_text(7, 0, "VOLVER AL MENU", C_FG, C_BG);
+			exit(0);
+			for (;;)
+				;
+		}
+		if (!pages)
+			continue;
+		if (pressed & ((1u << 0) | (1u << 4))) { /* A, derecha */
+			page = page >= pages ? 1 : page + 1;
+			div_page(x, have7, page - 1, total);
+		} else if (pressed & ((1u << 1) | (1u << 5))) { /* B, izquierda */
+			page = page <= 1 ? pages : page - 1;
+			div_page(x, have7, page - 1, total);
+		}
+	}
 }

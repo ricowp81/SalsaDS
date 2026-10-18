@@ -150,13 +150,18 @@ static void group_sqrt(void)
 	SDS_CHECK(MEM32(R_SQRT_RESULT), 5);
 	/* ocupado justo después de escribir */
 	wr64(R_SQRT_PARAM, 1000000);
-	SDS_CHECK(MEM16(R_SQRTCNT) & 0x8000, 0x8000);
+	/* en una DS real el cálculo (13 ciclos) puede haber terminado ya al leer: informativo, no fallo */
+	SDS_DIVERGE_M(MEM16(R_SQRTCNT) & 0x8000, 0x8000, 0x8000);
 	SDS_CHECK(WAIT_UNTIL(!(MEM16(R_SQRTCNT) & 0x8000), 100000), 1);
 	SDS_CHECK(MEM32(R_SQRT_RESULT), 1000);
 	MEM16(R_SQRTCNT) = 0xFFFF;
-	SDS_DIVERGE(MEM16(R_SQRTCNT) & 0x7FFF, 1); /* solo el bit 0 existe (GBATEK); melonDS guarda todo */
+	SDS_DIVERGE_M(MEM16(R_SQRTCNT) & 0x7FFF, 1, 0x7FFF); /* solo el bit 0 existe (GBATEK); melonDS guarda todo */
 	MEM16(R_SQRTCNT) = 0;
 }
+
+/* en un flashcart el cartucho no es el de la ROM: las comprobaciones de la ranura pasan a divergencias informativas */
+static int flashcart;
+#define CC(got, want) (flashcart ? sds_diverge_at((uint32_t)(got), (uint32_t)(want), SDS_MELON_NA, __LINE__, __FILE__) : SDS_CHECK(got, want))
 
 static void group_cart(void)
 {
@@ -173,22 +178,31 @@ static void group_cart(void)
 	test_off = (test_off + 0x1FFu) & ~0x1FFu;
 	pat = v_pattern + (test_off - pat_rom);
 	sds_group("CARTUCHO");
-	SDS_CHECK((MEM16(R_EXMEMCNT) >> 11) & 1, 0); /* la ranura es del ARM9 al arrancar */
-	SDS_CHECK(test_off + 0x200 <= pat_rom + sizeof v_pattern, 1);
+	/* ¿es el cartucho de la ROM o un flashcart (R4...)? Un flashcart sirve los datos de la ROM pero no el chip ni todos los
+	 * comandos: si el identificador (B8) es 0/FFFFFFFF o B7 no devuelve los bytes conocidos, los comprobaciones de este
+	 * grupo pasan a informativas ("no aplica en flashcart") y se anota en el log */
+	n = rom_read(0xB8, 0, 7, 4, buf2);
+	flashcart = n != 1 || buf2[0] == 0 || buf2[0] == 0xFFFFFFFFu;
+	n = rom_read(0xB7, test_off, 1, 0x200, buf);
+	flashcart |= n != 128 || memcmp(buf, pat, 0x200) != 0;
+	if (flashcart)
+		sds_note("CARTUCHO y CART ARM7: no aplican en flashcart (chip ID o B7 distintos del cartucho real); sus resultados son informativos");
+	CC((MEM16(R_EXMEMCNT) >> 11) & 1, 0); /* la ranura es del ARM9 al arrancar */
+	CC(test_off + 0x200 <= pat_rom + sizeof v_pattern, 1);
 	/* identificador del chip (comando B8 con el cartucho en el estado en que lo deja el arranque: KEY2 sin cifrar los
 	 * datos): distinto de cero. Los comandos 00h y 90h solo valen antes de activar KEY1 y no se prueban */
 	n = rom_read(0xB8, 0, 7, 4, buf2);
-	SDS_CHECK(n, 1);
-	SDS_CHECK(buf2[0] != 0 && buf2[0] != 0xFFFFFFFFu, 1);
+	CC(n, 1);
+	CC(buf2[0] != 0 && buf2[0] != 0xFFFFFFFFu, 1);
 	SDS_DIVERGE(buf2[0], MEM32(0x027FF800)); /* el identificador que el arranque deja en RAM (informativo) */
 	/* lectura B7 de un bloque de bytes conocidos */
 	n = rom_read(0xB7, test_off, 1, 0x200, buf);
-	SDS_CHECK(n, 128);
-	SDS_CHECK(memcmp(buf, pat, 0x200), 0);
+	CC(n, 128);
+	CC(memcmp(buf, pat, 0x200), 0);
 	/* un bloque de 4 bytes (modo de lectura corta) */
 	n = rom_read(0xB7, test_off + 4, 7, 4, buf2);
-	SDS_CHECK(n, 1);
-	SDS_CHECK(memcmp(buf2, pat + 4, 4), 0);
+	CC(n, 1);
+	CC(memcmp(buf2, pat + 4, 4), 0);
 	/* por debajo de 0x8000 se lee 0x8000 + (dir & 0x1FF): el bloque se repite cada 0x200 bytes (GBATEK). melonDS 1.1
 	 * lo hace distinto: informativo */
 	rom_read(0xB7, 0x1000, 1, 0x200, buf2);
@@ -199,8 +213,8 @@ static void group_cart(void)
 	/* una lectura de 0x200 bytes que cruza un límite de 4 KB da la vuelta dentro de su página (GBATEK) */
 	n = rom_read(0xB7, 0x9000 - 0x100, 1, 0x200, buf2);
 	rom_read(0xB7, 0x9000 - 0x100, 7, 4, buf);
-	SDS_CHECK(n, 128);
-	SDS_CHECK(buf2[0], buf[0]);
+	CC(n, 128);
+	CC(buf2[0], buf[0]);
 	{
 		uint32_t w0[1];
 
@@ -222,9 +236,9 @@ static void group_cart(void)
 				(void)REG32(R_ROMDATA);
 				cnt++;
 			}
-		SDS_CHECK(cnt, 128);
+		CC(cnt, 128);
 	}
-	SDS_CHECK(WAIT_UNTIL(n_card != 0, 100000), 1);
+	CC(WAIT_UNTIL(n_card != 0, 100000), 1);
 	MEM32(R_IE) &= ~IRQ_CARD;
 	/* DMA en modo cartucho (modo 5 del ARM9): una palabra por aviso, cuenta 1, repetir, origen fijo */
 	REG16(R_AUXSPICNT) = 0x8000;
@@ -235,9 +249,9 @@ static void group_cart(void)
 	MEM32(R_DMA(3, 2)) = (1u << 31) | (1u << 26) | (1u << 25) | (5u << 27) | (2u << 23) | 1u;
 	rom_cmd(0xB7, test_off);
 	REG32(R_ROMCTRL) = ROMCTRL_START(1);
-	SDS_CHECK(WAIT_UNTIL(!(REG32(R_ROMCTRL) & ROMCTRL_BUSY), 4000000), 1);
+	CC(WAIT_UNTIL(!(REG32(R_ROMCTRL) & ROMCTRL_BUSY), 4000000), 1);
 	MEM32(R_DMA(3, 2)) = 0;
-	SDS_CHECK(memcmp(buf, pat, 0x200), 0);
+	CC(memcmp(buf, pat, 0x200), 0);
 	/* AUXSPI: el chip de guardado se prueba aparte (ROM save) */
 	REG16(R_AUXSPICNT) = 0x8000;
 }
@@ -312,11 +326,11 @@ int main(void)
 
 		test_off = (test_off + 0x1FFu) & ~0x1FFu;
 		MEM16(R_EXMEMCNT) = (uint16_t)(save | 0x0800);
-		SDS_CHECK(mb_call(P_CART_OWN, test_off, 0, 0), 1);
+		CC(mb_call(P_CART_OWN, test_off, 0, 0), 1);
 		MEM16(R_EXMEMCNT) = (uint16_t)save;
-		SDS_CHECK(MBOX->res[0], 128);
-		SDS_CHECK(memcmp((const void *)(uintptr_t)0x02390A00, v_pattern + (test_off - pat_rom), 0x200), 0);
-		SDS_CHECK(MBOX->res[2] != 0 && MBOX->res[2] != 0xFFFFFFFFu, 1);
+		CC(MBOX->res[0], 128);
+		CC(memcmp((const void *)(uintptr_t)0x02390A00, v_pattern + (test_off - pat_rom), 0x200), 0);
+		CC(MBOX->res[2] != 0 && MBOX->res[2] != 0xFFFFFFFFu, 1);
 	}
 	{
 		uint32_t spin = 0, nibble;

@@ -304,16 +304,16 @@ static void group_flash(void)
 		id[0] = xfer(0, 1);
 		id[1] = xfer(0, 1);
 		id[2] = xfer(0, 0);
-		SDS_DIVERGE(id[0], 0x20); /* melonDS 1.1 contesta FFh a todo */
-		SDS_DIVERGE(id[1], 0x40);
-		SDS_DIVERGE(id[2], size >= 1048576u ? 0x14 : size >= 524288u ? 0x13 : 0x12);
+		SDS_DIVERGE_M(id[0], 0x20, 0xFF); /* melonDS 1.1 contesta FFh a todo */
+		SDS_DIVERGE_M(id[1], 0x40, 0xFF);
+		SDS_DIVERGE_M(id[2], size >= 1048576u ? 0x14 : size >= 524288u ? 0x13 : 0x12, 0xFF);
 	}
 	/* borrar la página (DBh): queda en FFh (melonDS 1.1 la deja en 00h) */
 	flash_cmd(0xDB, a, 0, 0);
 	wait_idle();
 	rd(a, r, 16);
 	for (int i = 0; i < 16; i++)
-		SDS_DIVERGE_ID(r[i], 0xFF, 600 + i);
+		sds_diverge_at(r[i], 0xFF, 0x00, 600 + i, __FILE__);
 	/* escribir página (0Ah) borra antes: sobre cualquier cosa queda exactamente lo escrito, y el resto de la
 	 * página queda borrado */
 	for (int i = 0; i < 16; i++)
@@ -325,7 +325,7 @@ static void group_flash(void)
 		SDS_CHECK_ID(r[i], 0x0F, 700 + i);
 	rd(a + 16, r, 4);
 	for (int i = 0; i < 4; i++)
-		SDS_DIVERGE_ID(r[i], 0xFF, 750 + i); /* melonDS 1.1: 00h */
+		sds_diverge_at(r[i], 0xFF, 0x00, 750 + i, __FILE__); /* melonDS 1.1: 00h */
 	/* programar página (02h) solo baja bits: 0x0F y 0x3C dan 0x0C */
 	for (int i = 0; i < 16; i++)
 		w[i] = 0x3C;
@@ -333,7 +333,7 @@ static void group_flash(void)
 	wait_idle();
 	rd(a, r, 16);
 	for (int i = 0; i < 16; i++)
-		SDS_DIVERGE_ID(r[i], 0x0C, 800 + i); /* melonDS 1.1 deja 00h */
+		sds_diverge_at(r[i], 0x0C, 0x00, 800 + i, __FILE__); /* melonDS 1.1 deja 00h */
 	/* sin WREN no se borra */
 	xfer(0xDB, 1);
 	addr_out(a, 3, 0);
@@ -345,11 +345,11 @@ static void group_flash(void)
 	flash_cmd(0xD8, a, 0, 0);
 	wait_idle();
 	rd(a, r, 4);
-	SDS_DIVERGE(r[0], 0xFF);
+	SDS_DIVERGE_M(r[0], 0xFF, 0x00);
 	rd(a + 0x80, r, 4);
-	SDS_DIVERGE(r[0], 0xFF);
+	SDS_DIVERGE_M(r[0], 0xFF, 0x00);
 	rd(0x10000 - 4, r, 4); /* el último byte del sector 0 */
-	SDS_DIVERGE(r[3], 0xFF);
+	SDS_DIVERGE_M(r[3], 0xFF, 0x00);
 }
 
 int main(void)

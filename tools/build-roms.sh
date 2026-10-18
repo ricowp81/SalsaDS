@@ -12,8 +12,11 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
 	echo "No existe la imagen $IMAGE: la construyo (tools/docker-image-nds.sh)" >&2
 	"$ROOT/tools/docker-image-nds.sh" >&2
 fi
+# versión que queda grabada en el log de la SD: commit y, si hay cambios sin commitear, "+"
+REV="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo desconocida)"
+if [ -n "$(git -C "$ROOT" status --porcelain -- tests/roms/src tests/roms/Makefile 2>/dev/null)" ]; then REV="$REV+"; fi
 run() {
-	docker run --rm -i --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$ROOT:/src" -w /src "$IMAGE" "$@"
+	docker run --rm -i --user "$(id -u):$(id -g)" -e SDS_GITREV="$REV" -e HOME=/tmp -v "$ROOT:/src" -w /src "$IMAGE" "$@"
 }
 if [ "${1:-}" = "--sh" ]; then
 	shift

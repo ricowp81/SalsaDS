@@ -82,6 +82,41 @@ sds.ppm --regs ROM.nds`, luego `tools/compare-image.py sds.ppm melon.ppm` (la pa
 la comparación de la línea `regs`. `tools/gen-bios-vectors.py` genera `src/bios/vectors.h` y, con `--pattern`,
 `src/periph/pattern.h` (bytes conocidos para leer el cartucho).
 
+## Correr las ROMs en una DS real (flashcart R4)
+
+Las ROMs de pruebas (`hola`, `cpu9`, `cpuarm`, `mem`, `irq`, `dma`, `ipc`, `bios`, `periph`, `save`) escriben además un
+**log de texto en la SD**. Las de gráficos (`gfx*`), `demo`, `ocio` y `carga` no.
+
+1. Copiar los `.nds` de `homebrew/` a una carpeta de la SD (por ejemplo `SalsaDS-pruebas/`) y lanzarlos desde el menú del
+   flashcart. Las ROMs usan el DLDI de libnds: el cargador del flashcart lo parchea al arrancar (lo normal en R4 con
+   kernel Wood R4, Lazy, Akaio, etc.); si el kernel no lo hace, no hay SD para la ROM y la prueba corre igual, solo sin log.
+2. Esperar a que termine (la mayoría, segundos; `cpu9` y `cpuarm` más). En la pantalla de arriba salen los grupos, la
+   franja verde/roja y, en la fila 2, `SD:LOG OK` o `SD:NO` (sin SD o montaje fallido).
+3. Si hubo divergencias en ESTE hardware (valor distinto del documentado), aparece `A: VER DIVERGENCIAS N`: **A / derecha**
+   pasa de página y **B / izquierda** vuelve. Cada divergencia son dos filas: `DIV <grupo> L<línea> ARM9|ARM7` y
+   `H<hw> D<doc> M<melonDS>` (amarillo si el hardware coincide con melonDS, rojo si con ninguno; `M?` = sin dato de melonDS).
+   Sirve para leerlas en una foto si el log falla.
+4. **START** intenta volver al menú del cargador (`exit(0)`, bootstub); si el flashcart no lo provee, la pantalla pide
+   «Apaga la consola para volver al menú».
+5. El log queda en `/SalsaDS-pruebas/resultados/<rom>.txt` (carpeta creada si no existe). Cada corrida se **añade** al
+   final con `=== corrida N ===`. Contiene: ROM y commit con el que se construyó (`SDS_GITREV`, `+` si había cambios sin
+   commitear), veredicto, los grupos de cada CPU (`ARM9`/`ARM7`) con total y fallos, el primer fallo y el registro de los
+   16 primeros (grupo, identificador = línea de la fuente, obtenido, esperado) y **todas** las llamadas de divergencia con
+   `hw=` (este hardware), `doc=` (GBATEK o manual de ARM) y `melon=` (melonDS 1.1, `?` si no está medido), más a qué
+   coincide el hardware. Esto incluye los casos en que el hardware coincide con la documentación (melonDS equivocado), que
+   son los que más interesa saber.
+6. En un flashcart los grupos `CARTUCHO` y `CART ARM7` de `periph` miden el R4, no el cartucho de la ROM: si el chip ID
+   (B8) es 0/FFFFFFFF o B7 no devuelve los bytes conocidos, sus comprobaciones pasan a informativas y el log lo anota
+   (`NOTA: ... no aplican en flashcart`). La lectura de SQRTCNT justo tras escribir también es informativa: en hardware el
+   cálculo (13 ciclos) puede haber terminado ya.
+
+Cómo funciona (`src/common/sds.c`): al arrancar `sds_init` monta la SD con `fatInitDefault()` de libnds (FatFs + DLDI,
+BlocksDS); al terminar, `sds_finish` dibuja primero la pantalla y después escribe el log con `fopen/fprintf`. El ARM7
+deja sus grupos y divergencias en `SDS_X7_ADDR` (`0x023B0000`, `struct sds_x7`) para que el ARM9 los añada al log. Las
+divergencias se declaran con `SDS_DIVERGE(hw, doc)` o `SDS_DIVERGE_M(hw, doc, melonds)`. En SalsaDS y melonDS no hay
+DLDI: el montaje falla, `SD:NO` y todo lo demás (bloque de resultados en RAM, `melonds-run.py`, `salsads-cpurun`) queda
+igual. Las ROMs se construyen con `tools/build-roms.sh` (que pasa el commit a `SDS_GITREV`).
+
 ## ROMs de gráficos 2D (`gfx*`, `src/gfx`)
 
 Montan escenas en los motores 2D (Fase 2.1) y dejan en RAM (`0x02380800`) una lista de píxeles con color conocido

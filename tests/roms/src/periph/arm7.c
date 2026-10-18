@@ -108,7 +108,7 @@ static void group_touch(void)
 	if (!pen_down) {
 		SDS_CHECK(x, 0);      /* sin tocar: X = 0, Y = 0xFFF (GBATEK) */
 		SDS_CHECK(y, 0xFFF);
-		SDS_DIVERGE(z1, 0); /* Z1 sin tocar: GBATEK no dice; melonDS da 0xFFF */
+		SDS_DIVERGE_M(z1, 0, 0xFFF); /* Z1 sin tocar: GBATEK no dice; melonDS da 0xFFF */
 	} else {
 		/* calibración del firmware: pixel = (adc - adc1) * (scr2 - scr1) / (adc2 - adc1) + scr1 - 1 */
 		const int32_t ax1 = u[0x58] | (u[0x59] << 8), ay1 = u[0x5A] | (u[0x5B] << 8), sx1 = u[0x5C], sy1 = u[0x5D];
