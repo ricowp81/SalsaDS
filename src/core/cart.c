@@ -13,6 +13,7 @@
  *
  * Fuente: GBATEK (DS Cartridge I/O Ports, Protocol, Header). Código propio.
  */
+#include <stdlib.h>
 #include <string.h>
 
 #include "core/nds_priv.h"
@@ -22,13 +23,161 @@ int nds_cart_owner(const struct nds *n)
 	return (n->io[NDS_CPU9].exmem >> 11) & 1; /* 0 = ARM9, 1 = ARM7 */
 }
 
-static uint8_t rom_byte(const struct nds_cart *c, uint32_t addr)
+static void pg_load(struct nds_rompg *g, uint32_t page, uint32_t size, uint32_t *slot_out, int ra)
+{
+	uint32_t best = 0;
+	uint64_t oldest = ~0ull;
+	const size_t psz = (size_t)1 << g->shift;
+	uint8_t *dst;
+	uint64_t off = (uint64_t)page << g->shift;
+	int got;
+
+	for (uint32_t i = 0; i < g->nslots; i++) {
+		if (g->slot_page[i] == 0xFFFFFFFFu) {
+			best = i;
+			break;
+		}
+		if (g->slot_stamp[i] < oldest) {
+			oldest = g->slot_stamp[i];
+			best = i;
+		}
+	}
+	if (g->slot_page[best] != 0xFFFFFFFFu)
+		g->map[g->slot_page[best]] = -1;
+	dst = g->mem + ((size_t)best << g->shift);
+	got = g->rd(g->user, off, dst, off + psz > size ? (size_t)(size - off) : psz);
+	if (got < 0) {
+		g->errs++;
+		got = 0;
+	}
+	if ((size_t)got < psz)
+		memset(dst + got, 0xFF, psz - (size_t)got);
+	g->slot_page[best] = page;
+	g->map[page] = (int32_t)best;
+	g->slot_stamp[best] = ++g->stamp;
+	if (ra)
+		g->ra++;
+	else
+		g->miss++;
+	*slot_out = best;
+}
+
+/* Ventana de hasta 4 KB de la ROM en `a4k` (múltiplo de 4 KB); *avail = bytes válidos (0 = más allá del final). */
+static const uint8_t *rom_win(struct nds_cart *c, uint32_t a4k, uint32_t *avail)
+{
+	struct nds_rompg *g = &c->pg;
+	uint32_t page, slot;
+
+	if (a4k >= c->size) {
+		*avail = 0;
+		return NULL;
+	}
+	*avail = c->size - a4k < 0x1000u ? (uint32_t)(c->size - a4k) : 0x1000u;
+	if (!c->paged)
+		return c->rom + a4k;
+	page = a4k >> g->shift;
+	g->acc++;
+	if (g->map[page] < 0) {
+		pg_load(g, page, (uint32_t)c->size, &slot, 0);
+		/* acceso secuencial (la página anterior está en la caché): se lee la siguiente por adelantado */
+		if (page > 0 && g->map[page - 1] >= 0 && page + 1 < g->npages && g->map[page + 1] < 0)
+			pg_load(g, page + 1, (uint32_t)c->size, &slot, 1);
+	}
+	slot = (uint32_t)g->map[page];
+	g->slot_stamp[slot] = ++g->stamp;
+	return g->mem + ((size_t)slot << g->shift) + (a4k & ((1u << g->shift) - 1u));
+}
+
+void nds_cart_pread(struct nds_cart *c, uint32_t off, uint8_t *dst, uint32_t len)
+{
+	if (!c->paged) {
+		memcpy(dst, c->rom + off, len);
+		return;
+	}
+	if (c->pg.rd(c->pg.user, off, dst, len) < (int)len)
+		c->pg.errs++;
+}
+
+int nds_load_rom_paged(struct nds *n, int (*rd)(void *, uint64_t, uint8_t *, size_t), void *user, size_t len,
+		       unsigned page_shift, size_t cache_bytes)
+{
+	struct nds_cart *c = &n->cart;
+	struct nds_rompg *g = &c->pg;
+	uint8_t hdr[0x1000];
+	uint32_t a9_off, a9_size, a7_off, a7_size;
+	unsigned shift;
+
+	if (page_shift < 12 || page_shift > 24 || (cache_bytes >> page_shift) < 2 || len < 0x200 || len > 0xFFFFFFFFu)
+		return -1;
+	memset(hdr, 0xFF, sizeof hdr);
+	if (rd(user, 0, hdr, len < sizeof hdr ? len : sizeof hdr) < 0x200)
+		return -1;
+	a9_off = rd32le(hdr + 0x20);
+	a9_size = rd32le(hdr + 0x2C);
+	a7_off = rd32le(hdr + 0x30);
+	a7_size = rd32le(hdr + 0x3C);
+	if ((uint64_t)a9_off + a9_size > len || (uint64_t)a7_off + a7_size > len)
+		return -1;
+	nds_rom_free(n);
+	memset(g, 0, sizeof *g);
+	g->rd = rd;
+	g->user = user;
+	g->shift = page_shift;
+	g->nslots = (uint32_t)(cache_bytes >> page_shift);
+	g->npages = (uint32_t)((len + ((size_t)1 << page_shift) - 1) >> page_shift);
+	if (g->nslots > g->npages)
+		g->nslots = g->npages < 2 ? 2 : g->npages;
+	g->mem = malloc((size_t)g->nslots << page_shift);
+	g->map = malloc(sizeof(int32_t) * (g->npages + 1u));
+	g->slot_page = malloc(sizeof(uint32_t) * g->nslots);
+	g->slot_stamp = calloc(g->nslots, sizeof(uint64_t));
+	if (!g->mem || !g->map || !g->slot_page || !g->slot_stamp) {
+		nds_rom_free(n);
+		return -1;
+	}
+	for (uint32_t i = 0; i < g->npages + 1u; i++)
+		g->map[i] = -1;
+	for (uint32_t i = 0; i < g->nslots; i++)
+		g->slot_page[i] = 0xFFFFFFFFu;
+	memcpy(c->hdr, hdr, sizeof hdr);
+	c->rom = c->hdr;
+	c->size = len;
+	c->paged = 1;
+	shift = hdr[0x14];
+	c->capacity = shift <= 14 ? 0x20000u << shift : 0;
+	if (c->capacity && c->capacity < len)
+		c->capacity = 0;
+	nds_save_default(n);
+	return 0;
+}
+
+void nds_rom_free(struct nds *n)
+{
+	struct nds_rompg *g = &n->cart.pg;
+
+	free(g->mem);
+	free(g->map);
+	free(g->slot_page);
+	free(g->slot_stamp);
+	memset(g, 0, sizeof *g);
+	n->cart.paged = 0;
+}
+
+void nds_rom_stats(const struct nds *n, uint64_t *acc, uint64_t *miss, uint64_t *ra)
+{
+	*acc = n->cart.pg.acc;
+	*miss = n->cart.pg.miss;
+	*ra = n->cart.pg.ra;
+}
+
+/* Dirección efectiva de la ROM para un byte: [0, 0x8000) se espeja a 0x8000 + (a & 0x1FF) y se aplica la capacidad. */
+static uint32_t rom_map(const struct nds_cart *c, uint32_t addr)
 {
 	if (addr < 0x8000u)
 		addr = 0x8000u + (addr & 0x1FFu);
 	if (c->capacity)
 		addr &= c->capacity - 1u;
-	return addr < c->size ? c->rom[addr] : 0xFF;
+	return addr;
 }
 
 uint32_t nds_cart_chipid(const struct nds_cart *c)
@@ -67,9 +216,25 @@ static void cart_start(struct nds *n, int cpu)
 		addr = (uint32_t)c->cmd[1] << 24 | (uint32_t)c->cmd[2] << 16 | (uint32_t)c->cmd[3] << 8 | c->cmd[4];
 		{
 			const uint32_t page = addr & ~0xFFFu, off = addr & 0xFFFu;
+			uint32_t avail;
+			const uint8_t *w;
 
-			for (uint32_t i = 0; i < nbytes; i++)
-				c->buf[i] = rom_byte(c, page + ((off + i) & 0xFFFu));
+			/* cada bloque queda dentro de su página de 4 KB (da la vuelta dentro de ella): una ventana */
+			if (page < 0x8000u) {
+				w = rom_win(c, rom_map(c, 0x8000u), &avail);
+				for (uint32_t i = 0; i < nbytes; i++) {
+					const uint32_t j = (off + i) & 0x1FFu;
+
+					c->buf[i] = j < avail ? w[j] : 0xFF;
+				}
+			} else {
+				w = rom_win(c, rom_map(c, page), &avail);
+				for (uint32_t i = 0; i < nbytes; i++) {
+					const uint32_t j = (off + i) & 0xFFFu;
+
+					c->buf[i] = j < avail ? w[j] : 0xFF;
+				}
+			}
 		}
 		break;
 	case 0x00: /* cabecera, repetida cada 4 KB */

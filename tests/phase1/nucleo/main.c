@@ -118,6 +118,37 @@ static int autotest, failures;
 
 static struct nds *nds;
 static uint8_t *rom_buf;
+/* ROM por fragmentos (docs/memory-budget.md): si el archivo pasa de ROM_WHOLE_MAX_MB (o existe ROM_PAGED_FLAG) se queda abierto y
+ * el núcleo lee páginas de ROM_PAGE_KB bajo demanda; rom_buf pasa a ser solo la cabecera (4 KB). */
+#ifndef ROM_WHOLE_MAX_MB
+#define ROM_WHOLE_MAX_MB 64
+#endif
+#ifndef ROM_PAGE_KB
+#define ROM_PAGE_KB 256
+#endif
+#ifndef ROM_CACHE_MB
+#define ROM_CACHE_MB 32
+#endif
+#define ROM_PAGED_FLAG SALSADS_DATA_DIR "/rom-paged"
+static FILE *rom_file;
+
+static unsigned rom_page_shift(void)
+{
+	unsigned s = 10;
+
+	while ((1u << (s - 10)) < ROM_PAGE_KB)
+		s++;
+	return s;
+}
+
+static int rom_file_rd(void *user, uint64_t off, uint8_t *dst, size_t len)
+{
+	FILE *f = user;
+
+	if (fseek(f, (long)off, SEEK_SET) != 0)
+		return -1;
+	return (int)fread(dst, 1, len, f);
+}
 static size_t rom_len;
 static const char *rom_name;
 
@@ -198,7 +229,24 @@ static int load_rom(void)
 		fseek(f, 0, SEEK_END);
 		n = ftell(f);
 		fseek(f, 0, SEEK_SET);
-		if (n >= 0x200 && n <= 0x10000000L) {
+		struct stat pst;
+		const int forced = stat(ROM_PAGED_FLAG, &pst) == 0;
+
+		if (n >= 0x200 && n <= 0x20000000L && (forced || n > (long)ROM_WHOLE_MAX_MB * 1024L * 1024L)) {
+			rom_buf = memalign(128, 4096);
+			memset(rom_buf, 0xFF, 4096);
+			if (rom_buf && fread(rom_buf, 1, n < 4096 ? (size_t)n : 4096u, f) >= 0x200) {
+				rom_file = f; /* queda abierto */
+				rom_len = (size_t)n;
+				rom_name = ROM_PATH;
+				salsads_log("ROM de %s: %u bytes, por fragmentos (páginas de %u KB, caché de %u MB)%s", ROM_PATH,
+					    (unsigned)rom_len, ROM_PAGE_KB, ROM_CACHE_MB, forced ? " [forzado por " ROM_PAGED_FLAG "]" : "");
+				return 0;
+			}
+			free(rom_buf);
+			rom_buf = NULL;
+			salsads_log("no pude leer %s: uso la ROM de carga", ROM_PATH);
+		} else if (n >= 0x200 && n <= 0x20000000L) {
 			rom_buf = memalign(128, (size_t)n);
 			if (rom_buf && fread(rom_buf, 1, (size_t)n, f) == (size_t)n) {
 				rom_len = (size_t)n;
@@ -965,6 +1013,14 @@ static void log_stats(void)
 		salsads_log("DATO eventos: por cuadro, cuántos (ms con reloj de perfil, promedio de %u cuadros; incluye lo que el evento ejecuta, "
 			    "p. ej. la geometría en «gx»):%s", (unsigned)acc_prof_n, line);
 	}
+	if (nds->cart.paged) {
+		uint64_t ra_acc, ra_miss, ra_ra;
+
+		nds_rom_stats(nds, &ra_acc, &ra_miss, &ra_ra);
+		salsads_log("DATO rom: por fragmentos, %llu ventanas de 4 KB, %llu fallos de caché (%.3f por cuadro), %llu páginas leídas por adelantado, "
+			    "%llu errores de lectura", (unsigned long long)ra_acc, (unsigned long long)ra_miss,
+			    (double)ra_miss / (double)(nds->frames ? nds->frames : 1), (unsigned long long)ra_ra, (unsigned long long)nds->cart.pg.errs);
+	}
 	if (spu_on)
 		salsads_log("DATO spe: composición 2D por pantalla y por cuadro (decrementador del SPE), mediana / p95 / máx en ms: "
 			    "A %u.%02u / %u.%02u / %u.%02u, B %u.%02u / %u.%02u / %u.%02u; el PPE esperando a los SPE: mediana %u.%02u, "
@@ -1696,7 +1752,8 @@ int main(void)
 	nds->log = core_log;
 	nds_init(nds);
 	tb_hz = (uint64_t)sysGetTimebaseFrequency();
-	if (nds_load_rom(nds, rom_buf, rom_len) != 0 || nds_boot_direct(nds) != 0) {
+	if ((rom_file ? nds_load_rom_paged(nds, rom_file_rd, rom_file, rom_len, rom_page_shift(), (size_t)ROM_CACHE_MB << 20)
+		      : nds_load_rom(nds, rom_buf, rom_len)) != 0 || nds_boot_direct(nds) != 0) {
 		salsads_log("RESULTADO nucleo: FALLO la ROM no es válida (cabecera o binarios)");
 		salsads_log_shutdown();
 		return 1;

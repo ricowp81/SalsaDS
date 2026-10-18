@@ -151,9 +151,25 @@ struct nds_rgn {
 	uint32_t mask;
 };
 
+/* ROM por fragmentos (cart.c): caché de páginas LRU leídas bajo demanda con `rd`. Con ROM entera `paged` vale 0. */
+struct nds_rompg {
+	int (*rd)(void *user, uint64_t off, uint8_t *dst, size_t len); /* bytes leídos, <0 = error */
+	void *user;
+	uint8_t *mem;          /* nslots páginas de (1 << shift) bytes */
+	int32_t *map;          /* página -> ranura, -1 = fuera */
+	uint32_t *slot_page;   /* ranura -> página (0xFFFFFFFF = libre) */
+	uint64_t *slot_stamp;  /* uso más reciente (LRU) */
+	uint64_t stamp;
+	uint32_t shift, nslots, npages;
+	uint64_t acc, miss, ra, errs; /* ventanas de 4 KB pedidas, fallos, páginas leídas por adelantado, errores de lectura */
+};
+
 struct nds_cart {
-	const uint8_t *rom;
+	const uint8_t *rom;    /* ROM entera, o (paginada) copia de los primeros 4 KB */
 	size_t size;
+	uint8_t paged;
+	struct nds_rompg pg;
+	uint8_t hdr[0x1000];
 	uint32_t capacity;     /* 128 KB << cabecera[0x14] */
 	uint16_t auxcnt;
 	uint8_t auxdata;
@@ -421,6 +437,14 @@ struct nds {
 void nds_init(struct nds *n);
 /* Conecta la ROM (sin copiarla: `rom` tiene que vivir mientras se use). 0 = bien. */
 int nds_load_rom(struct nds *n, const uint8_t *rom, size_t len);
+/* Igual, pero la ROM se lee por fragmentos: `rd(user, off, dst, len)` devuelve los bytes leídos (<0 error). Páginas de
+ * 1 << page_shift bytes (>= 12), caché de cache_bytes (>= 2 páginas), con lectura adelantada de la página siguiente
+ * cuando el acceso es secuencial. 0 = bien. Se liberan con nds_rom_free. */
+int nds_load_rom_paged(struct nds *n, int (*rd)(void *, uint64_t, uint8_t *, size_t), void *user, size_t len,
+		       unsigned page_shift, size_t cache_bytes);
+void nds_rom_free(struct nds *n);
+/* Estadística de la caché de la ROM paginada (ceros con ROM entera). */
+void nds_rom_stats(const struct nds *n, uint64_t *acc, uint64_t *miss, uint64_t *ra);
 /* Arranque directo: carga los binarios ARM9/ARM7, arma la memoria y los registros. 0 = bien. */
 int nds_boot_direct(struct nds *n);
 /* Recompilador del ARM9: lo conecta (0) o dice que no se puede en este host o sin memoria (-1: sigue el
