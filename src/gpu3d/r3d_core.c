@@ -151,6 +151,8 @@ static const uint32_t *tc_block(r3d_ctx *c, const r3d_tex *tx, uint64_t tag, uin
 static uint32_t tc_tex(void *ctx, const r3d_tex *tx, uint32_t s, uint32_t t)
 {
 	r3d_ctx *c = (r3d_ctx *)ctx;
+
+	c->st->tex_px++;
 	const uint32_t csh = tc_csh(tx), rsh = 8u - csh;
 	const uint32_t bx = s >> csh, by = t >> rsh;
 	/* identidad: desplazamiento (16 bits), tamaños y formato y transparencia (10), paleta (13), bloque (12) */

@@ -268,11 +268,14 @@ R3D_INLINE int32_t r3d_floordiv(int32_t a, int32_t b) /* b > 0 */
 }
 
 /* Factor de interpolación con corrección por w (0..2^P): piso(pos·w0·2^P / ((len - pos)·w1 + pos·w0)), o
- * piso(pos·2^P / len) si las w son iguales. Exacto y en 32 bits (división con resto, un bit por vuelta): pos·w0 < 2^26 y
- * el resto doblado < 2^27. Sin divisiones de 64 bits, que en el SPE son una llamada a libgcc por píxel. */
+ * piso(pos·2^P / len) si las w son iguales. Exacto y en 32 bits: un cociente aproximado en coma flotante y una corrección
+ * entera (a·2^P - f·d se calcula módulo 2^32, y su valor real cabe en 32 bits con signo porque d < 2^26); el resultado no
+ * depende del redondeo de la coma flotante, así que es el mismo en el SPE, el PPE y el host. Sin divisiones enteras (en el
+ * SPE son de software) ni aritmética de 64 bits. tools: comprobado contra la fórmula de 64 bits en 4·10^8 casos. */
 R3D_INLINE uint32_t r3d_pfac(uint32_t pos, uint32_t len, uint32_t w0, uint32_t w1, uint32_t P)
 {
-	uint32_t a, d, f = 0;
+	uint32_t a, d;
+	int32_t f, r;
 
 	if (len == 0)
 		return 0;
@@ -285,18 +288,29 @@ R3D_INLINE uint32_t r3d_pfac(uint32_t pos, uint32_t len, uint32_t w0, uint32_t w
 		a = pos * w0;
 		d = (len - pos) * w1 + a;
 	}
-	for (uint32_t i = 0; i < P; i++) {
-		const uint32_t ge = (a << 1) >= d;
-
-		a = (a << 1) - (ge ? d : 0u);
-		f = (f << 1) | ge;
-	}
-	return f;
+	f = (int32_t)((float)a * (float)(1u << P) / (float)d);
+	r = (int32_t)((a << P) - (uint32_t)f * d);
+	if (r < 0)
+		f--;
+	else if ((uint32_t)r >= d)
+		f++;
+	return (uint32_t)f;
 }
 
 R3D_INLINE int32_t r3d_lerp(int32_t a, int32_t b, uint32_t f, uint32_t P)
 {
 	return (a * (int32_t)((1u << P) - f) + b * (int32_t)f) >> P;
+}
+
+/* Igual, con operandos de 16 bits (s, t y el color con signo; w sin signo): en el SPE son productos de 16 × 16 bits
+ * (una instrucción) en lugar de los de 32. Mismo resultado mientras quepan (r3d_lerp lo dice arriba). */
+R3D_INLINE int32_t r3d_lerp16(int32_t a, int32_t b, uint32_t f, uint32_t P)
+{
+	return ((int32_t)(int16_t)a * (int32_t)(int16_t)((1u << P) - f) + (int32_t)(int16_t)b * (int32_t)(int16_t)f) >> P;
+}
+R3D_INLINE uint32_t r3d_lerpu16(uint32_t a, uint32_t b, uint32_t f, uint32_t P)
+{
+	return ((uint32_t)(uint16_t)a * (uint32_t)(uint16_t)((1u << P) - f) + (uint32_t)(uint16_t)b * (uint32_t)(uint16_t)f) >> P;
 }
 
 static inline void r3d_end_at(r3d_end *e, const r3d_v *a, const r3d_v *b, uint32_t pos, uint32_t len)
@@ -627,7 +641,7 @@ R3D_INLINE int r3d_depth_ok(const r3d_poly *p, const r3d_rstate *rs, uint32_t d,
 }
 
 /* Dibuja la línea y del polígono en los búferes de esa línea (col, dep, att: 256 entradas cada uno). */
-static inline void r3d_draw_row(const r3d_poly *p, const r3d_row *row, const r3d_rstate *rs, uint32_t *col, uint32_t *dep,
+static inline __attribute__((always_inline)) void r3d_draw_row(const r3d_poly *p, const r3d_row *row, const r3d_rstate *rs, uint32_t *col, uint32_t *dep,
 				uint32_t *att, r3d_texfn tf, void *tctx, r3d_stats *st)
 {
 	const int32_t L = row->xr - row->xl;
@@ -639,7 +653,10 @@ static inline void r3d_draw_row(const r3d_poly *p, const r3d_row *row, const r3d
 	/* z lineal, z(k) = zl + trunc((zr - zl)·k / L), exacta y en 32 bits: cociente y resto por paso */
 	const uint32_t adz = zr >= zl ? zr - zl : zl - zr, zneg = zr < zl, uL = L > 0 ? (uint32_t)L : 1u;
 	const uint32_t zq = adz / uL, zr_ = adz % uL;
-	uint32_t zu, zacc;
+
+	/* con las w iguales el factor es lineal, piso(k·2^P / L): también por cociente y resto, sin dividir por píxel */
+	const uint32_t lin = wl == wr, fq = (1u << R3D_PS) / uL, fr_ = (1u << R3D_PS) % uL;
+	uint32_t zu, zacc, fu, facc, written = 0;
 
 	if (x0 >= x1)
 		return;
@@ -648,12 +665,15 @@ static inline void r3d_draw_row(const r3d_poly *p, const r3d_row *row, const r3d
 
 		zu = zq * k0 + (zr_ * k0) / uL;
 		zacc = (zr_ * k0) % uL;
+		fu = fq * k0 + (fr_ * k0) / uL;
+		facc = (fr_ * k0) % uL;
 	}
+	st->pixels += (uint32_t)(x1 - x0);
 	for (int32_t x = x0; x < x1; x++) {
 		const uint32_t k = (uint32_t)(x - row->xl);
 		const int edge = row->alledge || x < row->xle || x >= row->xrs;
 		uint32_t f, d, a0, c;
-		const uint32_t zcur = zu;
+		const uint32_t zcur = zu, fcur = fu;
 
 		zu += zq;
 		zacc += zr_;
@@ -661,13 +681,18 @@ static inline void r3d_draw_row(const r3d_poly *p, const r3d_row *row, const r3d
 			zacc -= uL;
 			zu++;
 		}
+		fu += fq;
+		facc += fr_;
+		if (facc >= uL) {
+			facc -= uL;
+			fu++;
+		}
 		if (p->wire && !edge)
 			continue;
-		st->pixels++;
-		f = r3d_pfac(k, (uint32_t)L, wl, wr, R3D_PS);
+		f = lin ? fcur : r3d_pfac(k, (uint32_t)L, wl, wr, R3D_PS);
 		if (rs->wbuf) {
 			/* w << wshift cabe en 32 bits: la w normalizada nunca pasa de la del vértice más lejano */
-			const uint32_t w = (uint32_t)r3d_lerp((int32_t)wl, (int32_t)wr, f, R3D_PS) << p->wshift;
+			const uint32_t w = r3d_lerpu16(wl, wr, f, R3D_PS) << p->wshift;
 
 			d = w > 0xFFFFFFu ? 0xFFFFFFu : w;
 		} else {
@@ -691,17 +716,16 @@ static inline void r3d_draw_row(const r3d_poly *p, const r3d_row *row, const r3d
 			continue;
 		{
 			const uint32_t fc = f >> (R3D_PS - R3D_PC); /* el color con menos bits [melonDS] */
-			const uint32_t vr = (uint32_t)r3d_lerp(row->l.r, row->r.r, fc, R3D_PC) >> 3;
-			const uint32_t vg = (uint32_t)r3d_lerp(row->l.g, row->r.g, fc, R3D_PC) >> 3;
-			const uint32_t vb = (uint32_t)r3d_lerp(row->l.b, row->r.b, fc, R3D_PC) >> 3;
+			const uint32_t vr = (uint32_t)r3d_lerp16(row->l.r, row->r.r, fc, R3D_PC) >> 3;
+			const uint32_t vg = (uint32_t)r3d_lerp16(row->l.g, row->r.g, fc, R3D_PC) >> 3;
+			const uint32_t vb = (uint32_t)r3d_lerp16(row->l.b, row->r.b, fc, R3D_PC) >> 3;
 			uint32_t tex = 0;
 
 			if (textured) {
-				const int32_t s = r3d_lerp(row->l.s, row->r.s, f, R3D_PS) >> 4, t = r3d_lerp(row->l.t, row->r.t, f, R3D_PS) >> 4;
+				const int32_t s = r3d_lerp16(row->l.s, row->r.s, f, R3D_PS) >> 4, t = r3d_lerp16(row->l.t, row->r.t, f, R3D_PS) >> 4;
 
 				tex = tf(tctx, &p->tex, r3d_wrap(s, p->tex.sl, p->tex.rs, p->tex.fs),
 					 r3d_wrap(t, p->tex.tl, p->tex.rt, p->tex.ft));
-				st->tex_px++;
 			}
 			c = r3d_shade(p, rs, vr, vg, vb, tex, textured);
 		}
@@ -735,9 +759,10 @@ static inline void r3d_draw_row(const r3d_poly *p, const r3d_row *row, const r3d
 				att[x] = (a0 & ~(uint32_t)(AT_FOG | (63u << 6))) | AT_TRANS | (p->id << 6) |
 					 (((a0 & AT_FOG) && (p->attr & PA_FOG)) ? AT_FOG : 0u);
 			}
-			st->written++;
+			written++;
 		}
 	}
+	st->written += written;
 }
 
 /* ---- pasada final por línea: edge marking y niebla -------------------------------------------------- */
