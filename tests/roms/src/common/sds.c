@@ -12,7 +12,6 @@
 #include <fat.h>
 #include <nds/exceptions.h>
 #include <stdarg.h>
-#include <stdlib.h>
 #include <sys/stat.h>
 
 #ifndef SDS_ROM_NAME
@@ -313,60 +312,88 @@ static void sd_flush(void)
 		sd_state = 1;
 }
 
-/* Manejador de excepciones propio (ARM9): en vez de la pantalla de libnds en la de abajo, anota el PC, la instrucción y los
- * registros en la pantalla de arriba y en el log, e intenta escribir el log antes de rendirse. */
-static void sd_flush(void);
-static void exc_handler(void)
+/* Manejador de excepciones propio (ARM9): en vez de la pantalla de libnds en la de abajo, pinta en la de arriba el grupo, el PC
+ * y los registros. NO toca la SD (con la pila o el estado dañados se colgaba) y no desreferencia nada que no esté en memoria
+ * principal. Si una excepción ocurre dentro del propio manejador, la pantalla muestra primero la ORIGINAL (copia de los
+ * registros al entrar) y luego la segunda. */
+static int32_t exc_first[16];
+static uint32_t exc_depth;
+
+static int exc_readable(uint32_t a)
+{
+	return a >= 0x02000000u && a < 0x023FFFFCu;
+}
+
+static void exc_dump(int row0, const char *tag, const int32_t *reg, uint16_t bg)
 {
 	char line[40], num[12];
-	const uint32_t pc = (uint32_t)exceptionRegisters[15];
-	uint32_t w1 = *(volatile uint32_t *)(pc - 4), w2 = *(volatile uint32_t *)(pc - 8);
+	const uint32_t pc = (uint32_t)reg[15];
 
-	fill_rect(0, 0, 256, 192, RGB(20, 2, 2));
 	line[0] = 0;
-	append(line, "EXCEPCION EN ");
-	append(line, group_name ? group_name : "-");
-	draw_text(0, 0, line, C_FG, RGB(20, 2, 2));
-	line[0] = 0;
-	append(line, "PC ");
+	append(line, tag);
+	append(line, " PC ");
 	hex32(num, pc);
 	append(line, num);
-	draw_text(2, 0, line, C_FG, RGB(20, 2, 2));
+	draw_text(row0, 0, line, C_FG, bg);
+	if (exc_readable(pc - 8) && exc_readable(pc)) {
+		line[0] = 0;
+		append(line, "I-4 ");
+		hex32(num, *(volatile uint32_t *)(pc - 4));
+		append(line, num);
+		append(line, " I-8 ");
+		hex32(num, *(volatile uint32_t *)(pc - 8));
+		append(line, num);
+	} else {
+		line[0] = 0;
+		append(line, "PC FUERA DE LA RAM");
+	}
+	draw_text(row0 + 1, 0, line, C_FG, bg);
 	line[0] = 0;
-	append(line, "I-4 ");
-	hex32(num, w1);
+	append(line, "SP ");
+	hex32(num, (uint32_t)reg[13]);
 	append(line, num);
-	draw_text(3, 0, line, C_FG, RGB(20, 2, 2));
-	line[0] = 0;
-	append(line, "I-8 ");
-	hex32(num, w2);
+	append(line, " LR ");
+	hex32(num, (uint32_t)reg[14]);
 	append(line, num);
-	draw_text(4, 0, line, C_FG, RGB(20, 2, 2));
-	for (int r = 0; r < 4; r++) {
+	draw_text(row0 + 2, 0, line, C_FG, bg);
+	for (int r = 0; r < 3; r++) {
 		line[0] = 0;
 		append(line, "R");
 		dec(num, (uint32_t)(r * 4));
 		append(line, num);
-		append(line, " ");
-		hex32(num, (uint32_t)exceptionRegisters[r * 4]);
+		append(line, "=");
+		hex32(num, (uint32_t)reg[r * 4]);
 		append(line, num);
-		draw_text(6 + r, 0, line, C_FG, RGB(20, 2, 2));
+		append(line, " ");
+		dec(num, (uint32_t)(r * 4 + 1));
+		append(line, "R");
+		append(line, num);
+		append(line, "=");
+		hex32(num, (uint32_t)reg[r * 4 + 1]);
+		append(line, num);
+		draw_text(row0 + 3 + r, 0, line, C_FG, bg);
 	}
+}
+
+static void exc_handler(void)
+{
+	const uint16_t bg = RGB(20, 2, 2);
+	char line[40];
+
+	if (exc_depth++ == 0)
+		for (int r = 0; r < 16; r++)
+			exc_first[r] = exceptionRegisters[r];
+	fill_rect(0, 0, 256, 192, bg);
 	line[0] = 0;
-	append(line, "SP ");
-	hex32(num, (uint32_t)exceptionRegisters[13]);
-	append(line, num);
-	append(line, " LR ");
-	hex32(num, (uint32_t)exceptionRegisters[14]);
-	append(line, num);
-	draw_text(11, 0, line, C_FG, RGB(20, 2, 2));
-	lprintf("[EXCEPCION] en el grupo %s\n", group_name ? group_name : "-");
-	for (int r = 0; r < 16; r++)
-		lprintf("  r%d=%08lX\n", r, (unsigned long)exceptionRegisters[r]);
-	lprintf("  instruccion en PC-4=%08lX PC-8=%08lX\n", (unsigned long)w1, (unsigned long)w2);
-	draw_text(13, 0, "ESCRIBIENDO LOG...", C_FG, RGB(20, 2, 2));
-	sd_flush();
-	draw_text(13, 0, sd_state == 1 ? "LOG ESCRITO EN LA SD  " : "SIN SD: ANOTA LA FOTO", C_FG, RGB(20, 2, 2));
+	append(line, "EXCEPCION EN ");
+	append(line, group_name ? group_name : "-");
+	draw_text(0, 0, line, C_FG, bg);
+	exc_dump(1, exc_depth > 1 ? "1A" : "", exc_first, bg);
+	if (exc_depth > 1) {
+		draw_text(8, 0, "SEGUNDA EXCEPCION (EN EL MANEJADOR)", C_FG, bg);
+		exc_dump(9, "2A", (const int32_t *)exceptionRegisters, bg);
+	}
+	draw_text(15, 0, "ANOTA ESTA PANTALLA (FOTO)", C_FG, bg);
 	for (;;)
 		;
 }
@@ -801,7 +828,7 @@ void sds_finish(void)
 			fill_rect(0, 0, 256, 192, C_BG);
 			draw_text(6, 0, "APAGA LA CONSOLA PARA", C_FG, C_BG);
 			draw_text(7, 0, "VOLVER AL MENU", C_FG, C_BG);
-			exit(0);
+			/* sin exit(0): en el R4 reiniciaba la ROM una y otra vez (40 corridas en el log) */
 			for (;;)
 				;
 		}

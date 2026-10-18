@@ -97,8 +97,8 @@ Las ROMs de pruebas (`hola`, `cpu9`, `cpuarm`, `mem`, `irq`, `dma`, `ipc`, `bios
    pasa de página y **B / izquierda** vuelve. Cada divergencia son dos filas: `DIV <grupo> L<línea> ARM9|ARM7` y
    `H<hw> D<doc> M<melonDS>` (amarillo si el hardware coincide con melonDS, rojo si con ninguno; `M?` = sin dato de melonDS).
    Sirve para leerlas en una foto si el log falla.
-4. **START** intenta volver al menú del cargador (`exit(0)`, bootstub); si el flashcart no lo provee, la pantalla pide
-   «Apaga la consola para volver al menú».
+4. **START** muestra «Apaga la consola para volver al menú» y se queda esperando: no llama a `exit(0)` porque en el R4 (sin
+   bootstub) reiniciaba la ROM una y otra vez y cada vuelta añadía otra corrida al log (40 en una prueba).
 5. El log queda en `/SalsaDS-pruebas/resultados/<rom>.txt` (carpeta creada si no existe). Cada corrida se **añade** al
    final con `=== corrida N ===`. Contiene: ROM y commit con el que se construyó (`SDS_GITREV`, `+` si había cambios sin
    commitear), veredicto, los grupos de cada CPU (`ARM9`/`ARM7`) con total y fallos, el primer fallo y el registro de los
@@ -117,9 +117,9 @@ Las ROMs de pruebas (`hola`, `cpu9`, `cpuarm`, `mem`, `irq`, `dma`, `ipc`, `bios
    `-DBIOS_SWI17`, para comparar emuladores).
 7. **Excepciones del ARM9** (instrucción indefinida, abortos): las ROMs que usan `sds_init` instalan su manejador
    (`setExceptionHandler`): pintan en rojo en la pantalla de arriba el grupo, el PC, las dos palabras antes del PC
-   (`I-4`, `I-8`: la instrucción ofensiva es una de ellas según el modo) y los registros, anotan lo mismo en el log y
-   tratan de escribirlo (restaurando el estado). El grupo `MODOS` de `cpuarm` ya no escribe el bit T con
-   `msr cpsr_c, #0xFF` (impredecible en ARMv5; en la DS real cambiaba a Thumb y ejecutaba basura): solo con `-DMSR_T_TEST`.
+   (`I-4`, `I-8`) y los registros. No escriben a la SD desde el manejador (con el estado dañado se colgaba) ni leen fuera de la
+   memoria principal; si el manejador mismo falla, muestra primero la excepción original y luego la segunda. El grupo `MODOS`
+   de `cpuarm` no escribe el bit T con `msr cpsr_c, #0xFF` (impredecible en ARMv5): solo con `-DMSR_T_TEST`.
 8. En un flashcart los grupos `CARTUCHO` y `CART ARM7` de `periph` miden el R4, no el cartucho de la ROM: si el chip ID
    (B8) es 0/FFFFFFFF o B7 no devuelve los bytes conocidos, sus comprobaciones pasan a informativas y el log lo anota
    (`NOTA: ... no aplican en flashcart`). La lectura de SQRTCNT justo tras escribir también es informativa: en hardware el
