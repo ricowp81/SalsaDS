@@ -346,6 +346,7 @@ int main(int argc, char **argv)
 	const char *wav_path = NULL;
 	int snd_original = 0, g2d_stats = 0;
 	const char *gxdump_path = NULL;
+	int gx_clock = 0;
 	struct { uint64_t frame; uint32_t keys, x, y; } press[64];
 	struct { uint64_t frame; const char *file; } shot[32];
 	uint32_t npress = 0, nshot = 0;
@@ -364,6 +365,8 @@ int main(int argc, char **argv)
 			wav_path = argv[++i];
 		else if (!strcmp(argv[i], "--g2d-stats"))
 			g2d_stats = 1;
+		else if (!strcmp(argv[i], "--gx-clock"))
+			gx_clock = 1; /* mide el tiempo del motor de geometría con el reloj del host (el reloj mismo cuesta: sólo para repartir) */
 		else if (!strcmp(argv[i], "--gx-dump") && i + 1 < argc)
 			gxdump_path = argv[++i];
 		else if (!strcmp(argv[i], "--snd-original"))
@@ -476,7 +479,8 @@ int main(int argc, char **argv)
 	M.dbg = dbg;
 	M.vid.use_ref = use_ref;
 	nds_init(&M);
-	M.gx.clock = clock_ns;
+	if (gx_clock)
+		M.gx.clock = clock_ns;
 	if (wav_path)
 		M.snd.ops.sink = wav_sink;
 	if (snd_original)

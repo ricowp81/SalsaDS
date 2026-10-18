@@ -319,6 +319,7 @@ struct nds {
 	/* Motor de geometría (Fase 3.1): src/gpu3d/gx.c; el pegamento con la máquina, en src/core/geom.c. */
 	gx_t gx;
 	uint64_t gx_frames; /* cuadros entregados por SWAP_BUFFERS */
+	uint64_t gx_irq_t;  /* instante de la última petición de la IRQ 21 (se repite cada NDS_GX_PERIOD mientras dure el nivel) */
 	uint32_t ipcsync_out[2]; /* bits 8-11 de cada CPU */
 	uint8_t ipcsync_irqen[2];
 	struct nds_fifo fifo[2]; /* cola que envía cada CPU */

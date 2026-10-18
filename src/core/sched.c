@@ -362,6 +362,12 @@ static int dma_waits_for(const struct nds *n, int cpu, unsigned mode)
 	return 0;
 }
 
+/* Lo usa geom.c: ¿hay un canal armado esperando el aviso `mode`? */
+int nds_dma_waits(const struct nds *n, int cpu, unsigned mode)
+{
+	return dma_waits_for(n, cpu, mode);
+}
+
 /* ---- eventos del video ----------------------------------------------------------------------------------- */
 
 static void ev_line(struct nds *n, uint64_t t)

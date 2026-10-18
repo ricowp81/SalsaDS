@@ -28,7 +28,8 @@
 
 #define GX_FIFO_ENTRIES 256u /* entradas de 40 bits (orden + parámetro) */
 #define GX_PIPE_ENTRIES 4u   /* la tubería delante del motor; no cuenta en GXSTAT */
-#define GX_QUEUE_MAX (GX_FIFO_ENTRIES + GX_PIPE_ENTRIES)
+#define GX_QUEUE_MAX (GX_FIFO_ENTRIES + GX_PIPE_ENTRIES) /* entradas que caben (FIFO + tubería) */
+#define GX_QRING 512u                                    /* anillo de la cola: potencia de 2, sin divisiones */
 #define GX_MAX_POLYS 2048u /* polígonos por cuadro (Polygon RAM) */
 #define GX_MAX_VERTS 6144u /* vértices por cuadro (Vertex RAM); los vértices de una tira se guardan una sola vez */
 #define GX_POLY_MAXV 10u   /* un cuadrilátero recortado contra los seis planos tiene a lo más 10 vértices */
@@ -140,7 +141,7 @@ typedef struct gx_stats {
 
 typedef struct gx {
 	/* cola de entradas (FIFO de 256 + tubería de 4) */
-	gx_qent q[GX_QUEUE_MAX];
+	gx_qent q[GX_QRING];
 	uint32_t qhead, qcount;
 	/* decodificador de palabras empaquetadas de GXFIFO */
 	uint32_t pk_word;

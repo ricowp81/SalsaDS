@@ -1037,7 +1037,7 @@ uint64_t gx_next_start(const gx_t *g)
 
 		if (g->qcount < ne)
 			return GX_NEVER;
-		t = g->q[(g->qhead + ne - 1) % GX_QUEUE_MAX].t;
+		t = g->q[(g->qhead + ne - 1) & (GX_QRING - 1u)].t;
 		cf = g->cycle_free;
 		return t > cf ? t : cf;
 	}
@@ -1062,10 +1062,10 @@ void gx_advance(gx_t *g, uint64_t now)
 		ne = cmd_entries(cmd);
 		np = g_np[cmd];
 		for (unsigned i = 0; i < np; i++)
-			p[i] = g->q[(g->qhead + i) % GX_QUEUE_MAX].param;
+			p[i] = g->q[(g->qhead + i) & (GX_QRING - 1u)].param;
 		if (cmd >= 0x70 && cmd <= 0x72)
 			g->test_pending = g->test_pending >= ne ? g->test_pending - ne : 0u;
-		g->qhead = (g->qhead + ne) % GX_QUEUE_MAX;
+		g->qhead = (g->qhead + ne) & (GX_QRING - 1u);
 		g->qcount -= ne;
 		cost = exec_cmd(g, cmd, p, start);
 		g->cycle_free = start + 2ull * cost;
@@ -1095,7 +1095,7 @@ static uint64_t q_push(gx_t *g, uint64_t now, uint8_t cmd, uint32_t param)
 		gx_advance(g, t);
 	}
 	{
-		gx_qent *e = &g->q[(g->qhead + g->qcount) % GX_QUEUE_MAX];
+		gx_qent *e = &g->q[(g->qhead + g->qcount) & (GX_QRING - 1u)];
 
 		e->cmd = cmd;
 		e->param = param;

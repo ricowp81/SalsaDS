@@ -72,6 +72,7 @@ void nds_dma_trigger(struct nds *n, int cpu, unsigned mode);
 #define NDS_DMA_MMEM 4 /* ARM9: memoria principal a la FIFO del modo 3 */
 #define NDS_DMA_CART 5 /* ARM9: modo 5; ARM7: modo 2 */
 #define NDS_GX_PERIOD 1024u /* ciclos del ARM9 entre dos peticiones de la IRQ 21 (por nivel) */
+#define NDS_GX_POLL 256u    /* ciclos del ARM9 entre dos miradas del evento EV_GX a la FIFO (sólo con IRQ 21 por nivel o una DMA de modo 7 esperando) */
 #define NDS_DMA_GXFIFO 7 /* ARM9: FIFO de comandos de geometría */
 
 /* geom.c */
@@ -81,7 +82,8 @@ void nds_gx_port_write(struct nds *n, uint32_t off, uint32_t w); /* off = direcc
 uint32_t nds_gx_read32(struct nds *n, uint32_t off);              /* off = dirección - 0x04000000, 0x600-0x6A7 */
 void nds_gx_gxstat_write(struct nds *n, uint32_t v, uint32_t mask);
 int nds_gx_dma_ok(struct nds *n, uint64_t t);
-void nds_gx_schedule(struct nds *n);
+void nds_gx_schedule(struct nds *n, uint32_t delay);
+int nds_dma_waits(const struct nds *n, int cpu, unsigned mode);
 void nds_gx_event(struct nds *n, uint64_t bt);
 void nds_gx_vblank(struct nds *n, uint64_t t);
 
