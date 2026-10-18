@@ -338,8 +338,11 @@ static void group_misc(void)
 		}
 		sds_notef("ranura de GBA, 16 bytes de 0x08000000: %s", rom);
 		sds_notef("ranura de GBA, 16 bytes de 0x0A000000: %s", ram);
-		SDS_DIVERGE_M(MEM16(0x08000000), 0xFFFF, 0xFE08);
-		SDS_DIVERGE_M(MEM8(0x0A000000), 0xFF, 0xFF);
+		/* bus abierto: solo vale con la ranura vacía (con cartucho o flashcard se lee su contenido: no es una divergencia) */
+		if (fixed != 0x96) {
+			SDS_DIVERGE_M(MEM16(0x08000000), 0xFFFF, 0xFE08);
+			SDS_DIVERGE_M(MEM8(0x0A000000), 0xFF, 0xFF);
+		}
 		*exmem = exmem0;
 	}
 }
