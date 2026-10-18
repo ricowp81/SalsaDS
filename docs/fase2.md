@@ -253,6 +253,10 @@ Super Mario 64 DS (`--vs-ref`).
 
 ## 5. Qué medir en la PS3
 
+Paquete: `build/salsads-nucleo-fase22.pkg` (copia de `build/salsads-nucleo/salsads-nucleo.pkg`, hecha desde el commit `c4a738b`),
+SHA-256 `cce7721a908a362ee3aed51d673348361a34bb10a5fd9a33b20f67de0e37a601`. En RPCS3: `RESULTADO nucleo: OK`, autoprueba del audio
+(SPE contra PPE) sin diferencias.
+
 Paquete «SalsaDS núcleo» (SLDS00008), con NSMB como `/dev_hdd0/salsads/rom.nds` (respaldo propio ya desencriptado): en el log
 (`nucleo.log`) cada 120 cuadros, `DATO spe` (tiempo de cada pantalla), `DATO spe-etapas` (ms por pantalla y cuadro en cada etapa;
 `plan (espera)` y `compone (espera)` son los bloqueos de DMA) y `DATO audio` (tiempo del SPE de audio, anillo, faltas, pico). Con

@@ -21,7 +21,7 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
   los fondos que solo se desplazan. En RPCS3 (que cuenta instrucciones) con NSMB: A 14,8 → 4,7 ms, B 1,3 → 1,2; la PS3 lo dirá
   (`DATO spe-etapas`). Instrumentación por etapa en el SPE y contadores de DMA en el host.
 - Herramientas: `--press`/`--shot` (entrada y capturas por guion), `--wav`, `--g2d-stats`, `--trace-from`, `--dump-cpu`, TCM visibles.
-- Paquete «SalsaDS núcleo» (SLDS00008) con todo lo anterior: ver la ruta y el SHA-256 en `docs/fase2.md` (sección 5) y abajo.
+- Paquete «SalsaDS núcleo» (SLDS00008) con todo lo anterior: `build/salsads-nucleo-fase22.pkg` (commit `c4a738b`), SHA-256 `cce7721a908a362ee3aed51d673348361a34bb10a5fd9a33b20f67de0e37a601`; en RPCS3 OK.
 - Pendiente: medir en la PS3 (2D por etapa, audio con faltas, 10 bits), 3D (Fase 3), FIR del remuestreo, HOLD y volumen general
   contra una DS real.
 
