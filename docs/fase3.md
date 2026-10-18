@@ -66,9 +66,9 @@ sin decidir): melonDS sólo se ejecutó como referencia de comportamiento (`tool
 | Modo 2 | LOAD, MULT, TRANS, IDENTITY, PUSH, POP, STORE y RESTORE actúan sobre la posición y la vectorial a la vez | confirmado contra melonDS con ≈ 2000 comprobaciones aleatorias |
 | Matriz clip | `posición × proyección`, se recalcula al cambiar una de las dos | 0x04000640 (16 palabras, fila mayor) |
 | Matriz vectorial | 3x3 superior izquierda | 0x04000680 (9 palabras, fila mayor) |
-| Vértice | VTX_16: 1.3.12; VTX_10: 1.3.6 (`<< 6`); VTX_DIFF: 1.0.9 (`<< 3`) | XY/XZ/YZ conservan la coordenada que falta |
+| Vértice | VTX_16: 1.3.12; VTX_10: 1.3.6 (`<< 6`); VTX_DIFF: 10 bits con signo **sumados tal cual** (1/4096, ±0,125; ver 3.3) | XY/XZ/YZ conservan la coordenada que falta |
 | Espacio de recorte | `(x, y, z, 1) × clip`, cada componente en 64 bits y `>> 12` | |
-| Textura | 1.11.4 | modos de TEXIMAGE_PARAM bits 30-31: 0 sin transformar; 1 `(s, t, 1, 1) × T`; 2 normal × T + (s, t); 3 vértice × T + (s, t) |
+| Textura | 1.11.4 | modos de TEXIMAGE_PARAM bits 30-31: 0 sin transformar; 1 `(s, t, 1, 1) × T` en TEXCOORD; 2 normal × T + (s, t) **en NORMAL**; 3 vértice × T + (s, t) en cada vértice (reglas medidas en 3.3) |
 | Color | RGB555 en la orden; **6 bits** en la salida: `c6 = (c5 << 1) + ((c5 + 31) >> 5)` | el recorte interpola los 6 bits |
 | Normal, luz | 1.0.9; luz y normal se transforman con la vectorial (3x3, `>> 12`, saturadas a −512…511) | |
 | Iluminación | niveles de 8 bits: difuso `max(0, −N·L) >> 10`; especular `2d² − 1` con semivector `(L + (0,0,−1)) / 2`, tabla de 128 de SHININESS; `(a·b·nivel) >> 13` y ambiente `(a·b) >> 5`; suma con emisión saturada a 31 | **sin contrastar con una DS real**; NORMAL siempre recalcula el color (con ninguna luz, la emisión) |
@@ -180,7 +180,7 @@ llevar el motor a un SPE (`gx_t` ya no depende del núcleo; las órdenes se pued
 | Todo lo demás de la ROM `geom` | idéntico | idéntico |
 
 Sin contrastar con una DS real (se marca `[sin contrastar]` en el código): la iluminación (anchos y redondeos), el recorte
-(orden de los planos, redondeo de la interpolación), el modo de textura 1-3, los costes por polígono, cara de área cero, el
+(orden de los planos, redondeo de la interpolación), los costes por polígono, cara de área cero, el
 `wshift`, el 6 bits de los colores y el signo del bit 12 de VEC_RESULT. La ROM `geom` se puede correr en una DS real
 (`docs/ds-real.md`): sus `SDS_DIVERGE` anotan en la SD qué valor da el hardware.
 
@@ -228,7 +228,7 @@ GBATEK y la comparación con melonDS **ejecutándolo** (ROM `gx3d`, `tools/gfx-c
   tramo «gordo» cuando va hacia afuera. Línea vacía por redondeo con los bordes iguales: un píxel. **Ajustado a melonDS** con la
   escena 13 (48 triángulos al azar) y `tools/r3d-fit.py`: de 866 píxeles distintos a 44; quedan ≈ 5 % de las líneas con un
   píxel de diferencia en un borde.
-- **Interpolación**: factor con corrección por w, `f = piso(pos·w0·2^P / ((len−pos)·w1 + pos·w0))`, P = 9 en aristas (posición
+- **Interpolación** (la regla de 3.3 reemplaza lo que sigue para el color y las líneas ortográficas): factor con corrección por w, `f = piso(pos·w0·2^P / ((len−pos)·w1 + pos·w0))`, P = 9 en aristas (posición
   en y, o en x para las x-mayores) y P = 9 en la línea para texturas y w, 8 para el color; `a = (a0·(2^P−f) + a1·f) >> P`. El
   color se interpola con 3 bits más y la fracción llena. z lineal en pantalla (Z-buffer); la del W-buffer es la w interpolada
   `<< wshift`. Todo exacto en 32 bits (el factor: cociente en coma flotante corregido en enteros; con las w iguales y la z,
@@ -326,7 +326,7 @@ referencia; contra melonDS la escena 11 es idéntica.
 | 12 profundidad «igual» | **0** | 0 | — |
 | 13 / 14 triángulos al azar (cobertura / Gouraud) | 44 / 2239 | 44 / 1003 | bordes / color ±1 |
 
-   **Divergencia principal**: la interpolación del color de vértice. Con el modelo actual el 70 % de los canales coincide y el
+   **Divergencia principal (resuelta en 3.3)**: la interpolación del color de vértice. Con el modelo actual el 70 % de los canales coincide y el
    resto difiere en 1 (de 5 bits); ninguna variante de precisión, redondeo o posición probada con `tools/r3d-fit.py` lo explica.
    Visualmente no se nota salvo en toon/highlight, donde ±1 en el rojo cambia de entrada de la tabla en el borde de cada franja.
 4. **Juegos** (respaldos del autor, fuera del repositorio; capturas en `build/r3d/juegos/`): New Super Mario Bros. 1-1
@@ -336,7 +336,7 @@ referencia; contra melonDS la escena 11 es idéntica.
    la escena por tiempo, a ojo: `sm64ds-vs-melonds.png`) la estrella de SM64DS **sale mal**: sus ojos son tiras negras en X y la
    textura de entorno (4x4 con coordenadas por normales, modo 2) tiene ruido. Los vértices de esos polígonos ya vienen así del
    motor de geometría (`--gx-dump`), así que es un pendiente de la 3.1 (matrices de los huesos o el modo 2 de texturas), no del
-   rasterizador. NSMB no se comparó con melonDS (no se le pueden mandar teclas por guion).
+   rasterizador. NSMB no se comparó con melonDS (no se le pueden mandar teclas por guion). **Arreglada en 3.3.**
 
 ## Mediciones
 
@@ -366,3 +366,101 @@ gx3d (o un juego) como `/dev_hdd0/salsads/rom.nds`, el log trae `DATO raster3d` 
 3. Antialiasing, imagen de fondo, polígonos de un punto.
 4. La estrella de SM64DS: el motor de geometría (huesos y coordenadas de textura por normales).
 5. Correr `gx3d` en una DS real (`docs/ds-real.md`): sus `SDS_DIVERGE` dicen qué hace el hardware en los píxeles de prueba.
+
+
+# Fase 3.3 — Fidelidad del 3D
+
+Tres arreglos contra melonDS (siempre **ejecutándolo**: la ROM `gx3d`, `tools/gfx-compare.py`; código propio desde GBATEK y las
+mediciones; ni se leyó ni se copió código de melonDS, NooDS ni DeSmuME).
+
+## La estrella de «Touch to start» de Super Mario 64 DS
+
+Dos causas, las dos en `gx.c`, y las dos salían del volcado de órdenes de un cuadro (órdenes y parámetros del cuadro 2929):
+
+1. **VTX_DIFF (0x28)** sumaba la diferencia por 8 (la tabla de 3.1 decía «1.0.9 `<< 3`»). El campo de 10 bits con signo se suma **tal
+   cual** a la coordenada 1.3.12 (rango ±511/4096 = ±0,125). Los ojos de la estrella (una tira de triángulos de VTX_XY, VTX_YZ
+   y VTX_DIFF) quedaban ocho veces más grandes: las tiras negras en X. La ROM `gx3d` y `test_gx.c` ya lo cubren.
+2. **Coordenadas de textura generadas** (la textura de entorno de la estrella: 4x4 con el modo 2, la normal por la matriz de
+   textura). Tres reglas, medidas con la escena 15 de `gx3d` (12 celdas con matrices distintas, comparadas con melonDS):
+   - **Modo 2** (normal): se calcula **al llegar NORMAL**, no en el vértice: `s = TEXCOORD.s + ((n · M) >> 21)` con la 3x3 de la
+     matriz (sin la fila de traslación). Un TEXCOORD posterior pisa el resultado con las coordenadas crudas. Antes: `>> 17` y se
+     sumaba la traslación (16 veces más grande, de ahí el «ruido»).
+   - **Modo 3** (vértice): `s = TEXCOORD.s + ((v · M) >> 24)`, sin traslación, en cada vértice.
+   - **Modo 1**: `(s, t, 1, 1) × M` en TEXCOORD, y la traslación y la tercera fila se suman **sin** multiplicar por 16
+     (`(s·m0 + t·m4 + m8 + m12) >> 12`).
+
+   Estado nuevo en el motor: `cur_s/cur_t` (las coordenadas que llevará el próximo vértice). Escena 15: **idéntica** a melonDS
+   (celdas de los modos 1 y 2; las del modo 3 con degradado fuerte también, desde la regla lineal exacta de abajo). Contra el
+   juego (`build/r3d/juegos/sm64ds-star-despues.png`): la estrella sale con ojos, degradado y entorno como en melonDS (el borde
+   suave del melonDS es su antialiasing, que aún no está).
+
+## La regla de interpolación del color
+
+Medida con escenas que aíslan una sola cosa (colores y largos al azar; el analizador cuenta los canales de 5 bits que difieren
+y ajusta la regla; todas dan **cero diferencias** salvo lo anotado):
+
+| Escena | Aísla | Resultado |
+|---|---|---|
+| 16 | la línea (rectángulos con un color por lado vertical; 2 a 240 píxeles, 5724 canales) | idéntica |
+| 17 | las aristas y-mayores (color arriba y abajo; 2 a 180 líneas) | idéntica |
+| 18 | la línea en perspectiva (`w` distinta a la izquierda y a la derecha, 1 a 7) | idéntica |
+| 19 | las aristas en perspectiva | 12 píxeles (cuatro canales de 5532, todos en el rectángulo de 180 líneas con `w` 1:9, a un nivel) |
+| 20 | el color por una arista y-mayor inclinada | idéntico en la arista izquierda (0 de 18 triángulos con diferencia) |
+| 22 | la línea con aristas inclinadas (paralelogramos con un color por lado) | ver «denominador» |
+
+La regla (en `r3d_px.h`):
+
+1. **El color de vértice se interpola con 3 bits más**, `c9 = (c6 << 3) | (c6 ? 7 : 0)`: la fracción llena (redondea hacia
+   arriba) **salvo en el 0**, que sigue siendo 0 (con 7 también en el 0 había 20 diferencias de 5724; ajustando una tabla por
+   valor salieron cero con solo ese caso). Después `>> 3` a 6 bits.
+2. **Con las `w` iguales (ortográfica) la interpolación es lineal y exacta**: `v(k) = a + piso((b − a) · k / L)`. Antes se pasaba
+   por un factor de 8 o 9 bits (`piso(k · 2^P / L)`), de ahí el «±1 en el 30 % de los canales». Se calcula sin divisiones por
+   píxel (cociente y resto por paso en la línea, `r3d_dda`; en las aristas, una estimación en coma flotante corregida en
+   enteros, `r3d_lin`) y todo en 32 bits, igual en referencia, SPE, PPE y host. Vale también para las coordenadas de textura.
+3. **Con `w` distinta (perspectiva)** el factor sigue siendo `piso(k · w0 · 2^P / ((L − k) · w1 + k · w0))`, con **P = 8 para el
+   color en la línea** y P = 9 en las aristas y para la textura (de 6012 canales, 0 diferencias con P = 8; con P = 9, 63).
+4. **Denominador de la línea**: `L = xr − xl` (píxeles cubiertos), y **uno más cuando la arista derecha es inclinada y y-mayor**.
+   Se vio con los paralelogramos: en un rectángulo la línea de 40 píxeles interpola con 40; con las aristas inclinadas
+   (36 paralelogramos, todas las líneas) con 41. Con la derecha vertical o x-mayor no cambia; ninguna variación del
+   denominador mejora las x-mayores. No se sabe el mecanismo del hardware: es lo que reproduce las mediciones.
+5. **Las aristas x-mayores**, con las `w` iguales, interpolan **por la y, en el extremo de afuera del tramo de la línea**: la
+   izquierda que va hacia la izquierda y la derecha que va hacia la derecha usan `(y + 1 − y0) / dy`; las otras, `(y − y0) / dy`
+   (antes, la posición en x del píxel). Con las `w` distintas se mantiene la regla anterior.
+6. **Decal**: un texel de alfa 0 deja el color del vértice tal cual y de alfa 31 el del texel (la fórmula `(t·a + v·(31 − a)) >> 5`
+   los dejaba 1/32 abajo). Con eso toon y highlight (escenas 7 y 8) salen **idénticos**.
+
+## Diferencias con melonDS antes y después (`tools/gfx-compare.py build/roms/gx3d.nds N`, píxeles distintos de 49 152)
+
+| Escena | 3.2 | 3.3 | Qué queda |
+|---|---|---|---|
+| 0 cobertura | 1656 | 179 | bordes (≈ 5 % de líneas, un píxel) |
+| 1 Gouraud | 14 001 | 828 | color ±1 junto a las aristas x-mayores |
+| 2 perspectiva | 391 | 107 | bordes y un nivel de color |
+| 7 / 8 decal y toon / highlight | 3941 / 4957 | **0** / **0** | — |
+| 9 niebla, edge marking, alpha test | 1560 | 1560 | niebla ±1 en una franja (sin tocar) |
+| 13 / 14 triángulos al azar | 44 / 2239 | 44 / 930 | bordes / color junto a aristas x-mayores |
+| 15 a 18 (nuevas: textura generada y color) | — | **0** | — |
+| 19, 20, 21, 22 (nuevas) | — | 12, 544, 3638, 146 | arista derecha en perspectiva, aristas x-mayores |
+
+Las escenas 3, 4, 10, 11 y 12 siguen idénticas. **Pendiente**: el color de los triángulos con tres aristas x-mayores (escena 21:
+cada línea difiere en ±1 de 5 bits en ≈ 40 % de los canales; el extremo izquierdo se explica y el derecho no del todo), la
+niebla (escena 9), los bordes de un píxel y el antialiasing.
+
+## Juegos
+
+Sin regresiones (código del SPE igual a la referencia en todos los cuadros, `--vs-ref3d`): Super Mario 64 DS «Touch to start»
+(1,60 ms por cuadro en el host), Mario Kart DS (carrera de demostración, 2,47 ms) y New Super Mario Bros. (menú, 0,29 ms).
+Capturas en `build/r3d/juegos/` (`sm64ds-star-despues.png`, `mkds-2500.png`, `nsmb-4500.png`).
+
+## Captura de pantalla (DISPCAPCNT)
+
+**No hecha** (era opcional). Sigue sin emularse: la ROM `gx3d` la dispara solo en melonDS. Pasos para la 3.4: el compositor 2D
+del motor A escribe, línea por línea, la mezcla de la fuente A (la imagen del motor A o solo el 3D) y de la B (un banco de VRAM
+o la FIFO de memoria principal) con EVA/EVB en el banco de captura (bits 16-17 de `DISPCAPCNT`, de 128×128 a 256×192) y apaga
+el bit 31 al terminar el cuadro. Pide que el SPE escriba VRAM (hoy solo la lee), o que el PPE lo haga con la imagen de la línea.
+
+## Pruebas nuevas
+
+`tests/unit/test_gx.c` (`test_texgen`): VTX_DIFF, los tres modos de textura generada, y que un TEXCOORD después de NORMAL pisa el
+modo 2. ROM `gx3d`: escenas 15 a 22 (en `test-host.sh` con imagen de referencia y `REF3D`), `gx3d.golden` con las 23 semillas. El
+hash de la semilla 7 de `test_render3d.c` cambió con las reglas (igual en LE y BE).

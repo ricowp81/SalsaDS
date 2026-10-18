@@ -14,7 +14,9 @@
  * Escenas (semilla): 0 cobertura (formas, aristas x/y-mayores, alambre, altura cero, recorte), 1 Gouraud, 2 textura en
  * perspectiva, 3 los 7 formatos de textura y repetir/espejo/recorte, 4 translúcidos (ids, orden, profundidad), 5 Z-buffer,
  * 6 W-buffer, 7 decal y toon, 8 highlight, 9 alpha test, niebla y edge marking, 10 sombras, 11 3D sobre 2D (mezcla con
- * BG1), 12 prueba de profundidad «igual», 13 y 14 triángulos al azar (cobertura y Gouraud) para ajustar el modelo.
+ * BG1), 12 prueba de profundidad «igual», 13 y 14 triángulos al azar (cobertura y Gouraud) para ajustar el modelo,
+ * 15 coordenadas de textura generadas (modos 1 a 3 de TEXIMAGE_PARAM), 16 y 17 interpolación del color a lo largo
+ * de la línea y de las aristas.
  */
 #include "../gfx/gfx.h"
 
@@ -420,6 +422,54 @@ static void s_formats(void)
 	tquad(190, 130, 246, 186, 0, -32, -32, 64, 64);
 }
 
+/* Coordenadas de textura generadas (TEXIMAGE_PARAM bits 30-31): 1 = (s, t, 1, 1) por la matriz de textura, 2 = la normal
+ * por la matriz más (s, t), 3 = el vértice por la matriz más (s, t). Tablero de celdas; cada una con su matriz. */
+static void nrm(int x, int y, int z)
+{
+	cmd(0x21, ((uint32_t)x & 0x3FFu) | (((uint32_t)y & 0x3FFu) << 10) | (((uint32_t)z & 0x3FFu) << 20));
+}
+
+static void texgen_cell(int x, int y, uint32_t mode, int32_t dg, int32_t tx, int32_t ty, int32_t tz, int s0, int t0)
+{
+	static const int vn[4][3] = { { -400, -300, 200 }, { -300, 350, -200 }, { 400, 300, 100 }, { 300, -350, -100 } };
+	static const int vp[4][2] = { { 0, 0 }, { 0, 1 }, { 1, 1 }, { 1, 0 } };
+	const int sz = 56;
+
+	cmd(MTX_MODE, 3);
+	cmd(MTX_IDENTITY, 0);
+	for (int i = 0; i < 16; i++)
+		GXP(MTX_LOAD_4x4) = (uint32_t)((i == 0 || i == 5 || i == 10) ? dg : i == 12 ? tx : i == 13 ? ty : i == 14 ? tz : i == 15 ? 0x1000 : i == 1 ? dg / 7 : i == 8 ? dg / 5 : i == 9 ? dg / 3 : 0);
+	cmd(MTX_MODE, 2);
+	use_tex(texparam(T_DIRECT, 2, 2, 7, 0, 3, 0) | (mode << 30), 0);
+	cmd(POLY_ATTR, ATTR(0, 31, 1));
+	cmd(BEGIN, 1);
+	for (int k = 0; k < 4; k++) {
+		tc(s0, t0); /* el modo 2 calcula en NORMAL: un TEXCOORD después lo pisaría */
+		nrm(vn[k][0], vn[k][1], vn[k][2]);
+		cmd(COLOR, RGB5(31, 31, 31));
+		sv(x + vp[k][0] * sz, y + vp[k][1] * sz, 0);
+	}
+	cmd(END, 0);
+}
+
+static void s_texgen(void)
+{
+	ident_all();
+	/* modo 1 (s, t, 1, 1) x M; modo 2 normal x M; modo 3 vértice x M; sin y con traslación */
+	texgen_cell(4, 4, 1, 0x1000, 0, 0, 0, 3, 5);
+	texgen_cell(66, 4, 1, 0x2000, 0x3000, 0x5000, 0x1000, 3, 5);
+	texgen_cell(128, 4, 2, 0x10000, 0, 0, 0, 0, 0);
+	texgen_cell(190, 4, 2, 0x100000, 0, 0, 0, 0, 0);
+	texgen_cell(4, 66, 2, 0x400000, 0, 0, 0, 0, 0);
+	texgen_cell(66, 66, 2, 0x100000, 0x400000, 0x200000, 0x100000, 0, 0);
+	texgen_cell(128, 66, 3, 0x100000, 0, 0, 0, 0, 0);
+	texgen_cell(190, 66, 3, 0x1000000, 0, 0, 0, 0, 0);
+	texgen_cell(4, 128, 3, 0x100000, 0x400000, 0x200000, 0x100000, 0, 0);
+	texgen_cell(66, 128, 1, 0x10000, 0, 0, 0, 0, 0);
+	texgen_cell(128, 128, 1, 0x10000, 0x40000, 0x80000, 0x100000, 0, 0);
+	texgen_cell(190, 128, 1, 0x4000, 0x10000, 0x20000, 0, 7, 9);
+}
+
 static void s_translucent(int manual)
 {
 	ident_all();
@@ -653,10 +703,204 @@ static void s_random(int gouraud)
 		}
 }
 
+/* 16/17: interpolación del color de vértice aislada. 16: rectángulos cuyos lados verticales llevan un color cada uno
+ * (la interpolación sólo corre a lo largo de la línea, de 2 a 240 píxeles); 17: rectángulos con un color arriba y otro
+ * abajo (sólo corre por las aristas, de 2 a 180 líneas). Colores y largos con el LCG de rnd(); tools/r3d-fit.py los
+ * repite para ajustar la regla. */
+static const uint8_t span_len[19] = { 2, 3, 4, 5, 6, 7, 8, 10, 13, 16, 21, 31, 40, 57, 64, 100, 127, 200, 240 };
+
+static void s_interp(int vertical)
+{
+	ident_all();
+	lcg_state = 777u + (uint32_t)vertical;
+	cmd(POLY_ATTR, ATTR(0, 31, 1));
+	for (int i = 0; i < 38; i++) {
+		const int len = span_len[i % 19];
+		uint16_t ca, cb;
+		int x0, y0, x1, y1;
+
+		ca = RGB5(rnd(32), rnd(32), rnd(32));
+		cb = RGB5(rnd(32), rnd(32), rnd(32));
+		if (vertical) {
+			x0 = 2 + 6 * i;
+			y0 = 2 + rnd(8);
+			x1 = x0 + 4;
+			y1 = y0 + (len > 180 ? 180 : len);
+			cmd(BEGIN, 1);
+			cmd(COLOR, ca);
+			sv(x0, y0, 0);
+			cmd(COLOR, cb);
+			sv(x0, y1, 0);
+			cmd(COLOR, cb);
+			sv(x1, y1, 0);
+			cmd(COLOR, ca);
+			sv(x1, y0, 0);
+		} else {
+			x0 = 2 + rnd(12);
+			y0 = 2 + 5 * i;
+			x1 = x0 + len;
+			y1 = y0 + 4;
+			cmd(BEGIN, 1);
+			cmd(COLOR, ca);
+			sv(x0, y0, 0);
+			cmd(COLOR, ca);
+			sv(x0, y1, 0);
+			cmd(COLOR, cb);
+			sv(x1, y1, 0);
+			cmd(COLOR, cb);
+			sv(x1, y0, 0);
+		}
+		cmd(END, 0);
+	}
+}
+
+/* 18: interpolación del color con w distinta en los lados (perspectiva): los lados verticales de cada rectángulo están a
+ * w0 y w1 (de 1,0 a 7,0), cada uno con su color. w = 4096 + z con la proyección de abajo; x e y se eligen para que el
+ * vértice caiga en el píxel pedido. */
+static void pv(int px, int py, int32_t z)
+{
+	const int32_t w = 4096 + z;
+
+	vtx((int32_t)(((int64_t)px * w + 127) / 128) - w, w - (int32_t)(((int64_t)py * w + 95) / 96), z);
+}
+
+static void s_interp_w(void)
+{
+	static const int32_t m[16] = { 0x1000, 0, 0, 0, 0, 0x1000, 0, 0, 0, 0, 0, 0x1000, 0, 0, 0, 0x1000 };
+
+	cmd(MTX_MODE, 0);
+	for (int i = 0; i < 16; i++)
+		GXP(MTX_LOAD_4x4) = (uint32_t)m[i];
+	cmd(MTX_MODE, 2);
+	cmd(MTX_IDENTITY, 0);
+	lcg_state = 4242u;
+	cmd(POLY_ATTR, ATTR(0, 31, 1));
+	for (int i = 0; i < 38; i++) {
+		const int len = span_len[i % 19] < 8 ? 8 + span_len[i % 19] : span_len[i % 19];
+		const int x0 = 2 + rnd(12), y0 = 2 + 5 * i, x1 = x0 + len, y1 = y0 + 4;
+		const int32_t zl = rnd(2) ? rnd(24000) : rnd(2000), zr = rnd(2) ? rnd(24000) : rnd(2000);
+		const uint16_t ca = RGB5(rnd(32), rnd(32), rnd(32)), cb = RGB5(rnd(32), rnd(32), rnd(32));
+
+		cmd(BEGIN, 1);
+		cmd(COLOR, ca);
+		pv(x0, y0, zl);
+		cmd(COLOR, ca);
+		pv(x0, y1, zl);
+		cmd(COLOR, cb);
+		pv(x1, y1, zr);
+		cmd(COLOR, cb);
+		pv(x1, y0, zr);
+		cmd(END, 0);
+	}
+}
+
+/* 19: lo mismo, pero con la w distinta arriba y abajo (la interpolación por las aristas, en perspectiva). */
+static void s_interp_wv(void)
+{
+	static const int32_t m[16] = { 0x1000, 0, 0, 0, 0, 0x1000, 0, 0, 0, 0, 0, 0x1000, 0, 0, 0, 0x1000 };
+
+	cmd(MTX_MODE, 0);
+	for (int i = 0; i < 16; i++)
+		GXP(MTX_LOAD_4x4) = (uint32_t)m[i];
+	cmd(MTX_MODE, 2);
+	cmd(MTX_IDENTITY, 0);
+	lcg_state = 9191u;
+	cmd(POLY_ATTR, ATTR(0, 31, 1));
+	for (int i = 0; i < 38; i++) {
+		const int len = span_len[i % 19] < 8 ? 8 + span_len[i % 19] : (span_len[i % 19] > 180 ? 180 : span_len[i % 19]);
+		const int x0 = 2 + 6 * i, y0 = 2 + rnd(8), x1 = x0 + 4, y1 = y0 + len;
+		const int32_t zt = rnd(2) ? rnd(24000) : rnd(2000), zb = rnd(2) ? rnd(24000) : rnd(2000);
+		const uint16_t ca = RGB5(rnd(32), rnd(32), rnd(32)), cb = RGB5(rnd(32), rnd(32), rnd(32));
+
+		cmd(BEGIN, 1);
+		cmd(COLOR, ca);
+		pv(x0, y0, zt);
+		cmd(COLOR, cb);
+		pv(x0, y1, zb);
+		cmd(COLOR, cb);
+		pv(x1, y1, zb);
+		cmd(COLOR, ca);
+		pv(x1, y0, zt);
+		cmd(END, 0);
+	}
+}
+
+/* 20/21: color por una arista inclinada. Triángulos con la arista izquierda (de arriba a abajo) de un solo tramo: el
+ * primer píxel de cada línea lleva el color de esa arista. 20: aristas casi verticales (y-mayores), 21: casi
+ * horizontales (x-mayores, hacia la izquierda y hacia la derecha). */
+static void s_slope(int shallow)
+{
+	ident_all();
+	lcg_state = 555u + (uint32_t)shallow;
+	cmd(POLY_ATTR, ATTR(0, 31, 1));
+	for (int i = 0; i < (shallow ? 18 : 18); i++) {
+		int tx, ty, bx, by, rx, ry, c0, r0;
+		uint16_t ct, cb, cr;
+
+		if (!shallow) {
+			c0 = (i % 6) * 42;
+			r0 = (i / 6) * 62;
+			tx = c0 + 2 + rnd(19);
+			ty = r0 + 1 + rnd(6);
+			bx = c0 + 1 + rnd(22);
+			by = r0 + 54 + rnd(6);
+			rx = c0 + 30 + rnd(10);
+			ry = r0 + 20 + rnd(30);
+		} else {
+			const int right = i & 1;
+
+			c0 = (i % 3) * 84;
+			r0 = (i / 3) * 31;
+			tx = c0 + (right ? 4 + rnd(10) : 30 + rnd(30));
+			ty = r0 + 1 + rnd(3);
+			bx = c0 + (right ? 40 + rnd(25) : 1 + rnd(20));
+			by = r0 + 14 + rnd(10);
+			rx = c0 + 75 + rnd(8);
+			ry = r0 + 4 + rnd(5);
+		}
+		ct = RGB5(rnd(32), rnd(32), rnd(32));
+		cb = RGB5(rnd(32), rnd(32), rnd(32));
+		cr = RGB5(rnd(32), rnd(32), rnd(32));
+		cmd(BEGIN, 0);
+		cmd(COLOR, ct);
+		sv(tx, ty, 0);
+		cmd(COLOR, cb);
+		sv(bx, by, 0);
+		cmd(COLOR, cr);
+		sv(rx, ry, 0);
+		cmd(END, 0);
+	}
+}
+
+/* 22: la interpolación a lo largo de la línea con los bordes inclinados: paralelogramos con los lados de un color cada
+ * uno (sin interpolación por las aristas) y pendientes distintas. */
+static void s_para(void)
+{
+	ident_all();
+	lcg_state = 31337u;
+	cmd(POLY_ATTR, ATTR(0, 31, 1));
+	for (int i = 0; i < 36; i++) {
+		const int c0 = (i % 4) * 64, r0 = (i / 4) * 21, H = 19, sl = rnd(2 * H - 3) - (H - 2), L = 6 + rnd(40);
+		const int x0 = c0 + 1 + (sl < 0 ? -sl : 0), y0 = r0 + 1, y1 = y0 + H;
+		const uint16_t ca = RGB5(rnd(32), rnd(32), rnd(32)), cb = RGB5(rnd(32), rnd(32), rnd(32));
+
+		cmd(BEGIN, 1);
+		cmd(COLOR, ca);
+		sv(x0, y0, 0);
+		cmd(COLOR, ca);
+		sv(x0 + sl, y1, 0);
+		cmd(COLOR, cb);
+		sv(x0 + sl + L, y1, 0);
+		cmd(COLOR, cb);
+		sv(x0 + L, y0, 0);
+		cmd(END, 0);
+	}
+}
+
 int main(void)
 {
 	scene = *(volatile uint32_t *)0x027FFE0Cu & 0xFFFFu;
-	if (scene > 14)
+	if (scene > 22)
 		scene = 0;
 	sds_init_quiet();
 	REG16(R_POWCNT1) = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 9) | (1 << 15);
@@ -685,6 +929,14 @@ int main(void)
 	case 12: s_equal(); break;
 	case 13: s_random(0); break;
 	case 14: s_random(1); break;
+	case 15: s_texgen(); break;
+	case 16: s_interp(0); break;
+	case 17: s_interp(1); break;
+	case 18: s_interp_w(); break;
+	case 19: s_interp_wv(); break;
+	case 20: s_slope(0); break;
+	case 21: s_slope(1); break;
+	case 22: s_para(); break;
 	}
 	if (scene != 4 && scene != 5 && scene != 6)
 		cmd(SWAP, 0);
