@@ -61,13 +61,21 @@ static inline uint16_t g2d_3d_555(uint32_t px)
 	return (uint16_t)(((px >> 1) & 31u) | (((px >> 9) & 31u) << 5) | (((px >> 17) & 31u) << 10));
 }
 
-/* 3D translúcido sobre el objetivo 2: (3D·(a + 1) + 2D·(31 − a)) / 32 en 6 bits por canal [melonDS]. */
-static inline uint16_t g2d_blend3d(uint16_t a, uint16_t b, int alpha)
+/* Bit bajo (de los 6) de cada canal de un píxel 3D: R en el bit 0, G en el 1, B en el 2. */
+static inline int g2d_3d_lsb(uint32_t px)
+{
+	return (int)((px & 1u) | ((px >> 7) & 2u) | ((px >> 14) & 4u));
+}
+
+/* 3D sobre el objetivo 2: (3D·(a + 1) + 2D·(31 − a) + 16) / 32 en 6 bits por canal, con los 6 bits del 3D (`lsb`, de
+ * g2d_3d_lsb) [melonDS]. */
+static inline uint16_t g2d_blend3d(uint16_t a, uint16_t b, int alpha, int lsb)
 {
 	uint16_t r = 0;
 
 	for (int k = 0; k < 3; k++) {
-		const int v = (2 * ((a >> (5 * k)) & 31) * (alpha + 1) + 2 * ((b >> (5 * k)) & 31) * (31 - alpha)) >> 5;
+		const int a6 = 2 * ((a >> (5 * k)) & 31) + ((lsb >> k) & 1);
+		const int v = (a6 * (alpha + 1) + 2 * ((b >> (5 * k)) & 31) * (31 - alpha) + 16) >> 5;
 
 		r |= (uint16_t)((v >> 1) << (5 * k));
 	}

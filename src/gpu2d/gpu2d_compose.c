@@ -1273,7 +1273,7 @@ static void draw_3d(gpu2d_ctx *c, const g2d_job *j, uint32_t p)
 			const uint32_t a = (q >> 24) & 31u;
 
 			px[k] = a ? (uint16_t)(0x8000u | g2d_3d_555(q)) : (uint16_t)G2D_TRANSP;
-			al[k] = (uint16_t)a;
+			al[k] = (uint16_t)(a | ((uint32_t)g2d_3d_lsb(q) << 5)); /* alfa y los bits bajos del color de 6 bits */
 			semi |= a != 0 && a != 31;
 		}
 		memcpy(&c->bg[0][8 + v], px, 16);
@@ -1388,13 +1388,15 @@ static inline g2d_v8 v8_bright_down(g2d_v8 a, g2d_v8 evy)
 }
 
 /* g2d_blend3d de gpu2d_fx.h (3D translúcido sobre el objetivo 2), con el alfa del 3D por carril. */
-static inline g2d_v8 v8_blend3d(g2d_v8 a, g2d_v8 b, g2d_v8 alpha)
+static inline g2d_v8 v8_blend3d(g2d_v8 a, g2d_v8 b, g2d_v8 meta)
 {
+	const g2d_v8 alpha = g2d_v8_and(meta, g2d_v8_splat(31)), lsb = g2d_v8_shr(meta, 5);
 	const g2d_v8 fa = g2d_v8_add(alpha, g2d_v8_splat(1)), fb = g2d_v8_sub(g2d_v8_splat(31), alpha);
 	g2d_v8 r = g2d_v8_splat(0);
 
 	for (int k = 0; k < 3; k++) {
-		const g2d_v8 v = g2d_v8_shr(g2d_v8_add(g2d_v8_mul(g2d_v8_shl(CH5(a, k), 1), fa), g2d_v8_mul(g2d_v8_shl(CH5(b, k), 1), fb)), 5);
+		const g2d_v8 a6 = g2d_v8_or(g2d_v8_shl(CH5(a, k), 1), g2d_v8_and(g2d_v8_shr(lsb, k), g2d_v8_splat(1)));
+		const g2d_v8 v = g2d_v8_shr(g2d_v8_add(g2d_v8_add(g2d_v8_mul(a6, fa), g2d_v8_mul(g2d_v8_shl(CH5(b, k), 1), fb)), g2d_v8_splat(16)), 5);
 
 		r = g2d_v8_or(r, g2d_v8_shl(g2d_v8_shr(v, 1), 5 * k));
 	}
@@ -1455,8 +1457,8 @@ static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out
 	}
 	if (use_win)
 		build_windows(c, j, p);
-	if (j->bg_type[0] == BG_3D && c->l3d_semi)
-		has_semi = 1; /* los píxeles 3D translúcidos se mezclan aunque BLDCNT no pida efectos */
+	if (j->bg_type[0] == BG_3D)
+		has_semi = 1; /* los píxeles 3D se mezclan con su alfa aunque BLDCNT no pida efectos */
 	need_fx = (emode != 0) || has_semi;
 	c->stats.fx_lines += need_fx ? 1u : 0u;
 	G2D_ACC(c, cl_layers, tl_);
@@ -1505,11 +1507,10 @@ static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out
 						}
 						top = g2d_v8_sel(top, s, m);
 						if (e == 0 && j->bg_type[0] == BG_3D) {
-							/* 3D: translúcido (alfa < 31) = capa 7, con el alfa en el meta */
+							/* 3D: capa 7 (mezcla con su propio alfa), con el alfa en el meta */
 							const g2d_v8 a3 = c->a3d[v];
-							const g2d_v8 lid = g2d_v8_sel(g2d_v8_splat(0), seven, g2d_v8_gt(g2d_v8_splat(31), a3));
 
-							topl = g2d_v8_sel(topl, lid, m);
+							topl = g2d_v8_sel(topl, seven, m);
 							topm = g2d_v8_sel(topm, a3, m);
 						} else {
 							topl = g2d_v8_sel(topl, g2d_v8_splat((uint16_t)e), m);

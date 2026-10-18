@@ -646,7 +646,7 @@ static void render_line(rs_t *s, int y, uint16_t *out)
 		/* orden de capas de adelante hacia atrás */
 		int lay[6], nl = 0;
 		uint16_t col[6];
-		int semi = 0, balp = -1, a3top = 31;
+		int semi = 0, balp = -1, a3top = -1, l3top = 0;
 
 		for (int p = 0; p < 4; p++) {
 			if (op.v && best_prio == p && (!use_win || (wbits & 0x10))) {
@@ -672,8 +672,10 @@ static void render_line(rs_t *s, int y, uint16_t *out)
 					a = (px >> 24) & 31u;
 					if (a == 0)
 						continue;
-					if (nl == 0)
+					if (nl == 0) {
 						a3top = (int)a;
+						l3top = g2d_3d_lsb(px);
+					}
 					lay[nl] = 0;
 					col[nl++] = g2d_3d_555(px);
 					continue;
@@ -693,11 +695,11 @@ static void render_line(rs_t *s, int y, uint16_t *out)
 		const int sec_l = nl > 1 ? lay[1] : 5;
 		const uint16_t sec_c = nl > 1 ? col[1] : s->pal[0];
 
-		if (top_l == 0 && a3top < 31) {
-			/* 3D translúcido: se mezcla con el objetivo 2 con su propio alfa, sin mirar el modo de BLDCNT; sin objetivo 2,
-			 * como un OBJ semitransparente (brillo si BG0 es objetivo 1) [melonDS] */
+		if (top_l == 0 && a3top >= 0) {
+			/* 3D (también el opaco): con el objetivo 2 se mezcla con su propio alfa, sin mirar el modo de BLDCNT ni EVA/EVB
+			 * (el opaco queda igual); sin objetivo 2, como un OBJ semitransparente (brillo si BG0 es objetivo 1) [melonDS] */
 			if (t2 & (1 << sec_l))
-				c = g2d_blend3d(c, sec_c, a3top);
+				c = g2d_blend3d(c, sec_c, a3top, l3top);
 			else if (effects_ok && (t1 & 1) && emode >= 2)
 				c = emode == 2 ? g2d_bright_up(c, evy) : g2d_bright_down(c, evy);
 		} else if (top_l == 4 && (semi || balp >= 0)) {
