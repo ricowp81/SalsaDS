@@ -7,9 +7,14 @@
  */
 #include "gpu2d/gpu2d_compose.h"
 #include "gpu2d/gpu2d_fx.h"
+#ifndef __SPU__
+uint64_t g2d_dma_cnt[G2D_ST_COUNT][G2D_C_COUNT];
+int g2d_stage;
+#endif
 #ifdef G2D_DBG
 #include <stdio.h>
 int g2d_dbg_x = -1, g2d_dbg_y = -1, g2d_dbg_cur;
+
 #endif
 
 static const uint8_t obj_dims[3][4][2] = {
@@ -24,6 +29,14 @@ static inline int pow2(uint32_t v)
 {
 	return v && !(v & (v - 1));
 }
+
+/* Espera del DMA dentro de la etapa 1 (para el perfil por etapa). */
+#define PW(c, mask)                                  \
+	do {                                         \
+		const uint32_t tw_ = G2D_T();        \
+		g2d_wait(mask);                      \
+		G2D_ACC(c, plan_wait, tw_);          \
+	} while (0)
 
 /* ---- vistas de la VRAM ------------------------------------------------------------------------------- */
 
@@ -213,6 +226,7 @@ static void ext_pal_load(gpu2d_ctx *c, const gpu2d_engine *e)
 {
 	uint32_t pending = 0;
 
+	G2D_STAGE(G2D_ST_EXTPAL);
 	for (int k = 0; k < 5; k++) {
 		const uint32_t src = k < 4 ? e->extbg[k] : e->extobj;
 		uint16_t *dst = c->pal + (k < 4 ? G2D_PAL_BGEXT + k * 4096 : G2D_PAL_OBJEXT);
@@ -225,7 +239,7 @@ static void ext_pal_load(gpu2d_ctx *c, const gpu2d_engine *e)
 		}
 	}
 	if (pending)
-		g2d_wait(1u << G2D_TAG_EXT);
+		PW(c, 1u << G2D_TAG_EXT);
 	for (int k = 0; k < 5; k++) {
 		uint16_t *dst = c->pal + (k < 4 ? G2D_PAL_BGEXT + k * 4096 : G2D_PAL_OBJEXT);
 		const uint32_t src = k < 4 ? e->extbg[k] : e->extobj;
@@ -347,7 +361,7 @@ static int amap_prepare(gpu2d_ctx *c, const gpu2d_engine *e, int rb, int type, u
 		if (rb == 0)
 			c->amap_key[1] = 0xFFFFFFFFu;
 		get_run(c->amap + off, e, 0, sbase, (len + 15u) & ~15u, G2D_TAG_MAP);
-		g2d_wait(1u << G2D_TAG_MAP);
+		PW(c, 1u << G2D_TAG_MAP);
 	}
 	return 1;
 }
@@ -398,60 +412,198 @@ static void plan_affine(gpu2d_ctx *c, const gpu2d_engine *e, g2d_job *j, int b, 
 	}
 	if (type == BG_EXT16 && (c->dc & G2D_DC_BGEXTPAL))
 		slot_ext = G2D_PAL_BGEXT + (uint32_t)b * 4096u;
-	for (int i = 0; i < GPU2D_W; i++) {
-		int32_t xs = i - i % mh, sx, sy;
-		uint32_t a = 0;
-		uint16_t base = 0;
+	if (mh == 1 && pa == 0x100 && pc == 0 && (type == BG_AFFINE || type == BG_EXT16)) {
+		/*
+		 * Fondo de teselas sin rotación ni escala en horizontal (PA = 1,0, PC = 0: lo que usan los juegos para un fondo que
+		 * solo se desplaza): la fila de origen es una sola y x avanza de a uno, así que se recorre por teselas: una lectura
+		 * del mapa y un bloque de 16 bytes (la fila de 8 texeles de una tesela cabe siempre en uno) por cada 8 píxeles, en
+		 * lugar de una lectura del mapa y una dirección por píxel.
+		 */
+		const int lw3 = __builtin_ctz((unsigned)w) - 3;
+		const int32_t wm = w - 1, hm = h - 1;
+		const int32_t sx0 = ref[0] >> 8, sy0 = ref[1] >> 8;
+		const int32_t sy = sy0 & hm;
+		const int rowok = wrap || sy == sy0;
+		int i = 0;
 
-		if (i && (i % mh)) { /* mismo grupo de mosaico: el píxel de la izquierda */
-			ab->off[i] = ab->off[i - 1];
-			ab->base[i] = ab->base[i - 1];
-			continue;
+		while (i < GPU2D_W) {
+			const int32_t x = sx0 + i;
+			const int32_t xw = x & wm;
+			const int ix = xw & 7, runlen = 8 - ix < GPU2D_W - i ? 8 - ix : GPU2D_W - i;
+			const int ok = rowok && (wrap || xw == x);
+
+			if (!ok) {
+				for (int k = 0; k < runlen; k++)
+					ab->off[i + k] = 0xFFFF;
+			} else {
+				uint32_t row;
+				uint16_t base = 0;
+				int hf = 0;
+				const int mi = ((sy >> 3) << lw3) + (xw >> 3);
+
+				if (type == BG_AFFINE) {
+					row = cbase + (uint32_t)map[mi] * 64u + (uint32_t)((sy & 7) << 3);
+				} else {
+					const uint16_t me = g2d_ld16le(map + (mi << 1));
+					const int iy = (me & 0x800) ? 7 - (sy & 7) : (sy & 7);
+
+					hf = (me & 0x400) != 0;
+					row = cbase + (uint32_t)(me & 1023) * 64u + (uint32_t)(iy << 3);
+					if (slot_ext)
+						base = (uint16_t)(slot_ext + ((me >> 12) & 15) * 256u);
+				}
+				row &= vmask;
+				if ((int32_t)(row >> 4) != prev_quad) {
+					prev_quad = (int32_t)(row >> 4);
+					c->aoffs[n++] = view_off(e, 0, row & ~15u);
+				}
+				{
+					const uint16_t qo = (uint16_t)((n - 1) * 16u + (row & 15u));
+
+					for (int k = 0; k < runlen; k++) {
+						ab->off[i + k] = (uint16_t)(qo + (hf ? 7 - (ix + k) : ix + k));
+						ab->base[i + k] = base;
+					}
+				}
+			}
+			i += runlen;
 		}
-		sx = (int32_t)((ref[0] + (int64_t)pa * xs) >> 8);
-		sy = (int32_t)((ref[1] + (int64_t)pc * xs) >> 8);
-		if (wrap) {
-			sx &= w - 1;
-			sy &= h - 1;
-		} else if (sx < 0 || sx >= w || sy < 0 || sy >= h) {
-			ab->off[i] = 0xFFFF;
-			ab->base[i] = 0;
-			continue;
-		}
+	} else if (mh == 1) {
+		/*
+		 * Sin mosaico, dos pasadas. 1ª: la dirección de cada texel, sin ramas ni dependencias entre píxeles (la posición avanza
+		 * sumando PA y PC: el punto de referencia cabe en 28 bits y PA * 255 en 24, así que bastan enteros de 32 bits; los
+		 * lados son potencias de 2: nada de multiplicar por w). 2ª: quitar los repetidos (un bloque de 16 bytes por cambio de
+		 * bloque) y armar la lista del DMA. En el SPE un píxel de la versión de una sola pasada costaba ≈ 115 ciclos.
+		 */
+		const int lw = __builtin_ctz((unsigned)w), lw3 = lw - 3;
+		int32_t px = ref[0], py = ref[1];
+		const int32_t dx = (int32_t)pa, dy = (int32_t)pc;
+		const int32_t wm = w - 1, hm = h - 1;
+		const uint32_t scr = G2D_BGCNT_SCR_BMP(cnt), wrapm = wrap ? 0xFFFFFFFFu : 0u, none = 0xFFFFFFFFu;
+		uint32_t *const aa = c->aaddr;
+
+#define AFF_LOOP(...)                                                                                     \
+	for (int i = 0; i < GPU2D_W; i++) {                                                               \
+		const int32_t sx0 = px >> 8, sy0 = py >> 8;                                               \
+		const int32_t sx = sx0 & wm, sy = sy0 & hm;                                               \
+		const uint32_t ok = wrapm | (uint32_t)-(int32_t)((sx == sx0) & (sy == sy0));               \
+		uint32_t a;                                                                               \
+		uint16_t base = 0;                                                                        \
+		(void)base;                                                                               \
+		__VA_ARGS__                                                                               \
+		aa[i] = (a & vmask) | ~ok;                                                                \
+		ab->base[i] = base;                                                                       \
+		px += dx;                                                                                 \
+		py += dy;                                                                                 \
+	}
 		switch (type) {
 		case BG_AFFINE:
-			a = cbase + (uint32_t)map[(sy >> 3) * (w >> 3) + (sx >> 3)] * 64u + (uint32_t)((sy & 7) * 8 + (sx & 7));
+			AFF_LOOP(a = cbase + (uint32_t)map[((sy >> 3) << lw3) + (sx >> 3)] * 64u + (uint32_t)(((sy & 7) << 3) + (sx & 7));)
 			break;
-		case BG_EXT16: {
-			const uint16_t me = g2d_ld16le(map + ((sy >> 3) * (w >> 3) + (sx >> 3)) * 2);
-			int ix = sx & 7, iy = sy & 7;
+		case BG_EXT16:
+			AFF_LOOP({
+				const uint16_t me = g2d_ld16le(map + ((((sy >> 3) << lw3) + (sx >> 3)) << 1));
+				const int ix = (me & 0x400) ? 7 - (sx & 7) : (sx & 7), iy = (me & 0x800) ? 7 - (sy & 7) : (sy & 7);
 
-			if (me & 0x400)
-				ix = 7 - ix;
-			if (me & 0x800)
-				iy = 7 - iy;
-			a = cbase + (uint32_t)(me & 1023) * 64u + (uint32_t)(iy * 8 + ix);
-			if (slot_ext)
-				base = (uint16_t)(slot_ext + ((me >> 12) & 15) * 256u);
+				a = cbase + (uint32_t)(me & 1023) * 64u + (uint32_t)((iy << 3) + ix);
+				base = slot_ext ? (uint16_t)(slot_ext + ((me >> 12) & 15) * 256u) : 0;
+			})
 			break;
-		}
 		case BG_BMP8:
-			a = G2D_BGCNT_SCR_BMP(cnt) + (uint32_t)(sy * w + sx);
+			AFF_LOOP(a = scr + (uint32_t)((sy << lw) + sx);)
 			break;
 		case BG_BMPD:
-			a = G2D_BGCNT_SCR_BMP(cnt) + (uint32_t)(sy * w + sx) * 2u;
+			AFF_LOOP(a = scr + (uint32_t)(((sy << lw) + sx) << 1);)
 			break;
 		default:
-			a = (uint32_t)(sy * w + sx);
+			AFF_LOOP(a = (uint32_t)((sy << lw) + sx);)
 			break;
 		}
-		a &= vmask;
-		if ((int32_t)(a >> 4) != prev_quad) {
-			prev_quad = (int32_t)(a >> 4);
-			c->aoffs[n++] = view_off(e, 0, a & ~15u);
+#undef AFF_LOOP
+		for (int i = 0; i < GPU2D_W; i++) {
+			const uint32_t a = aa[i];
+
+			if (a == none) {
+				ab->off[i] = 0xFFFF;
+				continue;
+			}
+			if ((int32_t)(a >> 4) != prev_quad) {
+				prev_quad = (int32_t)(a >> 4);
+				c->aoffs[n++] = view_off(e, 0, a & ~15u);
+			}
+			ab->off[i] = (uint16_t)((n - 1) * 16u + (a & 15u));
 		}
-		ab->off[i] = (uint16_t)((n - 1) * 16u + (a & 15u));
-		ab->base[i] = base;
+	} else {
+	/*
+	 * Un píxel por grupo de mosaico. Sin divisiones ni productos de 64 bits (en el SPE son llamadas a rutinas de software
+	 * de cientos de ciclos por píxel: esa era la causa principal de los 20 ms por pantalla con fondos afines).
+	 */
+	{
+		const int lw = __builtin_ctz((unsigned)w), lw3 = lw - 3;
+		int32_t px = ref[0], py = ref[1];
+		const int32_t dx = (int32_t)pa * mh, dy = (int32_t)pc * mh;
+		const uint16_t wm = (uint16_t)(w - 1), hm = (uint16_t)(h - 1);
+
+		for (int i0 = 0; i0 < GPU2D_W; i0 += mh, px += dx, py += dy) {
+			int32_t sx = px >> 8, sy = py >> 8;
+			uint32_t a = 0;
+			uint16_t base = 0, off;
+			int ok = 1;
+
+			if (wrap) {
+				sx &= wm;
+				sy &= hm;
+			} else if ((uint32_t)sx >= (uint32_t)w || (uint32_t)sy >= (uint32_t)h) {
+				ok = 0;
+			}
+			if (ok) {
+				switch (type) {
+				case BG_AFFINE:
+					a = cbase + (uint32_t)map[((sy >> 3) << lw3) + (sx >> 3)] * 64u + (uint32_t)(((sy & 7) << 3) + (sx & 7));
+					break;
+				case BG_EXT16: {
+					const uint16_t me = g2d_ld16le(map + ((((sy >> 3) << lw3) + (sx >> 3)) << 1));
+					int ix = sx & 7, iy = sy & 7;
+
+					if (me & 0x400)
+						ix = 7 - ix;
+					if (me & 0x800)
+						iy = 7 - iy;
+					a = cbase + (uint32_t)(me & 1023) * 64u + (uint32_t)((iy << 3) + ix);
+					if (slot_ext)
+						base = (uint16_t)(slot_ext + ((me >> 12) & 15) * 256u);
+					break;
+				}
+				case BG_BMP8:
+					a = G2D_BGCNT_SCR_BMP(cnt) + (uint32_t)((sy << lw) + sx);
+					break;
+				case BG_BMPD:
+					a = G2D_BGCNT_SCR_BMP(cnt) + (uint32_t)(((sy << lw) + sx) << 1);
+					break;
+				default:
+					a = (uint32_t)((sy << lw) + sx);
+					break;
+				}
+				a &= vmask;
+				if ((int32_t)(a >> 4) != prev_quad) {
+					prev_quad = (int32_t)(a >> 4);
+					c->aoffs[n++] = view_off(e, 0, a & ~15u);
+				}
+				off = (uint16_t)((n - 1) * 16u + (a & 15u));
+			} else {
+				off = 0xFFFF;
+				base = 0;
+			}
+			{
+				const int i1 = i0 + mh < GPU2D_W ? i0 + mh : GPU2D_W;
+
+				for (int i = i0; i < i1; i++) {
+					ab->off[i] = off;
+					ab->base[i] = base;
+				}
+			}
+		}
+	}
 	}
 	if (n) {
 		g2d_gather(ab->data, e->vram_ea, c->aoffs, n, 16, G2D_TAG_AFF + (uint32_t)rb * 2 + p, ab->list);
@@ -695,14 +847,14 @@ static void obj_mosaic_x(gpu2d_ctx *c, uint32_t p, int mh)
 		memcpy(met + v * 8, &c->omet[p][8 + v], 16);
 		memcpy(cov + v * 8, &c->ocov[p][8 + v], 16);
 	}
-	for (int x = 0; x < GPU2D_W; x++) {
+	for (int x = 0, xm = 0; x < GPU2D_W; x++, xm = xm + 1 == mh ? 0 : xm + 1) { /* xm = x % mh sin dividir */
 		/* un texel transparente de un OBJ con mosaico, donde no hay otro píxel, lleva la marca sin color */
 		if (idx[x] == G2D_TRANSP && cov[x])
 			met[x] = (uint16_t)(7 | 0x200);
 		const int flag = (met[x] & 0x200) != 0;
 
 		if (flag) {
-			if (x % mh == 0 || !prev_flag) {
+			if (xm == 0 || !prev_flag) {
 				lidx = idx[x];
 				lmet = met[x];
 			} else {
@@ -895,6 +1047,7 @@ static void plan_line(gpu2d_ctx *c, const gpu2d_engine *e, int y)
 	const int isb = (e->flags & G2D_F_ENGINE_B) != 0;
 	const gpu2d_change *ch;
 
+	G2D_STAGE(G2D_ST_PLAN);
 	j->npalchg = 0;
 	j->waitmask = 0;
 	while ((ch = chg_peek(c, e, y)) != 0) {
@@ -951,14 +1104,26 @@ static void plan_line(gpu2d_ctx *c, const gpu2d_engine *e, int y)
 		for (int b = 0; b < GPU2D_NBG; b++) {
 			const int t = j->bg_type[b];
 
-			if (t == BG_TEXT)
+			if (t == BG_TEXT) {
+				const uint32_t t0_ = G2D_T();
+
+				G2D_STAGE(G2D_ST_TEXT);
 				plan_text(c, e, j, b, y, &need, &map_wait);
-			else if (t >= BG_AFFINE && t <= BG_LARGE)
+				G2D_ACC(c, plan_text, t0_);
+			} else if (t >= BG_AFFINE && t <= BG_LARGE) {
+				const uint32_t t0_ = G2D_T();
+
+				G2D_STAGE(G2D_ST_AFFINE);
 				plan_affine(c, e, j, b, y, p, &j->waitmask);
+				G2D_ACC(c, plan_aff, t0_);
+			}
 		}
 		/* Etapa B de los fondos de texto: con los mapas en el local store, pedir las teselas. */
+		G2D_STAGE(G2D_ST_TEXT);
 		if (need) {
-			g2d_wait(map_wait);
+			const uint32_t t1_ = G2D_T();
+
+			PW(c, map_wait);
 			c->stats.map_waits++;
 			for (int b = 0; b < GPU2D_NBG; b++) {
 				if (!(need & (1 << b)))
@@ -978,8 +1143,16 @@ static void plan_line(gpu2d_ctx *c, const gpu2d_engine *e, int y)
 						   c->lists[b][cur]);
 				}
 			}
+			G2D_ACC(c, plan_text, t1_);
 		}
-		plan_obj(c, e, j, y, p);
+		G2D_STAGE(G2D_ST_OBJ);
+		{
+			const uint32_t t2_ = G2D_T();
+
+			plan_obj(c, e, j, y, p);
+			G2D_ACC(c, plan_obj, t2_);
+		}
+		G2D_STAGE(G2D_ST_PLAN);
 	}
 	/* al final de la línea: los puntos de referencia avanzan con PB y PD */
 	for (int b = 0; b < 2; b++) {
@@ -998,8 +1171,12 @@ static void mosaic_h(g2d_v8 *line8, int mh)
 
 	for (int v = 0; v < 32; v++)
 		memcpy(px + v * 8, &line8[8 + v], 16);
-	for (int x = 0; x < GPU2D_W; x++)
-		px[x] = px[x - x % mh];
+	for (int x0 = 0; x0 < GPU2D_W; x0 += mh) { /* sin dividir por píxel */
+		const int x1 = x0 + mh < GPU2D_W ? x0 + mh : GPU2D_W;
+
+		for (int x = x0 + 1; x < x1; x++)
+			px[x] = px[x0];
+	}
 	for (int v = 0; v < 32; v++)
 		memcpy(&line8[8 + v], px + v * 8, 16);
 }
@@ -1047,25 +1224,30 @@ static void draw_affine(gpu2d_ctx *c, const g2d_job *j, int b, uint32_t p)
 	const int rb = b - 2;
 	const g2d_abg *ab = &c->abg[rb][p];
 	const int bmpd = j->bg_type[b] == BG_BMPD;
-	uint16_t px[GPU2D_W] __attribute__((aligned(16)));
+	const uint8_t *data = &ab->data[0][0];
+	const g2d_v8 none = g2d_v8_splat(0xFFFF), tr = g2d_v8_splat(G2D_TRANSP), ones = g2d_v8_splat(0xFFFF);
 
-	for (int i = 0; i < GPU2D_W; i++) {
-		const uint16_t o = ab->off[i];
+	/* ocho píxeles a la vez; la posición 0xFFFF (fuera del fondo) lee un byte cualquiera y su resultado se descarta */
+	for (int v = 0; v < 32; v++) {
+		g2d_v8 o, valid, m, px;
 
-		if (o == 0xFFFF) {
-			px[i] = G2D_TRANSP;
-		} else if (bmpd) {
-			const uint16_t v = g2d_ld16le(&ab->data[0][0] + o);
+		memcpy(&o, &ab->off[v * 8], 16);
+		valid = g2d_v8_andc(ones, g2d_v8_eq(o, none));
+		if (bmpd) {
+			const g2d_v8 val = g2d_v8_gather16le(data, g2d_v8_and(o, g2d_v8_splat(0xFFE)));
 
-			px[i] = (v & 0x8000u) ? v : (uint16_t)G2D_TRANSP;
+			m = g2d_v8_and(valid, g2d_v8_gt(val, g2d_v8_splat(0x7FFF)));
+			px = g2d_v8_sel(tr, val, m);
 		} else {
-			const uint8_t col = (&ab->data[0][0])[o];
+			const g2d_v8 col = g2d_v8_gather8(data, g2d_v8_and(o, g2d_v8_splat(0xFFF)));
+			g2d_v8 base;
 
-			px[i] = col ? (uint16_t)(ab->base[i] + col) : (uint16_t)G2D_TRANSP;
+			memcpy(&base, &ab->base[v * 8], 16);
+			m = g2d_v8_and(valid, g2d_v8_andc(ones, g2d_v8_eq(col, g2d_v8_splat(0))));
+			px = g2d_v8_sel(tr, g2d_v8_add(base, col), m);
 		}
+		c->bg[b][8 + v] = px;
 	}
-	for (int v = 0; v < 32; v++)
-		memcpy(&c->bg[b][8 + v], px + v * 8, 16);
 }
 
 /* Máscaras de ventana: para cada capa (0..3 fondos, 4 OBJ, 5 efectos) un vector de 0xFFFF donde se permite */
@@ -1115,12 +1297,76 @@ static void build_windows(gpu2d_ctx *c, const g2d_job *j, uint32_t p)
 	}
 }
 
-static inline uint16_t color_of(const gpu2d_ctx *c, uint32_t v)
+/* ---- etapa 2: componer una línea --------------------------------------------------------------------------- */
+
+/* ---- color final de 8 píxeles a la vez ---------------------------------------------------------------------------- */
+
+/* Colores BGR555 de ocho píxeles de la capa unificada: índice de paleta, o color directo si el bit 15 está. */
+static inline g2d_v8 colors_of(const gpu2d_ctx *c, g2d_v8 idx)
 {
-	return (v & 0x8000u) ? (uint16_t)(v & 0x7FFFu) : c->pal[v];
+	const g2d_v8 direct = g2d_v8_gt(idx, g2d_v8_splat(0x7FFF));
+	const g2d_v8 pc = g2d_v8_lookup(c->pal, g2d_v8_andc(idx, direct));
+
+	return g2d_v8_sel(pc, g2d_v8_and(idx, g2d_v8_splat(0x7FFF)), direct);
 }
 
-/* ---- etapa 2: componer una línea --------------------------------------------------------------------------- */
+/* Los tres canales de 5 bits de ocho colores BGR555 en tres vectores (canal 0 = R). */
+#define CH5(col, k) g2d_v8_and(g2d_v8_shr((col), 5 * (k)), g2d_v8_splat(31))
+
+/* g2d_blend de gpu2d_fx.h, ocho píxeles a la vez y con factores por carril. */
+static inline g2d_v8 v8_blend(g2d_v8 a, g2d_v8 b, g2d_v8 eva, g2d_v8 evb)
+{
+	g2d_v8 r = g2d_v8_splat(0);
+
+	for (int k = 0; k < 3; k++) {
+		g2d_v8 v = g2d_v8_add(g2d_v8_add(g2d_v8_mul(g2d_v8_shl(CH5(a, k), 1), eva), g2d_v8_mul(g2d_v8_shl(CH5(b, k), 1), evb)),
+				      g2d_v8_splat(8));
+
+		v = g2d_v8_shr(v, 4);
+		v = g2d_v8_sel(v, g2d_v8_splat(63), g2d_v8_gt(v, g2d_v8_splat(63)));
+		r = g2d_v8_or(r, g2d_v8_shl(g2d_v8_shr(v, 1), 5 * k));
+	}
+	return r;
+}
+
+static inline g2d_v8 v8_bright_up(g2d_v8 a, g2d_v8 evy)
+{
+	g2d_v8 r = g2d_v8_splat(0);
+
+	for (int k = 0; k < 3; k++) {
+		const g2d_v8 c6 = g2d_v8_shl(CH5(a, k), 1);
+		const g2d_v8 t = g2d_v8_shr(g2d_v8_add(g2d_v8_mul(g2d_v8_sub(g2d_v8_splat(63), c6), evy), g2d_v8_splat(8)), 4);
+
+		r = g2d_v8_or(r, g2d_v8_shl(g2d_v8_shr(g2d_v8_add(c6, t), 1), 5 * k));
+	}
+	return r;
+}
+
+static inline g2d_v8 v8_bright_down(g2d_v8 a, g2d_v8 evy)
+{
+	g2d_v8 r = g2d_v8_splat(0);
+
+	for (int k = 0; k < 3; k++) {
+		const g2d_v8 c6 = g2d_v8_shl(CH5(a, k), 1);
+		const g2d_v8 t = g2d_v8_shr(g2d_v8_add(g2d_v8_mul(c6, evy), g2d_v8_splat(7)), 4);
+
+		r = g2d_v8_or(r, g2d_v8_shl(g2d_v8_shr(g2d_v8_sub(c6, t), 1), 5 * k));
+	}
+	return r;
+}
+
+/* BGR555 → RGBA5551 (gpu2d_to_5551) de ocho colores. */
+static inline g2d_v8 v8_to_5551(g2d_v8 c)
+{
+	return g2d_v8_or(g2d_v8_or(g2d_v8_shl(CH5(c, 0), 11), g2d_v8_shl(CH5(c, 1), 6)),
+			 g2d_v8_or(g2d_v8_shl(CH5(c, 2), 1), g2d_v8_splat(1)));
+}
+
+/* Máscara «distinto de cero» por carril. */
+static inline g2d_v8 v8_nz(g2d_v8 a)
+{
+	return g2d_v8_andc(g2d_v8_splat(0xFFFF), g2d_v8_eq(a, g2d_v8_splat(0)));
+}
 
 static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out)
 {
@@ -1133,6 +1379,9 @@ static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out
 	const int mbon = ((mb >> 14) & 3) == 1 || ((mb >> 14) & 3) == 2;
 	int has_semi = 0, need_fx;
 	const g2d_v8 ones = g2d_v8_splat(0xFFFF), tr = g2d_v8_splat(G2D_TRANSP);
+
+	const uint32_t tl_ = G2D_T();
+	uint32_t tf_;
 
 	/* capas */
 	for (int b = 0; b < GPU2D_NBG; b++) {
@@ -1160,111 +1409,125 @@ static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out
 		build_windows(c, j, p);
 	need_fx = (emode != 0) || has_semi;
 	c->stats.fx_lines += need_fx ? 1u : 0u;
+	G2D_ACC(c, cl_layers, tl_);
+	tf_ = G2D_T();
 
-	/* prioridades: del fondo hacia el frente */
-	for (int v = 0; v < 32; v++) {
-		g2d_v8 top = g2d_v8_splat(0), topl = g2d_v8_splat(5), sec = g2d_v8_splat(0), secl = g2d_v8_splat(5),
-		       topm = g2d_v8_splat(0);
+	/* Capas en el orden en que se pintan: del fondo hacia el frente (prioridad 3 a 0; a igual prioridad, BG3 primero y el OBJ
+	 * después de los fondos). Se arma una vez por línea: dentro del bucle de vectores no queda ninguna decisión por capa. */
+	{
+		int ent[16], nent = 0;
 
 		for (int pr = 3; pr >= 0; pr--) {
 			for (int b = GPU2D_NBG - 1; b >= 0; b--) {
 				const int t = j->bg_type[b];
-				g2d_v8 s, m;
 
-				if (!(t == BG_TEXT || (t >= BG_AFFINE && t <= BG_LARGE && j->aff_ok[b - 2])))
-					continue;
-				if ((int)G2D_BGCNT_PRIO(j->regs[G2D_R_BGCNT + b]) != pr)
-					continue;
-				s = c->bg[b][8 + v];
-				m = g2d_v8_andc(ones, g2d_v8_eq(s, tr));
-				if (use_win)
-					m = g2d_v8_and(m, c->allow[b][v]);
-				if (!g2d_v8_any(m))
-					continue;
-				if (need_fx) {
-					sec = g2d_v8_sel(sec, top, m);
-					secl = g2d_v8_sel(secl, topl, m);
-				}
-				top = g2d_v8_sel(top, s, m);
-				topl = g2d_v8_sel(topl, g2d_v8_splat((uint16_t)b), m);
-				topm = g2d_v8_sel(topm, g2d_v8_splat(0), m);
+				if ((t == BG_TEXT || (t >= BG_AFFINE && t <= BG_LARGE && j->aff_ok[b - 2])) &&
+				    (int)G2D_BGCNT_PRIO(j->regs[G2D_R_BGCNT + b]) == pr)
+					ent[nent++] = b;
 			}
-			if (dc & G2D_DC_OBJ) {
-				const g2d_v8 s = c->oidx[p][8 + v], om = c->omet[p][8 + v];
-				g2d_v8 m = g2d_v8_andc(ones, g2d_v8_eq(s, tr));
-
-				m = g2d_v8_and(m, g2d_v8_eq(g2d_v8_and(om, g2d_v8_splat(7)), g2d_v8_splat((uint16_t)pr)));
-				if (use_win)
-					m = g2d_v8_and(m, c->allow[4][v]);
-				if (g2d_v8_any(m)) {
-					const g2d_v8 semi = g2d_v8_andc(ones, g2d_v8_eq(g2d_v8_and(om, g2d_v8_splat(0x18)), g2d_v8_splat(0)));
-					const g2d_v8 lid = g2d_v8_sel(g2d_v8_splat(4), g2d_v8_splat(6), semi);
-
-					if (need_fx) {
-						sec = g2d_v8_sel(sec, top, m);
-						secl = g2d_v8_sel(secl, topl, m);
-					}
-					top = g2d_v8_sel(top, s, m);
-					topl = g2d_v8_sel(topl, lid, m);
-					topm = g2d_v8_sel(topm, om, m);
-				}
-			}
+			if (dc & G2D_DC_OBJ)
+				ent[nent++] = 4 + pr;
 		}
-		/* color final de los 8 píxeles */
 		{
-			uint16_t tv[8] __attribute__((aligned(16))), tl[8] __attribute__((aligned(16))),
-				sv[8] __attribute__((aligned(16))), sl[8] __attribute__((aligned(16))),
-				tm[8] __attribute__((aligned(16))), fxv[8] __attribute__((aligned(16)));
+			const g2d_v8 eva_v = g2d_v8_splat((uint16_t)eva), evb_v = g2d_v8_splat((uint16_t)evb), evy_v = g2d_v8_splat((uint16_t)evy);
+			const g2d_v8 mbf = g2d_v8_splat((uint16_t)g2d_ev(mb & 31));
+			const int mbmode = (mb >> 14) & 3;
+			const g2d_v8 t1v = g2d_v8_splat((uint16_t)t1), t2v = g2d_v8_splat((uint16_t)t2), one = g2d_v8_splat(1);
+			const g2d_v8 six = g2d_v8_splat(6), four = g2d_v8_splat(4);
 
-			memcpy(tv, &top, 16);
-			if (need_fx) {
-				memcpy(tl, &topl, 16);
-				memcpy(sv, &sec, 16);
-				memcpy(sl, &secl, 16);
-				memcpy(tm, &topm, 16);
-				if (use_win)
-					memcpy(fxv, &c->allow[5][v], 16);
-			}
-			for (int k = 0; k < 8; k++) {
-				uint16_t col = color_of(c, tv[k]);
+			for (int v = 0; v < 32; v++) {
+				g2d_v8 top = g2d_v8_splat(0), topl = g2d_v8_splat(5), sec = g2d_v8_splat(0), secl = g2d_v8_splat(5),
+				       topm = g2d_v8_splat(0);
+				g2d_v8 col;
 
-				if (need_fx) {
-					const int tlk = tl[k], slk = sl[k] == 6 ? 4 : sl[k]; /* el 6 es un OBJ con mezcla propia: abajo vale como OBJ */
-					const int fxok = !use_win || fxv[k] != 0;
+				for (int k = 0; k < nent; k++) {
+					const int e = ent[k];
+					g2d_v8 s, m;
 
-					if (tlk == 6) {
-						const uint16_t m = tm[k];
-						const int balp = (m & 16) ? (m >> 5) & 15 : -1;
-
-						if (t2 & (1 << slk)) {
-							const int a = balp >= 0 ? balp + 1 : eva, bb = balp >= 0 ? 16 - a : evb;
-
-							col = g2d_blend(col, color_of(c, sv[k]), a, bb);
-						} else if (fxok && (t1 & 0x10) && emode >= 2) {
-							col = emode == 2 ? g2d_bright_up(col, evy) : g2d_bright_down(col, evy);
+					if (e < 4) {
+						s = c->bg[e][8 + v];
+						m = g2d_v8_andc(ones, g2d_v8_eq(s, tr));
+						if (use_win)
+							m = g2d_v8_and(m, c->allow[e][v]);
+						if (need_fx) {
+							sec = g2d_v8_sel(sec, top, m);
+							secl = g2d_v8_sel(secl, topl, m);
 						}
-					} else if (fxok && emode && (t1 & (1 << tlk))) {
-						if (emode == 1) {
-							if (t2 & (1 << slk))
-								col = g2d_blend(col, color_of(c, sv[k]), eva, evb);
-						} else {
-							col = emode == 2 ? g2d_bright_up(col, evy) : g2d_bright_down(col, evy);
+						top = g2d_v8_sel(top, s, m);
+						topl = g2d_v8_sel(topl, g2d_v8_splat((uint16_t)e), m);
+						topm = g2d_v8_sel(topm, g2d_v8_splat(0), m);
+					} else {
+						const g2d_v8 om = c->omet[p][8 + v];
+						g2d_v8 semi, lid;
+
+						s = c->oidx[p][8 + v];
+						m = g2d_v8_andc(ones, g2d_v8_eq(s, tr));
+						m = g2d_v8_and(m, g2d_v8_eq(g2d_v8_and(om, g2d_v8_splat(7)), g2d_v8_splat((uint16_t)(e - 4))));
+						if (use_win)
+							m = g2d_v8_and(m, c->allow[4][v]);
+						semi = g2d_v8_andc(ones, g2d_v8_eq(g2d_v8_and(om, g2d_v8_splat(0x18)), g2d_v8_splat(0)));
+						lid = g2d_v8_sel(four, six, semi);
+						if (need_fx) {
+							sec = g2d_v8_sel(sec, top, m);
+							secl = g2d_v8_sel(secl, topl, m);
+						}
+						top = g2d_v8_sel(top, s, m);
+						topl = g2d_v8_sel(topl, lid, m);
+						topm = g2d_v8_sel(topm, om, m);
+					}
+				}
+				/* color final de los 8 píxeles */
+				col = colors_of(c, top);
+				if (need_fx) {
+					const g2d_v8 slk = g2d_v8_sel(secl, four, g2d_v8_eq(secl, six)); /* el 6 es un OBJ con mezcla propia: abajo vale como OBJ */
+					const g2d_v8 fxok = use_win ? v8_nz(c->allow[5][v]) : ones;
+					const g2d_v8 isobj6 = g2d_v8_eq(topl, six);
+					const g2d_v8 t1bit = v8_nz(g2d_v8_and(g2d_v8_shrv(t1v, topl), one));
+					const g2d_v8 t2bit = v8_nz(g2d_v8_and(g2d_v8_shrv(t2v, slk), one));
+					g2d_v8 res = col;
+
+					/* lo caro (los dos colores y la aritmética de mezcla) solo si algún carril lo usa */
+					if (emode == 1) {
+						const g2d_v8 m = g2d_v8_and(g2d_v8_andc(fxok, isobj6), g2d_v8_and(t1bit, t2bit));
+
+						if (g2d_v8_any(m))
+							res = g2d_v8_sel(res, v8_blend(col, colors_of(c, sec), eva_v, evb_v), m);
+					} else if (emode >= 2) {
+						const g2d_v8 m = g2d_v8_and(g2d_v8_andc(fxok, isobj6), t1bit);
+
+						if (g2d_v8_any(m))
+							res = g2d_v8_sel(res, emode == 2 ? v8_bright_up(col, evy_v) : v8_bright_down(col, evy_v), m);
+					}
+					if (g2d_v8_any(isobj6)) {
+						/* OBJ con mezcla propia: su factor viene en el meta (si no, EVA/EVB), y si el de abajo no es objetivo 2,
+						 * puede subir o bajar el brillo si el OBJ es objetivo 1 y hay modo de brillo */
+						const g2d_v8 hasb = v8_nz(g2d_v8_and(topm, g2d_v8_splat(16)));
+						const g2d_v8 balp = g2d_v8_and(g2d_v8_shr(topm, 5), g2d_v8_splat(15));
+						const g2d_v8 a = g2d_v8_sel(eva_v, g2d_v8_add(balp, one), hasb);
+						const g2d_v8 bb = g2d_v8_sel(evb_v, g2d_v8_sub(g2d_v8_splat(16), a), hasb);
+						const g2d_v8 mb6 = g2d_v8_and(isobj6, t2bit);
+
+						if (g2d_v8_any(mb6))
+							res = g2d_v8_sel(res, v8_blend(col, colors_of(c, sec), a, bb), mb6);
+						if ((t1 & 0x10) && emode >= 2) {
+							const g2d_v8 mr = g2d_v8_and(g2d_v8_andc(isobj6, t2bit), fxok);
+
+							res = g2d_v8_sel(res, emode == 2 ? v8_bright_up(col, evy_v) : v8_bright_down(col, evy_v), mr);
 						}
 					}
+					col = res;
 				}
 				if (mbon)
-					col = g2d_master_bright(col, mb);
-#ifdef G2D_DBG
-				if ((v * 8 + k) == g2d_dbg_x && g2d_dbg_y == g2d_dbg_cur) {
-					fprintf(stderr, "x=%d top=%04x/%u sec=%04x/%u meta=%04x col=%04x need_fx=%d use_win=%d t1=%x t2=%x emode=%d\n",
-						v * 8 + k, tv[k], need_fx ? tl[k] : 99, need_fx ? sv[k] : 0, need_fx ? sl[k] : 99,
-						need_fx ? tm[k] : 0, col, need_fx, use_win, t1, t2, emode);
+					col = mbmode == 1 ? v8_bright_up(col, mbf) : v8_bright_down(col, mbf);
+				{
+					const g2d_v8 o = v8_to_5551(col);
+
+					memcpy(out + v * 8, &o, 16);
 				}
-#endif
-				out[v * 8 + k] = gpu2d_to_5551(col);
 			}
 		}
 	}
+	G2D_ACC(c, cl_final, tf_);
 }
 
 static void compose_line(gpu2d_ctx *c, const gpu2d_engine *e, int y)
@@ -1276,8 +1539,12 @@ static void compose_line(gpu2d_ctx *c, const gpu2d_engine *e, int y)
 	g2d_job *j = &c->job[p];
 	uint16_t *out = c->outbuf[p];
 
+	const uint32_t tw_ = G2D_T();
+
+	G2D_STAGE(G2D_ST_COMPOSE);
 	/* La salida de la línea y - 2 usó este búfer; lo que necesita esta línea. */
 	g2d_wait((1u << (G2D_TAG_OUT + p)) | j->waitmask);
+	G2D_ACC(c, cl_wait, tw_);
 	for (uint32_t i = 0; i < j->npalchg; i++)
 		c->pal[(j->palchg[i] >> 16) & 511u] = (uint16_t)(j->palchg[i] & 0x7FFFu);
 
@@ -1293,7 +1560,12 @@ static void compose_line(gpu2d_ctx *c, const gpu2d_engine *e, int y)
 	} else {
 		compose_graphics(c, j, p, out);
 	}
-	g2d_put(out, e->out_ea + (uint64_t)y * GPU2D_W * 2, GPU2D_W * 2, G2D_TAG_OUT + p);
+	{
+		const uint32_t tp_ = G2D_T();
+
+		g2d_put(out, e->out_ea + (uint64_t)y * GPU2D_W * 2, GPU2D_W * 2, G2D_TAG_OUT + p);
+		G2D_ACC(c, cl_put, tp_);
+	}
 }
 
 int gpu2d_compose_engine(gpu2d_ctx *c, const gpu2d_engine *e)
@@ -1303,7 +1575,11 @@ int gpu2d_compose_engine(gpu2d_ctx *c, const gpu2d_engine *e)
 	if (((e->vram_ea + G2D_VRAM_SIZE + G2D_VRAM_ZERO) >> 32) != (e->vram_ea >> 32))
 		return -1;
 
+	const uint32_t ti_ = G2D_T();
+
+	G2D_STAGE(G2D_ST_INIT);
 	memset(&c->stats, 0, sizeof c->stats);
+	memset(&c->prof, 0, sizeof c->prof);
 	/* paleta y OAM crudas (1 KB cada una); la paleta pasa por rawline */
 	g2d_get(c->oamraw, e->oam_ea, 1024, G2D_TAG_START);
 	g2d_get(&c->rawline[0][0], e->pal_ea, 1024, G2D_TAG_START);
@@ -1343,12 +1619,32 @@ int gpu2d_compose_engine(gpu2d_ctx *c, const gpu2d_engine *e)
 			win_step_v(c->regs, c->winv, 1, line);
 		}
 
-	plan_line(c, e, 0);
-	for (int y = 0; y < GPU2D_H; y++) {
-		if (y + 1 < GPU2D_H)
-			plan_line(c, e, y + 1);
-		compose_line(c, e, y);
+	G2D_ACC(c, init, ti_);
+	{
+		const uint32_t t0_ = G2D_T();
+
+		plan_line(c, e, 0);
+		G2D_ACC(c, plan, t0_);
 	}
-	g2d_wait((1u << G2D_TAG_OUT) | (1u << (G2D_TAG_OUT + 1)));
+	for (int y = 0; y < GPU2D_H; y++) {
+		if (y + 1 < GPU2D_H) {
+			const uint32_t t0_ = G2D_T();
+
+			plan_line(c, e, y + 1);
+			G2D_ACC(c, plan, t0_);
+		}
+		{
+			const uint32_t t0_ = G2D_T();
+
+			compose_line(c, e, y);
+			G2D_ACC(c, compose, t0_);
+		}
+	}
+	{
+		const uint32_t t0_ = G2D_T();
+
+		g2d_wait((1u << G2D_TAG_OUT) | (1u << (G2D_TAG_OUT + 1)));
+		G2D_ACC(c, end_wait, t0_);
+	}
 	return 0;
 }

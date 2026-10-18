@@ -13,6 +13,8 @@
 
 #include "spu/gpu2d/job.h"
 
+_Static_assert(sizeof(job_result) <= 112, "el resultado de un trabajo de spukit es de 112 bytes");
+
 static gpu2d_ctx ctx;
 static gpu2d_engine eng __attribute__((aligned(16)));
 
@@ -33,6 +35,7 @@ static int handler(void *user, const spukit_job *job, spukit_result *res)
 		out.rc = gpu2d_compose_engine(&ctx, &eng);
 		out.ticks = t0 - spukit_ticks();
 		out.stats = ctx.stats;
+		out.prof = ctx.prof;
 	}
 	memcpy(res->data, &out, sizeof out);
 	return 0;

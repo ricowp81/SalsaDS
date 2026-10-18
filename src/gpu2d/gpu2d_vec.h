@@ -68,6 +68,70 @@ G2D_INLINE g2d_v8 g2d_v8_shr(g2d_v8 a, int n)
 {
 	return spu_rlmask(a, (vec_short8)spu_splats((short)-n));
 }
+G2D_INLINE g2d_v8 g2d_v8_sub(g2d_v8 a, g2d_v8 b)
+{
+	return spu_sub(a, b);
+}
+G2D_INLINE g2d_v8 g2d_v8_shl(g2d_v8 a, int n)
+{
+	return spu_sl(a, (unsigned int)n);
+}
+/* Desplazamiento a la derecha con un contador por carril (0..15). */
+G2D_INLINE g2d_v8 g2d_v8_shrv(g2d_v8 a, g2d_v8 n)
+{
+	return spu_rlmask(a, (vec_short8)spu_sub((vec_ushort8)spu_splats((unsigned short)0), n));
+}
+/* Las 16 bajas de a * b por carril (sin signo). */
+G2D_INLINE g2d_v8 g2d_v8_mul(g2d_v8 a, g2d_v8 b)
+{
+	const vec_uint4 e = spu_mule(a, b), o = spu_mulo(a, b);
+
+	return (g2d_v8)spu_shuffle(e, o, ((vec_uchar16){ 2, 3, 18, 19, 6, 7, 22, 23, 10, 11, 26, 27, 14, 15, 30, 31 }));
+}
+/* Un byte por carril: data[offs[k]] (offs dentro de la tabla) y, con `le16`, un par de bytes little-endian. */
+G2D_INLINE g2d_v8 g2d_v8_gather8(const uint8_t *data, g2d_v8 offs)
+{
+	g2d_v8 r = spu_splats((unsigned short)0);
+
+	r = spu_insert((unsigned short)data[spu_extract(offs, 0)], r, 0);
+	r = spu_insert((unsigned short)data[spu_extract(offs, 1)], r, 1);
+	r = spu_insert((unsigned short)data[spu_extract(offs, 2)], r, 2);
+	r = spu_insert((unsigned short)data[spu_extract(offs, 3)], r, 3);
+	r = spu_insert((unsigned short)data[spu_extract(offs, 4)], r, 4);
+	r = spu_insert((unsigned short)data[spu_extract(offs, 5)], r, 5);
+	r = spu_insert((unsigned short)data[spu_extract(offs, 6)], r, 6);
+	r = spu_insert((unsigned short)data[spu_extract(offs, 7)], r, 7);
+	return r;
+}
+G2D_INLINE g2d_v8 g2d_v8_gather16le(const uint8_t *data, g2d_v8 offs)
+{
+	g2d_v8 r = spu_splats((unsigned short)0);
+
+	r = spu_insert(g2d_ld16le(data + spu_extract(offs, 0)), r, 0);
+	r = spu_insert(g2d_ld16le(data + spu_extract(offs, 1)), r, 1);
+	r = spu_insert(g2d_ld16le(data + spu_extract(offs, 2)), r, 2);
+	r = spu_insert(g2d_ld16le(data + spu_extract(offs, 3)), r, 3);
+	r = spu_insert(g2d_ld16le(data + spu_extract(offs, 4)), r, 4);
+	r = spu_insert(g2d_ld16le(data + spu_extract(offs, 5)), r, 5);
+	r = spu_insert(g2d_ld16le(data + spu_extract(offs, 6)), r, 6);
+	r = spu_insert(g2d_ld16le(data + spu_extract(offs, 7)), r, 7);
+	return r;
+}
+/* pal[idx] por carril (idx dentro de la tabla). */
+G2D_INLINE g2d_v8 g2d_v8_lookup(const uint16_t *pal, g2d_v8 idx)
+{
+	g2d_v8 r = spu_splats((unsigned short)0);
+
+	r = spu_insert(pal[spu_extract(idx, 0)], r, 0);
+	r = spu_insert(pal[spu_extract(idx, 1)], r, 1);
+	r = spu_insert(pal[spu_extract(idx, 2)], r, 2);
+	r = spu_insert(pal[spu_extract(idx, 3)], r, 3);
+	r = spu_insert(pal[spu_extract(idx, 4)], r, 4);
+	r = spu_insert(pal[spu_extract(idx, 5)], r, 5);
+	r = spu_insert(pal[spu_extract(idx, 6)], r, 6);
+	r = spu_insert(pal[spu_extract(idx, 7)], r, 7);
+	return r;
+}
 G2D_INLINE int g2d_v8_any(g2d_v8 m)
 {
 	return spu_extract(spu_gather(m), 0) != 0;
@@ -160,6 +224,16 @@ G2D_INLINE void g2d_v8_place(g2d_v8 t, uint32_t off, g2d_v8 *lo, g2d_v8 *hi)
 	*hi = spu_shuffle(t, ff, sel);
 }
 
+#define G2D_STAGE(x) ((void)0)
+
+#ifdef G2D_PROF
+#define G2D_T() spu_read_decrementer()
+#define G2D_ACC(c, field, t0) ((c)->prof.field += (uint32_t)((t0) - spu_read_decrementer()))
+#else
+#define G2D_T() 0u
+#define G2D_ACC(c, field, t0) ((void)(t0))
+#endif
+
 /* DMA. `tag` 0..30. */
 typedef struct g2d_el {
 	uint32_t size;  /* bit 31: detener y avisar (no se usa) */
@@ -245,6 +319,43 @@ G2D_INLINE g2d_v8 g2d_v8_shr(g2d_v8 a, int n)
 		r.l[i] = (uint16_t)(a.l[i] >> n);
 	return r;
 }
+G2D_V8_BIN(g2d_v8_sub, a.l[i] - b.l[i])
+G2D_V8_BIN(g2d_v8_mul, (uint32_t)a.l[i] * b.l[i])
+G2D_INLINE g2d_v8 g2d_v8_shl(g2d_v8 a, int n)
+{
+	g2d_v8 r;
+	for (int i = 0; i < 8; i++)
+		r.l[i] = (uint16_t)(a.l[i] << n);
+	return r;
+}
+G2D_INLINE g2d_v8 g2d_v8_shrv(g2d_v8 a, g2d_v8 n)
+{
+	g2d_v8 r;
+	for (int i = 0; i < 8; i++)
+		r.l[i] = (uint16_t)(a.l[i] >> (n.l[i] & 15));
+	return r;
+}
+G2D_INLINE g2d_v8 g2d_v8_lookup(const uint16_t *pal, g2d_v8 idx)
+{
+	g2d_v8 r;
+	for (int i = 0; i < 8; i++)
+		r.l[i] = pal[idx.l[i]];
+	return r;
+}
+G2D_INLINE g2d_v8 g2d_v8_gather8(const uint8_t *data, g2d_v8 offs)
+{
+	g2d_v8 r;
+	for (int i = 0; i < 8; i++)
+		r.l[i] = data[offs.l[i]];
+	return r;
+}
+G2D_INLINE g2d_v8 g2d_v8_gather16le(const uint8_t *data, g2d_v8 offs)
+{
+	g2d_v8 r;
+	for (int i = 0; i < 8; i++)
+		r.l[i] = rd16le(data + offs.l[i]);
+	return r;
+}
 G2D_INLINE int g2d_v8_any(g2d_v8 m)
 {
 	for (int i = 0; i < 8; i++)
@@ -310,14 +421,29 @@ typedef struct g2d_el {
 	uint32_t size, eal;
 } g2d_el;
 
+/* Contadores de DMA del host (diagnóstico: cuántas órdenes y cuántos bytes pide cada etapa de un cuadro; el costo en el
+ * SPE depende de las órdenes, del tamaño de cada trozo y de las esperas, no solo de los bytes). `g2d_stage` lo fija
+ * el compositor al entrar a cada etapa. */
+enum { G2D_ST_INIT, G2D_ST_PLAN, G2D_ST_TEXT, G2D_ST_AFFINE, G2D_ST_OBJ, G2D_ST_COMPOSE, G2D_ST_EXTPAL, G2D_ST_COUNT };
+enum { G2D_C_GET, G2D_C_GET_BYTES, G2D_C_LIST, G2D_C_LIST_EL, G2D_C_LIST_BYTES, G2D_C_PUT, G2D_C_PUT_BYTES, G2D_C_WAIT, G2D_C_COUNT };
+extern uint64_t g2d_dma_cnt[G2D_ST_COUNT][G2D_C_COUNT];
+extern int g2d_stage;
+#define G2D_STAGE(x) (g2d_stage = (x))
+#define G2D_T() 0u
+#define G2D_ACC(c, field, t0) ((void)(t0))
+
 G2D_INLINE void g2d_get(void *ls, uint64_t ea, uint32_t size, uint32_t tag)
 {
 	(void)tag;
+	g2d_dma_cnt[g2d_stage][G2D_C_GET]++;
+	g2d_dma_cnt[g2d_stage][G2D_C_GET_BYTES] += size;
 	memcpy(ls, (const void *)(uintptr_t)ea, size);
 }
 G2D_INLINE void g2d_put(const void *ls, uint64_t ea, uint32_t size, uint32_t tag)
 {
 	(void)tag;
+	g2d_dma_cnt[g2d_stage][G2D_C_PUT]++;
+	g2d_dma_cnt[g2d_stage][G2D_C_PUT_BYTES] += size;
 	memcpy((void *)(uintptr_t)ea, ls, size);
 }
 G2D_INLINE void g2d_gather(void *ls, uint64_t base, const uint32_t *offs, uint32_t n, uint32_t size, uint32_t tag,
@@ -325,12 +451,16 @@ G2D_INLINE void g2d_gather(void *ls, uint64_t base, const uint32_t *offs, uint32
 {
 	(void)tag;
 	(void)list;
+	g2d_dma_cnt[g2d_stage][G2D_C_LIST]++;
+	g2d_dma_cnt[g2d_stage][G2D_C_LIST_EL] += n;
+	g2d_dma_cnt[g2d_stage][G2D_C_LIST_BYTES] += (uint64_t)n * size;
 	for (uint32_t i = 0; i < n; i++)
 		memcpy((uint8_t *)ls + (size_t)i * size, (const void *)(uintptr_t)(base + offs[i]), size);
 }
 G2D_INLINE void g2d_wait(uint32_t mask)
 {
-	(void)mask;
+	if (mask)
+		g2d_dma_cnt[g2d_stage][G2D_C_WAIT]++;
 }
 
 #endif

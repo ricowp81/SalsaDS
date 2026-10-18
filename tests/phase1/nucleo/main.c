@@ -46,9 +46,12 @@
 #include "core/nds.h"
 #include "frontend/dspad.h"
 #include "spu/gpu2d/job.h"
+#include "spu/snd/job.h"
 #include "spukit/spukit.h"
 #include "spu_gpu2d_bin.h"
+#include "spu_snd_bin.h"
 #include "frontend/layout.h"
+#include "platform/ps3/audio_out.h"
 #include "platform/ps3/autotest.h"
 #include "platform/ps3/log.h"
 #include "rsxkit/rsxkit.h"
@@ -57,6 +60,7 @@
 
 #include "carga_bin.h"
 #include "../../roms/src/carga/shared.h"
+#include "../../roms/src/snd/adpcm.h"
 #include "util/endian.h"
 
 #ifndef NUCLEO_VERSION
@@ -66,6 +70,7 @@
 #define NUCLEO_APPID "SLDS00008"
 #define ROM_PATH SALSADS_DATA_DIR "/rom.nds"
 #define CFG_PATH SALSADS_DATA_DIR "/controles.cfg"
+#define AUDIO_CFG_PATH SALSADS_DATA_DIR "/audio.cfg"
 
 SYS_PROCESS_PARAM(1001, 0x100000);
 
@@ -106,6 +111,8 @@ static struct {
 	uint32_t wait_us;
 } sub, prev;
 static uint32_t sub_count;
+static uint64_t prof_sum[2][12]; /* tiempos por etapa de las dos pantallas (ticks del SPE), para la línea DATO spe-etapas */
+static uint32_t prof_n;
 static int autotest_verify;
 static int last_dset = -1; /* juego de texturas del último cuadro dibujado */
 
@@ -562,6 +569,227 @@ static void vid_verify(const typeof(sub) *q)
 	}
 }
 
+/* ---- sonido: el mezclador en un SPE y la salida de audio ------------------------------------------------------------- */
+
+static int snd_on;
+static spukit_worker *wk_snd;
+static uint32_t snd_seq[2];
+static struct {
+	uint64_t jobs, ticks, mix_ticks, wait_us, out_n;
+	uint32_t ticks_max, mix_max, errors;
+} snd_acc;
+
+static void snd_submit(void *ctx, int set, struct nds_snd_job *job, snd_state *st)
+{
+	job_snd js;
+
+	(void)ctx;
+	memset(&js, 0, sizeof js);
+	js.state_ea = (uint64_t)(uintptr_t)st;
+	js.log_ea = (uint64_t)(uintptr_t)job->log;
+	js.out_ea = (uint64_t)(uintptr_t)job->out;
+	js.nat_ea = (uint64_t)(uintptr_t)job->nat;
+	js.nlog = job->nlog;
+	js.nticks = job->nticks;
+	js.out_max = SND_OUT_MAX;
+	js.mode = job->mode;
+	js.ratio_adj = job->ratio_adj;
+	for (int i = 0; i < 4; i++) {
+		js.rgn_ea[i] = job->rgn[i].rd;
+		js.rgn_mask[i] = job->rgn[i].mask;
+	}
+	snd_seq[set] = spukit_post(wk_snd, JOB_SND, &js, sizeof js);
+}
+
+static void snd_wait(void *ctx, int set)
+{
+	const uint64_t t0 = now_us();
+	const spukit_result *r = spukit_wait(wk_snd, snd_seq[set]);
+	job_snd_result jr;
+
+	(void)ctx;
+	snd_acc.wait_us += now_us() - t0;
+	memcpy(&jr, r->data, sizeof jr);
+	if (r->error != 0) {
+		snd_acc.errors++;
+		nds->snd.job[set].out_n = 0;
+		return;
+	}
+	nds->snd.job[set].out_n = jr.out_n;
+	snd_acc.jobs++;
+	snd_acc.ticks += jr.ticks;
+	snd_acc.mix_ticks += jr.mix_ticks;
+	snd_acc.out_n += jr.out_n;
+	if (jr.ticks > snd_acc.ticks_max)
+		snd_acc.ticks_max = jr.ticks;
+	if (jr.mix_ticks > snd_acc.mix_max)
+		snd_acc.mix_max = jr.mix_ticks;
+}
+
+static void snd_sink(void *ctx, const float *out, uint32_t n, const int16_t *nat, uint32_t nticks)
+{
+	(void)ctx;
+	(void)nat;
+	(void)nticks;
+	audio_out_push(out, n);
+}
+
+/* Autoprueba del SPE de audio: el mismo trabajo en el SPE y en el PPE (mismo código C) con una memoria de prueba propia:
+ * las muestras de 16 bits, el estado y lo capturado tienen que ser idénticos; la salida flotante, igual salvo el redondeo
+ * del SPU. Dos trabajos seguidos (el estado se arrastra). Devuelve 0 si coincide. */
+#define ST_MEM 0x10000u
+static uint8_t st_mem_spe[ST_MEM] __attribute__((aligned(128))), st_mem_ppe[ST_MEM] __attribute__((aligned(128)));
+static snd_ent st_log[SND_LOG_MAX] __attribute__((aligned(128)));
+static int16_t st_nat_spe[2 * SND_TICKS_MAX] __attribute__((aligned(128))), st_nat_ppe[2 * SND_TICKS_MAX];
+static float st_out_spe[2 * SND_OUT_MAX] __attribute__((aligned(128))), st_out_ppe[2 * SND_OUT_MAX];
+static snd_state st_spe __attribute__((aligned(128))), st_ppe __attribute__((aligned(128)));
+
+static void st_bus_fetch(void *ctx, uint32_t addr, uint8_t *dst)
+{
+	(void)ctx;
+	if ((addr >> 23) == 4)
+		memcpy(dst, st_mem_ppe + (addr & (ST_MEM - 1)), SND_LINE);
+	else
+		memset(dst, 0, SND_LINE);
+}
+
+static void st_bus_store(void *ctx, uint32_t addr, const uint8_t *src, uint32_t n)
+{
+	(void)ctx;
+	if ((addr >> 23) == 4)
+		memcpy(st_mem_ppe + (addr & (ST_MEM - 1)), src, n);
+}
+
+static uint32_t st_n;
+
+static void st_w(uint32_t off, uint32_t v)
+{
+	st_log[st_n++] = (snd_ent){ .tick = 0, .off = (uint16_t)off, .val = (uint16_t)v, .mask = 0xFFFF };
+}
+
+static void st_w32(uint32_t off, uint32_t v)
+{
+	st_w(off, v & 0xFFFFu);
+	st_w(off + 2, v >> 16);
+}
+
+static int snd_selftest(void)
+{
+	job_snd js;
+	uint32_t t0 = 0, bad_nat = 0, bad_state = 0, bad_mem = 0, bad_out = 0;
+	const uint32_t D16 = 0x02000100u, D8 = 0x02000500u, DAD = 0x02000700u, CAP = 0x02002000u;
+
+	memset(st_mem_spe, 0, sizeof st_mem_spe);
+	for (uint32_t i = 0; i < 256; i++) {
+		wr16le(st_mem_spe + 0x100 + 2 * i, (uint16_t)(((int)i - 128) * 200));
+		st_mem_spe[0x500 + i] = (uint8_t)(i * 3);
+	}
+	memcpy(st_mem_spe + 0x700, adpcm_data, sizeof adpcm_data);
+	memcpy(st_mem_ppe, st_mem_spe, sizeof st_mem_ppe);
+	snd_reset(&st_spe);
+	snd_reset(&st_ppe);
+	for (int pass = 0; pass < 2; pass++) {
+		const uint32_t nt = 300u + 77u * (uint32_t)pass;
+		uint32_t n_ppe = 0, applied;
+		snd_bus bus = { NULL, st_bus_fetch, st_bus_store };
+
+		st_n = 0;
+		if (pass == 0) {
+			st_w(0x100, 0x807F);
+			st_w32(0x00 + 4, D16 & 0x07FFFFFFu);
+			st_w(0x08, (uint16_t)(0x10000u - 700u));
+			st_w32(0x0C, 128);
+			st_w32(0x00, 0x20000000u | (1u << 27) | 127u | (60u << 16) | 0x80000000u);
+			st_w32(0x10 + 4, D8);
+			st_w(0x10 + 8, 0xFE00u);
+			st_w32(0x10 + 12, 64);
+			st_w32(0x10, (1u << 27) | 100u | (1u << 8) | (20u << 16) | 0x80000000u);
+			st_w32(0x20 + 4, DAD);
+			st_w(0x20 + 8, 0xFE00u);
+			st_w(0x20 + 10, 1);
+			st_w32(0x20 + 12, 3);
+			st_w32(0x20, (1u << 27) | (2u << 29) | 127u | (80u << 16) | 0x80000000u);
+			st_w32(0x80, (3u << 29) | 127u | (64u << 16) | (3u << 24) | 0x80000000u);
+			st_w(0x88, 0xFF00u);
+			st_w32(0xE0, (3u << 29) | 127u | (64u << 16) | 0x80000000u);
+			st_w(0xE8, 0xFC00u);
+			st_w32(0x110, CAP & 0x07FFFFFFu);
+			st_w(0x114, 64);
+			st_w(0x108, 0x84);
+		}
+		memset(&js, 0, sizeof js);
+		js.state_ea = (uint64_t)(uintptr_t)&st_spe;
+		js.log_ea = (uint64_t)(uintptr_t)st_log;
+		js.out_ea = (uint64_t)(uintptr_t)st_out_spe;
+		js.nat_ea = (uint64_t)(uintptr_t)st_nat_spe;
+		js.nlog = st_n;
+		js.nticks = nt;
+		js.out_max = SND_OUT_MAX;
+		js.mode = (uint32_t)pass;
+		js.ratio_adj = 0.003f * (float)pass;
+		js.rgn_ea[0] = (uint64_t)(uintptr_t)st_mem_spe;
+		js.rgn_mask[0] = ST_MEM - 1;
+		{
+			const uint32_t seq = spukit_post(wk_snd, JOB_SND, &js, sizeof js);
+			const spukit_result *r = spukit_wait(wk_snd, seq);
+			job_snd_result jr;
+
+			if (r->error != 0) {
+				salsads_log("FALLO autoprueba del audio: el SPE devolvió error %d", r->error);
+				return -1;
+			}
+			memcpy(&jr, r->data, sizeof jr);
+			applied = jr.applied;
+			t0 = jr.out_n;
+		}
+		st_ppe.mode = js.mode;
+		st_ppe.ratio_adj = js.ratio_adj;
+		(void)snd_run(&st_ppe, st_log, st_n, nt, &bus, st_nat_ppe, st_out_ppe, SND_OUT_MAX, &n_ppe);
+		if (applied != st_n)
+			bad_state++;
+		for (uint32_t i = 0; i < 2 * nt; i++)
+			bad_nat += st_nat_spe[i] != st_nat_ppe[i];
+		if (t0 != n_ppe)
+			bad_out += 1000;
+		else
+			for (uint32_t i = 0; i < 2 * n_ppe; i++) {
+				const float d = st_out_spe[i] - st_out_ppe[i];
+
+				bad_out += d > 0.0005f || d < -0.0005f;
+			}
+		if (st_spe.busy != st_ppe.busy || st_spe.tick != st_ppe.tick || st_spe.peak != st_ppe.peak)
+			bad_state++;
+		for (int c = 0; c < SND_NCH; c++)
+			if (st_spe.ch[c].pos != st_ppe.ch[c].pos || st_spe.ch[c].out != st_ppe.ch[c].out ||
+			    st_spe.ch[c].tcnt != st_ppe.ch[c].tcnt || st_spe.ch[c].lfsr != st_ppe.ch[c].lfsr ||
+			    st_spe.ch[c].adv != st_ppe.ch[c].adv)
+				bad_state++;
+		bad_mem += memcmp(st_mem_spe, st_mem_ppe, sizeof st_mem_ppe) != 0;
+	}
+	salsads_log("autoprueba del audio: SPE contra PPE, 2 trabajos: %u muestras distintas, %u del estado, %u de la memoria "
+		    "capturada, %u de la salida flotante", (unsigned)bad_nat, (unsigned)bad_state, (unsigned)bad_mem,
+		    (unsigned)bad_out);
+	return bad_nat || bad_state || bad_mem || bad_out ? -1 : 0;
+}
+
+static void snd_load_cfg(void)
+{
+	FILE *f = fopen(AUDIO_CFG_PATH, "r");
+	char text[256];
+	size_t len;
+
+	if (!f)
+		return;
+	len = fread(text, 1, sizeof text - 1, f);
+	fclose(f);
+	text[len] = '\0';
+	/* una clave por línea: «original = si» cuantiza a 10 bits con el sesgo, como la salida de la DS */
+	if (strstr(text, "original = si") || strstr(text, "original=si")) {
+		nds_snd_set_mode(nds, SND_MODE_ORIGINAL);
+		salsads_log("audio: salida «como el original» (10 bits con SOUNDBIAS) por %s", AUDIO_CFG_PATH);
+	}
+}
+
 /* ---- un cuadro ------------------------------------------------------------------------------------------------ */
 
 /* Reloj de perfil del planificador: el timebase (79,8 MHz en la PS3). */
@@ -677,6 +905,45 @@ static void log_stats(void)
 			    "p95 %u.%02u, máx %u.%02u; cuadros dibujados %u",
 			    MS(pct(M_SPEA, 50)), MS(pct(M_SPEA, 95)), MS(pct(M_SPEA, 100)), MS(pct(M_SPEB, 50)), MS(pct(M_SPEB, 95)),
 			    MS(pct(M_SPEB, 100)), MS(pct(M_WAIT, 50)), MS(pct(M_WAIT, 95)), MS(pct(M_WAIT, 100)), nbuf[M_SPEA]);
+	if (spu_on && prof_n) {
+		static const char *const nm[12] = { "init", "plan", "(texto)", "(afín)", "(OBJ)", "(esperas)", "compone", "(espera)", "(capas)",
+						    "(final)", "(put)", "espera final" };
+		char line[700];
+		int k = 0;
+
+		for (int e = 0; e < 2; e++) {
+			k += snprintf(line + k, sizeof line - (size_t)k, "%s%c:", e ? "; " : "", 'A' + e);
+			for (int q = 0; q < 12; q++) {
+				const uint64_t us = prof_sum[e][q] * 1000000ull / spukit_tick_hz() / prof_n;
+
+				k += snprintf(line + k, sizeof line - (size_t)k, " %s %u.%02u", nm[q], (unsigned)(us / 1000), (unsigned)(us % 1000 / 10));
+			}
+		}
+		salsads_log("DATO spe-etapas (ms por pantalla y cuadro, media de %u cuadros; entre paréntesis lo que está dentro de la etapa anterior): %s",
+			    prof_n, line);
+		memset(prof_sum, 0, sizeof prof_sum);
+		prof_n = 0;
+	}
+	{
+		struct audio_out_stats as;
+		static uint64_t prev_silent;
+
+		audio_out_stats(&as, 1);
+		if (snd_on && snd_acc.jobs)
+			salsads_log("DATO audio: mezcla en el SPE por cuadro (decrementador): trabajo %u.%02u ms (máx %u.%02u), de eso snd_run "
+				    "%u.%02u ms (máx %u.%02u); el PPE esperando %u.%02u ms por cuadro; %u muestras de 48 kHz por cuadro; "
+				    "errores %u; salida: %s, anillo %u muestras, %u faltas (%u muestras de silencio en este lapso), %u bloques "
+				    "tarde, pico %.0f dBFS",
+				    MS(snd_acc.ticks * 1000000ull / snd_acc.jobs / spukit_tick_hz()),
+				    MS((uint64_t)snd_acc.ticks_max * 1000000ull / spukit_tick_hz()),
+				    MS(snd_acc.mix_ticks * 1000000ull / snd_acc.jobs / spukit_tick_hz()),
+				    MS((uint64_t)snd_acc.mix_max * 1000000ull / spukit_tick_hz()),
+				    MS(snd_acc.wait_us / snd_acc.jobs), (unsigned)(snd_acc.out_n / snd_acc.jobs),
+				    (unsigned)snd_acc.errors, audio_out_is_open() ? "abierta" : "sin audio", as.level, as.underruns,
+				    (unsigned)(as.silent - prev_silent), as.late, as.peak ? 20.0 * log10(as.peak / 32768.0) : -99.0);
+		prev_silent = as.silent;
+		memset(&snd_acc, 0, sizeof snd_acc);
+	}
 	if (secs_a9 > 0)
 		mips9_cpu = (double)acc_i9p / secs_a9 / 1e6;
 	if (secs_a7 > 0)
@@ -728,6 +995,8 @@ static void render_frame(void)
 		k = poll_input(dt, &tx, &ty);
 	}
 	nds_set_input(nds, k, tx, ty);
+	if (snd_on)
+		nds_snd_set_ratio_adj(nds, audio_out_ratio_adj());
 	i9a = nds->a9.icount;
 	i7a = nds->a7.icount;
 	{
@@ -771,6 +1040,13 @@ static void render_frame(void)
 				vid_collect(&prev);
 				dset = prev.set;
 				swap = (nds->vid.set[prev.vset].powcnt1 & 0x8000u) != 0;
+				for (int e = 0; e < 2; e++) {
+					const uint32_t *pp = (const uint32_t *)(const void *)&prev.res[e].prof;
+
+					for (int q = 0; q < 12; q++)
+						prof_sum[e][q] += pp[q];
+				}
+				prof_n++;
 				put(M_SPEA, (uint32_t)((uint64_t)prev.res[0].ticks * 1000000ull / spukit_tick_hz()));
 				put(M_SPEB, (uint32_t)((uint64_t)prev.res[1].ticks * 1000000ull / spukit_tick_hz()));
 				put(M_WAIT, prev.wait_us);
@@ -817,8 +1093,17 @@ static void render_frame(void)
 }
 
 /* Prueba automática: la ROM de carga tiene que estar viva en las dos CPUs, sin errores. */
+static uint32_t autotest_frames = AUTOTEST_FRAMES;
+
+/* Con una ROM externa (rom.nds) el autotest no comprueba la ROM de carga: solo corre los cuadros que diga frames.txt (una
+ * cifra) para tomar mediciones en RPCS3; el RESULTADO sigue la autoprueba del audio y del SPE. */
 static void autotest_check(void)
 {
+	if (rom_buf != (uint8_t *)carga_bin) {
+		salsads_log("autoprueba: ROM externa (%s), %u cuadros de la DS: sin las comprobaciones de la ROM de carga", rom_name,
+			    (unsigned)nds->frames);
+		return;
+	}
 	const uint32_t magic = nds_peek32(nds, NDS_CPU9, 0x023A0000u);
 	const uint32_t i9 = nds_peek32(nds, NDS_CPU9, 0x023A0004u), b9 = nds_peek32(nds, NDS_CPU9, 0x023A0008u);
 	const uint32_t i7 = nds_peek32(nds, NDS_CPU9, 0x023A000Cu), b7 = nds_peek32(nds, NDS_CPU9, 0x023A0010u);
@@ -859,6 +1144,16 @@ int main(void)
 	snprintf(banner, sizeof banner, "nucleo %s (%s, %s)", NUCLEO_VERSION, NUCLEO_TITLE, NUCLEO_APPID);
 	salsads_log_init_banner("nucleo", banner);
 	autotest = salsads_autotest();
+	if (autotest) {
+		FILE *ff = fopen(SALSADS_DATA_DIR "/frames.txt", "r");
+		unsigned nfr = 0;
+
+		if (ff) {
+			if (fscanf(ff, "%u", &nfr) == 1 && nfr > 0 && nfr < 100000)
+				autotest_frames = nfr;
+			fclose(ff);
+		}
+	}
 	sysUtilRegisterCallback(0, sysutil_cb, NULL);
 	load_config();
 	sds_input_init(&input);
@@ -906,7 +1201,7 @@ int main(void)
 	}
 	memset(tex_mem, 0, 1u << 20);
 	/* Los dos SPE del 2D (un trabajador por pantalla); si no arrancan, el PPE dibuja con el compositor del host */
-	if (spukit_init(2) == 0) {
+	if (spukit_init(3) == 0) {
 		for (int e = 0; e < 2 && (e == 0 || spu_on); e++) {
 			wk[e] = spukit_worker_start(spu_gpu2d_bin, e ? "gpu2d-b" : "gpu2d-a", 0);
 			spu_on = wk[e] != NULL;
@@ -922,6 +1217,34 @@ int main(void)
 		autotest_verify = autotest;
 		salsads_log("composición 2D: un SPE por pantalla (decrementador %u Hz)", (unsigned)spukit_tick_hz());
 	}
+	/* El SPE del sonido: mezcla los 16 canales; si no arranca, el núcleo mezcla en el PPE (sin ritmo de más, pero suena) */
+	if (spu_on) {
+		wk_snd = spukit_worker_start(spu_snd_bin, "snd", 0);
+		if (!wk_snd)
+			salsads_log("el SPE del sonido no arrancó (spukit %d): el PPE mezcla", spukit_last_error());
+	}
+	snd_load_cfg();
+	{
+		const int rc = audio_out_init();
+
+		salsads_log("audio: salida de la PS3 %s", rc == 0 ? "abierta (48 kHz, 2 canales)" : "NO se abrió: sin sonido");
+		if (rc != 0)
+			salsads_log("audio: audio_out_init devolvió %d", rc);
+	}
+	nds->snd.ops.sink = snd_sink;
+	if (wk_snd) {
+		if (snd_selftest() == 0) {
+			nds->snd.ops.submit = snd_submit;
+			nds->snd.ops.wait = snd_wait;
+			snd_on = 1;
+			salsads_log("sonido: mezclador en un SPE (autoprueba contra el PPE: igual)");
+		} else {
+			failures++;
+			salsads_log("sonido: la autoprueba del SPE falló: mezcla el PPE");
+		}
+	} else {
+		snd_on = 0;
+	}
 	si = rsxkit_screen_info();
 	cur_w = (int)si->width;
 	cur_h = (int)si->height;
@@ -929,12 +1252,22 @@ int main(void)
 
 	while (!quit) {
 		render_frame();
-		if (autotest && frame_no >= AUTOTEST_FRAMES) {
+		if (autotest && frame_no >= autotest_frames) {
 			autotest_check();
 			break;
 		}
 	}
 	save_flush(1);
+	if (snd_on) {
+		nds->snd.ops.submit = NULL;
+		nds->snd.ops.wait = NULL;
+		nds->snd.ops.sink = NULL;
+		if (nds->snd.prev >= 0)
+			snd_wait(NULL, nds->snd.prev); /* un trabajo en vuelo apunta a memoria que sigue viva, pero se espera */
+	}
+	if (wk_snd)
+		spukit_worker_stop(wk_snd);
+	audio_out_shutdown();
 	if (spu_on) {
 		nds->vid.ops.submit = NULL;
 		vid_collect(&sub);

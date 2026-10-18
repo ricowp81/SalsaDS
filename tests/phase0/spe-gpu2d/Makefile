@@ -6,6 +6,9 @@ COMMON  := src/platform/ps3/log.c
 LIBS    := -lnet -lsysutil -lsysmodule -lrt -llv2
 SPUKIT  := 1
 
+# Tiempos por etapa (DATO gpu2d ... etapas)
+SPU_EXTRA_CFLAGS := -DG2D_PROF
+
 SPU_PROGS    := gpu2d
 gpu2d_SRCS   := ../../../src/spu/gpu2d/gpu2d.c ../../../src/gpu2d/gpu2d_compose.c
 gpu2d_STACK_MIN := 4096
