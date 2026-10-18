@@ -13,6 +13,7 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 - **Hecho**: al leer ROMCTRL con el bloque esperando palabra o fin, el reloj de esa CPU avanza hasta el siguiente evento (tope `ev_min`) en vez de
   ejecutar el bucle; mismo tiempo para el juego, ARM9 −9 % de instrucciones en NSMB (1 700 cuadros), −21 % de tiempo host en la carga del título.
   `test-host` verde (la ROM `periph` y los tamaños de tramo sin cambios).
+- **Audio con la emulación lenta (fase27)**: la razón de remuestreo va de -40 % a +3 % (antes ±2 %) con control proporcional-integral y pendiente máxima de 1 % por cuadro (`src/audio/snd_rate.h`): a 23 ms por cuadro el audio se estira (ajuste de equilibrio -0,27) y no hay faltas en el anillo simulado (antes se rellenaba con silencio); por debajo de ~36 cuadros/s sigue habiendo faltas. Limitador suave tras el FIR (rodilla en 0,92, tiende a 1,0 sin alcanzarlo) contra el recorte de 1 dBFS. `SND_OUT_MAX` pasa a 1600. `test-host` verde. Paquete con el JIT (SLDS00009): `build/salsads-nucleo-jit-fase27.pkg`, SHA-256 `e7ce4b195b83290e760fbbce2b17d2cdd9a00c86ba9faf5901e483c9dce550b5`. Sin probar en la PS3: faltas y pico en `DATO audio`.
 - **Paquete «SalsaDS núcleo» con el JIT (SLDS00009)** del commit `80f3332`: `build/salsads-nucleo-jit-fase46.pkg`, SHA-256 `1582a43f383eee6a1dded47dafe54438f0cca5beff2e5d7a75eff9aa13c06eed`. Sin probar en la PS3: medir la carga del título de NSMB.
 - No se tocó la latencia emulada del cartucho: acortarla sería adelantar la carga respecto a la DS real (opción posterior, con interruptor).
 
