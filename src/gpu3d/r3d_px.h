@@ -474,22 +474,23 @@ R3D_INLINE int r3d_ymajor(int32_t dx, int32_t dy)
 	return adx < dy || (adx == dy && dx > 0);
 }
 
-/* Bordes de la línea y con una arista: la izquierda da el primer píxel (y el final de su tramo de arista), la derecha
+/* `oym`: la otra arista de la línea (la derecha para la izquierda y al revés) es y-mayor. Bordes de la línea y con una arista: la izquierda da el primer píxel (y el final de su tramo de arista), la derecha
  * el final exclusivo (y el principio de su tramo). Modelo ajustado a melonDS con la escena 13 de la ROM gx3d
  * (tools/r3d-fit.py; docs/fase3.md, 3.2):
  *   y-mayor (|dx| < dy, o |dx| = dy hacia la derecha):  izquierda piso(X(y)) (con 1/2^18 menos si la pendiente es negativa); derecha piso(X(y))
+ *             (con 1/2^18 menos también en la primera línea de la arista si la pendiente es negativa, 3.6)
  *   x-mayor:  la x de la línea siguiente redondeada: izquierda redondeo(X(y+1) - 1/2^18); derecha redondeo(X(y+1)) si
  *             va a la derecha, redondeo(X(y+1) - 1/2^18) si va a la izquierda; en la última línea de la arista, x1
  *   tramo de arista «gordo»: una izquierda x-mayor que va a la izquierda cubre hasta redondeo(X(y)); una derecha x-mayor
  *   que va a la derecha empieza en redondeo(X(y)). */
-static inline void r3d_edge_x(const r3d_v *a, const r3d_v *b, int32_t y, int right, int32_t *xb, int32_t *xrun, r3d_end *e)
+static inline void r3d_edge_x(const r3d_v *a, const r3d_v *b, int32_t y, int right, int oym, int32_t *xb, int32_t *xrun, r3d_end *e)
 {
 	const int32_t dy = b->y - a->y, dx = b->x - a->x, adx = dx < 0 ? -dx : dx;
 	const int32_t xf = r3d_xfix(a, b, y);
 	const int32_t half = 1 << 17;
 
 	if (r3d_ymajor(dx, dy)) { /* y-mayor */
-		*xb = r3d_fx(xf + (!right && dx < 0 ? -1 : 0));
+		*xb = r3d_fx(xf + (dx < 0 && (!right || y == a->y) ? -1 : 0));
 		*xrun = right ? 0x7FFFFFFF : -0x7FFFFFFF; /* sin tramo gordo */
 		r3d_end_at(e, a, b, (uint32_t)(y - a->y), (uint32_t)dy);
 	} else {         /* x-mayor */
@@ -511,8 +512,10 @@ static inline void r3d_edge_x(const r3d_v *a, const r3d_v *b, int32_t y, int rig
 			pos = -pos;
 		if (pos > adx)
 			pos = adx;
-		if (a->w == b->w) /* ortográfica: los atributos siguen la y, en el extremo de afuera del tramo de la línea [melonDS] */
-			r3d_end_at(e, a, b, (uint32_t)(y - a->y + ((right ? dx > 0 : dx < 0) ? 1 : 0)), (uint32_t)dy);
+		/* ortográfica: los atributos siguen la y, en el extremo de afuera del tramo de la línea [melonDS]; la izquierda que va hacia la
+		 * derecha, si la derecha es y-mayor (los cuadriláteros apilados de un tallo), también en la y de la línea siguiente (3.6) */
+		if (a->w == b->w)
+			r3d_end_at(e, a, b, (uint32_t)(y - a->y + (right ? dx > 0 : (dx < 0 || oym))), (uint32_t)dy);
 		else {
 			r3d_end_at(e, a, b, (uint32_t)pos, (uint32_t)adx);
 			/* la w y la z de la arista siguen la y, no la x (docs/fase3.md, 3.5): al seguir la x del píxel entero saltaban de
@@ -553,15 +556,18 @@ static inline int r3d_row_at(const r3d_poly *p, int32_t y, r3d_row *row)
 		return 0;
 	if (!r3d_chain_edge(p, p->ldir, y, &la, &lb) || !r3d_chain_edge(p, -p->ldir, y, &ra, &rb))
 		return 0;
-	r3d_edge_x(la, lb, y, 0, &xl, &xle, &row->l);
-	r3d_edge_x(ra, rb, y, 1, &xr, &xrs, &row->r);
+	r3d_edge_x(la, lb, y, 0, r3d_ymajor(rb->x - ra->x, rb->y - ra->y), &xl, &xle, &row->l);
+	r3d_edge_x(ra, rb, y, 1, r3d_ymajor(lb->x - la->x, lb->y - la->y), &xr, &xrs, &row->r);
 	/* los tramos gordos de las aristas x-mayores que van hacia afuera */
 	if (xle > xr)
 		xr = xle;
 	if (xrs < xl)
 		xl = xrs;
-	if (xr == xl) /* línea vacía por redondeo: un píxel */
+	if (xr == xl) { /* línea vacía por redondeo: un píxel, salvo en la última línea de un polígono de más de una cuya izquierda es x-mayor */
+		if (y == p->ybot - 1 && y > p->ytop && !r3d_ymajor(lb->x - la->x, lb->y - la->y))
+			return 0;
 		xr = xl + 1;
+	}
 	else if (xr < xl)
 		return 0;
 	row->xl = xl;

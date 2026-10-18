@@ -107,12 +107,15 @@ static uint32_t reg32(const rs_t *s, int r)
 
 /* ---- cambios -------------------------------------------------------------------------------------- */
 
-static void reload_ref(rs_t *s, int b)
+/* Escribir BGxX recarga solo la X interna y BGxY solo la Y interna (como melonDS). `which`: 1 = X, 2 = Y, 3 = las dos. */
+static void reload_ref(rs_t *s, int b, int which)
 {
 	const int base = b ? G2D_R_BG3PA : G2D_R_BG2PA;
 
-	s->ref[b][0] = sext28(reg32(s, base + 4));
-	s->ref[b][1] = sext28(reg32(s, base + 6));
+	if (which & 1)
+		s->ref[b][0] = sext28(reg32(s, base + 4));
+	if (which & 2)
+		s->ref[b][1] = sext28(reg32(s, base + 6));
 }
 
 static void apply_change(rs_t *s, const gpu2d_change *c)
@@ -120,9 +123,9 @@ static void apply_change(rs_t *s, const gpu2d_change *c)
 	if (c->reg < G2D_NREGS) {
 		s->regs[c->reg] = (uint16_t)c->value;
 		if (c->reg >= G2D_R_BG2PA + 4 && c->reg < G2D_R_BG2PA + 8)
-			reload_ref(s, 0);
+			reload_ref(s, 0, c->reg < G2D_R_BG2PA + 6 ? 1 : 2);
 		else if (c->reg >= G2D_R_BG3PA + 4 && c->reg < G2D_R_BG3PA + 8)
-			reload_ref(s, 1);
+			reload_ref(s, 1, c->reg < G2D_R_BG3PA + 6 ? 1 : 2);
 	} else if (c->reg == G2D_CHG_PAL) {
 		s->pal[(c->value >> 16) & 511] = (uint16_t)(c->value & 0x7FFFu);
 	} else if (c->reg == G2D_CHG_OAM) {
@@ -736,8 +739,8 @@ void gpu2d_ref_engine(const gpu2d_engine *e, uint16_t *out)
 	for (int i = 0; i < 512; i++)
 		s.pal[i] = (uint16_t)(rd16le(pal + i * 2) & 0x7FFFu);
 	memcpy(s.oam, oam, 1024);
-	reload_ref(&s, 0);
-	reload_ref(&s, 1);
+	reload_ref(&s, 0, 3);
+	reload_ref(&s, 1, 3);
 
 	/* Las ventanas verticales: la bandera sigue corriendo por las 263 líneas (solo cuentan los 8 bits bajos de la
 	 * línea), así que su valor al empezar el cuadro sale de dar la vuelta al cuadro anterior con los mismos

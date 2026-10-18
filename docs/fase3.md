@@ -715,3 +715,50 @@ Cambios (los mismos bits; `test-host`, hash de cuadros y autoprueba iguales):
 - Sin medir en la PS3 el efecto en el SPE: en RPCS3 (no concluyente) el mismo registro de prueba pasa de 18,8 a 12,4 ms; la meta de ≤ 6 ms para
   1200 polígonos se confirma o no con el `DATO geometria-spe` del paquete nuevo. Pendiente si no alcanza: `outcode` y la copia de `gx_cvtx`
   (56 bytes) en el armado, y el recorte en vectores.
+
+# Fase 3.6 — Aristas compartidas de los cuadriláteros apilados (los tallos de las plataformas de hongo de NSMB, nivel 1-3)
+
+En la PS3 los tallos de las plataformas de hongo que se inclinan salían como un **resorte**: cada segmento corrido, huecos de un
+píxel en las uniones y «dientes» a la derecha. El tallo es una pila de cuadriláteros ortográficos con textura (256 colores, recorte,
+índice 0 transparente): cada uno con sus aristas de arriba y de abajo **x-mayores y compartidas** con el vecino y las laterales casi
+verticales; la coordenada s corre a lo largo del tallo. Reproducido en el host con la partida del autor (nivel 1-3, cuadro ≈ 2700 con
+la derecha apretada desde el 2600) y trasladado a las escenas 35 (sin textura, colores alternos: la cobertura) y 36 (con la textura)
+de `gx3d`: seis tallos con los vértices tomados de un cuadro del juego y un desvío al azar de ±1 en cada uno (los vértices
+compartidos son los mismos de un cuadrilátero al siguiente).
+
+Contra melonDS (`tools/gfx-compare.py`), tres diferencias de regla:
+
+1. **Derecha y-mayor que va hacia la izquierda, primera línea de la arista**: el final exclusivo es `piso(X − 1/2^18)` (igual que la
+   izquierda con pendiente negativa), no `piso(X)`. Con X entero en el vértice sobraba un píxel (los «dientes»). Solo la primera línea:
+   en las siguientes con X entero melonDS no resta nada (el triángulo de la escena 0 lo mostró).
+2. **Última línea de un polígono de más de una cuya izquierda es x-mayor**: si los dos bordes coinciden en el vértice de abajo, no se
+   dibuja el píxel de «línea vacía por redondeo» (se dibujaba uno de más en el vértice inferior de cada cuadrilátero). La regla de un
+   píxel sigue valiendo en el resto de las líneas vacías (triángulos diminutos, escena 13).
+3. **Atributos de la izquierda x-mayor que va hacia la derecha**: si la arista derecha de la línea es y-mayor, los atributos se toman
+   en `(y + 1 − y0) / dy`, el extremo de afuera de la línea siguiente (antes, `(y − y0) / dy`). Con la derecha x-mayor (los triángulos
+   con tres aristas x-mayores de las escenas 20 y 21) se queda como estaba: la variante general empeoraba esas escenas. Esto era lo
+   que daba los huecos y las lengüetas: la `t` del extremo izquierdo de las líneas junto a la unión caía fuera de la textura (recorte,
+   índice 0 transparente).
+
+Diferencias con melonDS (píxeles de 49 152) antes → después: 0: 171 → 127, 13: 43 → 32, 14: 647 → 616, 20: 404 → 299, 22: 146 → **0**,
+23: 32 → 16, 24: 62 → 54, 25: 24 → 13, 28/29/31/32/33 −1…−5, 35 (nueva): 64 → 13, 36 (nueva): 1786 → 962; la 34 pasa de 1264 a 1265 y las
+demás no cambian. Quedan en la 35 trece píxeles donde dos cuadriláteros vecinos se disputan un píxel (orden) y en la 36 la textura de las
+líneas junto a las uniones (la variante «siempre la línea siguiente» baja la 36 a 935 pero sube la 21 en 1100 y la 14 en 15; con la
+derecha x-mayor las reglas de 3.3 se contradicen entre las escenas 20/21 y 36 y no se sabe aún el mecanismo del hardware).
+
+**Nubes de 1-3 (no era del 3D)**: el bloque claro con bordes rectos era el fondo BG3 (modo 5, extendido de 16 bits con paleta
+extendida): el juego reescribe `BG3X` en **cada línea** (HDMA en HBlank, con el mismo valor), y la recarga reponía también la Y
+interna a la del registro: el fondo repetía una sola fila de mapa y se veía una columna plana (los hongos translúcidos azul-verdes del
+juego nunca aparecían). En el hardware, escribir `BGxX` recarga **solo la X interna** y `BGxY` solo la Y (como melonDS): `reload_ref`
+recibe ahora qué mitad recargar (`gpu2d_compose.c` y `gpu2d_ref.c`). Medido: BG3 ahora coincide con una reconstrucción independiente
+del mapa y de la paleta extendida a partir de la VRAM, y la escena se parece a la foto de la DS real (hongos con lunares crema detrás de
+las plataformas, nubes solo arriba).
+
+**Mapa del mundo 1 con la cámara en movimiento (líneas verdes sobre el parche de tierra)**: reproducido en el host (la partida en el
+1-3, cuadros 1840–1858 yendo del nodo 1-1 hacia la derecha: rayas verdes horizontales en el borde de arriba del parche, 10–30 píxeles),
+**sin arreglar**. La escena 37 de `gx3d` toma de ese cuadro el suelo (cinco triángulos opacos) y el parche (dos triángulos translúcidos
+con alfa 30, mismos id y W-buffer) con sus pantallas y w: melonDS descarta casi todo el segundo triángulo del parche (el suelo gana)
+y SalsaDS lo dibuja entero (337 píxeles distintos); en la DS real el parche sale completo, así que la reproducción no es todavía
+fiel (falta algún polígono del cuadro o la regla de profundidad de las aristas x-mayores con w distintas). Con las w del volcado el parche
+va **por delante** del suelo (≈ 12 000 de w de 1 440 000) en cualquier interpolación; la divergencia con melonDS está en cómo interpola el
+suelo (aristas x-mayores) a la izquierda del parche.

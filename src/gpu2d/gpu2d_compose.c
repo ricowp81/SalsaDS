@@ -164,12 +164,16 @@ static int32_t sext28(uint32_t v)
 	return (int32_t)(v << 4) >> 4;
 }
 
-static void reload_ref(gpu2d_ctx *c, int b)
+/* Escribir BGxX recarga solo la X interna y escribir BGxY solo la Y interna (como melonDS): un juego que reescribe X en cada línea
+ * (desplazamiento horizontal por línea) no debe devolver la Y interna a la del registro. `which`: 1 = X, 2 = Y, 3 = las dos. */
+static void reload_ref(gpu2d_ctx *c, int b, int which)
 {
 	const int base = b ? G2D_R_BG3PA : G2D_R_BG2PA;
 
-	c->ref[b][0] = sext28((uint32_t)c->regs[base + 4] | ((uint32_t)c->regs[base + 5] << 16));
-	c->ref[b][1] = sext28((uint32_t)c->regs[base + 6] | ((uint32_t)c->regs[base + 7] << 16));
+	if (which & 1)
+		c->ref[b][0] = sext28((uint32_t)c->regs[base + 4] | ((uint32_t)c->regs[base + 5] << 16));
+	if (which & 2)
+		c->ref[b][1] = sext28((uint32_t)c->regs[base + 6] | ((uint32_t)c->regs[base + 7] << 16));
 }
 
 /* ---- ventanas verticales -------------------------------------------------------------------------------- */
@@ -260,9 +264,9 @@ static void apply_change(gpu2d_ctx *c, g2d_job *j, const gpu2d_change *ch)
 	if (ch->reg < G2D_NREGS) {
 		c->regs[ch->reg] = (uint16_t)ch->value;
 		if (ch->reg >= G2D_R_BG2PA + 4 && ch->reg < G2D_R_BG2PA + 8)
-			reload_ref(c, 0);
+			reload_ref(c, 0, ch->reg < G2D_R_BG2PA + 6 ? 1 : 2);
 		else if (ch->reg >= G2D_R_BG3PA + 4 && ch->reg < G2D_R_BG3PA + 8)
-			reload_ref(c, 1);
+			reload_ref(c, 1, ch->reg < G2D_R_BG3PA + 6 ? 1 : 2);
 	} else if (ch->reg == G2D_CHG_PAL) {
 		if (j->npalchg < G2D_PALCHG_MAX)
 			j->palchg[j->npalchg++] = ch->value;
@@ -1665,8 +1669,8 @@ int gpu2d_compose_engine(gpu2d_ctx *c, const gpu2d_engine *e)
 	for (int s = 0; s < GPU2D_NOBJ; s++)
 		decode_one(c, s);
 	memcpy(c->regs, e->regs, sizeof c->regs);
-	reload_ref(c, 0);
-	reload_ref(c, 1);
+	reload_ref(c, 0, 3);
+	reload_ref(c, 1, 3);
 	memcpy(c->mref, c->ref, sizeof c->mref);
 	c->ext_loaded = 0;
 	for (int b = 0; b < GPU2D_NBG; b++) {

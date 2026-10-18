@@ -4,6 +4,27 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-18 — NSMB 1-3: tallos y nubes (3.6)
+
+- **La partida del autor** (`A2DE.sav`, la de las 20:13; la de las 13:42 estaba recién formateada y no servía) lleva el host al 1-3:
+  `salsads-cpurun --save COPIA --press 950:0:120,56 --press 960:0 --press 1100:0:90,54 --press 1110:0 --press 1500:1 --press 1510:0`
+  (Mario Game, Archivo 1, A en el nodo), y desde el 2600 con `--press 2600:12` (derecha y B) salen los hongos que se inclinan.
+- **Tallos «resorte»: arreglado** (contra melonDS, escenas 35 y 36 de `gx3d`, y se ve liso en el host): tres reglas de `r3d_px.h` para las
+  aristas compartidas x-mayores (final exclusivo de la derecha y-mayor que va a la izquierda en su primera línea, sin píxel de «línea vacía»
+  en la última línea de un polígono con izquierda x-mayor, y atributos en la línea siguiente para la izquierda x-mayor que va a la derecha
+  con la derecha y-mayor). Detalle y números en `docs/fase3.md`, 3.6. De paso mejoran las escenas 0, 13, 14, 20, 22 (146 → 0), 23, 24, 25 y
+  las de profundidad; ninguna empeora salvo la 34 (+1 píxel).
+- **Nubes del 1-3: arreglado, no era del 3D**: era el fondo BG3 (extendido de 16 bits con paleta extendida). El juego escribe `BG3X` en cada
+  línea y la recarga reponía también la Y interna: una sola fila de mapa repetida, una columna plana pálida. Escribir `BGxX` recarga solo
+  la X interna y `BGxY` solo la Y (como melonDS), en el compositor y en su referencia.
+- **Mapa del mundo 1 con la cámara en movimiento: sin arreglar** (reproducido en el host, cuadros 1840–1858 del recorrido 1-3 → hacia el
+  nodo 1-1 y de vuelta; el parche de tierra con rayas verdes de 10–30 píxeles en su borde de arriba). La escena 37 de `gx3d` lo toma del
+  cuadro; melonDS pierde casi todo el segundo triángulo del parche y SalsaDS no (337 píxeles); en la DS real el parche sale completo, así
+  que falta fidelidad en la escena. Siguiente paso: volcar el cuadro completo (todos los polígonos de la zona, también los translúcidos
+  y su orden) en vez de solo suelo y parche, o medir la profundidad por píxel del suelo en melonDS.
+- Pruebas: `test-host` (ver abajo), `--vs-ref3d` y `--vs-ref` iguales con NSMB (1-3 y el mapa), MKDS y SM64DS; `gx3d.golden` con 38
+  escenas (15 cambiadas) y el hash de la semilla 7 de `test_render3d` actualizado.
+
 ## 2026-10-18 — Geometría: segunda vuelta (3.5b)
 
 - **Medido en la PS3**: SPE 35,3 ms por cuadro en NSMB (26 363 órdenes, 1227 polígonos), PPE 13,1 ms anotando + 6 ms esperando; con la

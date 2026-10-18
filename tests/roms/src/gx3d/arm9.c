@@ -16,7 +16,8 @@
  * 6 W-buffer, 7 decal y toon, 8 highlight, 9 alpha test, niebla y edge marking, 10 sombras, 11 3D sobre 2D (mezcla con
  * BG1), 12 prueba de profundidad «igual», 13 y 14 triángulos al azar (cobertura y Gouraud) para ajustar el modelo,
  * 15 coordenadas de textura generadas (modos 1 a 3 de TEXIMAGE_PARAM), 16 y 17 interpolación del color a lo largo
- * de la línea y de las aristas.
+ * de la línea y de las aristas, 20 a 34 aristas x-mayores, profundidad y mapa de NSMB (docs/fase3.md, 3.4 y 3.5), 35 y 36 el tallo
+ * de una plataforma de hongo de NSMB (3.6), 37 el parche de tierra del mapa con la cámara en movimiento (3.6).
  */
 #include "../gfx/gfx.h"
 
@@ -1130,10 +1131,97 @@ static void s_dirt(void)
 	cmd(SWAP, 2u);
 }
 
+/* 35 (sin textura, colores alternos) y 36 (texturado): el tallo de una plataforma de hongo de New Super Mario Bros. (nivel 1-3): cuadriláteros apilados, cada uno con sus aristas de
+ * arriba y de abajo x-mayores y compartidas con el vecino, texturados (256 colores, recorte, índice 0 transparente) con la
+ * coordenada s corriendo a lo largo del tallo. Vértices tomados de un cuadro del juego; cada tallo con un ligero desvío al azar.
+ * En SalsaDS las uniones dejaban huecos de un píxel y dientes a la derecha. */
+static void s_stem(int tex)
+{
+	static const int lx[8] = { 197, 195, 194, 194, 193, 192, 192, 191 }, ly[8] = { 99, 106, 113, 120, 127, 134, 141, 148 };
+	static const int rx[8] = { 228, 227, 226, 225, 225, 224, 224, 223 }, ry[8] = { 106, 112, 118, 124, 130, 136, 142, 148 };
+
+	ident_all();
+	lcg_state = 35353u;
+	if (tex)
+		use_tex(texparam(T_256, 2, 2, 4, 1, 0, 0), P_256 >> 4);
+	for (int k = 0; k < 6; k++) {
+		const int ox = -190 + (k % 3) * 82 + rnd(5), oy = -96 + (k / 3) * 96 + rnd(3);
+		int ax[8], ay[8], bx[8], by[8];
+
+		for (int i = 0; i < 8; i++) { /* los vértices compartidos son los mismos de un cuadrilátero al siguiente */
+			ax[i] = ox + lx[i] + (k ? rnd(3) - 1 : 0);
+			ay[i] = oy + ly[i] + (k ? rnd(3) - 1 : 0);
+			bx[i] = ox + rx[i] + (k ? rnd(3) - 1 : 0);
+			by[i] = oy + ry[i] + (k ? rnd(3) - 1 : 0);
+		}
+		cmd(POLY_ATTR, 0x001F0080u | ((uint32_t)(k + 1) << 24));
+		for (int q = 0; q < 7; q++) {
+			const uint16_t col = tex ? WHITE : (q & 1 ? RED : GREEN);
+			const uint32_t s0 = (uint32_t)(94 + 103 * q) & 0xFFFFu, s1 = (uint32_t)(94 + 103 * (q + 1)) & 0xFFFFu;
+
+			cmd(BEGIN, 1);
+			cmd(COLOR, col);
+			cmd(TEXCOORD, s0 | ((uint32_t)(-8) << 16));
+			sv(bx[q], by[q], 0);
+			cmd(TEXCOORD, s0 | (504u << 16));
+			sv(ax[q], ay[q], 0);
+			cmd(TEXCOORD, s1 | (504u << 16));
+			sv(ax[q + 1], ay[q + 1], 0);
+			cmd(TEXCOORD, s1 | ((uint32_t)(-8) << 16));
+			sv(bx[q + 1], by[q + 1], 0);
+			cmd(END, 0);
+		}
+	}
+	cmd(SWAP, 0);
+}
+
+/* 37: el parche de tierra del mapa de New Super Mario Bros. con su suelo, tomados tal cual (pantalla y w de cada vértice) de un cuadro en
+ * que la cámara se movía y el camino se veía con rayas verdes (W-buffer): el suelo son triángulos opacos con aristas x-mayores y el
+ * parche dos triángulos translúcidos (alfa 30) casi en su plano. */
+static void s_dirt2(void)
+{
+	static const int32_t m[16] = { 0x1000 * 48, 0, 0, 0, 0, 0x1555 * 48, 0, 0, 0, 0, -0x1000 * 24, -0x1000 * 48, 0, 0, 0, 0 };
+	static const int32_t ground[][9] = {
+		{ 98, 123, 1318641, 130, 93, 1437009, 39, 123, 1318641 },
+		{ 130, 93, 1437009, 103, 89, 1451304, 39, 123, 1318641 },
+		{ 39, 123, 1318641, 103, 89, 1451304, 104, 72, 1528377 },
+		{ 0, 115, 1346800, 104, 72, 1528377, 0, 62, 1579912 },
+		{ 0, 123, 1318641, 39, 123, 1318641, 0, 115, 1346800 },
+	};
+	static const int32_t patch[][9] = {
+		{ 67, 89, 1439286, 63, 110, 1353686, 87, 89, 1439286 },
+		{ 87, 89, 1439286, 63, 110, 1353686, 100, 99, 1396486 },
+	};
+
+	ident_all();
+	cmd(MTX_MODE, 0);
+	for (int i = 0; i < 16; i++)
+		GXP(MTX_LOAD_4x4) = (uint32_t)m[i];
+	cmd(MTX_MODE, 2);
+	cmd(MTX_IDENTITY, 0);
+	cmd(POLY_ATTR, 0x031F0080u);
+	for (unsigned t = 0; t < sizeof ground / sizeof ground[0]; t++) {
+		cmd(BEGIN, 0);
+		cmd(COLOR, GREEN);
+		for (int k = 0; k < 3; k++)
+			wv48(ground[t][3 * k], ground[t][3 * k + 1], ground[t][3 * k + 2]);
+		cmd(END, 0);
+	}
+	cmd(POLY_ATTR, 0x031E0080u);
+	for (unsigned t = 0; t < sizeof patch / sizeof patch[0]; t++) {
+		cmd(BEGIN, 0);
+		cmd(COLOR, YELLOW);
+		for (int k = 0; k < 3; k++)
+			wv48(patch[t][3 * k], patch[t][3 * k + 1], patch[t][3 * k + 2]);
+		cmd(END, 0);
+	}
+	cmd(SWAP, 2u);
+}
+
 int main(void)
 {
 	scene = *(volatile uint32_t *)0x027FFE0Cu & 0xFFFFu;
-	if (scene > 34)
+	if (scene > 37)
 		scene = 0;
 	sds_init_quiet();
 	REG16(R_POWCNT1) = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 9) | (1 << 15);
@@ -1181,6 +1269,9 @@ int main(void)
 	case 32: s_cross(0); break;
 	case 33: s_cross(1); break;
 	case 34: s_dirt(); break;
+	case 35: s_stem(0); break;
+	case 36: s_stem(1); break;
+	case 37: s_dirt2(); break;
 	case 29: s_wdepth(1, 0); break;
 	}
 	if (scene < 26 && scene != 4 && scene != 5 && scene != 6)
