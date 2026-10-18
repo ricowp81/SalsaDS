@@ -4,6 +4,32 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-18 — Eventos y geometría en un SPE (Fase 3.5)
+
+- **Medido en la PS3 con el JIT** (SM64DS en juego): emulación 26,6 ms = ARM9 13,3 + ARM7 2,3 + eventos 10,4 + planificador 0,6; en otras
+  escenas ARM9 17,4 y eventos 5,4 (misma suma). La geometría costaba 7,0 ms por cuadro en el PPE (≈ 670 polígonos). El reparto
+  ARM9/eventos se movía porque el motor de geometría es perezoso y lo ejecuta quien lo mira primero (la CPU o el evento `EV_GX`).
+- **Eventos**: de 4925 por cuadro, 4363 eran miradas de `EV_GX` cada 256 ciclos. Ahora solo se mira cuando el nivel de la FIFO
+  puede haber cambiado (o toca repetir la IRQ 21), y el evento de HBlank solo se arma si alguien lo usa. Por cuadro en el host: SM64DS
+  5039 → 1497, NSMB 5031 → 2304, MKDS 3183 → 1437. Contadores por tipo de evento (`DATO eventos`, `cpurun --stats --gx-clock`). Las
+  ROMs `irq`, `dma`, `ipc`, `periph`, `gx`, `geom` siguen en OK con todos los tamaños de tramo; cambia el intercalado fino de las
+  CPUs (fronteras de tramo) y la IRQ 21 por nivel ya no sale antes de que se cumpla el nivel (detalle en `docs/fase3.md`, 3.5).
+- **Geometría**: motor de tiempo (PPE) y ejecución separados (`gx.c` / `gx_exec.c`); en modo diferido las órdenes se anotan en un
+  registro y un SPE (el sexto, antes libre) las ejecuta por lotes con el mismo código; el PPE espera solo si la CPU lee un resultado de
+  la ejecución o en el SWAP_BUFFERS. Mismos bits que el modo directo: pruebas unitarias nuevas (`test_gx_defer`, `test_gx_job`), ROMs
+  `gx`/`geom` con `--gx-defer` en LE y BE, hash de cuadros (`--gx-hash`) igual en directo y diferido en SM64DS/NSMB/MKDS (4000 cuadros) y
+  `--vs-ref3d` igual; autoprueba del SPE al arrancar (3 registros al azar, vértices/polígonos/resultados iguales). `test-host` verde
+  (LE, BE, sanitizadores, recompilador, lockstep).
+- **Paquete «SalsaDS núcleo» con el JIT (SLDS00009)** del commit `ef37479`: `build/salsads-nucleo-jit-fase35.pkg` (copia de
+  `build/salsads-nucleo-jit/salsads-nucleo-jit.pkg`), SHA-256 `c1e0aa503a86885e8827b814ce9d1474921bd36276f78c65be8481b537ebf7bc`. En
+  RPCS3 (SM64DS, 400 cuadros): autoprueba de geometría igual y `RESULTADO nucleo: OK`. Líneas nuevas del log: `DATO eventos`,
+  `DATO geometria-spe` (trabajos, órdenes y subidas DMA por cuadro, ms del SPE, ms y número de esperas del PPE); `DATO geometria` ahora
+  mide lo que el PPE gasta anotando y publicando. **Sin medir en la PS3**: expectativa PPE ≈ 7 → ≈ 1 ms por cuadro; falta ver los ms del
+  SPE (código escalar de 64 bits, `__divti3` en el recorte) y cuánto espera el PPE en el VBlank.
+- Pendiente: medirlo en la consola; si el SPE pasa de ≈ 8 ms por cuadro, partir el trabajo (transformación/iluminación aparte del
+  recorte) o vectorizar la transformación de vértices; el tiempo de `frame_begin` (6 ms por cuadro en el desglose de la PS3) es otra
+  historia por mirar; `gx_t` creció 128 KB (registro de órdenes).
+
 ## 2026-10-18 — Recompilador del ARM9 (Fase 4)
 
 - **El ARM9 corre con un recompilador ARMv5TE (ARM y Thumb) → PowerPC64** propio (`src/jit/arec*`, conectado a la máquina en
