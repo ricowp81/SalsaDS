@@ -519,3 +519,5 @@ detalle y fuentes en `docs/fase0.md`, 0.2).
   (`prev = sub` al principio) y dibuja el mismo cuadro de antes. Bandas del 3D repartidas por costo estimado (`r3d_balance`, `r3d_job.bandsel`);
   archivo `reparto-alterno` para comparar con el reparto alterno. Esperado: la espera de ~9,2 ms baja a ~4–5 ms (el render pasa de 12 a 16,3 ms de
   margen) y el SPE1 deja de ir un 25 % por encima del SPE0; medir con `DATO raster3d` / `raster3d-latencia` y con `reparto-alterno` para el A/B.
+  Paquete con el JIT (SLDS00009) del commit `1e712e3`: `build/salsads-nucleo-jit-fase47.pkg`, SHA-256
+  `fa1e9cab105e444b1d3eaf9c5443adbbd920dd6481024cca490e3dc0dccbbbe6`. Sin probar en la PS3.
