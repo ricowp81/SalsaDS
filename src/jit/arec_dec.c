@@ -149,6 +149,18 @@ static void dec_arm(uint32_t addr, uint32_t insn, struct ai *a)
 					break;
 				}
 				callout(a); /* SWP y lo indefinido */
+				if ((insn & 0x0FB00FF0u) == 0x01000090u) { /* SWP / SWPB */
+					a->rn = (insn >> 16) & 15;
+					a->rd = (insn >> 12) & 15;
+					a->rm = insn & 15;
+					if (a->rn != 15 && a->rd != 15 && a->rm != 15) {
+						a->fast = FK_SWP;
+						a->call_ro = 1;
+						a->fr = 0;
+						a->msz = (insn & (1u << 22)) ? 1 : 4;
+						a->cyc = 4;
+					}
+				}
 				break;
 			}
 			/* LDRH / STRH / LDRSB / LDRSH (LDRD / STRD al intérprete) */
@@ -157,6 +169,26 @@ static void dec_arm(uint32_t addr, uint32_t insn, struct ai *a)
 
 				if (!load && lo != 0xB) {
 					callout(a);
+					/* LDRD (lo = D) / STRD (lo = F): par par distinto de r14, sin r15 */
+					a->rn = (insn >> 16) & 15;
+					a->rd = (insn >> 12) & 15;
+					a->pre = (insn >> 24) & 1;
+					a->up = (insn >> 23) & 1;
+					a->wb = !a->pre || ((insn >> 21) & 1);
+					if (insn & (1u << 22)) {
+						a->o2 = O2_IMM;
+						a->imm = ((insn >> 4) & 0xF0u) | (insn & 0xFu);
+					} else {
+						a->o2 = O2_SHI;
+						a->rm = insn & 15;
+					}
+					if (!(a->rd & 1) && a->rd != 14 && a->rn != 15 && !(a->o2 == O2_SHI && a->rm == 15)) {
+						a->fast = FK_LDRD;
+						a->call_ro = 1;
+						a->fr = 0;
+						a->load = lo == 0xD;
+						a->cyc = a->load ? 4 : 3;
+					}
 					break;
 				}
 				a->kind = AI_MEM;
@@ -217,6 +249,23 @@ static void dec_arm(uint32_t addr, uint32_t insn, struct ai *a)
 				break;
 			}
 			callout(a);
+			if ((insn & 0x0FBF0FFFu) == 0x010F0000u && ((insn >> 12) & 15) != 15) { /* MRS */
+				a->fast = FK_MRS;
+				a->rd = (insn >> 12) & 15;
+			} else if (((insn & 0x0FB0FFF0u) == 0x0120F000u && (insn & 15) != 15) ||
+				   (insn & 0x0FB0F000u) == 0x0320F000u) { /* MSR con registro o inmediato */
+				const unsigned fm = (insn >> 16) & 15;
+
+				/* SPSR (cualquier campo) o CPSR sin el campo de banderas: no lee ni escribe NZCV */
+				if ((insn & (1u << 22)) || !(fm & 8)) {
+					a->fast = FK_MSR;
+					a->call_ro = 1;
+					a->fr = 0;
+					a->o2 = (insn & (1u << 25)) ? O2_IMM : O2_SHI;
+					a->rm = insn & 15;
+					a->imm = ror32(insn & 0xFF, ((insn >> 8) & 15) * 2);
+				}
+			}
 			break;
 		}
 		/* proceso de datos */
@@ -356,6 +405,23 @@ static void dec_arm(uint32_t addr, uint32_t insn, struct ai *a)
 			if (!(insn & (1u << 20)) || rd != 15) { /* MRC a r15 escribe NZCV */
 				a->call_ro = 1;
 				a->fr = 0;
+			}
+			if (((insn >> 8) & 15) == 15 && ((insn >> 21) & 7) == 0) {
+				const unsigned crn = (insn >> 16) & 15, crm = insn & 15, op2 = (insn >> 5) & 7;
+
+				if (!(insn & (1u << 20))) {
+					/* c7: operaciones de caché y del búfer de escritura (no-op sin caché), salvo la espera de IRQ */
+					if (crn == 7 && !(crm == 0 && op2 == 4) && !(crm == 8 && op2 == 2)) {
+						a->fast = FK_CP15NOP;
+						a->cyc = 3;
+					}
+				} else if (rd != 15 && ((crn == 1 && crm == 0 && op2 == 0) || (crn == 9 && crm == 1 && op2 < 2))) {
+					a->fast = FK_MRC;
+					a->rd = (uint8_t)rd;
+					a->rn = (uint8_t)crn;
+					a->op = (uint8_t)op2;
+					a->cyc = 3;
+				}
 			}
 		}
 		break;

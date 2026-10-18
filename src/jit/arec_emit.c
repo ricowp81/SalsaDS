@@ -22,6 +22,7 @@
 
 #include "jit/arec_priv.h"
 #include "jit/ppcenc.h"
+#include "util/endian.h"
 
 #define G(n) (14u + (n))
 #define RCYC 29u
@@ -36,6 +37,13 @@
 #define OFF_PT ((int32_t)offsetof(struct acore, jit_pt))
 #define OFF_JL ((int32_t)offsetof(struct acore, jit_jl))
 #define OFF_FN(k) ((int32_t)offsetof(struct acore, jit_fn) + 8 * (int32_t)(k))
+#define OFF_CPSR ((int32_t)offsetof(struct acore, cpsr))
+#define OFF_BANK ((int32_t)offsetof(struct acore, bank))
+#define OFF_SPSR ((int32_t)offsetof(struct acore, spsr_bank))
+#define OFF_ATTN ((int32_t)offsetof(struct acore, attn))
+#define OFF_CP15_CTRL ((int32_t)offsetof(struct acore, cp15_ctrl))
+#define OFF_DTCM_REG ((int32_t)offsetof(struct acore, cp15_dtcm_reg))
+#define OFF_ITCM_REG ((int32_t)offsetof(struct acore, cp15_itcm_reg))
 
 #define CRB(f, b) ((f) * 4u + (b))
 #define LT 0u
@@ -983,6 +991,217 @@ static void emit_cold_exit_mem(struct em *e, unsigned live, uint32_t next, unsig
 	exit_pc_const(e, next, live);
 }
 
+static void page_lookup(struct em *e, unsigned ra, int wr, unsigned cold);
+
+/* Salta a `l` si la CPU está en modo usuario (CP15 y MSR CPSR_c se comportan distinto: lo hace el intérprete). */
+static void if_user(struct em *e, unsigned l)
+{
+	E(e, ppc_lwz(3, RST, OFF_CPSR));
+	E(e, ppc_rlwinm(3, 3, 0, 27, 31));
+	E(e, ppc_cmplwi(1, 3, 0x10));
+	bc_to(e, BO_T, CRB(1, EQ), l);
+}
+
+/* AI_CALL con camino rápido (x->fast): el caso común en línea; lo demás, el intérprete en el camino frío (con los
+ * mismos ciclos: x->cyc es el total que suma el intérprete; la llamada los deja en r29 y se descuentan los que ya están
+ * en lo pendiente). */
+static void emit_call_fast(struct em *e, const struct ai *x, unsigned P)
+{
+	const unsigned live = cold_live(e, e->i);
+	const unsigned slow = newlab(e), join = newlab(e);
+	const uint32_t at = x->addr | x->thumb, next = (x->addr + x->size) | x->thumb;
+	unsigned xirq = 0;
+
+	if (!x->call_ro)
+		flags_to_mem_cr(e, F_ALL);
+	switch (x->fast) {
+	case FK_CP15NOP:
+		if_user(e, slow);
+		break;
+	case FK_MRC:
+		if_user(e, slow);
+		if (x->rn == 1) {
+			E(e, ppc_lwz(G(x->rd), RST, OFF_CP15_CTRL));
+		} else if (x->op == 0) {
+			E(e, ppc_lwz(3, RST, OFF_DTCM_REG));
+			li32(e, 4, 0xFFFFF03Eu);
+			E(e, ppc_and(G(x->rd), 3, 4));
+		} else {
+			E(e, ppc_lwz(3, RST, OFF_ITCM_REG));
+			E(e, ppc_rlwinm(G(x->rd), 3, 0, 26, 30)); /* & 0x3E */
+		}
+		break;
+	case FK_MRS:
+		if (x->raw & (1u << 22)) { /* SPSR del banco; en usuario/sistema, el CPSR */
+			const unsigned cp = newlab(e);
+
+			E(e, ppc_lwz(3, RST, OFF_BANK));
+			E(e, ppc_cmplwi(1, 3, 0));
+			bc_to(e, BO_T, CRB(1, EQ), cp);
+			E(e, ppc_rlwinm(3, 3, 2, 0, 29));
+			E(e, ppc_addi(3, 3, OFF_SPSR));
+			E(e, ppc_lwzx(G(x->rd), RST, 3));
+			b_to(e, join);
+			bind(e, cp);
+		}
+		/* CPSR: lo de memoria sin NZCV ni T (en ARM T = 0; en memoria puede estar viejo), más NZCV */
+		E(e, ppc_lwz(3, RST, OFF_CPSR));
+		E(e, ppc_lwz(4, RST, OFF_NZCV));
+		/* & 0x0FFFFFDF sin máscara que dé la vuelta (en 64 bits, rlwinm con mb > me copia la palabra baja arriba) */
+		E(e, ppc_rlwinm(5, 3, 0, 4, 25));
+		E(e, ppc_rlwimi(5, 3, 0, 27, 31));
+		E(e, ppc_rlwinm(4, 4, 0, 0, 3));
+		E(e, ppc_or(G(x->rd), 5, 4));
+		break;
+	case FK_MSR: {
+		const unsigned fm = (x->raw >> 16) & 15;
+		unsigned v;
+
+		if (x->o2 == O2_IMM) {
+			li32(e, 5, x->imm);
+			v = 5;
+		} else {
+			v = G(x->rm);
+		}
+		if (x->raw & (1u << 22)) { /* SPSR: solo si el modo tiene banco */
+			uint32_t mask = 0;
+
+			if (fm & 8)
+				mask |= 0xFF000000u;
+			if (fm & 4)
+				mask |= 0x00FF0000u;
+			if (fm & 2)
+				mask |= 0x0000FF00u;
+			if (fm & 1)
+				mask |= 0x000000FFu;
+			mask &= 0xF80000FFu;
+			E(e, ppc_lwz(3, RST, OFF_BANK));
+			E(e, ppc_cmplwi(1, 3, 0));
+			bc_to(e, BO_T, CRB(1, EQ), join);
+			E(e, ppc_rlwinm(3, 3, 2, 0, 29));
+			E(e, ppc_addi(3, 3, OFF_SPSR));
+			E(e, ppc_lwzx(4, RST, 3));
+			li32(e, 6, mask);
+			E(e, ppc_andc(4, 4, 6));
+			E(e, ppc_and(7, v, 6));
+			E(e, ppc_or(4, 4, 7));
+			E(e, ppc_stwx(4, RST, 3));
+			break;
+		}
+		if (!(fm & 1))
+			break; /* sin el campo de control no cambia nada (s y x no tienen bits en el ARMv5) */
+		/* CPSR_c: I, F y el modo; si el modo cambia (bancos) o es usuario, el intérprete */
+		E(e, ppc_lwz(3, RST, OFF_CPSR));
+		E(e, ppc_rlwinm(4, 3, 0, 27, 31));
+		E(e, ppc_cmplwi(1, 4, 0x10));
+		bc_to(e, BO_T, CRB(1, EQ), slow);
+		E(e, ppc_mr(4, 3));
+		E(e, ppc_rlwimi(4, v, 0, 24, 25));
+		E(e, ppc_rlwimi(4, v, 0, 27, 31));
+		E(e, ppc_xor(6, 3, 4));
+		E(e, ppc_rlwinm(6, 6, 0, 27, 31));
+		E(e, ppc_cmplwi(1, 6, 0));
+		bc_to(e, BO_F, CRB(1, EQ), slow);
+		E(e, ppc_stw(4, RST, OFF_CPSR));
+		/* si se habilitó I o F con una línea pendiente, salir después de la instrucción (el despachador la atiende) */
+		xirq = newlab(e);
+		E(e, ppc_andc(6, 3, 4));
+		E(e, ppc_rlwinm(6, 6, 0, 24, 25));
+		E(e, ppc_cmplwi(1, 6, 0));
+		bc_to(e, BO_T, CRB(1, EQ), join);
+		E(e, ppc_lwz(6, RST, OFF_ATTN));
+		E(e, ppc_cmplwi(1, 6, 0));
+		bc_to(e, BO_F, CRB(1, EQ), xirq);
+		break;
+	}
+	case FK_SWP: {
+		const unsigned ra = G(x->rn);
+
+		if (x->msz == 4) {
+			E(e, ppc_rlwinm(8, ra, 0, 30, 31));
+			E(e, ppc_cmplwi(6, 8, 0));
+			bc_to(e, BO_F, CRB(6, EQ), slow);
+		}
+		page_lookup(e, ra, 0, slow);
+		E(e, ppc_rlwinm(6, ra, 21, 11, 28));
+		E(e, ppc_addis(6, 6, 0x20));
+		E(e, ppc_ldx(9, RPT, 6));
+		E(e, ppc_cmpdi(1, 9, 0));
+		bc_to(e, BO_T, CRB(1, EQ), slow);
+		E(e, ppc_rlwinm(8, ra, 0, 18, x->msz == 4 ? 29 : 31));
+		if (x->msz == 4) {
+			E(e, ppc_lwbrx(3, 7, 8));
+			E(e, ppc_stwbrx(G(x->rm), 9, 8));
+		} else {
+			E(e, ppc_lbzx(3, 7, 8));
+			E(e, ppc_stbx(G(x->rm), 9, 8));
+		}
+		E(e, ppc_mr(G(x->rd), 3));
+		break;
+	}
+	case FK_LDRD: {
+		const unsigned base = G(x->rn);
+
+		if (x->o2 == O2_IMM)
+			E(e, ppc_addi(11, base, x->up ? (int32_t)x->imm : -(int32_t)x->imm));
+		else
+			E(e, x->up ? ppc_add(11, base, G(x->rm)) : ppc_subf(11, G(x->rm), base));
+		E(e, ppc_rlwinm(10, x->pre ? 11u : base, 0, 0, 29));
+		page_lookup(e, 10, !x->load, slow);
+		E(e, ppc_rlwinm(8, 10, 0, 18, 29));
+		E(e, ppc_cmplwi(6, 8, 0x3FF8u));
+		bc_to(e, BO_T, CRB(6, GT), slow);
+		E(e, ppc_addi(9, 8, 4));
+		if (x->load) {
+			E(e, ppc_lwbrx(3, 7, 8));
+			E(e, ppc_lwbrx(4, 7, 9));
+			if (x->wb)
+				E(e, ppc_clrldi(base, 11, 32));
+			E(e, ppc_mr(G(x->rd), 3));
+			E(e, ppc_mr(G(x->rd + 1u), 4));
+		} else {
+			E(e, ppc_stwbrx(G(x->rd), 7, 8));
+			E(e, ppc_stwbrx(G(x->rd + 1u), 7, 9));
+			if (x->wb)
+				E(e, ppc_clrldi(base, 11, 32));
+		}
+		break;
+	}
+	default:
+		break;
+	}
+	bind(e, join);
+	{
+		const unsigned save = e->sec;
+
+		e->sec = SEC_COLD;
+		bind(e, slow);
+		li32(e, 4, x->raw);
+		li32(e, 5, at);
+		li32(e, 6, e->strict ? e->rem_max[e->i] : 0xFFFFu);
+		E(e, ppc_li(7, (int32_t)(P + 1)));
+		bl_abs(e, e->j->ent_call);
+		if (x->cyc > 1)
+			E(e, ppc_addis(RCYC, RCYC, -(int32_t)(x->cyc - 1)));
+		E(e, ppc_cmpwi(0, 3, 0));
+		bc_to(e, BO_T, CRB(0, EQ), join);
+		if (x->call_ro)
+			flags_to_mem_cr(e, live);
+		add_cyc(e, P + x->cyc, e->ipend);
+		E(e, ppc_li(3, 0));
+		E(e, ppc_li(4, (int32_t)(2 | live << 4)));
+		b_abs(e, e->j->ent_exit);
+		if (xirq) {
+			bind(e, xirq);
+			emit_cold_exit_mem(e, live, next, P + x->cyc, e->ipend);
+		}
+		e->sec = save;
+	}
+	/* MRS: las banderas no cambian (quedaron también en memoria) */
+	if (!x->call_ro)
+		e->in_mem = F_ALL;
+}
+
 /* AI_CALL: el intérprete ejecuta la instrucción con los registros en memoria. */
 static void emit_call(struct em *e, const struct ai *x, unsigned P)
 {
@@ -990,6 +1209,10 @@ static void emit_call(struct em *e, const struct ai *x, unsigned P)
 	const unsigned ex = newlab(e);
 	const uint32_t at = x->addr | x->thumb;
 
+	if (x->fast) {
+		emit_call_fast(e, x, P);
+		return;
+	}
 	if (!x->call_ro)
 		flags_to_mem_cr(e, F_ALL); /* las que no dejó la instrucción que las fijó (no debería pasar) */
 	li32(e, 4, x->raw);
@@ -1539,8 +1762,62 @@ static void page_lookup(struct em *e, unsigned ra, int wr, unsigned cold)
 	bc_to(e, BO_T, CRB(1, EQ), cold);
 }
 
+/* LDR rd, [pc, #±imm] (el «literal pool»): la dirección se conoce al traducir. Si la palabra está en la memoria del propio
+ * código (la misma vista para datos y para captación) y dentro de las cubetas del bloque, se lee ahora y el bloque cubre
+ * también esos bytes: una escritura ahí lo invalida, como al código. Devuelve 1 y el valor en *v. */
+static int literal_value(struct em *e, const struct ai *x, uint32_t *v)
+{
+	struct arec *j = e->j;
+	struct ablock *b = e->b;
+	uint32_t a, ph, avail;
+	const uint8_t *p, *d;
+
+	if (!x->load || x->rn != 15 || x->o2 != O2_IMM || x->wb || x->rd == 15 || !x->pre)
+		return 0;
+	a = x->up ? x->pcv + x->imm : x->pcv - x->imm;
+	if (a & (x->msz - 1u))
+		return 0;
+	p = j->cfg.code_ptr(j->cfg.ctx, a, &ph, &avail);
+	if (!p || avail < x->msz)
+		return 0;
+	d = j->pt[a >> AREC_PAGE_SHIFT];
+	if (!d || d + (a & ((1u << AREC_PAGE_SHIFT) - 1u)) != p)
+		return 0;
+	if (b->phys_lo == AREC_PHYS_NONE) {
+		if (ph != AREC_PHYS_NONE)
+			return 0;
+	} else {
+		if (ph == AREC_PHYS_NONE || ph < e->win_lo || ph + x->msz > e->win_hi)
+			return 0;
+		if (ph < b->phys_lo)
+			b->phys_lo = ph;
+		if (ph + x->msz > b->phys_hi)
+			b->phys_hi = ph + x->msz;
+	}
+	switch (x->msz) {
+	case 4:
+		*v = rd32le(p);
+		break;
+	case 2:
+		*v = x->msign ? (uint32_t)(int32_t)(int16_t)rd16le(p) : rd16le(p);
+		break;
+	default:
+		*v = x->msign ? (uint32_t)(int32_t)(int8_t)p[0] : p[0];
+		break;
+	}
+	return 1;
+}
+
 static void emit_mem(struct em *e, const struct ai *x, unsigned P)
 {
+	{
+		uint32_t lit;
+
+		if (literal_value(e, x, &lit)) {
+			li32(e, G(x->rd), lit);
+			return;
+		}
+	}
 	const unsigned cold = newlab(e), join = newlab(e);
 	const unsigned live = cold_live(e, e->i);
 	const unsigned mk = x->load ? (x->msz == 4 ? MK_W : x->msz == 2 ? (x->msign ? MK_SH : MK_H) : (x->msign ? MK_SB : MK_B))
@@ -2019,6 +2296,7 @@ static int emit_try(struct arec *j, const struct ai *ins, unsigned n, struct abl
 		}
 		b->entry = e->base;
 		b->words = total;
+		b->hot = e->nh;
 		return (int)total;
 	}
 }

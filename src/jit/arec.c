@@ -62,6 +62,44 @@ static unsigned call_kind(uint32_t insn, int thumb)
 
 /* ---- ayudantes que llama el código generado -------------------------------------------------------------- */
 
+#ifdef AREC_CALLHIST
+/* Depuración (-DAREC_CALLHIST): las instrucciones que más llama el intérprete desde un bloque, al salir. */
+#include <stdio.h>
+#define HIST_N 4096u
+static struct { uint32_t insn, at; uint64_t n; } hist[HIST_N];
+static void hist_dump(void)
+{
+	for (unsigned k = 0; k < 40; k++) {
+		unsigned best = 0;
+
+		for (unsigned i = 1; i < HIST_N; i++)
+			if (hist[i].n > hist[best].n)
+				best = i;
+		if (!hist[best].n)
+			break;
+		fprintf(stderr, "CALLHIST %10llu  %08x en %08x\n", (unsigned long long)hist[best].n, hist[best].insn, hist[best].at);
+		hist[best].n = 0;
+	}
+}
+static void hist_add(uint32_t insn, uint32_t at)
+{
+	static int reg;
+	unsigned h = ((insn * 2654435761u) ^ at) & (HIST_N - 1);
+
+	if (!reg) {
+		reg = 1;
+		atexit(hist_dump);
+	}
+	for (unsigned k = 0; k < 64; k++, h = (h + 1) & (HIST_N - 1))
+		if (!hist[h].n || (hist[h].insn == insn && hist[h].at == at)) {
+			hist[h].insn = insn;
+			hist[h].at = at;
+			hist[h].n++;
+			return;
+		}
+}
+#endif
+
 static int must_exit(struct acore *c, struct arec *j)
 {
 	if (j->exit_req)
@@ -148,6 +186,9 @@ static uint32_t h_call(struct acore *c, uint32_t insn, uint32_t at, uint32_t rem
 
 	j->pub.st.callouts++;
 	j->pub.st.call_by[call_kind(insn, thumb)]++;
+#ifdef AREC_CALLHIST
+	hist_add(insn, at);
+#endif
 	j->exit_req = 0;
 	c->cpsr = (c->cpsr & 0x0FFFFFFFu & ~ACORE_T) | (c->jit_nzcv & 0xF0000000u) | (thumb ? ACORE_T : 0u);
 	c->r[15] = r15;
@@ -481,6 +522,7 @@ again:
 	j->pub.st.blocks_made++;
 	j->pub.st.guest_made += n;
 	j->pub.st.host_words += (uint64_t)b->words;
+	j->pub.st.host_hot += (uint64_t)b->hot;
 	if (j->pub.clock_ns)
 		j->pub.st.compile_ns += j->pub.clock_ns() - t0;
 	return b;
@@ -521,6 +563,8 @@ void arec_run(struct arec *j, uint64_t until)
 	struct acore *c = j->c;
 	void (*const ev)(void *, int, uint64_t) = j->cfg.on_exec;
 
+	int jl_fill = 0;
+
 	while (c->cycles < until) {
 		struct ablock *b;
 		uint32_t pc;
@@ -547,6 +591,15 @@ void arec_run(struct arec *j, uint64_t until)
 				ev(j->cfg.ctx, AREC_EV_STEP, until);
 			continue;
 		}
+		if (jl_fill) {
+			/* se llegó por un destino indirecto que no estaba en la tabla (otro bloque con el mismo índice, o se
+			 * borró): el bloque vuelve a la tabla para que el próximo salto no pase por aquí */
+			struct ajl *e = &j->jl[(pc >> 1) & (AREC_JL_SIZE - 1)];
+
+			e->code = (uint64_t)(uintptr_t)(j->code + b->entry);
+			e->key = pc;
+			jl_fill = 0;
+		}
 		lim = until;
 		if (lim - c->cycles > 60000u)
 			lim = c->cycles + 60000u; /* las instrucciones se cuentan en 16 bits de r29 */
@@ -571,10 +624,15 @@ void arec_run(struct arec *j, uint64_t until)
 		switch ((r >> 56) & 3u) {
 		case 0:
 			set_pc(c, (uint32_t)r);
-			if ((r >> 59) & 1u)
+			if ((r >> 59) & 1u) {
 				j->pub.st.exits_budget++;
-			else
+			} else {
 				j->pub.st.exits_pc++;
+				jl_fill = 1;
+#ifdef AREC_CALLHIST
+				hist_add(0xEEEEEEEEu, (uint32_t)r);
+#endif
+			}
 			break;
 		case 1: {
 			const uint32_t id = (uint32_t)(r >> 8) & 0xFFFFFFu, k = (uint32_t)r & 0xFFu;

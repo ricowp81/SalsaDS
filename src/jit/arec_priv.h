@@ -54,7 +54,20 @@ struct ai {
 	uint8_t load, msz, msign, pre, up, wb; /* AI_MEM / AI_BLOCK */
 	uint8_t acc, sgn, link, xchg;           /* AI_MUL/AI_MULL; AI_B/AI_BX/AI_BLLO; AI_DP con rd = 15: xchg = 0 */
 	uint8_t call_ro;   /* AI_CALL que no lee ni escribe banderas (CP15, PLD) */
-	uint8_t pad[3];
+	uint8_t fast;      /* AI_CALL con camino rápido en línea (FK_*); el intérprete queda en el camino frío */
+	uint8_t pad[2];
+};
+
+/* Llamadas al intérprete que se traducen en línea en el caso común (el resto por el camino frío, con los mismos
+ * ciclos: `cyc` es el total que suma el intérprete). */
+enum {
+	FK_NONE = 0,
+	FK_CP15NOP, /* MCR p15 c7 (caché, búfer de escritura) que no sea la espera de interrupción: no-op */
+	FK_MRC,     /* MRC p15 de c1,c0,0 / c9,c1,0 / c9,c1,1 a un registro */
+	FK_MRS,     /* MRS rd, CPSR / SPSR */
+	FK_MSR,     /* MSR CPSR_c sin cambio de modo / MSR SPSR_* con banco */
+	FK_SWP,     /* SWP / SWPB por la ruta rápida */
+	FK_LDRD,    /* LDRD / STRD por la ruta rápida (las dos palabras en la misma página) */
 };
 
 #define AREC_MAX_INSN 64
@@ -88,6 +101,7 @@ struct ablock {
 	uint32_t entry;     /* índice de palabra en la caché */
 	uint32_t words;
 	uint16_t ninsn, maxcyc;
+	uint32_t hot;       /* palabras de la sección caliente */
 	uint32_t hnext;     /* cadena de la tabla de bloques */
 	uint32_t in_links;  /* lista de enlaces entrantes (índices en el arreglo de enlaces) */
 	uint32_t phys_lo, phys_hi;

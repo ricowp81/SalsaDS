@@ -6,8 +6,9 @@ Power ISA 2.02 y lo medido en la PS3 en la Fase 0 (§0.3 y §0.7); el diseño to
 de Salsa64 (bloques con enlace por parcheo de un salto, mapa de código para invalidar, caminos fríos aparte, caminos
 lentos compartidos). No viene de ningún emulador (ni melonDS ni NooDS, GPLv3).
 
-Estado: **correcto contra el intérprete en qemu-ppc64** (modo estricto y `--lockstep`); **sin medir en la PS3**: el
-paquete «SalsaDS JIT núcleo» (SLDS00009) es para eso.
+Estado: **correcto contra el intérprete en qemu-ppc64** (modo estricto y `--lockstep`). Primera medición en la PS3 (SM64DS en
+juego, 2026-10-18): ARM9 13,3 ms por cuadro de trabajo (17–22 en escenas pesadas; 44–49 con el intérprete); la segunda ronda
+(«Segunda ronda», abajo) está sin medir en la consola.
 
 ## Archivos
 
@@ -69,7 +70,8 @@ calculados en línea); las instrucciones condicionales que no se ejecutan cuesta
 Cada salida a dirección fija es un `b` a un trozo de la sección fría que vuelve al despachador con «enlázame»; el
 despachador traduce el destino si hace falta y parchea el `b` para que salte directo al prólogo del destino. Al invalidar un
 bloque se desparchean sus enlaces entrantes. Los saltos indirectos (BX, POP/LDM con pc, MOV pc, BLX) buscan el destino
-en una tabla de 16 384 entradas (`pc | Thumb` → código) con `mtctr`/`bctr`; si no está, vuelven al despachador. Las
+en una tabla de 16 384 entradas (`pc | Thumb` → código) con `mtctr`/`bctr`; si no está, vuelven al despachador, que
+vuelve a meter el bloque en la tabla (si otro bloque con el mismo índice lo había sacado, ya no se queda fuera). Las
 llamadas a C son `bl` si llegan (en la PS3 la caché está detrás del texto) y si no `ld`/`mtctr`/`bctrl`.
 
 ### Banderas NZCV
@@ -123,7 +125,14 @@ Decisión de la 0.7: CR por instrucción, sin `mfcr` ni formas con punto en el c
 
 ### Lo que va al intérprete desde el bloque
 
-MRS, MSR, SWI (la HLE de la BIOS), CP15, LDM/STM con `^` o lista vacía o (LDM) la base en la lista con escritura de vuelta,
+En línea, con el intérprete solo en el camino frío (mismos ciclos: el camino frío descuenta lo que ya está pendiente):
+MCR p15 c7 (caché y búfer de escritura; no-op salvo la espera de IRQ c7,c0,4 / c7,c8,2) y MRC p15 c1,c0,0 / c9,c1,0 /
+c9,c1,1 fuera del modo usuario; MRS CPSR/SPSR; MSR CPSR_c sin cambio de modo (si habilita I o F con una línea pendiente sale
+después de la instrucción) y MSR SPSR con banco; SWP/SWPB y LDRD/STRD por la ruta rápida (las dos palabras en la misma
+página). LDR rd, [pc, #off] lee el literal al traducir si está en la memoria del propio código y dentro de sus cubetas (el
+bloque se extiende a esos bytes: escribir el literal lo invalida).
+
+Por el intérprete: MSR que cambia el modo o las banderas, SWI (la HLE de la BIOS), el resto de CP15, LDM/STM con `^` o lista vacía o (LDM) la base en la lista con escritura de vuelta,
 SWP, LDRD/STRD, QADD y familia, SMULxy y familia, condicionales que fijan banderas, lo indefinido, BKPT y `BX PC` en Thumb.
 La llamada deja los registros en memoria, el CPSR con las banderas y el bit T, `r15` como lo espera el intérprete y vuelve
 al bloque si la instrucción no saltó, no cambió el estado, no hay una interrupción que tomar ni se invalidó código.
@@ -193,6 +202,56 @@ Lo que cuenta el recompilador en esos 1500 cuadros (modo rápido; NSMB / MKDS / 
 Antes de los caminos lentos compartidos y de la tabla de destinos de 16 384 entradas eran 20–24 palabras por instrucción
 y NSMB salía 2460 veces por cuadro por destinos indirectos no encontrados (tabla de 4096, la mitad sin usar en ARM).
 
+## Segunda ronda (rama fase41)
+
+Medido en la PS3 con la primera versión (SM64DS en juego, por cuadro): 1716 entradas, 600 salidas por pc, 1091 por presupuesto,
+1178 llamadas al intérprete (CP15 de caché, SWP, MRS/MSR); en escenas pesadas ~4170 entradas, 1985 salidas por pc y 2174 por
+presupuesto. En el `DATO desglose` el ARM9 cuesta ~9 µs por tramo y casi nada por instrucción (un ajuste de 248 muestras: el
+número de instrucciones no explica el tiempo, el de tramos sí): lo caro es entrar y salir (y, sospecha sin medir, el cambio
+de CPU y de datos en las cachés del PPE), no el código traducido. Ojo al leerlo: el desglose sale de los cuadros impares y el
+tiempo «limpio» de los pares; en un juego a 30 cuadros por segundo los impares son los de trabajo y los pares casi ociosos.
+
+Cambios:
+
+1. **Caídas al intérprete en línea** (ver arriba).
+2. **Destinos indirectos**: la tabla se rellena después de un fallo. No hizo falta una pila de retornos: las vueltas de
+   función ya caen casi todas en la tabla.
+3. **Tramo de 1024 ciclos** con el recompilador en el paquete de la PS3 (el intérprete y `salsads-cpurun` siguen en 128;
+   `--quantum N` en el host, `nucleo-jit-tramo` en la consola). El tramo ya se corta en el siguiente evento del planificador
+   (`src/core/sched.c` no cambió), así que lo que se gana depende de los eventos: con 5100 eventos por cuadro (NSMB, SM64DS:
+   el motor de geometría agenda muchos) los tramos bajan solo a la mitad y de 512 a 2048 casi no cambian; en MKDS (770
+   eventos) bajan 6×. Pasar del evento (correr el ARM9 hasta un evento que lo afecte) es trabajo del planificador.
+4. **Literales**: LDR relativo al pc leído al traducir (de ~11 instrucciones a 1–2).
+
+Efecto en la precisión del tramo largo: el ARM7 y el ARM9 se alternan cada 1024 ciclos en vez de 128, así que una CPU ve lo
+que la otra escribe (IPC, memoria compartida) hasta ~1000 ciclos tarde, además del bloque de retraso del modo rápido. Los
+juegos que esperan a la otra CPU sondeando dan más vueltas: en qemu, las lecturas lentas por cuadro suben 1,5–3× (sondeo de la
+E/S) y el ARM9 ejecuta un 2–10 % más de instrucciones por cuadro. Mario Kart DS, que ya cambiaba de escena con el modo rápido,
+también la cambia aquí (la demostración va por otro circuito a los 1500 cuadros; con el intérprete y tramos de 1024 igual): el
+juego sigue bien, el momento de los eventos no es el mismo. Las ROMs propias dan OK con tramos de 1 a 20 000 y `--lockstep`
+con 1024 no tiene diferencias (las dos máquinas usan el mismo tramo).
+
+Contadores en qemu, 1500 cuadros, por cuadro (antes: primera versión con tramo de 128; después: esta rama, tramo de 1024):
+
+| | NSMB antes → después | MKDS antes → después | SM64DS antes → después |
+|---|---|---|---|
+| entradas al código generado | 4508 → 2024 | 2181 → 378 | 2057 → 1142 |
+| tramos del planificador | 4335 → 2310 | 3367 → 561 | 2496 → 1417 |
+| salidas por presupuesto | 3302 → 1851 | 1786 → 334 | 1863 → 1108 |
+| salidas por destino indirecto no encontrado | 1054 → 30 | 337 → 3 | 177 → 17 |
+| llamadas al intérprete | 1819 → 411 | 2968 → 248 | 773 → 242 |
+| palabras PPC por instrucción (caliente) | 15,6 → 14,0 (7,2) | 15,1 → 13,5 (7,1) | 15,2 → 13,7 (7,2) |
+| lecturas lentas | 4830 → 7107 | 5966 → 17 345 | 3410 → 5939 |
+
+(Juegos según la cabecera de cada respaldo; en la tabla de «Resultados» de arriba las columnas de NSMB y SM64DS están
+cambiadas: NSMB es el de 6152 bloques y 4509 entradas.) Lo que queda en el intérprete: LDM/STM a la E/S (la FIFO de geometría: ~250 por cuadro), la vuelta de la IRQ de la
+BIOS (`SUBS pc, lr, #4` y el `LDM` de IE/IF, ~140 IRQ por cuadro en NSMB), MSR con cambio de modo y, en MKDS, CMP condicionales
+(`CMPNE`, ~54 por cuadro).
+
+Descartado: no escribir NZCV en las vueltas de función. Las funciones de comparación del EABI de ARM (`__aeabi_cfcmple` y
+familia, flotante por software) devuelven el resultado en las banderas; sin saber a dónde vuelve, la salida tiene que dejarlas
+exactas.
+
 ## Paquete «SalsaDS JIT núcleo» (SLDS00009)
 
 `tools/build.sh -C tests/phase4/nucleo-jit pkg` → `build/salsads-nucleo-jit/salsads-nucleo-jit.pkg`. Es «SalsaDS núcleo»
@@ -210,7 +269,10 @@ Qué mirar en `nucleo.log`, cada ~2 s:
   el intérprete desde el despachador (deberían ser ~0: es código que no se puede traducir), accesos lentos, invalidaciones;
   en total, bloques vivos, código usado de 4096 KB, vaciados (si suben seguido, la caché es chica) y bloques descartados
   (deberían ser 0).
-- La línea `jit:` del arranque: si la prueba de la caché pasó o por qué se usa el intérprete.
+- `DATO jit-llamadas`: las caídas al intérprete por clase y por cuadro (lo que no tiene camino rápido).
+- La línea `jit:` del arranque: si la prueba de la caché pasó o por qué se usa el intérprete, y el tramo del planificador
+  (1024 por omisión; un número de 16 a 20 000 en `/dev_hdd0/salsads/nucleo-jit-tramo` lo cambia, para comparar en la misma
+  escena con 128).
 
 En RPCS3 (texto de solo lectura) corre el respaldo con el intérprete: sirve para ver que el paquete arranca, no para el JIT.
 
@@ -220,9 +282,9 @@ En RPCS3 (texto de solo lectura) corre el respaldo con el intérprete: sirve par
   cuadro: el tramo del planificador es de 128 ciclos del ARM9), las llamadas al intérprete y la ruta lenta.
 - **ARM7 en el recompilador** (ARMv4T: las reglas de `v5` del intérprete — LDR pc sin cambio de estado, LDM/STM con la base,
   LDRH no alineado que rota, MUL que destruye C —, otra tabla de páginas y su propio espacio físico) y, después, en el hilo 1.
-- **Optimizaciones** según lo que diga la consola: en línea las llamadas al intérprete más frecuentes (CP15 de caché, que es
-  un no-op; SWP; MRS/MSR de solo I/F); LDRD/STRD; caché de destinos por sitio para los BX LR; banderas: no escribir NZCV en
-  las vueltas de función cuando el que llama no las lee; fusión cmp+salto; tramos más largos para el ARM9 con el
-  recompilador (menos entradas); la caché de código (4 MB) llega al 70 % en SM64DS en 1500 cuadros: más grande o desalojo
-  por mitades como en Salsa64.
+- **Medir la segunda ronda en la PS3** (mismas escenas, tramo de 1024 y de 128 con `nucleo-jit-tramo`).
+- **Optimizaciones** según lo que diga la consola: que el planificador deje correr al ARM9 más allá de los eventos que no lo
+  tocan (los del motor de geometría, sobre todo) o detecte los bucles de sondeo de IPC; entrada y salida más baratas (hoy guardan
+  18 registros y usan `mfcr`/`mtcrf` de varios campos); LDM/STM a la E/S sin el intérprete; CMP condicionales; fusión cmp+salto;
+  la caché de código (4 MB) llega al 70 % en SM64DS en 1500 cuadros: más grande o desalojo por mitades como en Salsa64.
 - Contrastar en una DS el efecto del modo rápido (la CPU ve los eventos hasta un bloque tarde).

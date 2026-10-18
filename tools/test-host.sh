@@ -292,6 +292,18 @@ if tools/build-ppc64.sh host >build/logs/build-ppc64-run.log 2>&1; then
 			check_rom "JIT" "$rom" "build/logs/rom-$rom-jit.log"
 		fi
 	done
+	# con el tramo largo del paquete de la PS3 (1024 ciclos: tests/phase1/nucleo/main.c, JIT_QUANTUM), modo rápido y --lockstep
+	for rom in irq ipc dma periph; do
+		tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --jit --quantum 1024 tests/roms/homebrew/$rom.nds >"build/logs/rom-$rom-jit-q1024.log" 2>&1
+		check_rom "JITq" "$rom" "build/logs/rom-$rom-jit-q1024.log"
+		tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --lockstep --quantum 1024 tests/roms/homebrew/$rom.nds >"build/logs/rom-$rom-lockstep-q1024.log" 2>&1
+		if grep -q '^LOCKSTEP: sin diferencias' "build/logs/rom-$rom-lockstep-q1024.log"; then
+			check_rom "LOCKq" "$rom" "build/logs/rom-$rom-lockstep-q1024.log"
+		else
+			printf '%-4s FALLO  lockstep q1024 %s (ver %s)\n' LOCK "$rom" "build/logs/rom-$rom-lockstep-q1024.log"
+			fail=1
+		fi
+	done
 	for rom in cpu9 cpuarm irq; do
 		tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --jit --jit-far --jit-nojl tests/roms/homebrew/$rom.nds >"build/logs/rom-$rom-jitfar.log" 2>&1
 		check_rom "JITf" "$rom" "build/logs/rom-$rom-jitfar.log"

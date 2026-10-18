@@ -30,6 +30,26 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
   recorte) o vectorizar la transformación de vértices; el tiempo de `frame_begin` (6 ms por cuadro en el desglose de la PS3) es otra
   historia por mirar; `gx_t` creció 128 KB (registro de órdenes).
 
+## 2026-10-18 — Recompilador del ARM9, segunda ronda (Fase 4.1)
+
+- **Medido en la PS3 con la primera versión** (SM64DS en juego): ARM9 13,3 ms por cuadro de trabajo (17–22 en escenas
+  pesadas), 1716–4170 entradas por cuadro, 600–1985 salidas por destino indirecto no encontrado, 1091–2174 por presupuesto,
+  ~1180 llamadas al intérprete. El tiempo del ARM9 sigue a los tramos (~9 µs por tramo), no a las instrucciones.
+- **Hecho** (`docs/fase4.md`, «Segunda ronda»): en línea MCR p15 c7, MRC p15 c1/c9, MRS, MSR CPSR_c sin cambio de modo y MSR
+  SPSR, SWP/SWPB y LDRD/STRD; la tabla de destinos indirectos se rellena después de un fallo; LDR relativo al pc leído al
+  traducir; tramo de 1024 ciclos en el paquete (`nucleo-jit-tramo` lo cambia); línea `DATO jit-llamadas`.
+- **En qemu, 1500 cuadros, por cuadro**: llamadas al intérprete 1819 → 411 (NSMB), 2968 → 248 (MKDS), 773 → 242 (SM64DS);
+  salidas por destino no encontrado 1054 → 30, 337 → 3, 177 → 17; entradas 4508 → 2024, 2181 → 378, 2057 → 1142; palabras PPC
+  por instrucción 15,6 → 14,0, 15,1 → 13,5, 15,2 → 13,7. Misma imagen final que antes con el mismo tramo; `--lockstep` sin
+  diferencias en los tres juegos con 128 y con 1024; `tools/build.sh test-host` verde.
+- **Precisión del tramo de 1024**: las CPUs se ven hasta ~1000 ciclos tarde; los bucles de sondeo dan más vueltas (lecturas
+  lentas ×1,5–3, ARM9 +2–10 % de instrucciones). En NSMB y SM64DS los tramos los cortan los eventos (~5100 por cuadro, del motor
+  de geometría): solo bajan a la mitad. El siguiente paso para eso es del planificador (no se tocó `src/core/sched.c`).
+- **Paquete «SalsaDS JIT núcleo» (SLDS00009)**: `build/salsads-nucleo-jit/salsads-nucleo-jit.pkg` del commit 5f2f3ce, SHA-256
+  `a5788b65e1b2e252c7face21f40180e25b420448da24196139064b88970b85ae`.
+- Pendiente: medir en la consola (mismas escenas, y `nucleo-jit-tramo` con 128 para comparar); LDM/STM a la E/S, CMP
+  condicionales, entrada y salida más baratas.
+
 ## 2026-10-18 — Recompilador del ARM9 (Fase 4)
 
 - **El ARM9 corre con un recompilador ARMv5TE (ARM y Thumb) → PowerPC64** propio (`src/jit/arec*`, conectado a la máquina en
