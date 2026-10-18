@@ -12,7 +12,7 @@ tanda: 2026-10-17 (ROMs del commit `728113c`). Lo que sigue marcado «pendiente�
 | `ipc` | OK; las dos divergencias (FIFO) coinciden con la documentación |
 | `bios` | OK 50 (sin las SWI 0x13 y 0x17); Halt del ARM7 conserva los registros (como GBATEK; la BIOS libre de melonDS no) |
 | `bios13` | OK 54: la SWI 0x13 funciona con las dos condiciones de abajo |
-| `mem` | OK 218; la ranura de GBA vacía lee 0 |
+| `mem` | OK 218; con una flashcard de GBA insertada la ranura lee 0 (falta medir vacía) |
 | `periph` | OK en lo que no toca el cartucho; SQRT y flashcart, abajo |
 | `dma`, `irq`, `cpuarm` | ver «Fallos y su clasificación» |
 
@@ -45,7 +45,7 @@ tanda: 2026-10-17 (ROMs del commit `728113c`). Lo que sigue marcado «pendiente�
 
 1. **Núcleo, temporizadores**: el temporizador 0 no guarda el bit 2 de TMxCNT_H y no forma cascada; TM0CNT_H lee 0xC3 tras escribir
    0xFFFF. Luego pasar el caso de `irqt.h` (TIMERS) a `SDS_CHECK`.
-2. **Núcleo, ranura de GBA vacía**: leer 0 (16 y 8 bits). Confirmar con otras direcciones y tamaños.
+2. (Ranura de GBA: sin cambios hasta medirla vacía; el 0 medido era de una flashcard de GBA.)
 3. **Núcleo, DMA de HBlank**: decidir con las cuentas del log de `dma` (grupo HBLANK) si hay más de una transferencia por línea
    o si corre en el VBlank, y ajustarlo; hoy hace una por línea visible.
 4. **Núcleo, SQRTCNT** (opcional): el bit de ocupado dura 13 ciclos; la lectura inmediata puede verlo ya bajo.

@@ -310,9 +310,20 @@ static void group_misc(void)
 		SDS_CHECK(MEM32(0xFFFF0000), v); /* y no se escribe */
 	}
 	/* la ranura de GBA vacía: lo que lee el ARM9 (informativo; GBATEK no lo dice) */
-	/* DS Lite real con la ranura de GBA vacía: 0 (como el bus abierto de la GBA, dirección/2); SalsaDS lee unos y melonDS 0xFE08 */
-	SDS_DIVERGE_M(MEM16(0x08000000), 0x0000, 0xFE08);
-	SDS_DIVERGE_M(MEM8(0x0A000000), 0x00, 0xFF);
+	/* ¿hay algo en la ranura de GBA? La cabecera de un cartucho de GBA tiene 0x96 en 0x080000B2. Se anota en el log y en la
+	 * pantalla: lo que lee la ranura depende de si hay un cartucho (o una flashcard de GBA) o está vacía. */
+	{
+		const uint32_t fixed = MEM8(0x080000B2);
+		const char *msg = fixed == 0x96 ? "GBA SLOT: CART" : "GBA SLOT: VACIA?";
+
+		sds_notef("ranura de GBA: %s (0x080000B2 = %02lX, 0x08000000 = %04lX)", fixed == 0x96 ? "hay un cartucho/flashcard" : "sin cabecera GBA (vacia?)",
+			  (unsigned long)fixed, (unsigned long)MEM16(0x08000000));
+		sds_print_row(0, msg);
+	}
+	/* la ranura de GBA: lo que lee el ARM9 (informativo; GBATEK no lo dice). Con una flashcard de GBA insertada leyó 0 en
+	 * 0x08000000 (16 bits) y 0x0A000000 (8 bits); falta medir con la ranura vacía. SalsaDS lee unos y melonDS 0xFE08 */
+	SDS_DIVERGE_M(MEM16(0x08000000), 0xFFFF, 0xFE08);
+	SDS_DIVERGE_M(MEM8(0x0A000000), 0xFF, 0xFF);
 }
 
 int main(void)
