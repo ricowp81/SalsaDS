@@ -18,7 +18,7 @@ all: $(OUT)/salsads-cpurun $(OUT)/armbench
 $(OUT)/salsads-cpurun: cpurun.c $(CORE_SRCS) $(CPU_SRCS) $(HDRS)
 	@mkdir -p $(OUT)
 	@echo "  CC      salsads-cpurun"
-	@$(CC) $(CFLAGS) cpurun.c $(CORE_SRCS) $(CPU_SRCS) -o $@
+	@$(CC) $(CFLAGS) cpurun.c $(CORE_SRCS) $(CPU_SRCS) -o $@ -lm
 
 $(OUT)/armbench: armbench.c $(CPU_SRCS) $(ROOT)/src/jit/loops.c
 	@mkdir -p $(OUT)

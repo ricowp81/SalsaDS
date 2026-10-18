@@ -91,6 +91,7 @@ enum nds_ev {
 	EV_TM7 = EV_TM9 + 4,
 	EV_CART = EV_TM7 + 4,
 	EV_SPI,
+	EV_GX, /* la FIFO de geometría (vacía de mentira) avisa que bajó de la mitad */
 	EV_COUNT
 };
 #define NDS_NEVER UINT64_MAX
@@ -264,6 +265,9 @@ struct nds {
 	uint16_t touch_x, touch_y; /* en píxeles de la pantalla de abajo */
 	uint16_t powcnt1, powcnt2;
 	struct nds_math math;
+	/* Motor de geometría (Fase 3 todavía no): la FIFO se traga las órdenes y siempre está vacía. */
+	uint8_t gx_irqmode, gx_err, gx_logged;
+	uint32_t gx_words;
 	uint32_t ipcsync_out[2]; /* bits 8-11 de cada CPU */
 	uint8_t ipcsync_irqen[2];
 	struct nds_fifo fifo[2]; /* cola que envía cada CPU */
@@ -307,7 +311,8 @@ struct nds {
 #define NDS_DBG_IPC 2u
 #define NDS_DBG_IRQ 4u
 #define NDS_DBG_CART 8u
-#define NDS_DBG_IO 16u /* todos los accesos a la E/S que no tienen traza propia */
+#define NDS_DBG_IO 16u /* todas las escrituras a la E/S */
+#define NDS_DBG_GX 32u /* lecturas del ARM9 a los registros del motor de geometría (0x04000600-0x040006FF) */
 
 /* ---- API pública -------------------------------------------------------------------------------- */
 

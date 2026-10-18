@@ -317,8 +317,8 @@ void nds_dma_write(struct nds *n, int cpu, unsigned reg, uint32_t v, uint32_t ma
 			d->dst = d->dad;
 			d->left = dma_count_of(cpu, ch, nw);
 			d->latched = 1;
-			if (dma_mode(cpu, nw >> 16) == 0)
-				dma_run(n, cpu, ch, 0);
+			if (dma_mode(cpu, nw >> 16) == 0 || (cpu == NDS_CPU9 && dma_mode(cpu, nw >> 16) == NDS_DMA_GXFIFO))
+				dma_run(n, cpu, ch, 0); /* la FIFO de geometría siempre tiene sitio: arranca al armarse */
 		} else if (!(nw & 0x80000000u)) {
 			d->latched = 0;
 		}
@@ -449,6 +449,15 @@ static void run_events(struct nds *n)
 		case EV_SPI:
 			n->ev[EV_SPI] = NDS_NEVER;
 			nds_spi_event(n);
+			break;
+		case EV_GX:
+			/* la IRQ 21 se pide por nivel: mientras GXSTAT diga «menos de la mitad» o «vacía» (la FIFO sin motor
+			 * siempre cumple las dos) se vuelve a pedir, como en melonDS, aunque el programa la confirme */
+			n->ev[EV_GX] = NDS_NEVER;
+			if (n->gx_irqmode) {
+				nds_irq_raise(n, NDS_CPU9, NDS_IRQ_GXFIFO);
+				nds_event_set(n, EV_GX, bt + NDS_GX_PERIOD);
+			}
 			break;
 		default: {
 			const int cpu = best >= EV_TM7;

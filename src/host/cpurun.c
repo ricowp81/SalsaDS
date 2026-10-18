@@ -216,6 +216,11 @@ int main(int argc, char **argv)
 	const char *save_path = NULL;
 	struct { uint32_t addr, len; const char *file; } dumps[8];
 	uint32_t ndumps = 0;
+	int dump_cpu = 0;
+	uint32_t trace_from = 0;
+	struct { uint64_t frame; uint32_t keys, x, y; } press[64];
+	struct { uint64_t frame; const char *file; } shot[32];
+	uint32_t npress = 0, nshot = 0;
 	int watch_cpu = 0;
 	uint64_t watch_max = 0;
 	int break_cpu = -1;
@@ -244,6 +249,27 @@ int main(int argc, char **argv)
 			show_arm7 = 1;
 		else if (!strcmp(argv[i], "--trace") && i + 1 < argc)
 			trace_n = strtoull(argv[++i], NULL, 0);
+		else if (!strcmp(argv[i], "--press") && i + 1 < argc && npress < 64) {
+			/* CUADRO:TECLAS_HEX[:X,Y] — desde ese cuadro se mantiene ese estado de botones (y del toque) */
+			char *e;
+
+			press[npress].frame = strtoull(argv[++i], &e, 0);
+			press[npress].keys = *e == ':' ? (uint32_t)strtoul(e + 1, &e, 16) : 0;
+			press[npress].x = press[npress].y = 0;
+			if (*e == ':') {
+				sscanf(e + 1, "%u,%u", &press[npress].x, &press[npress].y);
+				press[npress].keys |= NDS_KEY_PEN;
+			}
+			npress++;
+		} else if (!strcmp(argv[i], "--shot") && i + 1 < argc && nshot < 32) {
+			/* CUADRO:ARCHIVO.ppm — vuelca las dos pantallas al llegar a ese cuadro */
+			char *e;
+
+			shot[nshot].frame = strtoull(argv[++i], &e, 0);
+			shot[nshot].file = *e == ':' ? e + 1 : "shot.ppm";
+			nshot++;
+		} else if (!strcmp(argv[i], "--trace-from") && i + 1 < argc)
+			trace_from = (uint32_t)strtoul(argv[++i], NULL, 0);
 		else if (!strcmp(argv[i], "--trace7"))
 			trace_cpu = 1;
 		else if (!strcmp(argv[i], "--skip") && i + 1 < argc)
@@ -253,6 +279,8 @@ int main(int argc, char **argv)
 			watch_addr = (uint32_t)strtoul(argv[++i], NULL, 0);
 		} else if (!strcmp(argv[i], "--watch-max") && i + 1 < argc)
 			watch_max = strtoull(argv[++i], NULL, 0);
+		else if (!strcmp(argv[i], "--dump-cpu") && i + 1 < argc)
+			dump_cpu = atoi(argv[++i]) == 7 ? 1 : 0;
 		else if (!strcmp(argv[i], "--dump") && i + 1 < argc && ndumps < 8) {
 			/* DIR:LONG:ARCHIVO — al terminar, vuelca esa memoria tal como la ve el ARM9 */
 			char *a = argv[++i], *b = strchr(a, ':'), *c = b ? strchr(b + 1, ':') : NULL;
@@ -337,8 +365,15 @@ int main(int argc, char **argv)
 	}
 	if (keys)
 		nds_set_input(&M, keys, tx, ty);
-	for (uint64_t f = 0; f < skip_frames; f++)
+	for (uint64_t f = 0; f < skip_frames; f++) {
+		for (uint32_t k = 0; k < npress; k++)
+			if (press[k].frame == f)
+				nds_set_input(&M, press[k].keys, press[k].x, press[k].y);
+		for (uint32_t k = 0; k < nshot; k++)
+			if (shot[k].frame == f)
+				save_ppm(shot[k].file);
 		nds_run_frame(&M);
+	}
 	if (watch_addr) {
 		/* paso a paso (1 ciclo del ARM9): imprime cada cambio de la palabra en watch_addr, vista por watch_cpu */
 		uint32_t old = nds_peek32(&M, watch_cpu, watch_addr);
@@ -450,6 +485,9 @@ int main(int argc, char **argv)
 		/* traza de instrucciones de una CPU (la otra avanza a su ritmo) */
 		struct acore *c = trace_cpu ? &M.a7 : &M.a9;
 
+		if (trace_from) /* corre (de a una instrucción) hasta llegar a esa dirección */
+			for (uint64_t k = 0; k < (uint64_t)4000000000ull && acore_pc(c) != trace_from; k++)
+				nds_run(&M, 1);
 		for (uint64_t i = 0; i < trace_n; i++) {
 			const uint32_t pc = acore_pc(c);
 			const uint32_t insn = nds_peek32(&M, trace_cpu, pc & ~3u);
@@ -467,6 +505,12 @@ int main(int argc, char **argv)
 		uint32_t pc;
 
 		for (uint64_t f = 0; f < frames; f++) {
+			for (uint32_t k = 0; k < npress; k++)
+				if (press[k].frame == f)
+					nds_set_input(&M, press[k].keys, press[k].x, press[k].y);
+			for (uint32_t k = 0; k < nshot; k++)
+				if (shot[k].frame == f)
+					save_ppm(shot[k].file);
 			nds_run_frame(&M);
 			if (stuck_in_vector(&M, &who, &pc)) {
 				printf("EXCEPCIÓN %s sin manejador en el cuadro %llu: pc = 0x%08x (ARM9 pc 0x%08x, ARM7 pc 0x%08x)\n", who,
@@ -515,7 +559,7 @@ int main(int argc, char **argv)
 			if (!f)
 				continue;
 			for (uint32_t o = 0; o < dumps[k].len; o++)
-				fputc((int)nds_peek8(&M, 0, dumps[k].addr + o), f);
+				fputc((int)nds_peek8(&M, dump_cpu, dumps[k].addr + o), f);
 			fclose(f);
 		}
 		return rc_gfx;
