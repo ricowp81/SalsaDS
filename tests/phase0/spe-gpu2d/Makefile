@@ -7,7 +7,7 @@ LIBS    := -lnet -lsysutil -lsysmodule -lrt -llv2
 SPUKIT  := 1
 
 SPU_PROGS    := gpu2d
-gpu2d_SRCS   := spu/gpu2d.c ../../../src/gpu2d/gpu2d_compose.c
+gpu2d_SRCS   := ../../../src/spu/gpu2d/gpu2d.c ../../../src/gpu2d/gpu2d_compose.c
 gpu2d_STACK_MIN := 4096
 # Las llamadas indirectas de la salida del proceso (exit y los destructores
 # de la biblioteca de C) no las alcanza el trabajo: el SPE termina con

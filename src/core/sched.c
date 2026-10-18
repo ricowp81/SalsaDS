@@ -337,6 +337,18 @@ void nds_dma_trigger(struct nds *n, int cpu, unsigned mode)
 	}
 }
 
+/* ¿Hay un canal armado esperando el aviso `mode`? */
+static int dma_waits_for(const struct nds *n, int cpu, unsigned mode)
+{
+	for (int ch = 0; ch < 4; ch++) {
+		const struct nds_dma *d = &n->io[cpu].dma[ch];
+
+		if ((d->cnt & 0x80000000u) && d->latched && dma_mode(cpu, d->cnt >> 16) == mode)
+			return 1;
+	}
+	return 0;
+}
+
 /* ---- eventos del video ----------------------------------------------------------------------------------- */
 
 static void ev_line(struct nds *n, uint64_t t)
@@ -352,7 +364,10 @@ static void ev_line(struct nds *n, uint64_t t)
 		if ((ds & 0x20u) && line == lyc_of(ds))
 			nds_irq_raise(n, cpu, NDS_IRQ_VCOUNT);
 	}
+	if (line == 0)
+		nds_video_frame_begin(n);
 	if (line == 192) {
+		nds_video_frame_end(n);
 		n->frames++;
 		for (int cpu = 0; cpu < 2; cpu++) {
 			if (n->io[cpu].dispstat & 0x08u)
@@ -362,8 +377,13 @@ static void ev_line(struct nds *n, uint64_t t)
 		if (n->stop_on_vblank)
 			n->stop = 1;
 	}
-	if (line < 192)
+	if (line < 192) {
+		nds_video_line_start(n, line);
 		nds_dma_trigger(n, NDS_CPU9, NDS_DMA_DISPSTART);
+		if (dma_waits_for(n, NDS_CPU9, NDS_DMA_MMEM))
+			for (int k = 0; k < 32; k++) /* modo 3: 32 avisos de 4 palabras por línea */
+				nds_dma_trigger(n, NDS_CPU9, NDS_DMA_MMEM);
+	}
 }
 
 static void ev_hblank(struct nds *n)

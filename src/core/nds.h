@@ -24,6 +24,8 @@
 #include <stdint.h>
 
 #include "cpu/acore.h"
+#include "gpu2d/gpu2d.h"
+#include "gpu2d/gpu2d_compose.h"
 
 #define NDS_CPU9 0
 #define NDS_CPU7 1
@@ -186,6 +188,51 @@ struct nds_math {
 	uint8_t div0;
 };
 
+/* ---- Video (Fase 2.1): instantáneas por cuadro para los motores 2D ----------------------------------------
+ * Al empezar un cuadro (línea 0) se toma una instantánea de lo que los motores 2D necesitan (VRAM por páginas con
+ * su marca de «sucia», paleta, OAM, registros, tablas de páginas de las vistas) y, hasta la línea 192, se anotan
+ * por línea los cambios de registros, paleta y OAM que escribe el ARM9 (efectos de raster). En la línea 192 el
+ * cuadro queda listo: o se entrega a un renderizador (`ops.submit`, p. ej. los SPEs de la PS3) o se dibuja a
+ * demanda en el host (`nds_screens`). Hay dos juegos de instantáneas, que se turnan, para que un renderizador
+ * asíncrono lea el del cuadro anterior mientras se graba el siguiente. */
+#define NDS_VLOG_MAX 8192 /* cambios por motor y cuadro; los que sobran se descartan (cuenta en `dropped`) */
+#define NDS_VPAGES 41     /* páginas de 16 KB de los 656 KB de VRAM */
+
+struct nds_vset {
+	uint8_t vram[G2D_VRAM_SIZE + G2D_VRAM_ZERO] __attribute__((aligned(128))); /* + 128 bytes en cero al final */
+	uint8_t pal[2][1024] __attribute__((aligned(128)));
+	uint8_t oam[2][1024] __attribute__((aligned(128)));
+	uint8_t mmem[GPU2D_H][512] __attribute__((aligned(128))); /* modo 3: FIFO de memoria principal, por línea */
+	gpu2d_change chg[2][NDS_VLOG_MAX] __attribute__((aligned(128)));
+	gpu2d_frame frame;
+	uint16_t powcnt1; /* al final del cuadro */
+	uint32_t dropped; /* cambios que no cupieron */
+};
+
+struct nds_video_ops {
+	/* El cuadro `set` (con `frame` ya lleno salvo las salidas) está listo: el renderizador pone `out_ea` de cada motor
+	 * y lo dibuja (puede hacerlo en segundo plano). NULL = dibujar a demanda en el host. */
+	void (*submit)(void *ctx, int set, gpu2d_frame *frame);
+	/* Antes de volver a llenar la instantánea `set`: el renderizador tiene que haber terminado con ella (opcional). */
+	void (*wait)(void *ctx, int set);
+	void *ctx;
+};
+
+struct nds_video {
+	struct nds_vset set[2];
+	uint64_t dirty[2]; /* páginas de VRAM cambiadas desde la última instantánea de cada juego */
+	int cur;           /* juego que graba el cuadro en curso */
+	int recording;     /* 1 entre la línea 0 y la 192 */
+	int last;          /* último juego completo (línea 192 pasada), o -1 */
+	int rendered;      /* el host ya dibujó `last` en `img` */
+	uint32_t mpos;     /* posición (píxel del cuadro) de la FIFO de memoria principal */
+	uint32_t frames;
+	struct nds_video_ops ops;
+	uint16_t img[2][GPU2D_W * GPU2D_H]; /* host: RGBA5551 de los motores A y B del cuadro `last` */
+	int use_ref;        /* host: dibujar con la referencia píxel por píxel (1) o con el compositor por líneas (0) */
+	gpu2d_ctx comp;     /* espacio de trabajo del compositor del host */
+};
+
 struct nds {
 	struct acore a9, a7;
 
@@ -252,6 +299,7 @@ struct nds {
 		uint64_t prof_a9, prof_a7, prof_ev; /* ticks dentro del ARM9, del ARM7 y de los eventos */
 	} st;
 	uint64_t (*prof_clock)(void);
+	struct nds_video vid;
 	uint32_t dbg; /* NDS_DBG_*: trazas de depuración por `log` (0 = ninguna; solo el corredor del host las activa) */
 };
 
@@ -283,9 +331,20 @@ int nds_save_take_dirty(struct nds *n);
 /* Entrada: botones NDS_KEY_*, y el toque en píxeles (0-255, 0-191) si NDS_KEY_PEN. */
 void nds_set_input(struct nds *n, uint32_t keys, unsigned touch_x, unsigned touch_y);
 
-/* Imagen de las dos pantallas en RGB555 (bit 15 = 1), 256×192 cada una. Fase 1.2: modo de visualización
- * directa de VRAM (motor A) y fondo (paleta 0) en el modo de gráficos; las capas 2D son de la Fase 2. */
-void nds_screens(const struct nds *n, uint16_t *top, uint16_t *bottom);
+/* Imagen de las dos pantallas del último cuadro completo, en RGB555 (bit 15 = 1), 256×192 cada una, con el
+ * intercambio de POWCNT1 aplicado. En el host dibuja el cuadro a demanda con el renderizador 2D de src/gpu2d;
+ * si hay `vid.ops.submit` (la PS3), las imágenes las dibuja ese renderizador y esto no se usa. */
+void nds_screens(struct nds *n, uint16_t *top, uint16_t *bottom);
+
+/* ---- Video (src/core/video.c) ------------------------------------------------------------------------- */
+void nds_video_init(struct nds *n);
+/* Línea 0: toma la instantánea del cuadro y empieza a anotar cambios. Línea 192: cierra el cuadro. */
+void nds_video_frame_begin(struct nds *n);
+void nds_video_frame_end(struct nds *n);
+/* Último cuadro cerrado (o NULL si aún no hay): sus descriptores, sin `out_ea` si se dibuja a demanda. */
+const gpu2d_frame *nds_video_last_frame(const struct nds *n, int *set);
+/* Dibuja en el host el último cuadro cerrado (a las imágenes `vid.img`); no hace nada si ya está dibujado. */
+void nds_video_render_host(struct nds *n);
 
 /* Acceso de depuración a la memoria vista por una CPU (sin efectos; 0 si no hay nada). */
 uint32_t nds_peek32(struct nds *n, int cpu, uint32_t addr);

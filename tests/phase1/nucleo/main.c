@@ -1,10 +1,13 @@
 /*
- * SalsaDS — «SalsaDS núcleo» (Fase 1.2): el núcleo de la DS en la PS3, con las dos pantallas.
+ * SalsaDS — «SalsaDS núcleo» (Fases 1 y 2.1): el núcleo de la DS en la PS3, con las dos pantallas.
  *
  * Corre la máquina de src/core (ARM9 y ARM7 con intérpretes, mapa de memoria, IRQ, temporizadores, DMA, IPC,
  * cartucho, SPI, BIOS en HLE) sobre una ROM y muestra las dos pantallas con la salida de la Fase 0.6 (rsxkit).
- * Por ahora solo se ve lo que no necesita los motores 2D (Fase 2): el modo de visualización directa de VRAM
- * del motor A y el color de fondo del motor B.
+ * Los motores 2D A y B (Fase 2.1) los dibuja un SPE por pantalla (src/spu/gpu2d, spukit): al cerrar cada cuadro
+ * (línea 192) el núcleo entrega la instantánea al callback `vid_submit`, que publica los dos trabajos con la salida
+ * directa en la textura del RSX; mientras el PPE emula el cuadro siguiente los SPE componen, y el cuadro se dibuja
+ * al terminar la emulación del siguiente (un cuadro de latencia). Si los SPE no arrancan, el PPE dibuja con el
+ * compositor del host.
  *
  * ROM: /dev_hdd0/salsads/rom.nds si existe (un respaldo del autor, ya desencriptado, o una ROM propia); si no,
  * la ROM de carga propia (tests/roms/src/carga: las dos CPUs ocupadas sin parar, con sus resultados comprobados),
@@ -42,6 +45,9 @@
 
 #include "core/nds.h"
 #include "frontend/dspad.h"
+#include "spu/gpu2d/job.h"
+#include "spukit/spukit.h"
+#include "spu_gpu2d_bin.h"
 #include "frontend/layout.h"
 #include "platform/ps3/autotest.h"
 #include "platform/ps3/log.h"
@@ -89,13 +95,26 @@ static struct sds_keys keys;
 static struct sds_ds3 ds3;
 static int pad_present;
 
+/* Composición 2D en los SPE: un trabajador por pantalla */
+static int spu_on;
+static spukit_worker *wk[2];
+static struct {
+	int valid, set, vset; /* juego de texturas, juego de instantáneas del núcleo */
+	uint32_t seq[2];
+	job_result res[2];
+	int done;
+	uint32_t wait_us;
+} sub, prev;
+static uint32_t sub_count;
+static int autotest_verify;
+static int last_dset = -1; /* juego de texturas del último cuadro dibujado */
+
 static uint8_t *tex_mem;
 static uint32_t tex_off;
 static uint32_t set_fence[2];
 static int set_used[2];
 static uint32_t frame_no;
 
-static uint16_t top555[TEX_W * TEX_H], bot555[TEX_W * TEX_H];
 static enum sds_layout layout = SDS_LAYOUT_SIDE;
 static int show_osd = 1;
 static int cur_w, cur_h;
@@ -191,20 +210,6 @@ static rsxkit_vertex *vb_ptr(int set)
 	return (rsxkit_vertex *)(void *)(tex_mem + 0x80000u + (size_t)set * 0x1000u);
 }
 
-/* RGB555 de la DS (bits 0-4 rojo, 5-9 verde, 10-14 azul) a RGBA5551 del RSX. */
-static void convert(uint16_t *dst, const uint16_t *src)
-{
-	for (int y = 0; y < TEX_H; y++) {
-		uint16_t *row = dst + y * (TEX_PITCH / 2);
-
-		for (int x = 0; x < TEX_W; x++) {
-			const uint32_t v = src[y * TEX_W + x];
-
-			row[x] = (uint16_t)(((v & 31u) << 11) | (((v >> 5) & 31u) << 6) | (((v >> 10) & 31u) << 1) | 1u);
-		}
-	}
-}
-
 static void make_quad(rsxkit_vertex *v, const struct sds_rect *r)
 {
 	const float x0 = (float)r->x, y0 = (float)r->y, x1 = (float)(r->x + r->w), y1 = (float)(r->y + r->h);
@@ -222,7 +227,8 @@ static void make_quad(rsxkit_vertex *v, const struct sds_rect *r)
 	}
 }
 
-static void draw_screens(int set, const struct sds_rect r[2])
+/* r[0] es la pantalla de arriba; la textura de A (0) o de B (1) según el intercambio de POWCNT1 */
+static void draw_screens(int set, const struct sds_rect r[2], int swap)
 {
 	rsxkit_vertex *vb = vb_ptr(set);
 
@@ -239,7 +245,7 @@ static void draw_screens(int set, const struct sds_rect r[2])
 		d.ntex = 1;
 		d.scissor[2] = (float)cur_w;
 		d.scissor[3] = (float)cur_h;
-		d.tex[0].offset = tex_offset(set, s);
+		d.tex[0].offset = tex_offset(set, swap ? s : 1 - s);
 		d.tex[0].pitch = TEX_PITCH;
 		d.tex[0].width = TEX_W;
 		d.tex[0].height = TEX_H;
@@ -471,6 +477,91 @@ static void save_flush(int force)
 	salsads_log("no pude escribir el guardado en %s", save_path);
 }
 
+/* ---- composición 2D en los SPE ------------------------------------------------------------------------------ */
+
+/* Cierre del cuadro (línea 192): las dos pantallas van a dos SPE y la salida cae directo en las texturas del RSX. */
+static void vid_submit(void *ctx, int vset, gpu2d_frame *f)
+{
+	const int set = (int)(sub_count & 1u);
+
+	(void)ctx;
+	if (set_used[set])
+		rsxkit_fence_wait(set_fence[set]); /* el RSX ya terminó de leer esta textura */
+	sub.valid = 1;
+	sub.done = 0;
+	sub.set = set;
+	sub.vset = vset;
+	for (int e = 0; e < 2; e++) {
+		job_compose jc;
+
+		f->eng[e].out_ea = (uint64_t)(uintptr_t)tex_px(set, e);
+		jc.frame_ea = (uint64_t)(uintptr_t)f;
+		jc.engine = (uint32_t)e;
+		sub.seq[e] = spukit_post(wk[e], JOB_COMPOSE, &jc, sizeof jc);
+	}
+	sub_count++;
+}
+
+/* Espera los trabajos de un cuadro (si no se esperaron) y deja sus resultados. 0 = bien. */
+static int vid_collect(typeof(sub) *q)
+{
+	if (!q->valid || q->done)
+		return 0;
+	{
+		const uint64_t t0 = now_us();
+
+		for (int e = 0; e < 2; e++) {
+			const spukit_result *r = spukit_wait(wk[e], q->seq[e]);
+
+			if (r->error != 0) {
+				salsads_log("FALLO el SPE de la pantalla %c devolvió error %d", 'A' + e, r->error);
+				q->done = 1;
+				return -1;
+			}
+			memcpy(&q->res[e], r->data, sizeof q->res[e]);
+		}
+		q->wait_us = (uint32_t)(now_us() - t0);
+	}
+	q->done = 1;
+	return 0;
+}
+
+/* Antes de reescribir una instantánea: si todavía la lee un trabajo, esperarlo */
+static void vid_wait(void *ctx, int vset)
+{
+	(void)ctx;
+	if (sub.valid && !sub.done && sub.vset == vset)
+		vid_collect(&sub);
+	if (prev.valid && !prev.done && prev.vset == vset)
+		vid_collect(&prev);
+}
+
+/* Autoprueba: la imagen de los SPE contra la referencia del PPE sobre la misma instantánea */
+static void vid_verify(const typeof(sub) *q)
+{
+	static uint16_t ref[TEX_W * TEX_H];
+
+	for (int e = 0; e < 2; e++) {
+		const uint16_t *spe = tex_px(q->set, e);
+		int diffs = 0, first = -1;
+
+		gpu2d_ref_engine(&nds->vid.set[q->vset].frame.eng[e], ref);
+		for (int y = 0; y < TEX_H; y++)
+			for (int x = 0; x < TEX_W; x++) {
+				if (spe[y * (TEX_PITCH / 2) + x] != ref[y * TEX_W + x]) {
+					if (first < 0)
+						first = y * TEX_W + x;
+					diffs++;
+				}
+			}
+		if (diffs) {
+			salsads_log("FALLO el SPE de la pantalla %c difiere de la referencia en %d píxeles (primero en %d,%d)", 'A' + e,
+				    diffs, first % TEX_W, first / TEX_W);
+			failures++;
+		}
+	}
+}
+
 /* ---- un cuadro ------------------------------------------------------------------------------------------------ */
 
 /* Reloj de perfil del planificador: el timebase (79,8 MHz en la PS3). */
@@ -503,6 +594,9 @@ enum {
 	M_BEGIN,  /* rsxkit_frame_begin: espera del vsync y del RSX */
 	M_END,    /* rsxkit_frame_end */
 	M_IV,     /* intervalo entre cuadros */
+	M_SPEA,   /* SPE de la pantalla A: duración de la composición del cuadro que se dibuja (decrementador) */
+	M_SPEB,   /* ídem, pantalla B */
+	M_WAIT,   /* el PPE esperando a los SPE (spukit_wait) del cuadro que se dibuja */
 	M_COUNT
 };
 static uint32_t buf[M_COUNT][STATS_FRAMES];
@@ -577,6 +671,12 @@ static void log_stats(void)
 			    MS(pct(M_DRAW, 50)), MS(pct(M_BEGIN, 50)), MS(pct(M_END, 50)), (unsigned)(acc_slices / n),
 			    (unsigned)(acc_jumps / n), (unsigned)(acc_events / n));
 	}
+	if (spu_on)
+		salsads_log("DATO spe: composición 2D por pantalla y por cuadro (decrementador del SPE), mediana / p95 / máx en ms: "
+			    "A %u.%02u / %u.%02u / %u.%02u, B %u.%02u / %u.%02u / %u.%02u; el PPE esperando a los SPE: mediana %u.%02u, "
+			    "p95 %u.%02u, máx %u.%02u; cuadros dibujados %u",
+			    MS(pct(M_SPEA, 50)), MS(pct(M_SPEA, 95)), MS(pct(M_SPEA, 100)), MS(pct(M_SPEB, 50)), MS(pct(M_SPEB, 95)),
+			    MS(pct(M_SPEB, 100)), MS(pct(M_WAIT, 50)), MS(pct(M_WAIT, 95)), MS(pct(M_WAIT, 100)), nbuf[M_SPEA]);
 	if (secs_a9 > 0)
 		mips9_cpu = (double)acc_i9p / secs_a9 / 1e6;
 	if (secs_a7 > 0)
@@ -661,18 +761,47 @@ static void render_frame(void)
 	acc_i7 += nds->a7.icount - i7a;
 	acc_emu_ticks += tb3 - tb2;
 	tb4 = tb_clock();
-	nds_screens(nds, top555, bot555);
-	tb5 = tb_clock();
-	if (set_used[set])
-		rsxkit_fence_wait(set_fence[set]);
-	convert(tex_px(set, 0), top555);
-	convert(tex_px(set, 1), bot555);
-	tb6 = tb_clock();
-	sds_layout_compute(layout, SDS_SCALE_FIT, cur_w, cur_h, r);
-	draw_screens(set, r);
-	draw_ui(r, &cur_stats);
-	set_fence[set] = rsxkit_fence();
-	set_used[set] = 1;
+	{
+		int swap = 1, show = 1, dset = set;
+
+		if (spu_on) {
+			/* los SPE terminaron (o terminan) el cuadro anterior mientras se emulaba este: se dibuja ese */
+			show = prev.valid;
+			if (show) {
+				vid_collect(&prev);
+				dset = prev.set;
+				swap = (nds->vid.set[prev.vset].powcnt1 & 0x8000u) != 0;
+				put(M_SPEA, (uint32_t)((uint64_t)prev.res[0].ticks * 1000000ull / spukit_tick_hz()));
+				put(M_SPEB, (uint32_t)((uint64_t)prev.res[1].ticks * 1000000ull / spukit_tick_hz()));
+				put(M_WAIT, prev.wait_us);
+				if (autotest_verify && frame_no % 30u == 20u)
+					vid_verify(&prev);
+			}
+			prev = sub;
+			sub.valid = 0;
+		} else {
+			/* sin SPE: el compositor del host dibuja el cuadro y se copia a la textura */
+			nds_video_render_host(nds);
+			if (set_used[set])
+				rsxkit_fence_wait(set_fence[set]);
+			memcpy(tex_px(set, 0), nds->vid.img[0], TEX_W * TEX_H * 2);
+			memcpy(tex_px(set, 1), nds->vid.img[1], TEX_W * TEX_H * 2);
+			if (nds->vid.last >= 0)
+				swap = (nds->vid.set[nds->vid.last].powcnt1 & 0x8000u) != 0;
+		}
+		tb5 = tb_clock();
+		tb6 = tb_clock();
+		sds_layout_compute(layout, SDS_SCALE_FIT, cur_w, cur_h, r);
+		if (show)
+			draw_screens(dset, r, swap);
+		draw_ui(r, &cur_stats);
+		if (show) {
+			set_fence[dset] = rsxkit_fence();
+			set_used[dset] = 1;
+		}
+		if (show)
+			last_dset = dset;
+	}
 	tb7 = tb_clock();
 	rsxkit_frame_end();
 	put(M_BEGIN, tb_us(tb1 - tb0));
@@ -705,14 +834,18 @@ static void autotest_check(void)
 	if (nds->frames < AUTOTEST_FRAMES - 2)
 		fail("la DS no corrió todos los cuadros");
 	/* la pantalla de arriba no es lisa (el texto y la barra de la ROM de carga) */
-	{
+	if (last_dset >= 0) {
+		const uint16_t *a = tex_px(last_dset, 0);
 		int distinct = 0;
 
-		for (int i = 1; i < TEX_W * TEX_H && distinct < 3; i++)
-			if (top555[i] != top555[0])
-				distinct++;
+		for (int y = 0; y < TEX_H && distinct < 3; y++)
+			for (int x = 0; x < TEX_W && distinct < 3; x++)
+				if (a[y * (TEX_PITCH / 2) + x] != a[0])
+					distinct++;
 		if (distinct < 3)
 			fail("la pantalla de arriba de la ROM de carga está lisa");
+	} else {
+		fail("no se dibujó ningún cuadro");
 	}
 	salsads_log("autoprueba: cuadros de la DS %u, iteraciones ARM9 %u (errores %u), ARM7 %u (errores %u)", (unsigned)nds->frames,
 		    (unsigned)i9, (unsigned)b9, (unsigned)i7, (unsigned)b7);
@@ -772,6 +905,23 @@ int main(void)
 		return 1;
 	}
 	memset(tex_mem, 0, 1u << 20);
+	/* Los dos SPE del 2D (un trabajador por pantalla); si no arrancan, el PPE dibuja con el compositor del host */
+	if (spukit_init(2) == 0) {
+		for (int e = 0; e < 2 && (e == 0 || spu_on); e++) {
+			wk[e] = spukit_worker_start(spu_gpu2d_bin, e ? "gpu2d-b" : "gpu2d-a", 0);
+			spu_on = wk[e] != NULL;
+		}
+		if (!spu_on)
+			salsads_log("los SPE del 2D no arrancaron (spukit %d): el PPE dibuja con el compositor del host", spukit_last_error());
+	} else {
+		salsads_log("spukit_init falló: el PPE dibuja con el compositor del host");
+	}
+	if (spu_on) {
+		nds->vid.ops.submit = vid_submit;
+		nds->vid.ops.wait = vid_wait;
+		autotest_verify = autotest;
+		salsads_log("composición 2D: un SPE por pantalla (decrementador %u Hz)", (unsigned)spukit_tick_hz());
+	}
 	si = rsxkit_screen_info();
 	cur_w = (int)si->width;
 	cur_h = (int)si->height;
@@ -785,6 +935,14 @@ int main(void)
 		}
 	}
 	save_flush(1);
+	if (spu_on) {
+		nds->vid.ops.submit = NULL;
+		vid_collect(&sub);
+		vid_collect(&prev);
+		for (int e = 0; e < 2; e++)
+			if (wk[e])
+				spukit_worker_stop(wk[e]);
+	}
 	salsads_log("RESULTADO nucleo: %s", failures ? "FALLO" : "OK");
 	if (!rsxkit_lost()) {
 		rsxkit_finish();

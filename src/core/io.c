@@ -272,6 +272,8 @@ static void wr16(struct nds *n, int cpu, uint32_t o, uint16_t v, uint16_t mask)
 		}
 	}
 	gen_set(n, cpu, o, v, mask);
+	if (cpu == NDS_CPU9)
+		nds_video_reg_changed(n, o);
 }
 
 void nds_io_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v)

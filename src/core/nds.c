@@ -40,6 +40,8 @@ void nds_init(struct nds *n)
 {
 	void (*log)(void *, const char *) = n->log;
 	void *log_ctx = n->log_ctx;
+	const struct nds_video_ops vops = n->vid.ops;
+	const int use_ref = n->vid.use_ref;
 	const uint32_t quantum = n->quantum;
 	const uint32_t dbg = n->dbg;
 
@@ -48,6 +50,8 @@ void nds_init(struct nds *n)
 	n->log_ctx = log_ctx;
 	n->quantum = quantum;
 	n->dbg = dbg;
+	n->vid.ops = vops;
+	n->vid.use_ref = use_ref;
 	acore_init(&n->a9, ACORE_ARM9, &nds_bus9, n);
 	acore_attach_tcm(&n->a9, n->itcm, n->dtcm);
 	acore_init(&n->a7, ACORE_ARM7, &nds_bus7, n);
@@ -62,6 +66,7 @@ void nds_init(struct nds *n)
 	nds_spi_init(n);
 	nds_bios_init(n);
 	nds_sched_init(n);
+	nds_video_init(n);
 }
 
 int nds_load_rom(struct nds *n, const uint8_t *rom, size_t len)
@@ -120,73 +125,4 @@ void nds_set_input(struct nds *n, uint32_t keys, unsigned touch_x, unsigned touc
 	if ((keys & NDS_KEY_LID) && !lid_was)
 		nds_irq_raise(n, NDS_CPU7, NDS_IRQ_LIDOPEN);
 	nds_keys_changed(n);
-}
-
-/* ---- imagen ------------------------------------------------------------------------------------------- */
-
-static uint16_t bright(uint16_t c, uint16_t reg)
-{
-	const unsigned mode = (reg >> 14) & 3u;
-	unsigned f = reg & 0x1Fu;
-	unsigned ch[3] = { c & 31u, (c >> 5) & 31u, (c >> 10) & 31u };
-
-	if (f > 16)
-		f = 16;
-	if (mode == 1 || mode == 2) {
-		for (int i = 0; i < 3; i++)
-			ch[i] = mode == 1 ? ch[i] + ((31u - ch[i]) * f) / 16u : ch[i] - (ch[i] * f) / 16u;
-	}
-	return (uint16_t)(0x8000u | ch[0] | (ch[1] << 5) | (ch[2] << 10));
-}
-
-static void fill(uint16_t *dst, uint16_t c)
-{
-	for (int i = 0; i < NDS_SCREEN_W * NDS_SCREEN_H; i++)
-		dst[i] = c;
-}
-
-/* Imagen de un motor: modo 0 = blanca; 1 = gráficos (por ahora solo el fondo, ver nds.h); 2 = banco de VRAM
- * (solo A); 3 = memoria principal (solo A; sin implementar: negra). */
-static void engine(const struct nds *n, int b, uint16_t *dst)
-{
-	const unsigned gi = b ? 0x1000u >> 1 : 0;
-	const uint32_t dispcnt = (uint32_t)n->io[NDS_CPU9].gen[gi] | ((uint32_t)n->io[NDS_CPU9].gen[gi + 1] << 16);
-	const uint16_t br = n->io[NDS_CPU9].gen[(b ? 0x106C : 0x6C) >> 1];
-	const unsigned mode = (dispcnt >> 16) & 3u;
-	uint16_t c;
-
-	if (mode == 0 || (mode == 1 && (dispcnt & 0x80u))) {
-		fill(dst, bright(0x7FFF, br));
-		return;
-	}
-	if (mode == 1 || (b && mode != 1)) {
-		c = rd16le(n->pal + (b ? 0x400 : 0));
-		fill(dst, bright(c, br));
-		return;
-	}
-	if (mode == 2) {
-		const unsigned bank = (dispcnt >> 18) & 3u;
-		const uint8_t v = n->vramcnt[bank];
-		const uint8_t *src = n->vram + 0x20000u * bank;
-
-		if (!(v & 0x80u) || (v & 7u)) { /* tiene que estar habilitado y asignado al LCDC */
-			fill(dst, bright(0, br));
-			return;
-		}
-		for (int i = 0; i < NDS_SCREEN_W * NDS_SCREEN_H; i++)
-			dst[i] = bright(rd16le(src + 2 * i), br);
-		return;
-	}
-	fill(dst, bright(0, br));
-}
-
-void nds_screens(const struct nds *n, uint16_t *top, uint16_t *bottom)
-{
-	if (n->powcnt1 & 0x8000u) {
-		engine(n, 0, top);
-		engine(n, 1, bottom);
-	} else {
-		engine(n, 1, top);
-		engine(n, 0, bottom);
-	}
 }

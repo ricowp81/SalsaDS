@@ -1,0 +1,290 @@
+/*
+ * SalsaDS — video de la máquina: instantáneas por cuadro y registro de cambios por línea para los motores 2D
+ * (Fase 2.1). Ver el comentario de `struct nds_video` en nds.h y el encabezado de src/gpu2d/gpu2d.h.
+ *
+ * Línea 0 (`nds_video_frame_begin`): copia a la instantánea del cuadro las páginas de VRAM cambiadas desde la última
+ * vez que se llenó ese juego, la paleta y la OAM; copia los registros de cada motor y arma las tablas de páginas
+ * de las vistas (lo que VRAMCNT mapea a fondos y a OBJ de A y B), las ranuras de paletas extendidas y los bancos
+ * del modo de visualización de VRAM.
+ *
+ * Durante las líneas visibles el ARM9 escribe registros de los motores, paleta y OAM: cada escritura se anota con
+ * la primera línea en que se ve (la línea siguiente a la del instante en que se escribió: el motor dibuja una
+ * línea con lo que tiene al empezarla, como hace melonDS). Línea 192 (`nds_video_frame_end`): el cuadro queda
+ * cerrado y se entrega al renderizador.
+ *
+ * Fuente: GBATEK (mapas de E/S y de VRAM de los motores 2D). Código propio.
+ */
+#include <string.h>
+
+#include "core/nds_priv.h"
+
+#define PAGE_SHIFT 14u
+
+/* Primera línea en la que se ve una escritura hecha ahora; NDS_VIDEO_NONE si no se ve en este cuadro. Como en
+ * melonDS (la sonda `gfxprobe` lo mostró), el motor dibuja cada línea al llegar su HBlank: una escritura anterior al
+ * HBlank de la línea L (el punto 256) se ve en la propia línea L, una posterior en la L + 1. */
+#define NDS_VIDEO_NONE 0xFFFFFFFFu
+
+static uint32_t eff_line(const struct nds *n)
+{
+	uint32_t line;
+
+	if (!n->vid.recording)
+		return NDS_VIDEO_NONE;
+	line = nds_line_at(n->a9.cycles);
+	if (line >= 192u)
+		return NDS_VIDEO_NONE;
+	if (nds_dot_at(n->a9.cycles) >= NDS_HBLANK_CYCLES)
+		line++;
+	return line >= 192u ? NDS_VIDEO_NONE : line;
+}
+
+static void log_change(struct nds *n, int eng, uint32_t reg, uint32_t value)
+{
+	const uint32_t line = eff_line(n);
+	struct nds_vset *s = &n->vid.set[n->vid.cur];
+	gpu2d_engine *ge = &s->frame.eng[eng];
+
+	if (line == NDS_VIDEO_NONE)
+		return;
+	if (ge->nchg >= NDS_VLOG_MAX) {
+		s->dropped++;
+		return;
+	}
+	s->chg[eng][ge->nchg].line = (uint16_t)line;
+	s->chg[eng][ge->nchg].reg = (uint16_t)reg;
+	s->chg[eng][ge->nchg].value = value;
+	ge->nchg++;
+}
+
+void nds_video_reg_changed(struct nds *n, uint32_t o)
+{
+	int eng;
+	uint32_t i;
+
+	if (o < 0x70u) {
+		eng = 0;
+		i = o >> 1;
+	} else if (o >= 0x1000u && o < 0x1070u) {
+		eng = 1;
+		i = (o - 0x1000u) >> 1;
+	} else {
+		return;
+	}
+	if (i == 2 || i == 3) /* DISPSTAT y VCOUNT (los atiende el planificador) */
+		return;
+	if (eng == 0 && (i == 52 || i == 53)) { /* DISP_MMEM_FIFO */
+		nds_video_mmem_push(n, n->io[NDS_CPU9].gen[o >> 1]);
+		return;
+	}
+	log_change(n, eng, i, n->io[NDS_CPU9].gen[o >> 1]);
+}
+
+void nds_video_pal_written(struct nds *n, uint32_t off)
+{
+	const uint32_t eng = (off >> 10) & 1u, idx = (off & 0x3FFu) >> 1;
+
+	log_change(n, (int)eng, G2D_CHG_PAL, (idx << 16) | (rd16le(n->pal + (off & ~1u)) & 0x7FFFu));
+}
+
+void nds_video_oam_written(struct nds *n, uint32_t off)
+{
+	const uint32_t eng = (off >> 10) & 1u, idx = (off & 0x3FFu) >> 1;
+
+	log_change(n, (int)eng, G2D_CHG_OAM, (idx << 16) | rd16le(n->oam + (off & ~1u)));
+}
+
+void nds_video_vram_dirty(struct nds *n, uint32_t vram_off)
+{
+	const uint64_t bit = 1ull << (vram_off >> PAGE_SHIFT);
+
+	n->vid.dirty[0] |= bit;
+	n->vid.dirty[1] |= bit;
+}
+
+void nds_video_mmem_push(struct nds *n, uint16_t px)
+{
+	struct nds_video *v = &n->vid;
+
+	if (v->mpos < (uint32_t)(GPU2D_W * GPU2D_H)) {
+		wr16le(&v->set[v->cur].mmem[v->mpos / GPU2D_W][(v->mpos % GPU2D_W) * 2], px);
+		v->mpos++;
+	}
+}
+
+/* Línea visible `line` empieza: la FIFO del modo 3 se alinea con ella. */
+void nds_video_line_start(struct nds *n, uint32_t line)
+{
+	n->vid.mpos = line * GPU2D_W;
+}
+
+void nds_video_init(struct nds *n)
+{
+	struct nds_video *v = &n->vid;
+	struct nds_video_ops ops = v->ops;
+	const int use_ref = v->use_ref;
+
+	memset(v, 0, sizeof *v);
+	v->ops = ops;
+	v->use_ref = use_ref;
+	v->cur = 1;
+	v->last = -1;
+	v->dirty[0] = v->dirty[1] = (1ull << NDS_VPAGES) - 1;
+	nds_video_frame_begin(n); /* el primer cuadro empieza en el instante 0: la línea 0 no tiene evento */
+}
+
+static uint32_t ext_slot(unsigned bank, unsigned slot)
+{
+	return nds_vram_bank_offset(bank) + 0x2000u * slot;
+}
+
+void nds_video_frame_begin(struct nds *n)
+{
+	struct nds_video *v = &n->vid;
+	struct nds_vset *s;
+
+	v->cur ^= 1;
+	s = &v->set[v->cur];
+	if (v->ops.wait)
+		v->ops.wait(v->ops.ctx, v->cur);
+
+	/* VRAM: solo las páginas cambiadas desde la última vez que se llenó este juego */
+	for (unsigned pg = 0; pg < NDS_VPAGES; pg++)
+		if (v->dirty[v->cur] & (1ull << pg))
+			memcpy(s->vram + pg * 0x4000u, n->vram + pg * 0x4000u, 0x4000u);
+	v->dirty[v->cur] = 0;
+	memcpy(s->pal[0], n->pal, 2 * 1024);
+	memcpy(s->oam[0], n->oam, 2 * 1024);
+	memset(s->vram + G2D_VRAM_SIZE, 0, G2D_VRAM_ZERO);
+	s->dropped = 0;
+
+	for (int e = 0; e < 2; e++) {
+		gpu2d_engine *ge = &s->frame.eng[e];
+		const unsigned wbg = e ? 1u : 0u, wobj = e ? 3u : 2u;
+		const uint16_t *gen = &n->io[NDS_CPU9].gen[e ? 0x800 : 0];
+
+		memset(ge, 0, sizeof *ge);
+		ge->vram_ea = (uint64_t)(uintptr_t)s->vram;
+		ge->pal_ea = (uint64_t)(uintptr_t)s->pal[e];
+		ge->oam_ea = (uint64_t)(uintptr_t)s->oam[e];
+		ge->chg_ea = (uint64_t)(uintptr_t)s->chg[e];
+		ge->mmem_ea = e ? 0 : (uint64_t)(uintptr_t)s->mmem;
+		ge->flags = e ? G2D_F_ENGINE_B : 0;
+		ge->bgpages = e ? G2D_BG_PAGES_B : G2D_BG_PAGES_A;
+		ge->objpages = e ? G2D_OBJ_PAGES_B : G2D_OBJ_PAGES_A;
+		for (int i = 0; i < G2D_NREGS; i++)
+			ge->regs[i] = gen[i];
+		for (unsigned pg = 0; pg < G2D_BG_PAGES_A; pg++)
+			ge->bgpg[pg] = pg < ge->bgpages ? nds_vram_view_offset(n, wbg, pg) : G2D_UNMAPPED;
+		for (unsigned pg = 0; pg < G2D_OBJ_PAGES_A; pg++)
+			ge->objpg[pg] = pg < ge->objpages ? nds_vram_view_offset(n, wobj, pg) : G2D_UNMAPPED;
+		for (int k = 0; k < 4; k++)
+			ge->extbg[k] = G2D_UNMAPPED;
+		ge->extobj = G2D_UNMAPPED;
+		for (int k = 0; k < 4; k++)
+			ge->vdisp[k] = G2D_UNMAPPED;
+	}
+	{
+		/* Paletas extendidas (GBATEK, «DS Memory Control - VRAM»): fondos de A en E (MST 4, ranuras 0..3) o en F/G
+		 * (MST 4, OFS 0: ranuras 0-1; OFS 1: ranuras 2-3); OBJ de A en F/G (MST 5); fondos de B en H (MST 2) y OBJ
+		 * de B en I (MST 3). */
+		gpu2d_engine *ga = &s->frame.eng[0], *gb = &s->frame.eng[1];
+
+		for (unsigned b = 4; b < 9; b++) {
+			const uint8_t c = n->vramcnt[b];
+			const unsigned mst = c & 7u, ofs = (c >> 3) & 3u;
+
+			if (!(c & 0x80u))
+				continue;
+			if (b == 4 && mst == 4) {
+				for (unsigned k = 0; k < 4; k++)
+					ga->extbg[k] = ext_slot(b, k);
+			} else if ((b == 5 || b == 6) && mst == 4) {
+				for (unsigned k = 0; k < 2; k++)
+					ga->extbg[(ofs & 1u) * 2 + k] = ext_slot(b, k);
+			} else if ((b == 5 || b == 6) && mst == 5) {
+				if (ga->extobj == G2D_UNMAPPED)
+					ga->extobj = ext_slot(b, 0);
+			} else if (b == 7 && (mst & 3u) == 2) {
+				for (unsigned k = 0; k < 4; k++)
+					gb->extbg[k] = ext_slot(b, k);
+			} else if (b == 8 && (mst & 3u) == 3) {
+				gb->extobj = ext_slot(b, 0);
+			}
+		}
+		for (unsigned b = 0; b < 4; b++)
+			if ((n->vramcnt[b] & 0x80u) && (n->vramcnt[b] & 7u) == 0)
+				ga->vdisp[b] = nds_vram_bank_offset(b);
+	}
+	v->mpos = 0;
+	v->recording = 1;
+}
+
+void nds_video_frame_end(struct nds *n)
+{
+	struct nds_video *v = &n->vid;
+	struct nds_vset *s = &v->set[v->cur];
+
+	if (!v->recording)
+		return;
+	v->recording = 0;
+	s->powcnt1 = n->powcnt1;
+	v->last = v->cur;
+	v->rendered = 0;
+	v->frames++;
+	if (v->ops.submit)
+		v->ops.submit(v->ops.ctx, v->cur, &s->frame);
+}
+
+const gpu2d_frame *nds_video_last_frame(const struct nds *n, int *set)
+{
+	if (n->vid.last < 0)
+		return NULL;
+	if (set)
+		*set = n->vid.last;
+	return &n->vid.set[n->vid.last].frame;
+}
+
+/* ---- host ---------------------------------------------------------------------------------------------- */
+
+void nds_video_render_host(struct nds *n)
+{
+	struct nds_video *v = &n->vid;
+
+	if (v->last < 0 || v->rendered)
+		return;
+	for (int e = 0; e < 2; e++) {
+		gpu2d_engine *ge = &v->set[v->last].frame.eng[e];
+
+		ge->out_ea = (uint64_t)(uintptr_t)v->img[e];
+		if (v->use_ref)
+			gpu2d_ref_engine(ge, v->img[e]);
+		else
+			gpu2d_compose_engine(&v->comp, ge);
+	}
+	v->rendered = 1;
+}
+
+/* RGBA5551 → RGB555 con el bit 15 en 1 */
+static uint16_t to_555(uint16_t v)
+{
+	return (uint16_t)(0x8000u | ((v >> 11) & 31u) | (((v >> 6) & 31u) << 5) | (((v >> 1) & 31u) << 10));
+}
+
+void nds_screens(struct nds *n, uint16_t *top, uint16_t *bottom)
+{
+	struct nds_video *v = &n->vid;
+	int swap;
+
+	if (v->last < 0) {
+		for (int i = 0; i < NDS_SCREEN_W * NDS_SCREEN_H; i++)
+			top[i] = bottom[i] = 0xFFFFu;
+		return;
+	}
+	nds_video_render_host(n);
+	swap = (v->set[v->last].powcnt1 & 0x8000u) != 0;
+	for (int i = 0; i < NDS_SCREEN_W * NDS_SCREEN_H; i++) {
+		top[i] = to_555(v->img[swap ? 0 : 1][i]);
+		bottom[i] = to_555(v->img[swap ? 1 : 0][i]);
+	}
+}

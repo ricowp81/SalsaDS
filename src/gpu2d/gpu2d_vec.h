@@ -1,21 +1,21 @@
 /*
- * SalsaDS — vectores de 8 píxeles de 16 bits para el compositor 2D.
+ * SalsaDS — vectores de 8 píxeles de 16 bits para el compositor 2D (Fase 2.1).
  *
- * Un vector son 8 píxeles consecutivos de una línea. Cada píxel es el índice
- * de la paleta (0..511: fondos 0..255, OBJ 256..511) o 0xFFFF si es
- * transparente. En el SPE son un vec_ushort8; en el host, un arreglo de 8
- * valores con los mismos resultados (para probar la estructura del
- * compositor en la Mac y en qemu-ppc64; los kernels SIMD solo se prueban
- * en RPCS3 y en la PS3, contra la referencia).
+ * Un vector son 8 píxeles consecutivos de una línea. Cada píxel es un índice de la paleta unificada del compositor
+ * (G2D_TRANSP = transparente; 0..20991 = índice; 0x8000 | BGR555 = color directo). En el SPE son un vec_ushort8; en
+ * el host, un arreglo de 8 valores con los mismos resultados (para probar la estructura del compositor en la Mac y
+ * en qemu-ppc64; los kernels SIMD solo se prueban en RPCS3 y en la PS3, contra la referencia).
  *
- * También: lectura little-endian de medias palabras de la memoria de la DS
- * y las primitivas de DMA (en el host, copias).
+ * También: lectura little-endian de medias palabras de la memoria de la DS y las primitivas de DMA (en el host,
+ * copias).
  */
 #ifndef SALSADS_GPU2D_VEC_H
 #define SALSADS_GPU2D_VEC_H
 
 #include <stdint.h>
 #include <string.h>
+
+#define G2D_TRANSP 0x7FFFu
 
 #ifdef __SPU__
 #include <spu_intrinsics.h>
@@ -35,10 +35,50 @@ G2D_INLINE g2d_v8 g2d_v8_splat(uint16_t x)
 	return spu_splats(x);
 }
 
-/* Donde `src` no es transparente (0xFFFF) gana `src`; si no, `dst`. */
-G2D_INLINE g2d_v8 g2d_v8_merge(g2d_v8 dst, g2d_v8 src)
+G2D_INLINE g2d_v8 g2d_v8_and(g2d_v8 a, g2d_v8 b)
 {
-	return spu_sel(src, dst, spu_cmpeq(src, spu_splats((unsigned short)0xFFFF)));
+	return spu_and(a, b);
+}
+G2D_INLINE g2d_v8 g2d_v8_or(g2d_v8 a, g2d_v8 b)
+{
+	return spu_or(a, b);
+}
+G2D_INLINE g2d_v8 g2d_v8_andc(g2d_v8 a, g2d_v8 b) /* a & ~b */
+{
+	return spu_andc(a, b);
+}
+/* Donde la máscara es 1, `b`; si no, `a`. */
+G2D_INLINE g2d_v8 g2d_v8_sel(g2d_v8 a, g2d_v8 b, g2d_v8 m)
+{
+	return spu_sel(a, b, m);
+}
+G2D_INLINE g2d_v8 g2d_v8_eq(g2d_v8 a, g2d_v8 b)
+{
+	return spu_cmpeq(a, b);
+}
+G2D_INLINE g2d_v8 g2d_v8_gt(g2d_v8 a, g2d_v8 b) /* sin signo */
+{
+	return spu_cmpgt(a, b);
+}
+G2D_INLINE g2d_v8 g2d_v8_add(g2d_v8 a, g2d_v8 b)
+{
+	return spu_add(a, b);
+}
+G2D_INLINE g2d_v8 g2d_v8_shr(g2d_v8 a, int n)
+{
+	return spu_rlmask(a, (vec_short8)spu_splats((short)-n));
+}
+G2D_INLINE int g2d_v8_any(g2d_v8 m)
+{
+	return spu_extract(spu_gather(m), 0) != 0;
+}
+G2D_INLINE uint32_t g2d_v8_lane(g2d_v8 v, int k)
+{
+	return spu_extract(v, k);
+}
+G2D_INLINE g2d_v8 g2d_v8_put(g2d_v8 v, int k, uint16_t x)
+{
+	return spu_insert(x, v, k);
 }
 
 /* Patrones de shuffle por desplazamiento (no hay suma de bytes en el SPU). */
@@ -63,9 +103,8 @@ static const vec_uchar16 g2d_place_pat[8] = {
 	{ 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17 },
 };
 
-/* Los 8 píxeles de una fila de tesela de 4 bits (4 bytes, alineados a 4;
- * el nibble bajo es el píxel de la izquierda). `base` se suma al número de
- * color (banco de paleta × 16, más 256 si es OBJ). */
+/* Los 8 píxeles de una fila de tesela de 4 bits (4 bytes, alineados a 4; el nibble bajo es el píxel de la izquierda).
+ * `base` se suma al número de color (banco de paleta × 16, más 256 si es OBJ); el color 0 es transparente. */
 G2D_INLINE g2d_v8 g2d_v8_expand4(const uint8_t *p, uint32_t base, int hflip)
 {
 	const vec_uchar16 v = (vec_uchar16)spu_promote(*(const uint32_t *)(const void *)p, 0);
@@ -74,7 +113,7 @@ G2D_INLINE g2d_v8 g2d_v8_expand4(const uint8_t *p, uint32_t base, int hflip)
 	vec_ushort8 c = spu_rlmask((vec_ushort8)sp, ((vec_short8){ 0, -4, 0, -4, 0, -4, 0, -4 }));
 	c = spu_and(c, (unsigned short)15);
 	const vec_ushort8 tr = spu_cmpeq(c, (unsigned short)0);
-	g2d_v8 r = spu_sel(spu_add(c, (unsigned short)base), spu_splats((unsigned short)0xFFFF), tr);
+	g2d_v8 r = spu_sel(spu_add(c, (unsigned short)base), spu_splats((unsigned short)G2D_TRANSP), tr);
 	if (hflip)
 		r = spu_shuffle(r, r, ((vec_uchar16){ 14, 15, 12, 13, 10, 11, 8, 9, 6, 7, 4, 5, 2, 3, 0, 1 }));
 	return r;
@@ -87,7 +126,20 @@ G2D_INLINE g2d_v8 g2d_v8_expand8(const uint8_t *p, uint32_t base, int hflip)
 	const vec_ushort8 c = (vec_ushort8)spu_shuffle(v, v, ((vec_uchar16){ 0x80, 0, 0x80, 1, 0x80, 2, 0x80, 3,
 									     0x80, 4, 0x80, 5, 0x80, 6, 0x80, 7 }));
 	const vec_ushort8 tr = spu_cmpeq(c, (unsigned short)0);
-	g2d_v8 r = spu_sel(spu_add(c, (unsigned short)base), spu_splats((unsigned short)0xFFFF), tr);
+	g2d_v8 r = spu_sel(spu_add(c, (unsigned short)base), spu_splats((unsigned short)G2D_TRANSP), tr);
+	if (hflip)
+		r = spu_shuffle(r, r, ((vec_uchar16){ 14, 15, 12, 13, 10, 11, 8, 9, 6, 7, 4, 5, 2, 3, 0, 1 }));
+	return r;
+}
+
+/* Ocho píxeles de color directo (16 bytes little-endian, alineados a 16): 0x8000 | color si el bit 15 está, si no
+ * transparente. */
+G2D_INLINE g2d_v8 g2d_v8_expand16(const uint8_t *p, int hflip)
+{
+	const vec_uchar16 v = *(const vec_uchar16 *)(const void *)p;
+	vec_ushort8 c = (vec_ushort8)spu_shuffle(v, v, ((vec_uchar16){ 1, 0, 3, 2, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 14 }));
+	const vec_ushort8 op = spu_cmpgt(c, (unsigned short)0x7FFF);
+	g2d_v8 r = spu_sel(spu_splats((unsigned short)G2D_TRANSP), c, op);
 	if (hflip)
 		r = spu_shuffle(r, r, ((vec_uchar16){ 14, 15, 12, 13, 10, 11, 8, 9, 6, 7, 4, 5, 2, 3, 0, 1 }));
 	return r;
@@ -99,19 +151,13 @@ G2D_INLINE g2d_v8 g2d_v8_window(g2d_v8 a, g2d_v8 b, uint32_t off)
 	return spu_shuffle(a, b, g2d_window_pat[off]);
 }
 
-/* Pone `t` desplazado `off` píxeles a la derecha sobre dos vectores
- * consecutivos: lo que no cubre queda transparente. */
+/* Pone `t` desplazado `off` píxeles a la derecha sobre dos vectores consecutivos: lo que no cubre queda transparente. */
 G2D_INLINE void g2d_v8_place(g2d_v8 t, uint32_t off, g2d_v8 *lo, g2d_v8 *hi)
 {
 	const vec_uchar16 sel = g2d_place_pat[off];
-	const g2d_v8 ff = spu_splats((unsigned short)0xFFFF);
+	const g2d_v8 ff = spu_splats((unsigned short)G2D_TRANSP);
 	*lo = spu_shuffle(ff, t, sel);
 	*hi = spu_shuffle(t, ff, sel);
-}
-
-G2D_INLINE uint32_t g2d_v8_lane(g2d_v8 v, int k)
-{
-	return spu_extract(v, k);
 }
 
 /* DMA. `tag` 0..30. */
@@ -128,10 +174,10 @@ G2D_INLINE void g2d_put(const void *ls, uint64_t ea, uint32_t size, uint32_t tag
 {
 	mfc_put((volatile void *)ls, ea, size, tag, 0, 0);
 }
-/* Trae `n` bloques de `size` bytes que están en `base + offs[i]` y los deja
- * seguidos en `ls`. Todos dentro de la misma ventana de 4 GB que `base`. */
-G2D_INLINE void g2d_gather(void *ls, uint64_t base, const uint32_t *offs, uint32_t n, uint32_t size,
-			   uint32_t tag, g2d_el *list)
+/* Trae `n` bloques de `size` bytes que están en `base + offs[i]` y los deja seguidos en `ls`. Todos dentro de la
+ * misma ventana de 4 GB que `base`. (Con `size` distinto de múltiplo de 16 el DMA no sirve: aquí 16, 32, 64.) */
+G2D_INLINE void g2d_gather(void *ls, uint64_t base, const uint32_t *offs, uint32_t n, uint32_t size, uint32_t tag,
+			   g2d_el *list)
 {
 	const uint32_t lo = (uint32_t)base;
 	for (uint32_t i = 0; i < n; i++) {
@@ -170,12 +216,50 @@ G2D_INLINE g2d_v8 g2d_v8_splat(uint16_t x)
 	return r;
 }
 
-G2D_INLINE g2d_v8 g2d_v8_merge(g2d_v8 dst, g2d_v8 src)
+#define G2D_V8_BIN(NAME, EXPR)                                                                              \
+	G2D_INLINE g2d_v8 NAME(g2d_v8 a, g2d_v8 b)                                                          \
+	{                                                                                                   \
+		g2d_v8 r;                                                                                   \
+		for (int i = 0; i < 8; i++)                                                                 \
+			r.l[i] = (uint16_t)(EXPR);                                                          \
+		return r;                                                                                   \
+	}
+G2D_V8_BIN(g2d_v8_and, a.l[i] & b.l[i])
+G2D_V8_BIN(g2d_v8_or, a.l[i] | b.l[i])
+G2D_V8_BIN(g2d_v8_andc, a.l[i] & ~b.l[i])
+G2D_V8_BIN(g2d_v8_eq, a.l[i] == b.l[i] ? 0xFFFF : 0)
+G2D_V8_BIN(g2d_v8_gt, a.l[i] > b.l[i] ? 0xFFFF : 0)
+G2D_V8_BIN(g2d_v8_add, a.l[i] + b.l[i])
+
+G2D_INLINE g2d_v8 g2d_v8_sel(g2d_v8 a, g2d_v8 b, g2d_v8 m)
+{
+	g2d_v8 r;
+	for (int i = 0; i < 8; i++)
+		r.l[i] = (uint16_t)((a.l[i] & ~m.l[i]) | (b.l[i] & m.l[i]));
+	return r;
+}
+G2D_INLINE g2d_v8 g2d_v8_shr(g2d_v8 a, int n)
+{
+	g2d_v8 r;
+	for (int i = 0; i < 8; i++)
+		r.l[i] = (uint16_t)(a.l[i] >> n);
+	return r;
+}
+G2D_INLINE int g2d_v8_any(g2d_v8 m)
 {
 	for (int i = 0; i < 8; i++)
-		if (src.l[i] != 0xFFFF)
-			dst.l[i] = src.l[i];
-	return dst;
+		if (m.l[i])
+			return 1;
+	return 0;
+}
+G2D_INLINE uint32_t g2d_v8_lane(g2d_v8 v, int k)
+{
+	return v.l[k];
+}
+G2D_INLINE g2d_v8 g2d_v8_put(g2d_v8 v, int k, uint16_t x)
+{
+	v.l[k] = x;
+	return v;
 }
 
 G2D_INLINE g2d_v8 g2d_v8_expand4(const uint8_t *p, uint32_t base, int hflip)
@@ -183,7 +267,7 @@ G2D_INLINE g2d_v8 g2d_v8_expand4(const uint8_t *p, uint32_t base, int hflip)
 	g2d_v8 r;
 	for (int i = 0; i < 8; i++) {
 		const uint32_t c = (i & 1) ? (uint32_t)(p[i >> 1] >> 4) : (uint32_t)(p[i >> 1] & 15);
-		r.l[hflip ? 7 - i : i] = c ? (uint16_t)(c + base) : (uint16_t)0xFFFF;
+		r.l[hflip ? 7 - i : i] = c ? (uint16_t)(c + base) : (uint16_t)G2D_TRANSP;
 	}
 	return r;
 }
@@ -192,7 +276,17 @@ G2D_INLINE g2d_v8 g2d_v8_expand8(const uint8_t *p, uint32_t base, int hflip)
 {
 	g2d_v8 r;
 	for (int i = 0; i < 8; i++)
-		r.l[hflip ? 7 - i : i] = p[i] ? (uint16_t)(p[i] + base) : (uint16_t)0xFFFF;
+		r.l[hflip ? 7 - i : i] = p[i] ? (uint16_t)(p[i] + base) : (uint16_t)G2D_TRANSP;
+	return r;
+}
+
+G2D_INLINE g2d_v8 g2d_v8_expand16(const uint8_t *p, int hflip)
+{
+	g2d_v8 r;
+	for (int i = 0; i < 8; i++) {
+		const uint16_t c = rd16le(p + 2 * i);
+		r.l[hflip ? 7 - i : i] = (c & 0x8000u) ? c : (uint16_t)G2D_TRANSP;
+	}
 	return r;
 }
 
@@ -207,14 +301,9 @@ G2D_INLINE g2d_v8 g2d_v8_window(g2d_v8 a, g2d_v8 b, uint32_t off)
 G2D_INLINE void g2d_v8_place(g2d_v8 t, uint32_t off, g2d_v8 *lo, g2d_v8 *hi)
 {
 	for (uint32_t i = 0; i < 8; i++) {
-		lo->l[i] = i >= off ? t.l[i - off] : (uint16_t)0xFFFF;
-		hi->l[i] = i < off ? t.l[8 - off + i] : (uint16_t)0xFFFF;
+		lo->l[i] = i >= off ? t.l[i - off] : (uint16_t)G2D_TRANSP;
+		hi->l[i] = i < off ? t.l[8 - off + i] : (uint16_t)G2D_TRANSP;
 	}
-}
-
-G2D_INLINE uint32_t g2d_v8_lane(g2d_v8 v, int k)
-{
-	return v.l[k];
 }
 
 typedef struct g2d_el {
@@ -231,8 +320,8 @@ G2D_INLINE void g2d_put(const void *ls, uint64_t ea, uint32_t size, uint32_t tag
 	(void)tag;
 	memcpy((void *)(uintptr_t)ea, ls, size);
 }
-G2D_INLINE void g2d_gather(void *ls, uint64_t base, const uint32_t *offs, uint32_t n, uint32_t size,
-			   uint32_t tag, g2d_el *list)
+G2D_INLINE void g2d_gather(void *ls, uint64_t base, const uint32_t *offs, uint32_t n, uint32_t size, uint32_t tag,
+			   g2d_el *list)
 {
 	(void)tag;
 	(void)list;

@@ -3,7 +3,7 @@
  * resultados (tests/roms/src/common/sds.h), como hace tools/melonds-run.py con melonDS.
  *
  *   salsads-cpurun [--cycles N] [--frames N] [--quantum N] [--stats] [--arm7] [--keys HEX] [--touch X,Y]
- *                  [--screens FILE.ppm] [--peek ADDR]... [--trace N [--trace7]] ROM.nds
+ *                  [--screens FILE.ppm] [--ref] [--vs-ref] [--expect] [--same-ab] [--unmapped] [--peek ADDR]... [--trace N [--trace7]] ROM.nds
  *
  * Código de salida: 0 = OK, 1 = FALLO, 2 = sin veredicto, 3 = una CPU cayó en un vector de excepción de la BIOS
  * sin manejador. Con --frames corre ese número de cuadros y termina con 0 (para sacar imágenes).
@@ -78,6 +78,85 @@ static void save_ppm(const char *path)
 	fclose(f);
 }
 
+/* Lista de píxeles esperados que dejan las ROMs de gráficos (tests/roms/src/common/sds.h: sds_expect_pixel). Se comprueban
+ * contra la imagen de cada motor del último cuadro. Devuelve el número de fallos (y los imprime). */
+static int check_expect(void)
+{
+	const uint32_t n = nds_peek32(&M, 0, 0x02380804u);
+	int bad = 0;
+
+	if (nds_peek32(&M, 0, 0x02380800u) != 0x45505847u) {
+		printf("EXPECT: la ROM no dejó lista de píxeles esperados\n");
+		return 1;
+	}
+	nds_video_render_host(&M);
+	for (uint32_t i = 0; i < n && i < 1000; i++) {
+		const uint32_t a = nds_peek32(&M, 0, 0x02380808u + 8 * i), b = nds_peek32(&M, 0, 0x0238080Cu + 8 * i);
+		const int scr = (int)(a & 1), x = (int)(a >> 16), y = (int)(b & 0xFFFF);
+		const uint16_t want = gpu2d_to_5551((uint16_t)(b >> 16)), got = M.vid.img[scr][y * NDS_SCREEN_W + x];
+
+		if (got != want) {
+			if (bad < 20)
+				printf("EXPECT fallo: motor %c (%d,%d): obtuvo 0x%04x, esperaba 0x%04x\n", 'A' + scr, x, y, got, want);
+			bad++;
+		}
+	}
+	printf("EXPECT: %u comprobaciones, %d fallos\n", n, bad);
+	return bad;
+}
+
+/* Las dos pantallas iguales (las ROMs de gráficos montan la misma escena en los dos motores) */
+static int check_same_ab(void)
+{
+	int diffs = 0, first = -1;
+
+	nds_video_render_host(&M);
+	for (int i = 0; i < NDS_SCREEN_W * NDS_SCREEN_H; i++)
+		if (M.vid.img[0][i] != M.vid.img[1][i]) {
+			if (first < 0)
+				first = i;
+			diffs++;
+		}
+	if (diffs)
+		printf("A==B: FALLO, %d píxeles distintos (primero en %d,%d: A 0x%04x, B 0x%04x)\n", diffs, first % NDS_SCREEN_W,
+		       first / NDS_SCREEN_W, M.vid.img[0][first], M.vid.img[1][first]);
+	else
+		printf("A==B: OK\n");
+	return diffs != 0;
+}
+
+/* El compositor (el del SPE, aquí en escalar) contra el renderizador de referencia, píxel por píxel, en los dos motores.
+ * Si los mapas de los fondos afines no cupieron en la arena (el compositor no los dibuja), la comparación no vale. */
+static int check_vs_ref(void)
+{
+	static uint16_t refimg[NDS_SCREEN_W * NDS_SCREEN_H];
+	int set, diffs = 0, first = -1, fe = 0;
+	const gpu2d_frame *fr = nds_video_last_frame(&M, &set);
+
+	if (!fr || M.vid.use_ref) {
+		printf("REF: nada que comparar\n");
+		return 0;
+	}
+	nds_video_render_host(&M);
+	for (int e = 0; e < 2; e++) {
+		gpu2d_ref_engine(&fr->eng[e], refimg);
+		for (int i = 0; i < NDS_SCREEN_W * NDS_SCREEN_H; i++)
+			if (refimg[i] != M.vid.img[e][i]) {
+				if (first < 0) {
+					first = i;
+					fe = e;
+				}
+				diffs++;
+			}
+	}
+	if (diffs)
+		printf("REF: FALLO, %d píxeles distintos (primero en motor %c %d,%d)\n", diffs, 'A' + fe, first % NDS_SCREEN_W,
+		       first / NDS_SCREEN_W);
+	else
+		printf("REF: IGUAL\n");
+	return diffs != 0;
+}
+
 /* Si el juego escribió en su memoria de guardado y hay archivo, lo deja actualizado. */
 static void save_out(const char *path)
 {
@@ -141,10 +220,11 @@ int main(int argc, char **argv)
 	uint64_t watch_max = 0;
 	int break_cpu = -1;
 	uint32_t peek[8], npeek = 0;
-	int show_regs = 0;
+	int show_regs = 0, use_ref = 0, vs_ref = 0, expect = 0, same_ab = 0, unmapped = 0;
 	size_t len;
 	uint8_t *rom;
 	double t0, t1;
+	int rc_gfx = 0;
 
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--cycles") && i + 1 < argc)
@@ -202,6 +282,16 @@ int main(int argc, char **argv)
 			screens_path = argv[++i];
 		else if (!strcmp(argv[i], "--regs"))
 			show_regs = 1;
+		else if (!strcmp(argv[i], "--ref"))
+			use_ref = 1;
+		else if (!strcmp(argv[i], "--vs-ref"))
+			vs_ref = 1;
+		else if (!strcmp(argv[i], "--expect"))
+			expect = 1;
+		else if (!strcmp(argv[i], "--same-ab"))
+			same_ab = 1;
+		else if (!strcmp(argv[i], "--unmapped"))
+			unmapped = 1;
 		else if (!strcmp(argv[i], "--peek") && i + 1 < argc && npeek < 8)
 			peek[npeek++] = strtoul(argv[++i], NULL, 0);
 		else
@@ -209,7 +299,7 @@ int main(int argc, char **argv)
 	}
 	if (!rom_path) {
 		fprintf(stderr, "uso: salsads-cpurun [--cycles N] [--frames N] [--quantum N] [--stats] [--arm7] "
-				"[--keys HEX] [--touch X,Y] [--screens FILE.ppm] [--peek ADDR] [--save FILE | --save-size N] ROM.nds\n");
+				"[--keys HEX] [--touch X,Y] [--screens FILE.ppm] [--ref] [--vs-ref] [--expect] [--same-ab] [--unmapped] [--peek ADDR] [--save FILE | --save-size N] ROM.nds\n");
 		return 2;
 	}
 	rom = slurp(rom_path, &len);
@@ -220,6 +310,7 @@ int main(int argc, char **argv)
 	M.log = log_to_stderr;
 	M.quantum = quantum;
 	M.dbg = dbg;
+	M.vid.use_ref = use_ref;
 	nds_init(&M);
 	if (nds_load_rom(&M, rom, len) || nds_boot_direct(&M)) {
 		fprintf(stderr, "ROM inválida\n");
@@ -397,6 +488,22 @@ int main(int argc, char **argv)
 			       (double)M.st.events / (double)frames, (t1 - t0) * 1e6 / (double)frames);
 		if (screens_path)
 			save_ppm(screens_path);
+		if (unmapped) {
+			static uint16_t tmp[NDS_SCREEN_W * NDS_SCREEN_H];
+			int set;
+			const gpu2d_frame *fr = nds_video_last_frame(&M, &set);
+
+			gpu2d_ref_unmapped_reads = 0;
+			if (fr)
+				gpu2d_ref_engine(&fr->eng[0], tmp);
+			printf("VRAM sin banco: %u lecturas del motor A\n", gpu2d_ref_unmapped_reads);
+		}
+		if (expect && check_expect())
+			rc_gfx = 1;
+		if (same_ab && check_same_ab())
+			rc_gfx = 1;
+		if (vs_ref && check_vs_ref())
+			rc_gfx = 1;
 		for (uint32_t k = 0; k < npeek; k++)
 			printf("peek 0x%08x = 0x%08x\n", peek[k], nds_peek32(&M, 0, peek[k]));
 		if (show_regs)
@@ -411,7 +518,7 @@ int main(int argc, char **argv)
 				fputc((int)nds_peek8(&M, 0, dumps[k].addr + o), f);
 			fclose(f);
 		}
-		return 0;
+		return rc_gfx;
 	}
 	{
 		uint64_t done = 0;
@@ -457,6 +564,22 @@ int main(int argc, char **argv)
 		}
 		if (screens_path)
 			save_ppm(screens_path);
+		if (unmapped) {
+			static uint16_t tmp[NDS_SCREEN_W * NDS_SCREEN_H];
+			int set;
+			const gpu2d_frame *fr = nds_video_last_frame(&M, &set);
+
+			gpu2d_ref_unmapped_reads = 0;
+			if (fr)
+				gpu2d_ref_engine(&fr->eng[0], tmp);
+			printf("VRAM sin banco: %u lecturas del motor A\n", gpu2d_ref_unmapped_reads);
+		}
+		if (expect && check_expect())
+			rc_gfx = 1;
+		if (same_ab && check_same_ab())
+			rc_gfx = 1;
+		if (vs_ref && check_vs_ref())
+			rc_gfx = 1;
 		for (uint32_t k = 0; k < npeek; k++)
 			printf("peek 0x%08x = 0x%08x\n", peek[k], nds_peek32(&M, 0, peek[k]));
 		if (show_regs)

@@ -24,6 +24,24 @@ static const uint32_t bank_base[9] = { 0, 0x20000, 0x40000, 0x60000, 0x80000, 0x
 /* Tamaño de cada ventana de la VRAM que ve el ARM9 (se repite dentro de su región de 2 MB). */
 static const uint32_t win_size[4] = { 0x80000, 0x20000, 0x40000, 0x20000 };
 
+uint32_t nds_vram_bank_offset(unsigned bank)
+{
+	return bank_base[bank];
+}
+
+/* Desplazamiento (en el arreglo `vram`) de la página `pg` de una vista, o G2D_UNMAPPED. Si hay varios bancos sobre la
+ * misma página, se toma el de menor índice (la lectura de la CPU los combina con OR; el renderizador no). */
+uint32_t nds_vram_view_offset(const struct nds *n, unsigned win, unsigned pg)
+{
+	const uint16_t m = n->vpg_mask[win][pg];
+	unsigned b;
+
+	if (!m)
+		return G2D_UNMAPPED;
+	b = (unsigned)__builtin_ctz(m);
+	return bank_base[b] + (pg * 0x4000u - n->vbank_off[b]);
+}
+
 static inline uint32_t rd_sz(const uint8_t *p, int sz)
 {
 	return sz == 4 ? rd32le(p) : sz == 2 ? rd16le(p) : *p;
@@ -281,8 +299,10 @@ static void vram_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v)
 		if (region == 4) {
 			const uint32_t off = a - 0x06800000u;
 
-			if (off < NDS_VRAM_SIZE && n->vram_lcdc_mask[off >> 14])
+			if (off < NDS_VRAM_SIZE && n->vram_lcdc_mask[off >> 14]) {
 				wr_sz(n->vram + off, sz, v);
+				nds_video_vram_dirty(n, off);
+			}
 			return;
 		}
 		if (region > 3)
@@ -299,11 +319,16 @@ static void vram_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v)
 		return;
 	if (ptr) {
 		wr_sz(ptr + pgoff, sz, v);
+		nds_video_vram_dirty(n, (uint32_t)(ptr + pgoff - n->vram));
 		return;
 	}
 	for (unsigned b = 0; b < 9; b++)
-		if (mask & (1u << b))
-			wr_sz(n->vram + bank_base[b] + (pgstart - n->vbank_off[b]) + pgoff, sz, v);
+		if (mask & (1u << b)) {
+			const uint32_t o = bank_base[b] + (pgstart - n->vbank_off[b]) + pgoff;
+
+			wr_sz(n->vram + o, sz, v);
+			nds_video_vram_dirty(n, o);
+		}
 }
 
 /* ---- ruta lenta ------------------------------------------------------------------------------------ */
@@ -351,15 +376,21 @@ void nds_bus_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v)
 		nds_io_write(n, cpu, a, sz, v);
 		return;
 	case 0x05:
-		if (cpu == NDS_CPU9 && sz >= 2)
+		if (cpu == NDS_CPU9 && sz >= 2) {
 			wr_sz(n->pal + (a & (NDS_PAL_SIZE - 1)), sz, v);
+			for (int k = 0; k < sz; k += 2)
+				nds_video_pal_written(n, (a + (uint32_t)k) & (NDS_PAL_SIZE - 1));
+		}
 		return;
 	case 0x06:
 		vram_write(n, cpu, a, sz, v);
 		return;
 	case 0x07:
-		if (cpu == NDS_CPU9 && sz >= 2)
+		if (cpu == NDS_CPU9 && sz >= 2) {
 			wr_sz(n->oam + (a & (NDS_OAM_SIZE - 1)), sz, v);
+			for (int k = 0; k < sz; k += 2)
+				nds_video_oam_written(n, (a + (uint32_t)k) & (NDS_OAM_SIZE - 1));
+		}
 		return;
 	default:
 		return;
