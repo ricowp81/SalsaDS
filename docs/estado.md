@@ -15,6 +15,8 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
   1700; rayas en el cuadro 1755) y trasladado entero (23 polígonos en orden) a la escena 40 de `gx3d`: melonDS esconde el parche donde el suelo
   es casi coplanar y la DS real no (foto), así que melonDS no sirve de referencia ahí; no se tocó la profundidad. Siguiente: volcar profundidad por píxel en
   la PS3 o usar otro emulador de la DS real.
+- **Paquete «SalsaDS núcleo» con el JIT (SLDS00009)** del commit `97d0337` (más este renglón): `build/salsads-nucleo-jit-fase37.pkg`, SHA-256
+  `e3c5bc7cc2a9cc0ea42e3ba847d459a9f083883b5a6c0f2f2360d9598073c250`; holgura de pila del SPE del 3D 12272 bytes. Sin probar en la PS3: mirar el tallo inclinado del 1-3.
 - Pruebas: `gx3d.golden` con 41 escenas (1, 14, 20 y 21 cambiadas; 38, 39 y 40 nuevas), ROM `gx3d.nds` reconstruida.
 
 ## 2026-10-18 — NSMB 1-3: tallos y nubes (3.6)
