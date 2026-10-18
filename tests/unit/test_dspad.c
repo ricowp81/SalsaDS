@@ -91,6 +91,43 @@ static void test_mapping(void)
 	CHECK_EQ(k.keys, 0);
 }
 
+/* El stick izquierdo hace de cruceta, con histéresis (sube a 80 del centro,
+ * baja al volver por debajo de 48). */
+static void test_left_stick_dpad(void)
+{
+	struct sds_padcfg c;
+	struct sds_input in;
+	struct sds_keys k;
+	sds_padcfg_default(&c);
+	sds_input_init(&in);
+	struct sds_ds3 p = neutral();
+	sds_pad_map(&c, &in, &p, &k);
+	CHECK(k.keys == 0);
+	p.lx = 128 - 90;
+	sds_pad_map(&c, &in, &p, &k);
+	CHECK(k.keys == (1u << SDS_KEY_LEFT));
+	p.lx = 128 - 60; /* dentro de la histéresis: sigue */
+	sds_pad_map(&c, &in, &p, &k);
+	CHECK(k.keys == (1u << SDS_KEY_LEFT));
+	p.lx = 128 - 40; /* por debajo de 48: se suelta */
+	sds_pad_map(&c, &in, &p, &k);
+	CHECK(k.keys == 0);
+	p.lx = 128 + 90;
+	p.ly = 128 + 90; /* abajo a la derecha */
+	sds_pad_map(&c, &in, &p, &k);
+	CHECK(k.keys == ((1u << SDS_KEY_RIGHT) | (1u << SDS_KEY_DOWN)));
+	p.lx = 128 - 90; /* de golpe al otro lado */
+	p.ly = 128 - 90;
+	sds_pad_map(&c, &in, &p, &k);
+	CHECK(k.keys == ((1u << SDS_KEY_LEFT) | (1u << SDS_KEY_UP)));
+	/* el stick derecho no toca la cruceta */
+	p = neutral();
+	p.rx = 255;
+	sds_input_init(&in);
+	sds_pad_map(&c, &in, &p, &k);
+	CHECK(k.keys == 0);
+}
+
 static void test_config(void)
 {
 	struct sds_padcfg c, d;
@@ -416,6 +453,7 @@ void test_dspad(void)
 {
 	test_gyro();
 	test_mapping();
+	test_left_stick_dpad();
 	test_config();
 	test_touch_semantics();
 	test_stick();
