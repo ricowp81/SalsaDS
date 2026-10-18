@@ -22,7 +22,10 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
   cuadro; melonDS pierde casi todo el segundo triángulo del parche y SalsaDS no (337 píxeles); en la DS real el parche sale completo, así
   que falta fidelidad en la escena. Siguiente paso: volcar el cuadro completo (todos los polígonos de la zona, también los translúcidos
   y su orden) en vez de solo suelo y parche, o medir la profundidad por píxel del suelo en melonDS.
-- Pruebas: `test-host` (ver abajo), `--vs-ref3d` y `--vs-ref` iguales con NSMB (1-3 y el mapa), MKDS y SM64DS; `gx3d.golden` con 38
+- **Paquete «SalsaDS núcleo» con el JIT (SLDS00009)** del commit `577e5f8` (más este renglón): `build/salsads-nucleo-jit-fase44.pkg`, SHA-256
+  `f0720e18b2fce0c8f415faff7de463bf5b272049760b25ffa856fd94b0a79157`. Sin probar en la PS3: mirar los tallos y las nubes del 1-3 y el mapa
+  con la cámara en movimiento (las rayas del parche deberían seguir).
+- Pruebas: `test-host` verde (LE y BE, 8 075 418 y 8 076 520 comprobaciones), `--vs-ref3d` y `--vs-ref` iguales con NSMB (1-3 y el mapa), MKDS y SM64DS; `gx3d.golden` con 38
   escenas (15 cambiadas) y el hash de la semilla 7 de `test_render3d` actualizado.
 
 ## 2026-10-18 — Geometría: segunda vuelta (3.5b)
