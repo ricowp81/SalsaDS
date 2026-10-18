@@ -77,34 +77,77 @@ static void group_fill(void)
 	REG8(R_VRAMCNT(1)) = 0;
 }
 
+#define HB_WORDS 800u
+static uint16_t hb_line[560], hb_cnt[560];
+
 static void group_hblank(void)
 {
-	uint32_t n, m;
+	uint32_t n = 0, m = 0, k = 0, last = 0xFFFF, total = 0, d0 = 0, d1 = 0, d2 = 0, dmax = 0, vb_total = 0;
+	uint32_t at100 = 0, at200 = 0, at191 = 0, at192 = 0, first_vis = 0xFFFF;
 
 	sds_group("HBLANK");
-	/* en HBlank, una palabra por línea visible (0-191), nada durante el VBlank */
-	for (uint32_t i = 0; i < 300; i++)
+	/* en HBlank, una palabra por línea visible (0-191), nada durante el VBlank (GBATEK). El búfer de destino es de 800 palabras
+	 * (más de dos cuadros de líneas) y se anota en cada línea cuántas transferencias van, durante poco más de un cuadro y medio. */
+	for (uint32_t i = 0; i < HB_WORDS; i++)
 		BUFW[i] = 0x9000 + i;
-	clear_words(0x1000, 300);
+	clear_words(0x1000, HB_WORDS);
 	sync_vblank();
 	dma_set(0, BUF, BUF + 0x1000, D_ENABLE | D_WORD | D_REPEAT | D_START_HBLANK | D_SRC_INC | 1);
-	/* En una DS real, tras habilitarlo en la línea 192, hubo 300 o más transferencias al llegar a la línea 200 del cuadro
-	 * siguiente (esperadas 192): no está claro si cuenta también durante el VBlank o más de una por línea. Se anotan las
-	 * cuentas en varias líneas (datos para el log) y las dos comprobaciones pasan a informativas. */
 	{
-		static const uint32_t lines[] = { 20, 100, 190, 200, 230, 255 };
-		uint32_t cnt[6];
+		uint32_t prev_cnt = 0, frames_lines = 0;
 
-		for (unsigned k = 0; k < 6; k++) {
-			wait_line_at(lines[k]);
-			cnt[k] = count_nonzero(0x1000, 300);
+		while (k < 400 && frames_lines < 420) {
+			const uint32_t v = MEM16(R_VCOUNT);
+
+			while (n < HB_WORDS && BUFW[0x400 + n] != 0)
+				n++;
+			if (v != last) {
+				last = v;
+				frames_lines++;
+				hb_line[k] = (uint16_t)v;
+				hb_cnt[k] = (uint16_t)n;
+				k++;
+			}
 		}
-		sds_notef("HBLANK DMA desde la linea 192: lineas 20/100/190/200/230/255 -> %lu/%lu/%lu/%lu/%lu/%lu transferencias",
-			  (unsigned long)cnt[0], (unsigned long)cnt[1], (unsigned long)cnt[2], (unsigned long)cnt[3],
-			  (unsigned long)cnt[4], (unsigned long)cnt[5]);
-		n = cnt[1];
-		m = cnt[3];
+		MEM32(R_DMA(0, 2)) = 0;
+		(void)prev_cnt;
 	}
+	/* análisis: transferencias por línea en cada región (visibles 0-191 y VBlank 192-262) y cuentas en líneas clave */
+	for (uint32_t i = 1; i < k; i++) {
+		const uint32_t delta = hb_cnt[i] - hb_cnt[i - 1], v = hb_line[i];
+
+		if (v < 192) {
+			total += delta;
+			d0 += delta == 0;
+			d1 += delta == 1;
+			d2 += delta >= 2;
+		} else {
+			vb_total += delta;
+		}
+		if (delta > dmax)
+			dmax = delta;
+		if (v == 100 && !at100)
+			at100 = hb_cnt[i];
+		if (v == 200 && !at200)
+			at200 = hb_cnt[i];
+		if (v == 191 && !at191)
+			at191 = hb_cnt[i];
+		if (v == 192 && !at192)
+			at192 = hb_cnt[i];
+		if (v < 192 && first_vis == 0xFFFF)
+			first_vis = hb_cnt[i];
+	}
+	sds_notef("HBLANK DMA desde la linea 192 (%lu lineas vistas): en 100=%lu 191=%lu 192=%lu 200=%lu; lineas visibles con 0/1/>=2 transferencias=%lu/%lu/%lu "
+		  "(total %lu); transferencias en lineas de VBlank=%lu; maximo por linea=%lu",
+		  (unsigned long)k, (unsigned long)at100, (unsigned long)at191, (unsigned long)at192, (unsigned long)at200, (unsigned long)d0,
+		  (unsigned long)d1, (unsigned long)d2, (unsigned long)total, (unsigned long)vb_total, (unsigned long)dmax);
+	for (uint32_t i = 0; i < k && i < 280; i += 14)
+		sds_notef("  linea %3u cuenta %3u | %3u %3u | %3u %3u | %3u %3u | %3u %3u", hb_line[i], hb_cnt[i], i + 2 < k ? hb_line[i + 2] : 0,
+			  i + 2 < k ? hb_cnt[i + 2] : 0, i + 5 < k ? hb_line[i + 5] : 0, i + 5 < k ? hb_cnt[i + 5] : 0,
+			  i + 8 < k ? hb_line[i + 8] : 0, i + 8 < k ? hb_cnt[i + 8] : 0, i + 11 < k ? hb_line[i + 11] : 0,
+			  i + 11 < k ? hb_cnt[i + 11] : 0);
+	m = at200;
+	n = at100;
 	SDS_DIVERGE(n >= 100 && n <= 106, 1); /* melonDS 1.1 cuenta unas pocas más que las líneas */
 	SDS_DIVERGE(m, 192);
 	MEM32(R_DMA(0, 2)) = 0;

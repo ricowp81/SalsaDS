@@ -20,6 +20,7 @@
  *
  * Fuente: GBATEK (BIOS Functions, formatos de descompresión). Código propio.
  */
+#include <math.h>
 #include <string.h>
 
 #include "core/nds_priv.h"
@@ -450,6 +451,62 @@ static int bios_intrwait(struct nds *n, struct acore *c, int cpu, uint32_t disca
 	return 1;
 }
 
+/* ---- tablas del ARM7 (SWI 1Ah-1Ch) ---------------------------------------------------------------------------
+ * Seno (64 entradas), tono (768) y volumen (724). No se copia ninguna tabla: se generan con su fórmula, deducida
+ * del comportamiento de melonDS 1.1 y verificada en las 1556 entradas (tools/gen-bios-tables.py, ROM `tablas`):
+ *   seno:    round(sin(i * pi / 128) * 32767)
+ *   tono:    round((2^(i / 768) - 1) * 65536)
+ *   volumen: min(127, round(K * 10^((i - 723) / 200))), K = 2048 / 512 / 256 / 128 según el tramo; los últimos
+ *            elementos de los tres tramos altos (602, 662, 722) valen 126.
+ * Un índice fuera de rango devuelve 0 (la BIOS real lee lo que haya detrás de la tabla). */
+#define TAB_SINE_N 64
+#define TAB_PITCH_N 768
+#define TAB_VOL_N 724
+
+static uint16_t tab_sine[TAB_SINE_N], tab_pitch[TAB_PITCH_N];
+static uint8_t tab_vol[TAB_VOL_N];
+static int tab_ready;
+
+static uint32_t round_half_up(double x)
+{
+	return (uint32_t)floor(x + 0.5);
+}
+
+static void tables_init(void)
+{
+	const double pi = 3.14159265358979323846;
+
+	for (int i = 0; i < TAB_SINE_N; i++)
+		tab_sine[i] = (uint16_t)round_half_up(sin(i * pi / 128.0) * 32767.0);
+	for (int i = 0; i < TAB_PITCH_N; i++)
+		tab_pitch[i] = (uint16_t)round_half_up((pow(2.0, i / 768.0) - 1.0) * 65536.0);
+	for (int i = 0; i < TAB_VOL_N; i++) {
+		const double k = i < 483 ? 2048.0 : i < 603 ? 512.0 : i < 663 ? 256.0 : 128.0;
+		uint32_t v = round_half_up(k * pow(10.0, (i - 723) / 200.0));
+
+		if (v > 127u)
+			v = 127u;
+		if (i == 602 || i == 662 || i == 722)
+			v = 126u;
+		tab_vol[i] = (uint8_t)v;
+	}
+	tab_ready = 1;
+}
+
+static uint32_t swi_table(uint32_t fn, uint32_t idx)
+{
+	if (!tab_ready)
+		tables_init();
+	switch (fn) {
+	case 0x1A:
+		return idx < TAB_SINE_N ? tab_sine[idx] : 0;
+	case 0x1B:
+		return idx < TAB_PITCH_N ? tab_pitch[idx] : 0;
+	default:
+		return idx < TAB_VOL_N ? tab_vol[idx] : 0;
+	}
+}
+
 /* ---- gancho de SWI --------------------------------------------------------------------------------------------- */
 
 int nds_swi_hook(struct acore *c, uint32_t comment)
@@ -559,6 +616,14 @@ int nds_swi_hook(struct acore *c, uint32_t comment)
 	case 0x18:
 		if (cpu == NDS_CPU9) {
 			unfilter(c, c->r[0], c->r[1], 1, 0);
+			return 1;
+		}
+		break;
+	case 0x1A: /* GetSineTable, GetPitchTable, GetVolumeTable: solo en el ARM7 */
+	case 0x1B:
+	case 0x1C:
+		if (cpu == NDS_CPU7) {
+			c->r[0] = swi_table(fn, c->r[0]);
 			return 1;
 		}
 		break;

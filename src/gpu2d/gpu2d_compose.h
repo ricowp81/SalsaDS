@@ -125,6 +125,24 @@ typedef struct gpu2d_stats {
 	uint32_t fx_lines;      /* líneas con efectos de color por píxel */
 } gpu2d_stats;
 
+/* Tiempos por etapa en ticks del decrementador del SPE (79,8 MHz), solo con -DG2D_PROF en el SPE (ceros si no): cada
+ * campo es lo que gastó el SPE en esa etapa durante toda la pantalla. `plan_*` y `cl_*` están dentro de `plan` y `compose`. */
+typedef struct gpu2d_prof {
+	uint32_t init;       /* antes de la línea 0: paleta, OAM, cambios, ventanas verticales */
+	uint32_t plan;       /* etapa 1 de todas las líneas (suma de plan_line) */
+	uint32_t plan_text;  /* de eso: fondos de texto (mapas, teselas y su espera) */
+	uint32_t plan_aff;   /* de eso: fondos afines y de mapa de bits */
+	uint32_t plan_obj;   /* de eso: OBJ */
+	uint32_t plan_wait;  /* de eso: esperas del DMA dentro de la etapa 1 */
+	uint32_t compose;    /* etapa 2 de todas las líneas (suma de compose_line) */
+	uint32_t cl_wait;    /* de eso: la espera de lo que pidió la etapa 1 y del búfer de salida */
+	uint32_t cl_layers;  /* de eso: dibujar las capas (fondos y OBJ, ventanas) */
+	uint32_t cl_final;   /* de eso: prioridades, efectos de color y conversión (el bucle de los 32 vectores) */
+	uint32_t cl_put;     /* de eso: pedir el DMA de salida */
+	uint32_t end_wait;   /* la espera final de las salidas */
+	uint32_t pad[2];
+} gpu2d_prof;
+
 typedef struct gpu2d_ctx {
 	/* paleta unificada */
 	uint16_t pal[G2D_PAL_ALL] __attribute__((aligned(128)));
@@ -148,6 +166,7 @@ typedef struct gpu2d_ctx {
 	g2d_v8 ocov[2][G2D_LINE_VECS] __attribute__((aligned(16)));  /* texeles transparentes de OBJ con mosaico (para el mosaico horizontal) */
 	g2d_v8 allow[6][32] __attribute__((aligned(16)));
 	uint32_t aoffs[256];
+	uint32_t aaddr[GPU2D_W];  /* direcciones de los texeles de un fondo afín (primera pasada de plan_affine) */
 	g2d_v8 tmp[G2D_TILES + 1] __attribute__((aligned(16)));
 	uint16_t outbuf[2][GPU2D_W] __attribute__((aligned(128)));
 	uint8_t rawline[2][512] __attribute__((aligned(128)));
@@ -169,6 +188,7 @@ typedef struct gpu2d_ctx {
 	/* OBJ de la línea que se planea */
 	uint32_t oa_used;
 	gpu2d_stats stats;
+	gpu2d_prof prof;
 } gpu2d_ctx;
 
 /* Compone una pantalla en e->out_ea (192 líneas de 512 bytes). Devuelve 0 o un código negativo: -1 descriptor

@@ -249,6 +249,23 @@ static void perf_scene(int scene, int frames)
 		    res[0].stats.obj_flushes, res[0].stats.fx_lines, res[1].stats.bg_fetches, res[1].stats.map_waits,
 		    res[1].stats.obj_fetches, res[1].stats.obj_drawn, res[1].stats.chg_applied, res[1].stats.aff_lines,
 		    res[1].stats.aff_quads, res[1].stats.obj_flushes, res[1].stats.fx_lines);
+	{
+		static const char *const nm[12] = { "init", "plan", "(texto)", "(afín)", "(OBJ)", "(esperas)", "compone", "(espera)", "(capas)",
+						    "(final)", "(put)", "espera final" };
+
+		for (int e = 0; e < 2; e++) {
+			const uint32_t *pp = (const uint32_t *)(const void *)&res[e].prof;
+			char line[400];
+			int k = 0;
+
+			for (int q = 0; q < 12; q++) {
+				const uint32_t us = us_of(pp[q], hz);
+
+				k += snprintf(line + k, sizeof line - (size_t)k, " %s %u.%02u", nm[q], MS(us));
+			}
+			salsads_log("DATO gpu2d %-8s etapas de %c (ms):%s", scene_name[scene], 'A' + e, line);
+		}
+	}
 	salsads_log("DATO gpu2d %-8s referencia en el PPE (A+B, píxel por píxel): %u.%02u ms", scene_name[scene], MS(ref_us));
 }
 

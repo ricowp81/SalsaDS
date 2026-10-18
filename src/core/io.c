@@ -125,9 +125,15 @@ static uint16_t rd16(struct nds *n, int cpu, uint32_t o)
 		break;
 	}
 	if (cpu == NDS_CPU9) {
+		if (o == 0x600) /* GXSTAT: FIFO vacía (bits 25 y 26), motor libre */
+			return (uint16_t)(n->gx_err ? 0x8000u : 0);
+		if (o == 0x602)
+			return (uint16_t)(0x0600u | ((unsigned)n->gx_irqmode << 14));
 		if (o == 0x304)
 			return n->powcnt1;
 	} else {
+		if (o >= 0x400u && o < 0x520u)
+			return nds_snd_read(n, o - 0x400u);
 		switch (o) {
 		case 0x136:
 			return n->extkeyin;
@@ -146,6 +152,8 @@ uint32_t nds_io_read(struct nds *n, int cpu, uint32_t a, int sz)
 {
 	const uint32_t o = a & 0xFFFFFFu;
 
+	if (cpu == NDS_CPU9 && o >= 0x600u && o < 0x700u)
+		NDS_TRACE(n, NDS_DBG_GX, "ARM9 lee E/S GX 0x%08x (%d)", a, sz);
 	if (o >= 0x100000u) { /* 0x04100000: FIFO de recepción del IPC; 0x04100010: datos del cartucho */
 		if (o == 0x100000u)
 			return nds_ipcfifo_recv(n, cpu);
@@ -255,11 +263,36 @@ static void wr16(struct nds *n, int cpu, uint32_t o, uint16_t v, uint16_t mask)
 		break;
 	}
 	if (cpu == NDS_CPU9) {
+		if (o >= 0x400u && o < 0x600u) { /* GXFIFO y puertos de órdenes: se descartan (la geometría es de la Fase 3) */
+			n->gx_words += (o & 2u) ? 0u : 1u;
+			if (!n->gx_logged) {
+				n->gx_logged = 1;
+				nds_logf(n, "ARM9: primera orden a la FIFO de geometría (se descarta hasta la Fase 3)");
+			}
+			return;
+		}
+		if (o == 0x600) {
+			if ((mask & 0xFF00u) && (v & 0x8000u))
+				n->gx_err = 0;
+			return;
+		}
+		if (o == 0x602) {
+			if (mask & 0xC000u) {
+				n->gx_irqmode = (uint8_t)((v >> 14) & 3u);
+				if (n->gx_irqmode && n->ev[EV_GX] == NDS_NEVER)
+					nds_event_set(n, EV_GX, nds_cpu_now(n, NDS_CPU9) + 64u);
+			}
+			return;
+		}
 		if (o == 0x304) {
 			n->powcnt1 = (uint16_t)(((n->powcnt1 & ~mask) | (v & mask)) & 0x820Fu);
 			return;
 		}
 	} else {
+		if (o >= 0x400u && o < 0x520u) {
+			nds_snd_write(n, o - 0x400u, v, mask);
+			return;
+		}
 		switch (o) {
 		case 0x138:
 			nds_rtc_write(n, v, mask & 0xFFu);
@@ -280,6 +313,7 @@ void nds_io_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v)
 {
 	const uint32_t o = a & 0xFFFFFFu;
 
+	NDS_TRACE(n, NDS_DBG_IO, "ARM%d escribe E/S 0x%08x (%d) = 0x%08x", cpu ? 7 : 9, a, sz, v);
 	if (o >= 0x100000u)
 		return;
 	if (o == 0x188u && sz == 4) {

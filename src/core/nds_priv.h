@@ -43,6 +43,10 @@ void nds_video_vram_dirty(struct nds *n, uint32_t vram_off);
 void nds_video_mmem_push(struct nds *n, uint16_t px);
 void nds_video_line_start(struct nds *n, uint32_t line);
 
+/* sound.c */
+uint16_t nds_snd_read(struct nds *n, uint32_t off);
+void nds_snd_write(struct nds *n, uint32_t off, uint16_t v, uint16_t mask);
+
 /* io.c */
 uint32_t nds_io_read(struct nds *n, int cpu, uint32_t a, int sz);
 void nds_io_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v);
@@ -67,6 +71,8 @@ void nds_dma_trigger(struct nds *n, int cpu, unsigned mode);
 #define NDS_DMA_DISPSTART 3
 #define NDS_DMA_MMEM 4 /* ARM9: memoria principal a la FIFO del modo 3 */
 #define NDS_DMA_CART 5 /* ARM9: modo 5; ARM7: modo 2 */
+#define NDS_GX_PERIOD 1024u /* ciclos del ARM9 entre dos peticiones de la IRQ 21 (por nivel) */
+#define NDS_DMA_GXFIFO 7 /* ARM9: FIFO de comandos de geometría */
 
 /* ipc.c */
 void nds_ipc_init(struct nds *n);

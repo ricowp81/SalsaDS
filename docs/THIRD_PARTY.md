@@ -93,3 +93,10 @@ programa SPU) es código propio; usa `lib/spukit` como biblioteca.
 |---|---|---|
 | GBATEK (Martin Korth), motores 2D, fondos, OBJ, ventanas, efectos de color, DISPCNT, captura y visualización de memoria principal | `src/gpu2d/` y `src/core/video.c` (Fase 2.1) | Solo hechos de hardware; ni texto ni código |
 | melonDS 1.1 (GPL-3.0), solo ejecutado | Comparar la imagen del motor A con la de las ROMs propias (`tools/gfx-compare.py`) y medir líneas y mosaico por caja negra | **No se copió ni se leyó su código**; las fórmulas de color y el mosaico salieron de ajustar el comportamiento observado. Sin NooDS ni DeSmuME |
+
+| Fuente | Para qué | Notas |
+|---|---|---|
+| GBATEK (Martin Korth), sonido de la DS (canales, formatos PCM8/PCM16/IMA-ADPCM/PSG y ruido, SOUNDCNT, SOUNDBIAS, captura) y FIFO de comandos del motor de geometría (GXSTAT, GXFIFO, IRQ 21) | `src/audio/`, `src/core/sound.c`, la FIFO de `src/core/io.c` (Fase 2.2) | Solo hechos de hardware; ni texto ni código |
+| IMA ADPCM (especificación pública de IMA/DVI): tabla de 89 pasos y ajuste de índice | `src/audio/snd_mix.c`, `tools/gen-snd-data.py` | Datos del estándar, de dominio público; el codificador de prueba es propio |
+| melonDS 1.1 (GPL-3.0), solo ejecutado | Comparar muestra a muestra el mezclador de sonido (`tools/snd-compare.py`), las tablas de las SWI 1Ah–1Ch (`tools/gen-bios-tables.py --check`) y el comportamiento de la FIFO de geometría (ROM `gx`) | **No se copió ni se leyó su código**; las fórmulas salieron de ajustar su comportamiento (capturas de SNDCAP y valores devueltos por la BIOS libre). Las tablas **no** se copiaron: se generan con su fórmula |
+

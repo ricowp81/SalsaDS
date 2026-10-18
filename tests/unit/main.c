@@ -21,6 +21,7 @@ void test_r3d_selftest(void);
 void test_acore_arm(void);
 void test_acore_thumb(void);
 void test_acore_sys(void);
+void test_snd(void);
 
 int main(void)
 {
@@ -39,6 +40,7 @@ int main(void)
 	test_acore_arm();
 	test_acore_thumb();
 	test_acore_sys();
+	test_snd();
 	printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);
 	return check_failed ? 1 : 0;
 }

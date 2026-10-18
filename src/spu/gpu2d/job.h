@@ -14,12 +14,13 @@ typedef struct job_compose {
 	uint32_t engine;     /* 0: pantalla A, 1: pantalla B */
 } job_compose;
 
-/* Resultado (≤ 112 bytes): duración de la pantalla en ticks del decrementador (79,8 MHz) y sus contadores. */
+/* Resultado (≤ 112 bytes: 12 + 44 + 56): duración de la pantalla en ticks del decrementador (79,8 MHz) y sus contadores. */
 typedef struct job_result {
 	uint32_t ticks;
 	int32_t rc;
 	gpu2d_stats stats;
 	uint32_t ctx_bytes;  /* sizeof(gpu2d_ctx) */
+	gpu2d_prof prof;     /* tiempos por etapa (con -DG2D_PROF en el SPE) */
 } job_result;
 
 #endif

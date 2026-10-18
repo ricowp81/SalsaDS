@@ -470,15 +470,43 @@ void nds_mem_init(struct nds *n)
 
 /* Las lecturas de depuración de la E/S solo valen para los registros sin efecto al leerse: no los de las FIFO ni
  * el dato del cartucho (0x04100000 en adelante). */
+/* Las TCM del ARM9 se ven aquí tal como las ve la CPU (para trazas y volcados). */
+static int peek_tcm(struct nds *n, int cpu, uint32_t a, uint8_t *out)
+{
+	const struct acore *c = &n->a9;
+
+	if (cpu != NDS_CPU9)
+		return 0;
+	if (c->itcm && a < c->itcm_wr_len) {
+		*out = c->itcm[a & 0x7FFFu];
+		return 1;
+	}
+	if (c->dtcm && c->dtcm_wr_len && a - c->dtcm_base < c->dtcm_wr_len) {
+		*out = c->dtcm[(a - c->dtcm_base) & 0x3FFFu];
+		return 1;
+	}
+	return 0;
+}
+
 uint32_t nds_peek32(struct nds *n, int cpu, uint32_t a)
 {
+	uint8_t b[4];
+
+	a &= ~3u;
+	if (peek_tcm(n, cpu, a, &b[0]) && peek_tcm(n, cpu, a + 1, &b[1]) && peek_tcm(n, cpu, a + 2, &b[2]) &&
+	    peek_tcm(n, cpu, a + 3, &b[3]))
+		return (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
 	if ((a >> 24) == 4 && (a & 0xFFFFFF) >= 0x100000)
 		return 0;
-	return nds_bus_read(n, cpu, a & ~3u, 4);
+	return nds_bus_read(n, cpu, a, 4);
 }
 
 uint32_t nds_peek8(struct nds *n, int cpu, uint32_t a)
 {
+	uint8_t b;
+
+	if (peek_tcm(n, cpu, a, &b))
+		return b;
 	if ((a >> 24) == 4 && (a & 0xFFFFFF) >= 0x100000)
 		return 0;
 	return nds_bus_read(n, cpu, a, 1);

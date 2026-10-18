@@ -261,7 +261,15 @@ void nds_video_render_host(struct nds *n)
 			gpu2d_ref_engine(ge, v->img[e]);
 		else
 			gpu2d_compose_engine(&v->comp, ge);
+		{
+			uint32_t *dst = (uint32_t *)(void *)&v->stat_sum[e];
+			const uint32_t *src = (const uint32_t *)(const void *)&v->comp.stats;
+
+			for (size_t k = 0; k < sizeof(gpu2d_stats) / 4; k++)
+				dst[k] += src[k];
+		}
 	}
+	v->stat_frames++;
 	v->rendered = 1;
 }
 

@@ -4,6 +4,27 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-17 — FIFO de geometría, sonido y compositor rápido (Fase 2.2)
+
+- **New Super Mario Bros. ya entra a un nivel en el host.** El bucle de 620 883 instrucciones por cuadro no era el sonido: el
+  ARM9 esperaba a `GXSTAT` (FIFO de comandos con menos de la mitad) y a la IRQ 21 para mandar su lista de geometría por DMA. Ahora
+  la FIFO de geometría existe como «siempre vacía» (se traga las órdenes; IRQ 21 por nivel como en melonDS): título, menú,
+  selección de archivo (táctil), intro, mapa y 1-1 con el reloj corriendo, a 91–94 MIPS. Sin 3D no se ve a Mario (Fase 3).
+- **SWI 1Ah–1Ch** (tablas de seno, tono y volumen) generadas por fórmula y comprobadas contra las 1556 entradas de melonDS.
+- **Sonido**: los 16 canales (PCM8/16, IMA-ADPCM, PSG, ruido), SOUNDCNT/SOUNDBIAS y las capturas, en `src/audio` (portable) con
+  un SPE de mezcla (`src/spu/snd`), remuestreo lineal a 48 kHz en flotante (con el punto marcado para un FIR polifásico) y salida de
+  audio de la PS3 (`src/platform/ps3/audio_out.c`). La ROM `snd` captura lo que sale del mezclador por hardware y
+  `tools/snd-compare.py` lo compara con melonDS muestra a muestra: iguales, con dos divergencias documentadas (`docs/fase2.md`).
+  Autoprueba del SPE contra el PPE al arrancar (0 diferencias en RPCS3).
+- **2D en el SPE**: los 28 ms de la pantalla A y 8 de la B eran código escalar (multiplicación de 64 bits y división por
+  software en los fondos afines; color final de un píxel por vuelta con una docena de saltos): vectorizado, y una vía rápida para
+  los fondos que solo se desplazan. En RPCS3 (que cuenta instrucciones) con NSMB: A 14,8 → 4,7 ms, B 1,3 → 1,2; la PS3 lo dirá
+  (`DATO spe-etapas`). Instrumentación por etapa en el SPE y contadores de DMA en el host.
+- Herramientas: `--press`/`--shot` (entrada y capturas por guion), `--wav`, `--g2d-stats`, `--trace-from`, `--dump-cpu`, TCM visibles.
+- Paquete «SalsaDS núcleo» (SLDS00008) con todo lo anterior: `build/salsads-nucleo-fase22.pkg` (commit `c4a738b`), SHA-256 `cce7721a908a362ee3aed51d673348361a34bb10a5fd9a33b20f67de0e37a601`; en RPCS3 OK.
+- Pendiente: medir en la PS3 (2D por etapa, audio con faltas, 10 bits), 3D (Fase 3), FIR del remuestreo, HOLD y volumen general
+  contra una DS real.
+
 ## 2026-10-17 — Motores 2D A y B (Fase 2.1)
 
 El compositor de la 0.5 es ahora el renderizador de las dos pantallas: registro de cambios por línea en el núcleo

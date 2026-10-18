@@ -38,7 +38,7 @@ tanda: 2026-10-17 (ROMs del commit `728113c`). Lo que sigue marcado «pendiente�
 | `irq` TIMERS L377 (divergencia) | hw 0xC3, doc 0xC7 | **corregir el emulador** | la divergencia lleva ya 0xC3 como valor de referencia |
 | `irq` ARM7 TIMERS L304: prescaler, ticks fuera de ±2 | con prescaler 1 un tick es un ciclo y leer el temporizador y luego la referencia cuesta varios ciclos de bus en hardware | **corregir la prueba** | tolerancia de 64 ticks con prescaler 1 (2 con los demás); si vuelve a fallar, el log trae ticks y esperados (id 3000 + p). Pendiente de confirmar |
 | `dma` ARM7 COPIA L86 y MODOS L115, L122, L135 (una palabra mal por prueba) | el DMA empieza ~2 ciclos tras habilitarlo y la CPU alcanza a ejecutar una o dos instrucciones: la primera lectura del destino podía adelantarse. Solo el ARM7; ninguna fallaba en el ARM9 | **corregir la prueba** (hipótesis; sin confirmar) | `dma_set` deja unos `nop` tras habilitar, y cada bucle anota el primer elemento malo (valor obtenido y esperado) como divergencia con id = línea·1000 + índice. Si sigue fallando, el log dirá cuál palabra |
-| `dma` HBLANK L93 y L96 (ARM9): a la línea 200 había 300 o más transferencias (esperadas 192); a la línea 100 fuera de 100-106 | en hardware, el DMA de HBlank desde la línea 192 hizo más de una transferencia por línea o corrió también en el VBlank; GBATEK y SalsaDS dicen 192 | pendiente: faltan datos | las dos comprobaciones pasaron a divergencias y el log anota las cuentas en las líneas 20/100/190/200/230/255 (`[dato] HBLANK DMA...`) para decidir con la siguiente corrida |
+| `dma` HBLANK L93 y L96 (ARM9): a la línea 200 había 300 o más transferencias (esperadas 192); a la línea 100 fuera de 100-106 | en hardware, el DMA de HBlank desde la línea 192 llevó 21/107/192/300/300/300 transferencias en las líneas 20/100/190/200/230/255 (búfer de 300 palabras): sigue disparándose en las líneas de VBlank y llega al tope del búfer; GBATEK y SalsaDS dicen 192 | datos insuficientes (búfer demasiado corto): la prueba ahora usa 800 palabras y anota la cuenta línea a línea | las dos comprobaciones pasaron a divergencias y el log anota las cuentas en las líneas 20/100/190/200/230/255 (`[dato] HBLANK DMA...`) para decidir con la siguiente corrida |
 | `dma` e `irq`: «ARM9 ARM7: obtenido 0xB esperado 0xA» | no es una prueba: el ARM7 avisa por IPCSYNC de que tuvo fallos (los de arriba) | consecuencia | desaparece al corregir los fallos del ARM7 |
 
 ## Qué debe cambiar SalsaDS (lista para otra ronda; esta tanda no tocó `src/core` ni `src/bios`)
@@ -85,3 +85,17 @@ ROM directa y un cartucho original de GBA. Solo conclusiones (no se copian bytes
 - Flashcard, flashcard en modo ROM y cartucho original: cabecera de GBA válida (0x96 en 0x080000B2). Con cartucho o flashcard se lee
   su contenido, así que esas lecturas no son divergencias (la ROM `mem` solo las anota con la ranura vacía; la divergencia que salía
   con el cartucho original era simplemente su contenido).
+
+## Segunda tanda (`dma` e `irq`)
+
+- `dma`: OK 66/66. DMA de HBlank en el ARM9: el conteo sigue creciendo en las líneas de VBlank y llegaba al tope del búfer de 300
+  palabras antes de la línea 200. A la línea 100 había 107 transferencias (fuera del 100-106 esperado) y a la 200 ya 300; de 192 a 300 en pocas líneas no
+  cuadra con una transferencia por línea (puede ser la espera o el contador de la prueba); la prueba ahora usa un búfer
+  de 800 palabras, anota la cuenta en cada línea durante ~1,5 cuadros (`[dato] HBLANK DMA ...` y un volcado cada 14 líneas) y resume
+  las transferencias por línea visible (0/1/>=2) y en VBlank. No cambiar el núcleo hasta tener ese dato.
+- `irq`: solo fallaba el ARM9 en VIDEO (banderas de DISPSTAT): el bucle de 200000 vueltas no cubría un cuadro en el ARM9 real. Error de
+  la prueba: el tope es ahora de tiempo (3 cuadros por la referencia). Los temporizadores coinciden con la documentación y melonDS no
+  (TM0CNT_H = 0xC3 con el bit 2 ausente; temporizador 0 con cuenta ascendente cuenta).
+- SalsaDS: con tramos del planificador grandes (>= 2048 ciclos) la cuenta de un temporizador en cascada salta más de 1 entre lecturas
+  consecutivas (la ROM `irq`, en la prueba «avanza de uno en uno»); en el hardware avanza de uno en uno. La comprobación es informativa;
+  corregir el núcleo (actualizar los temporizadores al leerlos) y volver a hacerla `SDS_CHECK`.

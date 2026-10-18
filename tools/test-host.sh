@@ -48,7 +48,7 @@ fi
 # (qemu-ppc64), y deben dar OK como con melonDS (tools/melonds-run.py). Además se repiten con otros tamaños de tramo
 # del planificador (la frontera para el ARM7 en otro hilo: docs/fase1.md) y se corre la demostración, que no termina:
 # se comprueba que sus dos CPUs viven.
-ROMS="hola cpu9 cpuarm mem irq dma ipc bios periph"
+ROMS="hola cpu9 cpuarm mem irq dma ipc bios periph tablas gx"
 check_rom() { # orden rom log
 	if grep -q "^OK " "$3"; then
 		printf '%-4s OK     %s\n' "$1" "$(grep '^OK ' "$3")"
@@ -58,6 +58,20 @@ check_rom() { # orden rom log
 		fail=1
 	fi
 }
+# La ROM snd (sonido): lo que captura del mezclador es determinista; su SHA-256 (casos 1 a 57) está en snd.golden. Ese
+# valor sale de SalsaDS y se verificó caso por caso contra melonDS (tools/snd-compare.py; las dos divergencias conocidas
+# están anotadas allí): este chequeo atrapa regresiones sin necesitar melonDS.
+SND_GOLDEN=$(cat tests/roms/homebrew/snd.golden 2>/dev/null)
+check_snd() { # orden volcado
+	got=$(shasum -a 256 "$2" 2>/dev/null | cut -d' ' -f1)
+	if [ -n "$got" ] && [ "$got" = "$SND_GOLDEN" ]; then
+		printf '%-4s OK     snd: lo capturado del mezclador coincide con el valor de referencia\n' "$1"
+	else
+		printf '%-4s FALLO  snd: SHA-256 %s, esperado %s\n' "$1" "$got" "$SND_GOLDEN"
+		fail=1
+	fi
+}
+SND_ARGS="--frames 2500 --peek 0x02390834"
 check_demo() { # orden log
 	frames=$(sed -n 's/^peek 0x023a0004 = //p' "$2")
 	if grep -q "^peek 0x023a0000 = 0x4f4d4544" "$2" && [ -n "$frames" ] && [ $((frames)) -ge 100 ]; then
@@ -185,9 +199,12 @@ if tools/build.sh -C src/host >build/logs/build-host-run.log 2>&1; then
 	check_carga LE build/logs/rom-carga-le.log
 	tools/build.sh --sh "build/host-run/salsads-cpurun --frames 600 --stats tests/roms/homebrew/ocio.nds" >build/logs/rom-ocio-le.log 2>&1
 	check_ocio LE build/logs/rom-ocio-le.log
+	rm -f build/logs/snd-le.bin
+	tools/build.sh --sh "build/host-run/salsads-cpurun $SND_ARGS --dump 0x02300400:0xE400:build/logs/snd-le.bin tests/roms/homebrew/snd.nds" >build/logs/rom-snd-le.log 2>&1
+	check_snd LE build/logs/snd-le.bin
 	gfx_group LE le tools/build.sh --sh build/host-run/salsads-cpurun
 	# las ROMs otra vez con ASan y UBSan (errores de memoria en el mapa, la VRAM por bancos o la E/S)
-	if tools/build.sh --sh "gcc -std=gnu11 -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -Wall -Wextra -Isrc src/host/cpurun.c src/core/*.c src/bios/*.c src/cpu/*.c src/gpu2d/*.c -o build/host-run/cpurun-san" >build/logs/build-cpurun-san.log 2>&1; then
+	if tools/build.sh --sh "gcc -std=gnu11 -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -Wall -Wextra -Isrc src/host/cpurun.c src/core/*.c src/bios/*.c src/cpu/*.c src/gpu2d/*.c src/audio/*.c -o build/host-run/cpurun-san -lm" >build/logs/build-cpurun-san.log 2>&1; then
 		for rom in $ROMS; do
 			tools/build.sh --sh "build/host-run/cpurun-san tests/roms/homebrew/$rom.nds" >"build/logs/rom-$rom-san.log" 2>&1
 			check_rom "SAN" "$rom" "build/logs/rom-$rom-san.log"
@@ -200,6 +217,9 @@ if tools/build.sh -C src/host >build/logs/build-host-run.log 2>&1; then
 		check_carga SAN build/logs/rom-carga-san.log
 		tools/build.sh --sh "build/host-run/cpurun-san --frames 200 --touch 100,50 --keys 0x0510 --peek 0x023A0000 --peek 0x023A0004 tests/roms/homebrew/demo.nds" >build/logs/rom-demo-san.log 2>&1
 		check_demo SAN build/logs/rom-demo-san.log
+		rm -f build/logs/snd-san.bin
+		tools/build.sh --sh "build/host-run/cpurun-san $SND_ARGS --dump 0x02300400:0xE400:build/logs/snd-san.bin tests/roms/homebrew/snd.nds" >build/logs/rom-snd-san.log 2>&1
+		check_snd SAN build/logs/snd-san.bin
 		gfx_group SAN san tools/build.sh --sh build/host-run/cpurun-san
 	else
 		echo "SAN  FALLO  la compilación con sanitizadores (build/logs/build-cpurun-san.log)"
@@ -224,6 +244,9 @@ if tools/build-ppc64.sh host >build/logs/build-ppc64-run.log 2>&1; then
 	check_carga BE build/logs/rom-carga-be.log
 	tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --frames 600 --stats tests/roms/homebrew/ocio.nds >build/logs/rom-ocio-be.log 2>&1
 	check_ocio BE build/logs/rom-ocio-be.log
+	rm -f build/logs/snd-be.bin
+	tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun $SND_ARGS --dump 0x02300400:0xE400:build/logs/snd-be.bin tests/roms/homebrew/snd.nds >build/logs/rom-snd-be.log 2>&1
+	check_snd BE build/logs/snd-be.bin
 	gfx_group BE be tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun
 else
 	echo "BE   FALLO  la compilación ppc64 de src/host (build/logs/build-ppc64-run.log)"

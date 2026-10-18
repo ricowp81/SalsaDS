@@ -209,7 +209,7 @@ static void lprintf(const char *fmt, ...)
 void sds_notef(const char *fmt, ...)
 {
 	va_list ap;
-	char tmp[96];
+	char tmp[320];
 
 	va_start(ap, fmt);
 	vsnprintf(tmp, sizeof tmp, fmt, ap);

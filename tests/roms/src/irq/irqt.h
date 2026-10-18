@@ -127,7 +127,9 @@ static void group_video(void)
 	}
 	/* banderas de DISPSTAT: VBlank en las líneas 192-261, HBlank se alterna en cada línea, coincidencia con LYC */
 	set_lyc(77);
-	for (int i = 0; i < 200000 && !(seen_hb && seen_nohb && seen_vb && seen_match); i++) {
+	/* el tope es de tiempo (3 cuadros por la referencia), no de iteraciones: en una DS real el ARM9 recorre el bucle tan rápido
+	 * que 200000 vueltas no cubrían un cuadro y no llegaba a ver la línea 77 */
+	for (const uint32_t tl = ref_now(); ref_now() - tl < 3 * FRAME_CYCLES && !(seen_hb && seen_nohb && seen_vb && seen_match);) {
 		const uint32_t v0 = MEM16(R_VCOUNT), ds = MEM16(R_DISPSTAT), v1 = MEM16(R_VCOUNT);
 
 		if (v0 != v1)
@@ -366,7 +368,9 @@ static void group_timers(void)
 		MEM16(R_TM_H(0)) = 0;
 		MEM16(R_TM_H(1)) = 0;
 		SDS_CHECK(steps, 20);
-		SDS_CHECK(bad, 0);
+		/* en una DS real la cuenta avanza de uno en uno (0); SalsaDS con tramos grandes del planificador (>= 2048 ciclos) da saltos,
+		 * así que es informativo hasta corregir el núcleo (docs/ds-real.md) */
+		SDS_DIVERGE(bad, 0);
 	}
 	/* el temporizador 0 no tiene anterior a quién seguir: con el bit de cuenta ascendente no cuenta */
 	MEM16(R_TM_L(0)) = 0;

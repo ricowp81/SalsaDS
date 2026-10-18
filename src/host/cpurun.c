@@ -2,7 +2,7 @@
  * SalsaDS — corre una ROM de prueba (tests/roms) en la máquina de src/core y lee su veredicto del bloque de
  * resultados (tests/roms/src/common/sds.h), como hace tools/melonds-run.py con melonDS.
  *
- *   salsads-cpurun [--cycles N] [--frames N] [--quantum N] [--stats] [--arm7] [--keys HEX] [--touch X,Y]
+ *   salsads-cpurun [--wav FILE.wav] [--snd-original] [--cycles N] [--frames N] [--quantum N] [--stats] [--arm7] [--keys HEX] [--touch X,Y]
  *                  [--screens FILE.ppm] [--ref] [--vs-ref] [--expect] [--same-ab] [--unmapped] [--peek ADDR]... [--trace N [--trace7]] ROM.nds
  *
  * Código de salida: 0 = OK, 1 = FALLO, 2 = sin veredicto, 3 = una CPU cayó en un vector de excepción de la BIOS
@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <time.h>
 
 #include "core/nds.h"
@@ -49,6 +50,66 @@ static double now(void)
 
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+
+/* Salida de audio a 48 kHz (estéreo): se junta en memoria y se escribe como WAV de 16 bits al terminar. */
+static float *wav_buf;
+static size_t wav_n, wav_cap;
+static float wav_peak;
+
+static void wav_sink(void *ctx, const float *out, uint32_t n, const int16_t *nat, uint32_t nticks)
+{
+	(void)ctx;
+	(void)nat;
+	(void)nticks;
+	if (wav_n + n > wav_cap) {
+		const size_t cap = wav_cap ? wav_cap * 2 : (size_t)1 << 20;
+		float *nb = realloc(wav_buf, cap * 2 * sizeof(float));
+
+		if (!nb)
+			return;
+		wav_buf = nb;
+		wav_cap = cap;
+	}
+	memcpy(wav_buf + 2 * wav_n, out, (size_t)n * 2 * sizeof(float));
+	for (uint32_t i = 0; i < 2 * n; i++) {
+		const float a = out[i] < 0 ? -out[i] : out[i];
+
+		if (a > wav_peak)
+			wav_peak = a;
+	}
+	wav_n += n;
+}
+
+static void wav_write(const char *path)
+{
+	FILE *f = fopen(path, "wb");
+	uint8_t h[44] = { 'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ', 16, 0, 0, 0, 1, 0, 2, 0,
+			  0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 16, 0, 'd', 'a', 't', 'a' };
+	const uint32_t data = (uint32_t)(wav_n * 4), rate = 48000;
+
+	if (!f)
+		return;
+	for (int i = 0; i < 4; i++) {
+		h[4 + i] = (uint8_t)((36 + data) >> (8 * i));
+		h[24 + i] = (uint8_t)(rate >> (8 * i));
+		h[28 + i] = (uint8_t)((rate * 4) >> (8 * i));
+		h[40 + i] = (uint8_t)(data >> (8 * i));
+	}
+	fwrite(h, 1, sizeof h, f);
+	for (size_t i = 0; i < wav_n * 2; i++) {
+		float v = wav_buf[i] * 32768.0f;
+		int32_t q = (int32_t)(v < 0 ? v - 0.5f : v + 0.5f);
+		uint8_t b[2];
+
+		q = q > 32767 ? 32767 : q < -32768 ? -32768 : q;
+		b[0] = (uint8_t)q;
+		b[1] = (uint8_t)(q >> 8);
+		fwrite(b, 1, 2, f);
+	}
+	fclose(f);
+	fprintf(stderr, "audio: %zu muestras estéreo (%.2f s) en %s, pico %.1f dBFS\n", wav_n, (double)wav_n / 48000.0, path,
+		wav_peak > 0 ? 20.0 * log10((double)wav_peak) : -99.0);
 }
 
 static void log_to_stderr(void *ctx, const char *msg)
@@ -216,6 +277,13 @@ int main(int argc, char **argv)
 	const char *save_path = NULL;
 	struct { uint32_t addr, len; const char *file; } dumps[8];
 	uint32_t ndumps = 0;
+	int dump_cpu = 0;
+	uint32_t trace_from = 0;
+	const char *wav_path = NULL;
+	int snd_original = 0, g2d_stats = 0;
+	struct { uint64_t frame; uint32_t keys, x, y; } press[64];
+	struct { uint64_t frame; const char *file; } shot[32];
+	uint32_t npress = 0, nshot = 0;
 	int watch_cpu = 0;
 	uint64_t watch_max = 0;
 	int break_cpu = -1;
@@ -227,7 +295,13 @@ int main(int argc, char **argv)
 	int rc_gfx = 0;
 
 	for (int i = 1; i < argc; i++) {
-		if (!strcmp(argv[i], "--cycles") && i + 1 < argc)
+		if (!strcmp(argv[i], "--wav") && i + 1 < argc)
+			wav_path = argv[++i];
+		else if (!strcmp(argv[i], "--g2d-stats"))
+			g2d_stats = 1;
+		else if (!strcmp(argv[i], "--snd-original"))
+			snd_original = 1;
+		else if (!strcmp(argv[i], "--cycles") && i + 1 < argc)
 			max_cycles = strtoull(argv[++i], NULL, 0);
 		else if (!strcmp(argv[i], "--frames") && i + 1 < argc)
 			frames = strtoull(argv[++i], NULL, 0);
@@ -244,6 +318,27 @@ int main(int argc, char **argv)
 			show_arm7 = 1;
 		else if (!strcmp(argv[i], "--trace") && i + 1 < argc)
 			trace_n = strtoull(argv[++i], NULL, 0);
+		else if (!strcmp(argv[i], "--press") && i + 1 < argc && npress < 64) {
+			/* CUADRO:TECLAS_HEX[:X,Y] — desde ese cuadro se mantiene ese estado de botones (y del toque) */
+			char *e;
+
+			press[npress].frame = strtoull(argv[++i], &e, 0);
+			press[npress].keys = *e == ':' ? (uint32_t)strtoul(e + 1, &e, 16) : 0;
+			press[npress].x = press[npress].y = 0;
+			if (*e == ':') {
+				sscanf(e + 1, "%u,%u", &press[npress].x, &press[npress].y);
+				press[npress].keys |= NDS_KEY_PEN;
+			}
+			npress++;
+		} else if (!strcmp(argv[i], "--shot") && i + 1 < argc && nshot < 32) {
+			/* CUADRO:ARCHIVO.ppm — vuelca las dos pantallas al llegar a ese cuadro */
+			char *e;
+
+			shot[nshot].frame = strtoull(argv[++i], &e, 0);
+			shot[nshot].file = *e == ':' ? e + 1 : "shot.ppm";
+			nshot++;
+		} else if (!strcmp(argv[i], "--trace-from") && i + 1 < argc)
+			trace_from = (uint32_t)strtoul(argv[++i], NULL, 0);
 		else if (!strcmp(argv[i], "--trace7"))
 			trace_cpu = 1;
 		else if (!strcmp(argv[i], "--skip") && i + 1 < argc)
@@ -253,6 +348,8 @@ int main(int argc, char **argv)
 			watch_addr = (uint32_t)strtoul(argv[++i], NULL, 0);
 		} else if (!strcmp(argv[i], "--watch-max") && i + 1 < argc)
 			watch_max = strtoull(argv[++i], NULL, 0);
+		else if (!strcmp(argv[i], "--dump-cpu") && i + 1 < argc)
+			dump_cpu = atoi(argv[++i]) == 7 ? 1 : 0;
 		else if (!strcmp(argv[i], "--dump") && i + 1 < argc && ndumps < 8) {
 			/* DIR:LONG:ARCHIVO — al terminar, vuelca esa memoria tal como la ve el ARM9 */
 			char *a = argv[++i], *b = strchr(a, ':'), *c = b ? strchr(b + 1, ':') : NULL;
@@ -312,6 +409,10 @@ int main(int argc, char **argv)
 	M.dbg = dbg;
 	M.vid.use_ref = use_ref;
 	nds_init(&M);
+	if (wav_path)
+		M.snd.ops.sink = wav_sink;
+	if (snd_original)
+		nds_snd_set_mode(&M, SND_MODE_ORIGINAL);
 	if (nds_load_rom(&M, rom, len) || nds_boot_direct(&M)) {
 		fprintf(stderr, "ROM inválida\n");
 		return 2;
@@ -337,8 +438,15 @@ int main(int argc, char **argv)
 	}
 	if (keys)
 		nds_set_input(&M, keys, tx, ty);
-	for (uint64_t f = 0; f < skip_frames; f++)
+	for (uint64_t f = 0; f < skip_frames; f++) {
+		for (uint32_t k = 0; k < npress; k++)
+			if (press[k].frame == f)
+				nds_set_input(&M, press[k].keys, press[k].x, press[k].y);
+		for (uint32_t k = 0; k < nshot; k++)
+			if (shot[k].frame == f)
+				save_ppm(shot[k].file);
 		nds_run_frame(&M);
+	}
 	if (watch_addr) {
 		/* paso a paso (1 ciclo del ARM9): imprime cada cambio de la palabra en watch_addr, vista por watch_cpu */
 		uint32_t old = nds_peek32(&M, watch_cpu, watch_addr);
@@ -450,6 +558,9 @@ int main(int argc, char **argv)
 		/* traza de instrucciones de una CPU (la otra avanza a su ritmo) */
 		struct acore *c = trace_cpu ? &M.a7 : &M.a9;
 
+		if (trace_from) /* corre (de a una instrucción) hasta llegar a esa dirección */
+			for (uint64_t k = 0; k < (uint64_t)4000000000ull && acore_pc(c) != trace_from; k++)
+				nds_run(&M, 1);
 		for (uint64_t i = 0; i < trace_n; i++) {
 			const uint32_t pc = acore_pc(c);
 			const uint32_t insn = nds_peek32(&M, trace_cpu, pc & ~3u);
@@ -467,7 +578,15 @@ int main(int argc, char **argv)
 		uint32_t pc;
 
 		for (uint64_t f = 0; f < frames; f++) {
+			for (uint32_t k = 0; k < npress; k++)
+				if (press[k].frame == f)
+					nds_set_input(&M, press[k].keys, press[k].x, press[k].y);
+			for (uint32_t k = 0; k < nshot; k++)
+				if (shot[k].frame == f)
+					save_ppm(shot[k].file);
 			nds_run_frame(&M);
+			if (g2d_stats)
+				nds_video_render_host(&M);
 			if (stuck_in_vector(&M, &who, &pc)) {
 				printf("EXCEPCIÓN %s sin manejador en el cuadro %llu: pc = 0x%08x (ARM9 pc 0x%08x, ARM7 pc 0x%08x)\n", who,
 				       (unsigned long long)f, pc, acore_pc(&M.a9), acore_pc(&M.a7));
@@ -509,13 +628,46 @@ int main(int argc, char **argv)
 		if (show_regs)
 			print_regs();
 		save_out(save_path);
+		if (wav_path)
+			wav_write(wav_path);
+		if (g2d_stats) {
+			static const char *const st[G2D_ST_COUNT] = { "init", "plan", "texto", "afin", "obj", "compone", "extpal" };
+			uint64_t tot[G2D_C_COUNT] = { 0 };
+			const struct nds_video *vv = &M.vid;
+
+			printf("DMA del 2D por cuadro y por etapa (host: A y B juntos; %llu cuadros): órdenes get / bytes / listas (elementos) / put / "
+			       "esperas\n", (unsigned long long)frames);
+			for (int k = 0; k < G2D_ST_COUNT; k++) {
+				for (int q = 0; q < G2D_C_COUNT; q++)
+					tot[q] += g2d_dma_cnt[k][q];
+				printf("  %-8s get %8.1f (%9.0f B)  listas %7.1f (%8.1f elem, %9.0f B)  put %6.1f  esperas %8.1f\n", st[k],
+				       (double)g2d_dma_cnt[k][G2D_C_GET] / (double)frames, (double)g2d_dma_cnt[k][G2D_C_GET_BYTES] / (double)frames,
+				       (double)g2d_dma_cnt[k][G2D_C_LIST] / (double)frames, (double)g2d_dma_cnt[k][G2D_C_LIST_EL] / (double)frames,
+				       (double)g2d_dma_cnt[k][G2D_C_LIST_BYTES] / (double)frames, (double)g2d_dma_cnt[k][G2D_C_PUT] / (double)frames,
+				       (double)g2d_dma_cnt[k][G2D_C_WAIT] / (double)frames);
+			}
+			for (int e = 0; e < 2; e++) {
+				const gpu2d_stats *q = &vv->stat_sum[e];
+				const double nf = vv->stat_frames ? (double)vv->stat_frames : 1.0;
+
+				printf("  motor %c por cuadro: filas de teselas %.0f, esperas de mapa %.0f, filas de OBJ %.0f, OBJ-línea dibujados %.0f, "
+				       "cambios %.0f, líneas afines %.0f, bloques afines %.0f, vaciados de OBJ %.0f, líneas con efectos %.0f, "
+				       "mapas sin sitio %.0f\n", 'A' + e, q->bg_fetches / nf, q->map_waits / nf, q->obj_fetches / nf,
+				       q->obj_drawn / nf, q->chg_applied / nf, q->aff_lines / nf, q->aff_quads / nf, q->obj_flushes / nf,
+				       q->fx_lines / nf, q->map_dropped / nf);
+			}
+			printf("  total    get %8.1f (%9.0f B)  listas %7.1f (%8.1f elem)  put %6.1f  esperas %8.1f\n",
+			       (double)tot[G2D_C_GET] / (double)frames, (double)tot[G2D_C_GET_BYTES] / (double)frames,
+			       (double)tot[G2D_C_LIST] / (double)frames, (double)tot[G2D_C_LIST_EL] / (double)frames,
+			       (double)tot[G2D_C_PUT] / (double)frames, (double)tot[G2D_C_WAIT] / (double)frames);
+		}
 		for (uint32_t k = 0; k < ndumps; k++) {
 			FILE *f = fopen(dumps[k].file, "wb");
 
 			if (!f)
 				continue;
 			for (uint32_t o = 0; o < dumps[k].len; o++)
-				fputc((int)nds_peek8(&M, 0, dumps[k].addr + o), f);
+				fputc((int)nds_peek8(&M, dump_cpu, dumps[k].addr + o), f);
 			fclose(f);
 		}
 		return rc_gfx;
