@@ -186,10 +186,25 @@ Lo que se midió y se implementó así (algunas cosas contradicen la documentaci
 
 ### Salida y filtro
 
-Del mezclador salen muestras de 16 bits a 32 728,5 Hz que se convierten a flotante y se remuestrean a 48 kHz con **interpolación
-lineal** (`snd_resample`). **Punto de enganche para un FIR polifásico**: esa función es la única que conoce el filtro; el estado
-que arrastra entre trabajos está en `snd_state.hist` (con sitio para 32 muestras por canal) y `frac`; hay que sustituir su cuerpo
-y, en el SPE, comprobar la holgura de la pila. La opción `SND_MODE_ORIGINAL` («como el original»: `audio.cfg` con
+Del mezclador salen muestras de 16 bits a 32 728,5 Hz que se convierten a flotante y se remuestrean a 48 kHz con un **FIR
+polifásico** (`snd_resample` en `src/audio/snd_mix.c`; tabla en `src/audio/snd_fir.h`, generada por `tools/gen-snd-fir.py`):
+sinc con ventana de Kaiser (β = 7), 32 coeficientes, corte (-6 dB) a 15 kHz, 64 fases con interpolación lineal entre filas
+(filas normalizadas a suma 1: una continua sale intacta). Mira 15 muestras antes y 16 después de cada posición: la salida va
+retrasada 16 muestras nativas (~0,5 ms) y el estado que arrastra entre trabajos son las últimas 32 muestras nativas por canal
+(`snd_state.hist`) y `frac`. En el SPE el producto es vectorial (4 coeficientes por vector, desplazamiento con `spu_shuffle`;
+suma por carriles junta como (0+1)+(2+3), igual que el C); pila de `snd_run` 8,9 KB, holgura 178 KB. Medido en el host con un
+tono PCM16 (95 % de la banda nativa, nivel respecto del tono ideal; imagen = 32,73 kHz − f, plegada a 48 kHz):
+
+| tono | antes (lineal): tono / imagen | ahora (FIR): tono / imagen |
+|---|---|---|
+| 3,1 kHz | -0,3 / -40 dB | 0,0 / -84 dB |
+| 7,2 kHz | -1,4 / -24 dB | 0,0 / -82 dB |
+| 11,3 kHz | -3,5 / -15 dB | 0,0 / -79 dB |
+| 13,3 kHz | -5,0 / -12 dB | -0,1 / -80 dB |
+| 14,3 kHz | -5,9 / -10 dB | -2,1 / -86 dB |
+| 15,3 kHz | -6,8 / -9 dB | -9,2 / -78 dB |
+
+La opción `SND_MODE_ORIGINAL` («como el original»: `audio.cfg` con
 `original = si`, o `--snd-original` en el host) cuantiza a 10 bits con el sesgo (`(mezcla >> 6) + SOUNDBIAS` recortado a 0–1023)
 antes de convertir. El host escribe un WAV de 48 kHz con `--wav ARCHIVO` (para oír o analizar).
 

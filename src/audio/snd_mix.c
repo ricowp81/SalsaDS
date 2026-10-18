@@ -7,6 +7,10 @@
  * captura (2 * 1 KB): menos de 60 KB en total.
  */
 #include "audio/snd.h"
+#include "audio/snd_fir.h"
+#ifdef __SPU__
+#include <spu_intrinsics.h>
+#endif
 
 static const int16_t ima_step[89] = {
 	7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107,
@@ -321,37 +325,104 @@ static void cap_put(const snd_bus *bus, snd_cap *k, cap_run *r, int32_t v)
 /* ---- remuestreo ------------------------------------------------------------------------------------------- */
 
 /*
- * Interpolación lineal de 32,7 kHz a 48 kHz. Las muestras nativas del trabajo van en nat_f[0..n); `st->hist[c][0]` es la
- * última del trabajo anterior y `st->frac` la fase dentro de ese intervalo. Para un FIR polifásico se sustituye el
- * cuerpo de esta función (el estado de arrastre es `hist`, de SND_HIST muestras por canal).
+ * Remuestreo de 32,7 kHz a 48 kHz con un FIR polifásico (tabla de snd_fir.h, generada por tools/gen-snd-fir.py: 32
+ * coeficientes, 64 fases con interpolación lineal entre filas, pasabajos de 15 kHz con ventana de Kaiser). Las muestras
+ * van planas por canal en wl/wr: las primeras SND_HIST son las últimas del trabajo anterior (`st->hist`) y después las
+ * `n` nuevas. Cada salida mira 15 muestras antes y 16 después de su posición, así que sale retrasada 16 muestras
+ * nativas (~0,5 ms) y el trabajo acaba con la posición `n + 16` de la ventana, que en el siguiente trabajo vuelve a ser
+ * la 16. `st->frac` es la fase dentro de la muestra. La suma usa 4 acumuladores (los carriles de un vector) y se junta
+ * como (0+1)+(2+3): lo mismo en C y en el SPE (vectorizado: 4 coeficientes por vector, 8 madd por canal y salida).
  */
-static uint32_t snd_resample(snd_state *st, const float *nat_f, uint32_t n, float *out, uint32_t out_max)
+#define SND_AFTER_MAX 16 /* muestras mirando hacia delante */
+#define FIR_K0 (SND_HIST - SND_AFTER_MAX) /* posición inicial en la ventana: 16 */
+
+#ifdef __SPU__
+typedef vec_float4 fir_vec;
+
+static inline void fir_coefs(float *c, const float *h0, const float *h1, float a)
+{
+	const vec_float4 av = spu_splats(a);
+
+	for (int v = 0; v < SND_FIR_TAPS / 4; v++) {
+		const vec_float4 x0 = ((const vec_float4 *)h0)[v];
+
+		((vec_float4 *)c)[v] = spu_madd(av, spu_sub(((const vec_float4 *)h1)[v], x0), x0);
+	}
+}
+
+/* x puede estar en cualquier múltiplo de 4 bytes: 9 vectores alineados dan los 8 desplazados */
+static inline float fir_dot(const float *c, const float *x)
+{
+	static const vec_uchar16 pats[4] = {
+		{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
+		{ 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19 },
+		{ 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23 },
+		{ 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27 }
+	};
+	const unsigned off = (unsigned)((uintptr_t)x & 15u);
+	const vec_float4 *xv = (const vec_float4 *)((uintptr_t)x & ~(uintptr_t)15);
+	const vec_uchar16 pat = pats[off >> 2];
+	vec_float4 acc = spu_splats(0.0f), cur = xv[0];
+
+	for (int v = 0; v < SND_FIR_TAPS / 4; v++) {
+		const vec_float4 nxt = xv[v + 1];
+
+		acc = spu_madd(((const vec_float4 *)c)[v], spu_shuffle(cur, nxt, pat), acc);
+		cur = nxt;
+	}
+	return (spu_extract(acc, 0) + spu_extract(acc, 1)) + (spu_extract(acc, 2) + spu_extract(acc, 3));
+}
+#else
+static inline void fir_coefs(float *c, const float *h0, const float *h1, float a)
+{
+	for (int j = 0; j < SND_FIR_TAPS; j++)
+		c[j] = h0[j] + a * (h1[j] - h0[j]);
+}
+
+static inline float fir_dot(const float *c, const float *x)
+{
+	float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
+
+	for (int j = 0; j < SND_FIR_TAPS; j += 4) {
+		a0 += c[j] * x[j];
+		a1 += c[j + 1] * x[j + 1];
+		a2 += c[j + 2] * x[j + 2];
+		a3 += c[j + 3] * x[j + 3];
+	}
+	return (a0 + a1) + (a2 + a3);
+}
+#endif
+
+static uint32_t snd_resample(snd_state *st, const float *wl, const float *wr, uint32_t n, float *out, uint32_t out_max)
 {
 	const float ratio = (SND_RATE_NATIVE / SND_RATE_OUT) * (1.0f + st->ratio_adj);
+	const uint32_t last = SND_HIST + n - SND_AFTER_MAX; /* se puede sacar mientras k < last (k + 16 < SND_HIST + n) */
 	float f = st->frac;
-	float c0 = st->hist[0][0], c1 = st->hist[1][0];
-	uint32_t idx = 0, produced = 0;
+	uint32_t k = FIR_K0, produced = 0;
+	float c[SND_FIR_TAPS] __attribute__((aligned(16)));
 
-	/* (c0, c1) es la muestra de la izquierda del intervalo, nat_f[idx] la de la derecha y f la fase entre las dos */
 	while (produced < out_max) {
-		while (f >= 1.0f) { /* el intervalo avanzó: la derecha pasa a ser la izquierda */
-			if (idx >= n)
-				goto done;
+		float pf, a;
+		uint32_t ph;
+
+		while (f >= 1.0f) {
 			f -= 1.0f;
-			c0 = nat_f[2 * idx];
-			c1 = nat_f[2 * idx + 1];
-			idx++;
+			k++;
 		}
-		if (idx >= n)
+		if (k >= last)
 			break;
-		out[2 * produced] = c0 + (nat_f[2 * idx] - c0) * f;
-		out[2 * produced + 1] = c1 + (nat_f[2 * idx + 1] - c1) * f;
+		pf = f * (float)SND_FIR_PHASES;
+		ph = (uint32_t)pf;
+		a = pf - (float)ph;
+		fir_coefs(c, snd_fir[ph], snd_fir[ph + 1], a);
+		out[2 * produced] = fir_dot(c, wl + (k - SND_FIR_BEFORE));
+		out[2 * produced + 1] = fir_dot(c, wr + (k - SND_FIR_BEFORE));
 		produced++;
 		f += ratio;
 	}
-done:
-	st->hist[0][0] = c0;
-	st->hist[1][0] = c1;
+	/* si faltó sitio en `out` lo pendiente se descarta: la ventana siguiente empieza en n + 16 */
+	if (k < last)
+		f = 0.0f;
 	st->frac = f;
 	return produced;
 }
@@ -368,12 +439,18 @@ uint32_t snd_run(snd_state *st, const snd_ent *log, uint32_t nlog, uint32_t ntic
 {
 	static const uint8_t divsh[4] = { 0, 1, 2, 4 };
 	cap_run cr[2];
-	float nat_f[2 * SND_TICKS_MAX];
+	float wl_[SND_HIST + SND_TICKS_MAX + 4] __attribute__((aligned(16)));
+	float wr_[SND_HIST + SND_TICKS_MAX + 4] __attribute__((aligned(16)));
+	float *const wl = wl_, *const wr = wr_;
 	uint32_t ie = 0, peak = 0;
 
 	if (nticks > SND_TICKS_MAX)
 		nticks = SND_TICKS_MAX;
 	cr[0].n = cr[1].n = 0;
+	for (uint32_t i = 0; i < SND_HIST; i++) {
+		wl[i] = st->hist[0][i];
+		wr[i] = st->hist[1][i];
+	}
 	for (int c = 0; c < SND_NCH; c++)
 		st->ch[c].tag = 0xFFFFFFFFu; /* lo que haya en RAM ahora (el juego pudo rellenar el búfer) */
 	for (uint32_t t = 0; t < nticks; t++) {
@@ -474,11 +551,11 @@ uint32_t snd_run(snd_state *st, const snd_ent *log, uint32_t nlog, uint32_t ntic
 
 			ql = ql < 0 ? 0 : ql > 1023 ? 1023 : ql;
 			qr = qr < 0 ? 0 : qr > 1023 ? 1023 : qr;
-			nat_f[2 * t] = (float)(ql - 512) * (1.0f / 512.0f);
-			nat_f[2 * t + 1] = (float)(qr - 512) * (1.0f / 512.0f);
+			wl[SND_HIST + t] = (float)(ql - 512) * (1.0f / 512.0f);
+			wr[SND_HIST + t] = (float)(qr - 512) * (1.0f / 512.0f);
 		} else {
-			nat_f[2 * t] = (float)L * (1.0f / 32768.0f);
-			nat_f[2 * t + 1] = (float)R * (1.0f / 32768.0f);
+			wl[SND_HIST + t] = (float)L * (1.0f / 32768.0f);
+			wr[SND_HIST + t] = (float)R * (1.0f / 32768.0f);
 		}
 	}
 	cap_flush(bus, &cr[0]);
@@ -496,7 +573,11 @@ uint32_t snd_run(snd_state *st, const snd_ent *log, uint32_t nlog, uint32_t ntic
 	st->ticks_run = nticks;
 	st->log_applied = ie;
 	if (out && out_n) {
-		*out_n = snd_resample(st, nat_f, nticks, out, out_max);
+		*out_n = snd_resample(st, wl, wr, nticks, out, out_max);
+		for (uint32_t i = 0; i < SND_HIST; i++) { /* historia del siguiente trabajo: las últimas SND_HIST de la ventana */
+			st->hist[0][i] = wl[nticks + i];
+			st->hist[1][i] = wr[nticks + i];
+		}
 		st->nout = *out_n;
 	}
 	return ie;

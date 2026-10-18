@@ -276,7 +276,7 @@ static void test_resample(void)
 	static float out[2 * SND_OUT_MAX];
 	uint32_t n = 0, bad = 0;
 
-	/* una continua da una continua a 48 kHz (la interpolación no inventa nada) y el modo «como el original» cuantiza a 10 bits */
+	/* una continua da una continua a 48 kHz (las filas del FIR suman 1) y el modo «como el original» cuantiza a 10 bits */
 	reset();
 	for (uint32_t i = 0; i < 128; i++)
 		wr16le(mem + 0x100 + 2 * i, 0x2000);
@@ -284,7 +284,7 @@ static void test_resample(void)
 	w16(0x100, 0x807F);
 	chan(0, CNT(127, 0, 0, 1, 1), 0x02000100u, P512, 0, 64);
 	snd_run(&st, log_buf, nlog, 300, &bus, nat, out, SND_OUT_MAX, &n);
-	for (uint32_t i = 40; i < n; i++)
+	for (uint32_t i = 70; i < n; i++) /* el FIR tarda ~48 muestras de salida en llenar su ventana (32 nativas) */
 		bad += fabsf(out[2 * i] - 0.25f) > 1e-6f;
 	CHECK_EQ(bad, 0);
 	CHECK(n > 430 && n < 445);
