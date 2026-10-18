@@ -71,9 +71,10 @@
 #include "jit/arec.h"
 #include "rec_cache.h"
 #define NOJIT_FLAG SALSADS_DATA_DIR "/nucleo-jit-nojit"
-/* Con este archivo la geometría se ejecuta en el sexto SPE; sin él, en el PPE (medido en la PS3: el SPE escalar
- * tardaba 35 ms por cuadro con ~1200 polígonos contra ~7 del PPE). */
-#define GEOM_SPE_FLAG SALSADS_DATA_DIR "/geometria-spe"
+/* La geometría se ejecuta en el sexto SPE por omisión (el SPE vectorizado tarda ~7,9 ms por cuadro en Mario Kart DS contra
+ * ~2,8 del PPE, pero libera al hilo principal de la geometría; antes de la vectorización el SPE escalar tardaba 35 ms).
+ * Con este archivo vuelve al PPE. */
+#define GEOM_PPE_FLAG SALSADS_DATA_DIR "/geometria-ppe"
 #define JIT_MARKER SALSADS_DATA_DIR "/nucleo-jit.marker"
 /* Tramo del planificador con el recompilador (ciclos del ARM9 entre los cambios de CPU; el intérprete usa 128). Cada
  * tramo es una entrada al código generado, y lo que cuesta en la PS3 es el cambio de CPU (cachés), no las instrucciones:
@@ -881,6 +882,9 @@ static uint64_t acc_evn[EV_COUNT], acc_evt[EV_COUNT]; /* eventos del planificado
 static uint64_t acc_evn_all[EV_COUNT];                /* ídem, cuántos, en todos los cuadros */
 static r3d_stats acc_r3d;           /* render 3D: suma de los contadores de los dos SPE */
 static uint32_t acc_r3d_frames;
+/* latencia del render 3D: envío (línea 0) -> fin de cada SPE, visto desde el PPE que espera en el VBlank */
+static uint64_t r3d_post_us, acc_r3d_pre_us, acc_r3d_lat_us[2];
+static uint32_t acc_r3d_early;
 
 static void sort_u32(uint32_t *a, uint32_t n)
 {
@@ -1055,6 +1059,12 @@ static void log_stats(void)
 			    r->tex_px ? 100.0 * (double)r->tex_hits / (double)(r->tex_hits + r->tex_misses) : 100.0, r->tex_misses / n, r->tex_evict / n,
 			    r->line_miss / n, r->t_sort / n / hz, r->t_list / n / hz, r->t_fetch / n / hz, r->t_raster / n / hz, r->t_tex / n / hz,
 			    r->t_setup / n / hz, r->t_rows / n / hz, r->t_pix / n / hz, r->t_post / n / hz, r->t_out / n / hz);
+		salsads_log("DATO raster3d-latencia: por cuadro, desde el envío (línea 0) hasta: llegada del PPE al VBlank %.2f ms, fin del SPE0 %.2f ms, "
+			    "fin del SPE1 %.2f ms (si el SPE ya había terminado cuenta la llegada); SPE ya terminados al llegar: %.2f de 2",
+			    (double)acc_r3d_pre_us / 1000.0 / n, (double)acc_r3d_lat_us[0] / 1000.0 / n, (double)acc_r3d_lat_us[1] / 1000.0 / n,
+			    (double)acc_r3d_early / n);
+		acc_r3d_pre_us = acc_r3d_lat_us[0] = acc_r3d_lat_us[1] = 0;
+		acc_r3d_early = 0;
 		memset(&acc_r3d, 0, sizeof acc_r3d);
 		acc_r3d_frames = 0;
 	}
@@ -1276,6 +1286,7 @@ static void r3d_spe_submit(void *ctx, int set, r3d_job *j)
 	r3q.valid = 1;
 	r3q.set = set;
 	r3q.job = *j;
+	r3d_post_us = now_us();
 	for (uint32_t u = 0; u < 2; u++) {
 		r3d_job jj = *j;
 
@@ -1316,8 +1327,14 @@ static void r3d_spe_wait(void *ctx)
 	if (!r3q.valid)
 		return;
 	for (uint32_t u = 0; u < 2; u++) {
+		const int was_done = spukit_done(wk3d[u], r3q.seq[u]);
 		const spukit_result *r = spukit_wait(wk3d[u], r3q.seq[u]);
 		job_r3d_result res;
+
+		if (u == 0)
+			acc_r3d_pre_us += t0 - r3d_post_us;
+		acc_r3d_lat_us[u] += now_us() - r3d_post_us;
+		acc_r3d_early += (uint32_t)was_done;
 
 		memcpy(&res, r->data, sizeof res);
 		if (r->error != 0 || res.rc != 0) {
@@ -1805,11 +1822,11 @@ int main(void)
 			salsads_log("render 3D: los SPE no arrancaron (spukit %d): rasteriza el PPE", spukit_last_error());
 		}
 	}
-	/* Motor de geometría en el sexto SPE (solo con GEOM_SPE_FLAG); si no arranca o la autoprueba falla, el PPE ejecuta
+	/* Motor de geometría en el sexto SPE (salvo con GEOM_PPE_FLAG); si no arranca o la autoprueba falla, el PPE ejecuta
 	 * las órdenes (modo directo) */
 	struct stat gst;
-	if (spu_on && stat(GEOM_SPE_FLAG, &gst) != 0)
-		salsads_log("geometría: en el PPE (crear %s para ejecutarla en un SPE)", GEOM_SPE_FLAG);
+	if (spu_on && stat(GEOM_PPE_FLAG, &gst) == 0)
+		salsads_log("geometría: en el PPE (existe %s)", GEOM_PPE_FLAG);
 	else if (spu_on) {
 		wk_geom = spukit_worker_start(spu_geom_bin, "geom", 0);
 		if (wk_geom && geom_selftest() == 0) {

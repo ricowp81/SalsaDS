@@ -482,3 +482,19 @@ libretro, nombre del ejecutable.
 
 No encontré ningún emulador de DS usable en PS3 (búsqueda del 2026-10-16;
 detalle y fuentes en `docs/fase0.md`, 0.2).
+
+## Fase 4.5: dónde se van los 25,5 ms de Mario Kart DS (medido en la PS3, geometría en el SPE)
+
+- `frame_begin` (7,8 ms) no es trabajo: es `rsxkit_frame_begin`, la espera del flip anterior. Con la emulación en 25,5 ms el
+  intervalo es de 33,3 ms (30 Hz) y esa espera es el relleno hasta el siguiente VSync. Desaparece sola al bajar de 16,7 ms.
+- Los «eventos» (13,5 ms) son casi todos el evento de línea (9,9 ms), y de esos ~9,2 ms son la espera del render 3D en la
+  línea 192 (`wait3d` en `nds_gx_vblank`). El trabajo real de la CPU por cuadro es ~16,3 ms (ARM9 6,8 + ARM7 4,5 + gx 3,1 + resto):
+  ya está en el borde de los 16,7 ms, así que para 60 fps hace falta además esconder la espera del 3D.
+- Cambios de esta rama: la geometría va al SPE por omisión (`/dev_hdd0/salsads/geometria-ppe` la devuelve al PPE); en
+  `nds_gx_vblank` el motor avanza (`gx_advance`, que solo escribe el cuadro en construcción) antes de esperar al render 3D;
+  nueva línea `DATO raster3d-latencia` (envío en la línea 0 → llegada del PPE al VBlank → fin de cada SPE).
+- Pendiente (diseño): el render dura 10,8 / 13,5 ms por SPE pero tarda ~21 ms desde el envío; la línea nueva dirá si son
+  esperas de arranque o contención. Para esconder la espera: tercer `gx_frame` (el cuadro en vuelo sigue vivo tras el
+  SWAP_BUFFERS), esperar el render en la línea 262 y enviar el 2D (`vid_submit`) allí, con el reparto `prev/sub` del bucle
+  principal desplazado un cuadro; y repartir mejor las bandas (SPE1 trabaja 25 % más que SPE0). ARM7 en el hilo 1: sin
+  hacer (ARM7 4,5 ms; exige sincronía por tramos con el ARM9 y la ruta lenta del JIT compartida).
