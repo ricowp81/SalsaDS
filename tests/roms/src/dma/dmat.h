@@ -43,7 +43,29 @@ static void dma_set(unsigned ch, uint32_t src, uint32_t dst, uint32_t cnt)
 	MEM32(R_DMA(ch, 0)) = src;
 	MEM32(R_DMA(ch, 1)) = dst;
 	MEM32(R_DMA(ch, 2)) = cnt;
+	/* el DMA empieza ~2 ciclos después de habilitarlo y la CPU puede ejecutar todavía una o dos instrucciones: sin esto,
+	 * en una DS real el ARM7 leía a veces la primera palabra del destino antes de que llegara (ver docs/ds-real.md) */
+	__asm__ volatile("nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop" : : : "memory");
 }
+
+/* primer elemento que no coincide en un bucle de comprobación: se anota como divergencia (grupo, línea*1000+índice) */
+static uint32_t dbg_set, dbg_i, dbg_got, dbg_want;
+#define NOTE_BAD(i, g, w)                         \
+	do {                                      \
+		if ((g) != (w) && !dbg_set) {     \
+			dbg_set = 1;              \
+			dbg_i = (i);              \
+			dbg_got = (g);            \
+			dbg_want = (w);           \
+		}                                 \
+	} while (0)
+#define REPORT_BAD(line)                                                                                   \
+	do {                                                                                               \
+		if (dbg_set) {                                                                             \
+			sds_diverge_at(dbg_got, dbg_want, SDS_MELON_NA, (line) * 1000u + dbg_i, __FILE__); \
+			dbg_set = 0;                                                                       \
+		}                                                                                          \
+	} while (0)
 
 static void fill_words(uint32_t off, uint32_t n, uint32_t start)
 {
@@ -69,8 +91,9 @@ static void group_copy(void)
 		dma_set(ch, BUF, BUF + 0x400, D_ENABLE | D_WORD | 64);
 		bad = 0;
 		for (uint32_t i = 0; i < 64; i++)
-			bad += BUFW[0x100 + i] != 0xA0000000u + ch * 0x100 + i;
+			{ const uint32_t g_ = (uint32_t)(BUFW[0x100 + i]), w_ = (uint32_t)(0xA0000000u + ch * 0x100 + i); bad += g_ != w_; NOTE_BAD(i, g_, w_); }
 		SDS_CHECK(bad, 0);
+		REPORT_BAD(__LINE__);
 		SDS_CHECK(BUFW[0x100 + 64], 0); /* no pasa de la cuenta */
 		SDS_CHECK(MEM32(R_DMA(ch, 2)) & D_ENABLE, 0); /* termina y se deshabilita */
 		SDS_CHECK(MEM32(R_DMA(ch, 0)), BUF + 4 * 64 - 4 * 64 + 0); /* SAD no cambia */
@@ -82,8 +105,9 @@ static void group_copy(void)
 	dma_set(0, BUF, BUF + 0x400, D_ENABLE | 100);
 	bad = 0;
 	for (uint32_t i = 0; i < 100; i++)
-		bad += BUFH[0x200 + i] != 0x1000 + i;
+		{ const uint32_t g_ = (uint32_t)(BUFH[0x200 + i]), w_ = (uint32_t)(0x1000 + i); bad += g_ != w_; NOTE_BAD(i, g_, w_); }
 	SDS_CHECK(bad, 0);
+	REPORT_BAD(__LINE__);
 	SDS_CHECK(BUFH[0x200 + 100], 0);
 	/* una unidad */
 	BUFW[0] = 0xCAFEF00Du;
@@ -111,15 +135,17 @@ static void group_modes(void)
 	dma_set(0, BUF, BUF + 0x400 + 4 * 7, D_ENABLE | D_WORD | D_DST_DEC | 8);
 	bad = 0;
 	for (uint32_t i = 0; i < 8; i++)
-		bad += BUFW[0x100 + 7 - i] != 100 + i;
+		{ const uint32_t g_ = (uint32_t)(BUFW[0x100 + 7 - i]), w_ = (uint32_t)(100 + i); bad += g_ != w_; NOTE_BAD(i, g_, w_); }
 	SDS_CHECK(bad, 0);
+	REPORT_BAD(__LINE__);
 	/* origen decreciente */
 	clear_words(0x400, 16);
 	dma_set(0, BUF + 4 * 7, BUF + 0x400, D_ENABLE | D_WORD | D_SRC_DEC | 8);
 	bad = 0;
 	for (uint32_t i = 0; i < 8; i++)
-		bad += BUFW[0x100 + i] != 107 - i;
+		{ const uint32_t g_ = (uint32_t)(BUFW[0x100 + i]), w_ = (uint32_t)(107 - i); bad += g_ != w_; NOTE_BAD(i, g_, w_); }
 	SDS_CHECK(bad, 0);
+	REPORT_BAD(__LINE__);
 	/* destino fijo */
 	clear_words(0x400, 16);
 	dma_set(0, BUF, BUF + 0x400, D_ENABLE | D_WORD | D_DST_FIX | 8);
@@ -131,8 +157,9 @@ static void group_modes(void)
 	dma_set(0, BUF + 0x80, BUF + 0x400, D_ENABLE | D_WORD | D_SRC_FIX | 12);
 	bad = 0;
 	for (uint32_t i = 0; i < 12; i++)
-		bad += BUFW[0x100 + i] != 0xF111F111u;
+		{ const uint32_t g_ = (uint32_t)(BUFW[0x100 + i]), w_ = (uint32_t)(0xF111F111u); bad += g_ != w_; NOTE_BAD(i, g_, w_); }
 	SDS_CHECK(bad, 0);
+	REPORT_BAD(__LINE__);
 	SDS_CHECK(BUFW[0x100 + 12], 0);
 	/* los registros de dirección guardan lo escrito (con la máscara de la CPU) y la cuenta se lee de vuelta */
 	MEM32(R_DMA(3, 0)) = 0x02001234;
@@ -207,8 +234,9 @@ static void group_vblank(void)
 			;
 		bad = 0;
 		for (uint32_t i = 0; i < 4 * k; i++)
-			bad += BUFW[0x100 + i] != 0x7000 + i;
+			{ const uint32_t g_ = (uint32_t)(BUFW[0x100 + i]), w_ = (uint32_t)(0x7000 + i); bad += g_ != w_; NOTE_BAD(i, g_, w_); }
 		SDS_CHECK(bad, 0);
+		REPORT_BAD(__LINE__);
 		SDS_CHECK(BUFW[0x100 + 4 * k], 0);
 	}
 	MEM32(R_DMA(0, 2)) = 0; /* se detiene escribiendo cero */

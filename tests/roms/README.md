@@ -132,6 +132,8 @@ divergencias se declaran con `SDS_DIVERGE(hw, doc)` o `SDS_DIVERGE_M(hw, doc, me
 DLDI: el montaje falla, `SD:NO` y todo lo demás (bloque de resultados en RAM, `melonds-run.py`, `salsads-cpurun`) queda
 igual. Las ROMs se construyen con `tools/build-roms.sh` (que pasa el commit a `SDS_GITREV`).
 
+Los hallazgos de las corridas en hardware real y lo que SalsaDS debe cambiar están en `docs/ds-real.md`.
+
 ## ROMs de gráficos 2D (`gfx*`, `src/gfx`)
 
 Montan escenas en los motores 2D (Fase 2.1) y dejan en RAM (`0x02380800`) una lista de píxeles con color conocido

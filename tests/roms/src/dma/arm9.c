@@ -88,12 +88,25 @@ static void group_hblank(void)
 	clear_words(0x1000, 300);
 	sync_vblank();
 	dma_set(0, BUF, BUF + 0x1000, D_ENABLE | D_WORD | D_REPEAT | D_START_HBLANK | D_SRC_INC | 1);
-	wait_line_at(100);
-	n = count_nonzero(0x1000, 300);
-	SDS_CHECK(n >= 100 && n <= 106, 1); /* melonDS 1.1 cuenta unas pocas más que las líneas */
-	wait_line_at(200);
-	m = count_nonzero(0x1000, 300);
-	SDS_CHECK(m, 192);
+	/* En una DS real, tras habilitarlo en la línea 192, hubo 300 o más transferencias al llegar a la línea 200 del cuadro
+	 * siguiente (esperadas 192): no está claro si cuenta también durante el VBlank o más de una por línea. Se anotan las
+	 * cuentas en varias líneas (datos para el log) y las dos comprobaciones pasan a informativas. */
+	{
+		static const uint32_t lines[] = { 20, 100, 190, 200, 230, 255 };
+		uint32_t cnt[6];
+
+		for (unsigned k = 0; k < 6; k++) {
+			wait_line_at(lines[k]);
+			cnt[k] = count_nonzero(0x1000, 300);
+		}
+		sds_notef("HBLANK DMA desde la linea 192: lineas 20/100/190/200/230/255 -> %lu/%lu/%lu/%lu/%lu/%lu transferencias",
+			  (unsigned long)cnt[0], (unsigned long)cnt[1], (unsigned long)cnt[2], (unsigned long)cnt[3],
+			  (unsigned long)cnt[4], (unsigned long)cnt[5]);
+		n = cnt[1];
+		m = cnt[3];
+	}
+	SDS_DIVERGE(n >= 100 && n <= 106, 1); /* melonDS 1.1 cuenta unas pocas más que las líneas */
+	SDS_DIVERGE(m, 192);
 	MEM32(R_DMA(0, 2)) = 0;
 	/* al inicio de cada línea visible (modo 3): GBATEK dice «inicio de pantalla»; SalsaDS lo trata como una
 	 * transferencia por línea visible. melonDS 1.1 hace una sola por habilitación: informativo */

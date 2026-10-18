@@ -205,6 +205,17 @@ static void lprintf(const char *fmt, ...)
 		loglen += (uint32_t)n < LOGBUF_SIZE - loglen ? (uint32_t)n : LOGBUF_SIZE - loglen - 1;
 }
 
+void sds_notef(const char *fmt, ...)
+{
+	va_list ap;
+	char tmp[96];
+
+	va_start(ap, fmt);
+	vsnprintf(tmp, sizeof tmp, fmt, ap);
+	va_end(ap);
+	lprintf("[dato] %s\n", tmp);
+}
+
 /* Progreso: una línea en el búfer del log y en la fila 14 de la pantalla (lo único que queda si la ROM se cuelga). */
 void sds_progress(const char *text)
 {

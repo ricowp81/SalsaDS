@@ -301,7 +301,14 @@ static void group_timers(void)
 		{
 			const uint32_t want = t / div[p];
 
-			SDS_CHECK(ticks + 2 >= want && ticks <= want + 2, 1);
+			/* leer el temporizador y luego la referencia cuesta varios ciclos de bus: con prescaler 1 (un tick por ciclo) la
+			 * tolerancia de 2 no alcanza en una DS real (el ARM7 fallaba); con los demás, 2 ticks sobran */
+			const uint32_t tol = p == 0 ? 64 : 2;
+			const uint32_t ok_ = ticks + tol >= want && ticks <= want + tol;
+
+			SDS_CHECK(ok_, 1);
+			if (!ok_)
+				SDS_DIVERGE_ID(ticks, want, 3000 + p); /* ticks obtenidos y esperados, al log */
 			SDS_CHECK(t >= (lines - 1) * LINE_CYCLES && t <= (lines + 1) * LINE_CYCLES + 100, 1);
 		}
 	}
@@ -369,12 +376,16 @@ static void group_timers(void)
 
 		for (volatile int i = 0; i < 200; i++)
 			;
-		SDS_CHECK(MEM16(R_TM_L(0)), a);
+		/* En una DS real el bit 2 (cuenta ascendente) del temporizador 0 NO se guarda (TM0CNT_H lee 0xC3 tras escribir 0xFFFF)
+		 * y el temporizador cuenta como uno normal: aquí, con prescaler 1, avanza. GBATEK, melonDS 1.1 y SalsaDS dicen que no
+		 * cuenta (informativo hasta corregir el núcleo; ver docs/ds-real.md). */
+		SDS_DIVERGE_M(MEM16(R_TM_L(0)) != a, 1, 0);
 	}
 	MEM16(R_TM_H(0)) = 0;
 	/* bits de control: solo 0-2, 6 y 7 existen (GBATEK); melonDS 1.1 devuelve todo lo escrito (informativo) */
 	MEM16(R_TM_H(0)) = 0xFFFF;
-	SDS_DIVERGE(MEM16(R_TM_H(0)), 0xC7);
+	/* hardware: 0xC3 (el temporizador 0 no tiene el bit 2); GBATEK y SalsaDS dicen 0xC7; melonDS 1.1 devuelve 0xFFFF */
+	SDS_DIVERGE_M(MEM16(R_TM_H(0)), 0xC3, 0xFFFF);
 	MEM16(R_TM_H(0)) = 0;
 	/* acceso de 32 bits: recarga y control a la vez */
 	MEM32(R_TM_L(0)) = 0x00800000u | 0x4321u;

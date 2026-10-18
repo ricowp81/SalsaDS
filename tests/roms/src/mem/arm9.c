@@ -310,8 +310,9 @@ static void group_misc(void)
 		SDS_CHECK(MEM32(0xFFFF0000), v); /* y no se escribe */
 	}
 	/* la ranura de GBA vacía: lo que lee el ARM9 (informativo; GBATEK no lo dice) */
-	SDS_DIVERGE(MEM16(0x08000000), 0xFFFF);
-	SDS_DIVERGE(MEM8(0x0A000000), 0xFF);
+	/* DS Lite real con la ranura de GBA vacía: 0 (como el bus abierto de la GBA, dirección/2); SalsaDS lee unos y melonDS 0xFE08 */
+	SDS_DIVERGE_M(MEM16(0x08000000), 0x0000, 0xFE08);
+	SDS_DIVERGE_M(MEM8(0x0A000000), 0x00, 0xFF);
 }
 
 int main(void)

@@ -121,6 +121,8 @@ struct sds_x7 {
 void sds_note(const char *text);
 /* Anota un paso en el log de la SD (sincronizado) y en la fila 14 de la pantalla: si la ROM se cuelga, queda el último. */
 void sds_progress(const char *text);
+/* Anota una línea con formato en el log de la SD (datos sueltos para analizar en el hardware); en el ARM7 no hace nada. */
+void sds_notef(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 #define SDS_CHECK(got, want) sds_check((uint32_t)(got), (uint32_t)(want), __LINE__)
 /* Informativa: no falla, solo se registra si difiere. */

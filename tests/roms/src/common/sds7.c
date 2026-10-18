@@ -119,6 +119,11 @@ void sds_progress(const char *text)
 	(void)text;
 }
 
+void sds_notef(const char *fmt, ...)
+{
+	(void)fmt;
+}
+
 void sds_note(const char *text)
 {
 	(void)text;
