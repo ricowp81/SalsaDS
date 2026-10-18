@@ -47,9 +47,12 @@
 #include "frontend/dspad.h"
 #include "spu/gpu2d/job.h"
 #include "spu/snd/job.h"
+#include "spu/raster3d/job.h"
+#include "gpu3d/r3d_scene.h"
 #include "spukit/spukit.h"
 #include "spu_gpu2d_bin.h"
 #include "spu_snd_bin.h"
+#include "spu_raster3d_bin.h"
 #include "frontend/layout.h"
 #include "platform/ps3/audio_out.h"
 #include "platform/ps3/autotest.h"
@@ -825,6 +828,9 @@ enum {
 	M_SPEA,   /* SPE de la pantalla A: duración de la composición del cuadro que se dibuja (decrementador) */
 	M_SPEB,   /* ídem, pantalla B */
 	M_WAIT,   /* el PPE esperando a los SPE (spukit_wait) del cuadro que se dibuja */
+	M_R3D0,   /* render 3D: duración en el SPE 0 del 3D (decrementador) */
+	M_R3D1,   /* ídem, SPE 1 */
+	M_R3DW,   /* el PPE esperando al render 3D en el VBlank */
 	M_COUNT
 };
 static uint32_t buf[M_COUNT][STATS_FRAMES];
@@ -835,6 +841,8 @@ static struct stats cur_stats;
 static uint64_t acc_gx_ticks, acc_gx_cycles, acc_gx_polys, acc_gx_verts, acc_gx_swaps, acc_frames;
 static uint64_t acc_slices, acc_jumps, acc_events, acc_i9, acc_i7, acc_emu_ticks, acc_a9_ticks, acc_a7_ticks, acc_prof_n;
 static uint64_t acc_i9p, acc_i7p; /* instrucciones de los cuadros con perfil (para los MIPS dentro de cada CPU) */
+static r3d_stats acc_r3d;           /* render 3D: suma de los contadores de los dos SPE */
+static uint32_t acc_r3d_frames;
 
 static void sort_u32(uint32_t *a, uint32_t n)
 {
@@ -966,6 +974,23 @@ static void log_stats(void)
 			    acc_frames ? (unsigned)(100u * acc_gx_cycles / (acc_frames * NDS_FRAME_CYCLES)) : 0u,
 			    (unsigned)(gx_us / 1000u), (unsigned)(gx_us % 1000u), (unsigned)acc_prof_n);
 	}
+	if (acc_r3d_frames) {
+		const r3d_stats *r = &acc_r3d;
+		const double n = (double)acc_r3d_frames, hz = (double)spukit_tick_hz() / 1000.0;
+
+		salsads_log("DATO raster3d: %u cuadros con 3D; por cuadro y SPE (decrementador), mediana / p95 / máx en ms: SPE0 %u.%02u / %u.%02u / %u.%02u, "
+			    "SPE1 %u.%02u / %u.%02u / %u.%02u; espera del PPE en el VBlank %u.%02u / %u.%02u; por cuadro: %.0f polígonos, %.0f banda·polígono, "
+			    "%.0f píxeles, %.0f escritos; texeles %.0f, aciertos de la caché %.2f %%, %.1f bloques decodificados, %.1f desalojos, %.1f líneas de VRAM; "
+			    "ms por cuadro (suma de los dos SPE): orden %.2f, listas %.2f, DMA %.2f, dibujo %.2f (de eso texturas %.2f), posproceso %.2f, salida %.2f",
+			    (unsigned)acc_r3d_frames, MS(pct(M_R3D0, 50)), MS(pct(M_R3D0, 95)), MS(pct(M_R3D0, 100)), MS(pct(M_R3D1, 50)),
+			    MS(pct(M_R3D1, 95)), MS(pct(M_R3D1, 100)), MS(pct(M_R3DW, 50)), MS(pct(M_R3DW, 95)), r->polys / n / 2.0,
+			    r->band_polys / n, r->pixels / n, r->written / n, r->tex_px / n,
+			    r->tex_px ? 100.0 * (double)r->tex_hits / (double)(r->tex_hits + r->tex_misses) : 100.0, r->tex_misses / n, r->tex_evict / n,
+			    r->line_miss / n, r->t_sort / n / hz, r->t_list / n / hz, r->t_fetch / n / hz, r->t_raster / n / hz, r->t_tex / n / hz,
+			    r->t_post / n / hz, r->t_out / n / hz);
+		memset(&acc_r3d, 0, sizeof acc_r3d);
+		acc_r3d_frames = 0;
+	}
 	salsads_log("DATO MIPS: ARM9 %.2f, ARM7 %.2f (instrucciones entre el tiempo dentro de cada CPU: %u cuadros con perfil); "
 		    "sobre el tiempo total de emulación: ARM9 %.2f, ARM7 %.2f, juntas %.2f",
 		    mips9_cpu, mips7_cpu, (unsigned)acc_prof_n, mips9_tot, mips7_tot, mips9_tot + mips7_tot);
@@ -977,6 +1002,198 @@ static void log_stats(void)
 	acc_gx_ticks = acc_gx_cycles = acc_gx_polys = acc_gx_verts = acc_gx_swaps = acc_frames = 0;
 	acc_slices = acc_jumps = acc_events = acc_i9 = acc_i7 = acc_emu_ticks = acc_a9_ticks = acc_a7_ticks = acc_prof_n = 0;
 	acc_i9p = acc_i7p = 0;
+}
+
+/* ---- render 3D en dos SPE (Fase 3.2) ------------------------------------------------------------------------------- */
+
+/* Línea 0: el cuadro de geometría entregado en el último SWAP_BUFFERS se reparte en bandas alternas entre dos SPE; la capa
+ * 3D sale en la instantánea del cuadro (set->img3d), que el SPE del motor A lee al componer. Línea 192 (r3d_wait, antes del
+ * SWAP_BUFFERS y de entregar el 2D): hay que esperarlo. docs/fase3.md, 3.2. */
+static spukit_worker *wk3d[2];
+static int r3d_on;
+static struct {
+	int valid, set;
+	uint32_t seq[2];
+	r3d_job job;
+} r3q;
+static uint32_t r3d_fail;
+
+static void r3d_spe_submit(void *ctx, int set, r3d_job *j)
+{
+	(void)ctx;
+	r3q.valid = 1;
+	r3q.set = set;
+	r3q.job = *j;
+	for (uint32_t u = 0; u < 2; u++) {
+		r3d_job jj = *j;
+
+		jj.nunits = 2;
+		jj.unit = u;
+		r3q.seq[u] = spukit_post(wk3d[u], JOB_RASTER3D, &jj, sizeof jj);
+	}
+}
+
+/* Autoprueba durante la prueba automática: la capa 3D de los SPE contra la referencia del PPE sobre el mismo cuadro */
+static void r3d_spe_verify(int set)
+{
+	static uint32_t ref[R3D_W * R3D_H] __attribute__((aligned(128)));
+	const struct nds_vset *s = &nds->vid.set[set];
+	const r3d_job *j = &r3q.job;
+	int diffs = 0, first = -1;
+
+	r3d_render_ref((j->flags & R3D_F_BLANK) ? NULL : (const gx_frame *)(uintptr_t)j->frame_ea, s->vram, j->texslot, j->palslot,
+		       j->flags, ref);
+	for (int i = 0; i < R3D_W * R3D_H; i++)
+		if (ref[i] != s->img3d[i]) {
+			if (first < 0)
+				first = i;
+			diffs++;
+		}
+	if (diffs) {
+		salsads_log("FALLO el render 3D de los SPE difiere de la referencia del PPE en %d píxeles (primero en %d,%d)", diffs,
+			    first % R3D_W, first / R3D_W);
+		failures++;
+	}
+}
+
+static void r3d_spe_wait(void *ctx)
+{
+	const uint64_t t0 = now_us();
+
+	(void)ctx;
+	if (!r3q.valid)
+		return;
+	for (uint32_t u = 0; u < 2; u++) {
+		const spukit_result *r = spukit_wait(wk3d[u], r3q.seq[u]);
+		job_r3d_result res;
+
+		memcpy(&res, r->data, sizeof res);
+		if (r->error != 0 || res.rc != 0) {
+			if (r3d_fail++ < 4)
+				salsads_log("FALLO el SPE %u del render 3D devolvió error %d / %d", u, r->error, res.rc);
+			continue;
+		}
+		put(u ? M_R3D1 : M_R3D0, (uint32_t)((uint64_t)r->ticks * 1000000ull / spukit_tick_hz()));
+		{
+			uint32_t *dst = (uint32_t *)(void *)&acc_r3d;
+			const uint32_t *src = (const uint32_t *)(const void *)&res.st;
+
+			for (size_t k = 0; k < sizeof(r3d_stats) / 4; k++)
+				dst[k] += src[k];
+		}
+	}
+	put(M_R3DW, (uint32_t)(now_us() - t0));
+	acc_r3d_frames++;
+	r3q.valid = 0;
+	if (autotest_verify && frame_no % 30u == 12u)
+		r3d_spe_verify(r3q.set);
+}
+
+/* Imagen de la autoprueba para comparar en la Mac (solo cuando falla) */
+static void r3d_dump_ppm(uint32_t seed, const char *who, const uint32_t *img)
+{
+	char path[128];
+	FILE *f;
+
+	snprintf(path, sizeof path, SALSADS_DATA_DIR "/r3d-%u-%s.ppm", (unsigned)seed, who);
+	f = fopen(path, "wb");
+	if (!f)
+		return;
+	fprintf(f, "P6\n256 192\n255\n");
+	for (int i = 0; i < R3D_W * R3D_H; i++) {
+		const uint32_t q = img[i];
+		const uint8_t rgb[3] = { (uint8_t)(R3D_PX_R(q) << 2), (uint8_t)(R3D_PX_G(q) << 2), (uint8_t)(R3D_PX_B(q) << 2) };
+
+		fwrite(rgb, 1, 3, f);
+	}
+	fclose(f);
+	salsads_log("autoprueba 3D: imagen en %s", path);
+}
+
+/* Autoprueba al arrancar: escenas sintéticas (el motor de geometría real arma el cuadro) en los dos SPE contra la
+ * referencia del PPE. 0 = iguales. */
+static int r3d_spe_selftest(void)
+{
+	static gx_t g;
+	static uint8_t vram[R3D_VRAM_ZERO_OFF + 128] __attribute__((aligned(128)));
+	static uint32_t ref[R3D_W * R3D_H] __attribute__((aligned(128))), out[R3D_W * R3D_H] __attribute__((aligned(128)));
+	static const uint32_t seeds[] = { 3, 8, 21, 40 };
+	int bad = 0;
+
+	/* primero la aritmética de r3d_px.h, función por función */
+	{
+		const uint32_t seed = 12345;
+		const uint32_t q = spukit_post(wk3d[0], JOB_RASTER3D_PROBE, &seed, sizeof seed);
+		const spukit_result *r = spukit_wait(wk3d[0], q);
+		job_r3d_result res;
+
+		memcpy(&res, r->data, sizeof res);
+		for (uint32_t k = 0; k < R3D_NPROBES; k++) {
+			const uint32_t ppe = r3d_math_probe(seed, k);
+
+			if (res.probe[k] != ppe) {
+				/* 4 y 5 (desplazamientos de 64 bits con signo) son informativas: r3d_px.h no los usa */
+				salsads_log("autoprueba 3D: la sonda de aritmética %u da %08x en el SPE y %08x en el PPE%s", k, res.probe[k], ppe,
+					    (k == 4 || k == 5) ? " (informativa)" : "");
+				if (k != 4 && k != 5)
+					bad = 1;
+			}
+		}
+		if (!bad)
+			salsads_log("autoprueba 3D: sondas de aritmética iguales en el SPE y el PPE");
+	}
+
+	for (unsigned k = 0; k < sizeof seeds / sizeof seeds[0]; k++) {
+		r3d_job j;
+		const gx_frame *f;
+		uint32_t ticks[2] = { 0, 0 }, diffs = 0;
+		uint64_t tp;
+
+		memset(&j, 0, sizeof j);
+		f = r3d_scene_build(&g, seeds[k], k == 0 ? 2000u : 300u, vram, j.texslot, j.palslot);
+		tp = now_us();
+		r3d_render_ref(f, vram, j.texslot, j.palslot, 0, ref);
+		tp = now_us() - tp;
+		j.frame_ea = (uint64_t)(uintptr_t)f;
+		j.vram_ea = (uint64_t)(uintptr_t)vram;
+		j.out_ea = (uint64_t)(uintptr_t)out;
+		j.band = 16;
+		j.flags = f ? 0u : R3D_F_BLANK;
+		memset(out, 0xA5, sizeof out);
+		r3d_spe_submit(NULL, 0, &j);
+		for (uint32_t u = 0; u < 2; u++) {
+			const spukit_result *r = spukit_wait(wk3d[u], r3q.seq[u]);
+			job_r3d_result res;
+
+			memcpy(&res, r->data, sizeof res);
+			ticks[u] = r->ticks;
+			if (r->error || res.rc) {
+				salsads_log("autoprueba 3D: el SPE %u devolvió %d / %d", u, r->error, res.rc);
+				bad = 1;
+			}
+			if (k == 0 && u == 0)
+				salsads_log("render 3D: contexto del SPE %u bytes", res.ctx_bytes);
+		}
+		r3q.valid = 0;
+		for (int i = 0; i < R3D_W * R3D_H; i++)
+			diffs += out[i] != ref[i];
+		salsads_log("autoprueba 3D: escena %u (%u polígonos): %u píxeles distintos; SPE0 %u us, SPE1 %u us, referencia del PPE %u us",
+			    seeds[k], f ? f->npolys : 0u, diffs, (unsigned)((uint64_t)ticks[0] * 1000000ull / spukit_tick_hz()),
+			    (unsigned)((uint64_t)ticks[1] * 1000000ull / spukit_tick_hz()), (unsigned)tp);
+		if (diffs) {
+			int shown = 0;
+
+			bad = 1;
+			for (int i = 0; i < R3D_W * R3D_H && shown < 6; i++)
+				if (out[i] != ref[i]) {
+					salsads_log("autoprueba 3D: (%d,%d) SPE %08x, PPE %08x", i % R3D_W, i / R3D_W, out[i], ref[i]);
+					shown++;
+				}
+			r3d_dump_ppm(seeds[k], "spe", out);
+			r3d_dump_ppm(seeds[k], "ppe", ref);
+		}
+	}
+	return bad;
 }
 
 static void render_frame(void)
@@ -1229,7 +1446,8 @@ int main(void)
 	}
 	memset(tex_mem, 0, 1u << 20);
 	/* Los dos SPE del 2D (un trabajador por pantalla); si no arrancan, el PPE dibuja con el compositor del host */
-	if (spukit_init(3) == 0) {
+	/* SPE: 2D A, 2D B, sonido, render 3D × 2 (el sexto queda libre) */
+	if (spukit_init(5) == 0) {
 		for (int e = 0; e < 2 && (e == 0 || spu_on); e++) {
 			wk[e] = spukit_worker_start(spu_gpu2d_bin, e ? "gpu2d-b" : "gpu2d-a", 0);
 			spu_on = wk[e] != NULL;
@@ -1250,6 +1468,27 @@ int main(void)
 		wk_snd = spukit_worker_start(spu_snd_bin, "snd", 0);
 		if (!wk_snd)
 			salsads_log("el SPE del sonido no arrancó (spukit %d): el PPE mezcla", spukit_last_error());
+	}
+	/* Render 3D: dos SPE con bandas alternas; si no arrancan o la autoprueba falla, el PPE rasteriza (lento) */
+	nds->vid.r3d_band = 16;
+	nds->vid.r3d_units = 1;
+	if (spu_on) {
+		for (int u = 0; u < 2; u++)
+			wk3d[u] = spukit_worker_start(spu_raster3d_bin, u ? "r3d-1" : "r3d-0", 0);
+		if (wk3d[0] && wk3d[1]) {
+			if (r3d_spe_selftest() == 0) {
+				r3d_on = 1;
+				nds->vid.r3d_units = 2;
+				nds->vid.ops.submit3d = r3d_spe_submit;
+				nds->vid.ops.wait3d = r3d_spe_wait;
+				salsads_log("render 3D: dos SPE, bandas alternas de 16 líneas (autoprueba contra el PPE: igual)");
+			} else {
+				failures++;
+				salsads_log("render 3D: la autoprueba de los SPE falló: rasteriza el PPE");
+			}
+		} else {
+			salsads_log("render 3D: los SPE no arrancaron (spukit %d): rasteriza el PPE", spukit_last_error());
+		}
 	}
 	snd_load_cfg();
 	{
@@ -1296,6 +1535,14 @@ int main(void)
 	if (wk_snd)
 		spukit_worker_stop(wk_snd);
 	audio_out_shutdown();
+	if (r3d_on) {
+		r3d_spe_wait(NULL);
+		nds->vid.ops.submit3d = NULL;
+		nds->vid.ops.wait3d = NULL;
+	}
+	for (int u = 0; u < 2; u++)
+		if (wk3d[u])
+			spukit_worker_stop(wk3d[u]);
 	if (spu_on) {
 		nds->vid.ops.submit = NULL;
 		vid_collect(&sub);

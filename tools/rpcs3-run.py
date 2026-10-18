@@ -3,6 +3,7 @@
 
   tools/rpcs3-run.py empty                  (o la ruta a un .elf)
   tools/rpcs3-run.py ppe-bench --timeout 300 --config tools/rpcs3/salsads-interp.yml
+  tools/rpcs3-run.py nucleo --rom build/roms/gx3d.nds --frames 120   (ROM y cuadros del autotest del núcleo)
 
 Lanza RPCS3 con --no-gui y tools/rpcs3/salsads.yml, crea el archivo de modo
 autotest (src/platform/ps3/autotest.h) para que el programa salga solo, sigue
@@ -191,10 +192,30 @@ def main() -> int:
                     help="relanzar hasta N veces si termina sin RESULTADO")
     ap.add_argument("--config", type=pathlib.Path, default=CONFIG,
                     help="configuración de RPCS3 (por omisión tools/rpcs3/salsads.yml)")
+    ap.add_argument("--rom", type=pathlib.Path,
+                    help="núcleo: ROM que se copia como dev_hdd0/salsads/rom.nds mientras dura la corrida (y se borra al final)")
+    ap.add_argument("--frames", type=int, help="núcleo: cuadros del autotest con --rom (frames.txt)")
     args = ap.parse_args()
 
     lock = lock_rpcs3()  # noqa: F841 (se mantiene hasta salir)
     elf = resolve_elf(args.program)
+    data_dir = AUTOTEST_FLAG.parent
+    placed = []
+    if args.rom:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / "rom.nds").write_bytes(args.rom.read_bytes())
+        placed.append(data_dir / "rom.nds")
+        if args.frames:
+            (data_dir / "frames.txt").write_text(f"{args.frames}\n")
+            placed.append(data_dir / "frames.txt")
+    try:
+        return run_all(args, elf)
+    finally:
+        for f in placed:
+            f.unlink(missing_ok=True)
+
+
+def run_all(args, elf) -> int:
     lines: list = []
     for attempt in range(args.relaunch + 1):
         print(f"== RPCS3 intento {attempt + 1}: {elf.relative_to(ROOT)}", file=sys.stderr)
