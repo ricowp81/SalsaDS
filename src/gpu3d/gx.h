@@ -112,7 +112,7 @@ struct gx {
 	gx_exec ex;
 
 	/* cuadros */
-	gx_frame frame[2];
+	gx_frame frame[3];         /* en construcción, entregado (`front`) y el anterior, que el render 3D puede seguir leyendo hasta la línea 262 */
 	int bld;                   /* cuadro en construcción */
 	int front;                 /* último cuadro entregado por SWAP_BUFFERS, o -1 */
 	uint32_t swaps;            /* cuántos */

@@ -283,13 +283,21 @@ DS (que lo rasteriza mientras barre la pantalla):
    suben texturas en el VBlank, antes de que el hardware llegue a esas líneas) y se lanza el trabajo 3D con el cuadro entregado
    (`gx_front`). Si el motor A no muestra BG0 3D en la línea 0 no se rasteriza; sin cuadro entregado o con el render apagado
    (`POWCNT1` bit 2) la capa es transparente.
-2. **Línea 192 de N+1** (`nds_gx_vblank`, antes del SWAP_BUFFERS): el PPE espera el 3D (`wait3d`). Hace falta por dos cosas:
-   el SWAP_BUFFERS devuelve ese cuadro al motor de geometría para llenarlo de nuevo, y en seguida se entrega el 2D de N+1,
-   cuyo SPE del motor A lee la capa 3D línea por línea (`img3d_ea` de la instantánea, 1 KB por línea por DMA).
-3. El 2D se compone mientras se emula N+2 (el cuadro de retraso de la Fase 2): la capa 3D queda en el mismo cuadro que su 2D.
+2. **Línea 192 de N+1** (`nds_gx_vblank`): el SWAP_BUFFERS entrega el cuadro que se construyó y el motor sigue en un tercer
+   `gx_frame` (hay tres: en construcción, entregado y el anterior, que el render 3D todavía lee). Ya no se espera al render. Si el cuadro
+   captura la pantalla (DISPCAPCNT) con la capa 3D visible, la captura sí espera (`wait3d` en `nds_video_frame_end`), porque lee `img3d`.
+3. **Línea 262 de N+1** (`nds_video_submit_pending`): se espera el 3D (`wait3d`) y se entrega el 2D (`submit`) del cuadro que cerró la línea 192,
+   cuyo SPE del motor A lee la capa 3D línea por línea (`img3d_ea` de la instantánea, 1 KB por línea por DMA). Sin `wait3d` el 2D se
+   entrega en la 192, como antes.
+4. El 2D se compone mientras se emula el principio de N+2 y se dibuja al terminar esa pasada: el mismo cuadro y la misma capa 3D de antes
+   (el 3D se rasteriza durante el cuadro siguiente al SWAP_BUFFERS, como se describió arriba; no se cambió la latencia, un cambio de ese tipo
+   habría que contrastarlo con GBATEK y no se tocó); lo que cambia es cuándo espera el PPE.
 
-El 3D tiene así el tiempo de emular 192 líneas (casi todo el cuadro) en dos SPE; si tarda más, el PPE espera (línea
-`DATO raster3d`, «espera del PPE»). En el host todo es síncrono en la línea 0.
+El 3D tiene así el tiempo de emular 262 líneas (el cuadro entero) en dos SPE; si tarda más, el PPE espera en la línea 262 (línea
+`DATO raster3d`, «espera del PPE»). Las bandas de 16 líneas se reparten por costo estimado (`r3d_balance`, en `gpu3d/r3d.h`: preparación por banda y
+polígono, aristas por línea y píxeles de la caja, más con textura; las más caras primero, cada una a la unidad menos cargada), no
+alternas; el archivo `reparto-alterno` en el directorio de datos devuelve el reparto alterno. La imagen no depende del reparto. En el host
+todo es síncrono en la línea 0.
 
 ## La capa 3D en el compositor 2D
 

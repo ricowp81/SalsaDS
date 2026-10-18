@@ -75,6 +75,8 @@
  * ~2,8 del PPE, pero libera al hilo principal de la geometría; antes de la vectorización el SPE escalar tardaba 35 ms).
  * Con este archivo vuelve al PPE. */
 #define GEOM_PPE_FLAG SALSADS_DATA_DIR "/geometria-ppe"
+/* Con este archivo las bandas del render 3D vuelven al reparto alterno (u, u+2, ...) en lugar del reparto por costo. */
+#define R3D_ALT_FLAG SALSADS_DATA_DIR "/reparto-alterno"
 #define JIT_MARKER SALSADS_DATA_DIR "/nucleo-jit.marker"
 /* Tramo del planificador con el recompilador (ciclos del ARM9 entre los cambios de CPU; el intérprete usa 128). Cada
  * tramo es una entrada al código generado, y lo que cuesta en la PS3 es el cambio de CPU (cachés), no las instrucciones:
@@ -1059,7 +1061,7 @@ static void log_stats(void)
 			    r->tex_px ? 100.0 * (double)r->tex_hits / (double)(r->tex_hits + r->tex_misses) : 100.0, r->tex_misses / n, r->tex_evict / n,
 			    r->line_miss / n, r->t_sort / n / hz, r->t_list / n / hz, r->t_fetch / n / hz, r->t_raster / n / hz, r->t_tex / n / hz,
 			    r->t_setup / n / hz, r->t_rows / n / hz, r->t_pix / n / hz, r->t_post / n / hz, r->t_out / n / hz);
-		salsads_log("DATO raster3d-latencia: por cuadro, desde el envío (línea 0) hasta: llegada del PPE al VBlank %.2f ms, fin del SPE0 %.2f ms, "
+		salsads_log("DATO raster3d-latencia: por cuadro, desde el envío (línea 0) hasta: llegada del PPE a la línea 262 (la 192 si el cuadro captura) %.2f ms, fin del SPE0 %.2f ms, "
 			    "fin del SPE1 %.2f ms (si el SPE ya había terminado cuenta la llegada); SPE ya terminados al llegar: %.2f de 2",
 			    (double)acc_r3d_pre_us / 1000.0 / n, (double)acc_r3d_lat_us[0] / 1000.0 / n, (double)acc_r3d_lat_us[1] / 1000.0 / n,
 			    (double)acc_r3d_early / n);
@@ -1268,9 +1270,9 @@ static int geom_selftest(void)
 
 /* ---- render 3D en dos SPE (Fase 3.2) ------------------------------------------------------------------------------- */
 
-/* Línea 0: el cuadro de geometría entregado en el último SWAP_BUFFERS se reparte en bandas alternas entre dos SPE; la capa
- * 3D sale en la instantánea del cuadro (set->img3d), que el SPE del motor A lee al componer. Línea 192 (r3d_wait, antes del
- * SWAP_BUFFERS y de entregar el 2D): hay que esperarlo. docs/fase3.md, 3.2. */
+/* Línea 0: el cuadro de geometría entregado en el último SWAP_BUFFERS se reparte en bandas (por costo) entre dos SPE; la capa
+ * 3D sale en la instantánea del cuadro (set->img3d), que el SPE del motor A lee al componer. Línea 262 (r3d_wait, antes de entregar el 2D; la 192 si
+ * el cuadro captura la pantalla): hay que esperarlo. docs/fase3.md, 3.2. */
 static spukit_worker *wk3d[2];
 static int r3d_on;
 static struct {
@@ -1557,7 +1559,10 @@ static void render_frame(void)
 		int swap = 1, show = 1, dset = set;
 
 		if (spu_on) {
-			/* los SPE terminaron (o terminan) el cuadro anterior mientras se emulaba este: se dibuja ese */
+			/* el 2D se entrega en la línea 262 (tras esperar el 3D), ya dentro de esta pasada: los SPE lo componen mientras
+			 * termina de emularse y se dibuja ese, el mismo cuadro que antes (un cuadro de retraso, como la DS más uno) */
+			prev = sub;
+			sub.valid = 0;
 			show = prev.valid;
 			if (show) {
 				vid_collect(&prev);
@@ -1578,8 +1583,6 @@ static void render_frame(void)
 				if (autotest_verify && frame_no % 30u == 20u)
 					vid_verify(&prev);
 			}
-			prev = sub;
-			sub.valid = 0;
 		} else {
 			/* sin SPE: el compositor del host dibuja el cuadro y se copia a la textura */
 			nds_video_render_host(nds);
@@ -1813,7 +1816,13 @@ int main(void)
 				nds->vid.r3d_units = 2;
 				nds->vid.ops.submit3d = r3d_spe_submit;
 				nds->vid.ops.wait3d = r3d_spe_wait;
-				salsads_log("render 3D: dos SPE, bandas alternas de 16 líneas (autoprueba contra el PPE: igual)");
+				{
+					struct stat rst;
+
+					nds->vid.r3d_alt = stat(R3D_ALT_FLAG, &rst) == 0;
+					salsads_log("render 3D: dos SPE, bandas de 16 líneas con reparto %s (autoprueba contra el PPE: igual)",
+						    nds->vid.r3d_alt ? "alterno (existe " R3D_ALT_FLAG ")" : "por costo");
+				}
 			} else {
 				failures++;
 				salsads_log("render 3D: la autoprueba de los SPE falló: rasteriza el PPE");

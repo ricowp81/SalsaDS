@@ -433,6 +433,8 @@ static void ev_line(struct nds *n, uint64_t t)
 	}
 	if (line == 0)
 		nds_video_frame_begin(n);
+	if (line == NDS_LINES - 1u)
+		nds_video_submit_pending(n);
 	if (line == 192) {
 		nds_gx_vblank(n, t);
 		nds_video_frame_end(n);

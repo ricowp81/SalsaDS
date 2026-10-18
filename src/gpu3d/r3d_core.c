@@ -679,7 +679,9 @@ int r3d_core_render(r3d_ctx *c, const r3d_job *j, r3d_stats *st)
 	if (j->flags & R3D_F_BLANK) {
 		/* sin cuadro: transparente */
 		memset(c->col[0], 0, sizeof c->col[0]);
-		for (uint32_t b = j->unit; b < nbands; b += j->nunits) {
+		for (uint32_t b = 0; b < nbands; b++) {
+			if (!r3d_job_has_band(j, b))
+				continue;
 			r3d_put(c->col[0], j->out_ea + (uint64_t)b * j->band * R3D_W * 4u, j->band * R3D_W * 4u, R3D_TAG_OUT);
 			st->bands++;
 		}
@@ -701,11 +703,13 @@ int r3d_core_render(r3d_ctx *c, const r3d_job *j, r3d_stats *st)
 		sort_polys(c, hdr, n);
 		R3D_ACC(st->t_sort, t_);
 	}
-	for (uint32_t b = j->unit; b < nbands; b += j->nunits) {
+	for (uint32_t b = 0; b < nbands; b++) {
 		const int32_t y0 = (int32_t)(b * j->band), y1 = y0 + (int32_t)j->band;
 		const int edge = (c->rs.d3 & D3_EDGE) && !(c->rs.flags & R3D_F_NOEDGE);
 		uint32_t t_;
 
+		if (!r3d_job_has_band(j, b))
+			continue;
 		/* el búfer de color `cb` lo usó la salida de hace dos bandas */
 		r3d_wait(1u << (R3D_TAG_OUT + cb));
 		draw_band(c, n, y0, y1, cb);
