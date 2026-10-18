@@ -73,7 +73,7 @@ enum {
 	G2D_R_BLDCNT = 40,
 	G2D_R_BLDALPHA = 41,
 	G2D_R_BLDY = 42,
-	G2D_R_DISPCAP = 50,   /* 32 bits (motor A; no se usa) */
+	G2D_R_DISPCAP = 50,   /* 32 bits (motor A; la captura la hace el núcleo, video.c) */
 	G2D_R_MASTER_BRIGHT = 54,
 };
 

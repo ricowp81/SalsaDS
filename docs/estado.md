@@ -22,6 +22,7 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
   cuadro; melonDS pierde casi todo el segundo triángulo del parche y SalsaDS no (337 píxeles); en la DS real el parche sale completo, así
   que falta fidelidad en la escena. Siguiente paso: volcar el cuadro completo (todos los polígonos de la zona, también los translúcidos
   y su orden) en vez de solo suelo y parche, o medir la profundidad por píxel del suelo en melonDS.
+- **Captura de pantalla (DISPCAPCNT)** en `src/core/video.c` (ver `docs/fase3.md`): fuentes A (compuesta o 3D) y B (VRAM o FIFO), mezcla, tamaños y bancos, un solo cuadro. `test-host` verde. Paquete con el JIT (SLDS00009): `build/salsads-nucleo-jit-fase25.pkg`, SHA-256 `9613367fe9a8a6f44a013e4323d8495823babb06daa7d12adc5e209261894d59`. Sin probar en la PS3: Mario Kart DS, presentación del circuito.
 - **Paquete «SalsaDS núcleo» con el JIT (SLDS00009)** del commit `577e5f8` (más este renglón): `build/salsads-nucleo-jit-fase44.pkg`, SHA-256
   `f0720e18b2fce0c8f415faff7de463bf5b272049760b25ffa856fd94b0a79157`. Sin probar en la PS3: mirar los tallos y las nubes del 1-3 y el mapa
   con la cámara en movimiento (las rayas del parche deberían seguir).

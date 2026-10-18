@@ -454,10 +454,15 @@ Capturas en `build/r3d/juegos/` (`sm64ds-star-despues.png`, `mkds-2500.png`, `ns
 
 ## Captura de pantalla (DISPCAPCNT)
 
-**No hecha** (era opcional). Sigue sin emularse: la ROM `gx3d` la dispara solo en melonDS. Pasos para la 3.4: el compositor 2D
-del motor A escribe, línea por línea, la mezcla de la fuente A (la imagen del motor A o solo el 3D) y de la B (un banco de VRAM
-o la FIFO de memoria principal) con EVA/EVB en el banco de captura (bits 16-17 de `DISPCAPCNT`, de 128×128 a 256×192) y apaga
-el bit 31 al terminar el cuadro. Pide que el SPE escriba VRAM (hoy solo la lee), o que el PPE lo haga con la imagen de la línea.
+Hecha (`capture_frame` en `src/core/video.c`). Al llegar la línea 192, si el cuadro empezó con el bit 31 de `DISPCAPCNT`, el núcleo
+compone aparte la imagen del motor A (sin brillo maestro y en modo de gráficos; con el mismo código que la pantalla: referencia o
+compositor por líneas, igual en el host, el PPE y el SPE) o toma la capa 3D (fuente A = 3D), la mezcla con un banco de VRAM
+(DISPCNT bits 18-19, desplazamiento 26-27) o con la FIFO de memoria principal según los bits 29-30 con EVA/EVB (tope 16), y escribe
+el resultado en el banco de captura (bits 16-17, desplazamiento 18-19, tamaños 128×128, 256×64, 256×128 y 256×192) sobre la VRAM
+emulada, marcando las páginas sucias; luego apaga el bit 31. Sin pasos nuevos en el SPE: la VRAM llega al SPE por la instantánea.
+Dudas sin medir contra melonDS: el paso de línea al leer (256 píxeles) y al escribir (el ancho) en las capturas de 128 de ancho, y
+el bit alfa del resultado. Mario Kart DS (la presentación del circuito, cuadros 1528-1580) captura en los bancos C y D alternados
+y la imagen se ve estable, sin parpadeo negro y blanco.
 
 ## Pruebas nuevas
 

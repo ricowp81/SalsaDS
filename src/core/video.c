@@ -299,6 +299,114 @@ void nds_video_frame_begin(struct nds *n)
 	v->recording = 1;
 }
 
+/* ---- captura de pantalla (DISPCAPCNT, motor A) ----------------------------------------------------------------- */
+
+static uint16_t cap_rd16(const uint8_t *p)
+{
+	return (uint16_t)(p[0] | (p[1] << 8));
+}
+
+/* Si el cuadro empezó con la captura pedida (bit 31), la hace al terminar las líneas visibles: la imagen del motor A
+ * (o solo la capa 3D) se mezcla con un banco de VRAM o con la FIFO y se escribe en la VRAM emulada; el bit 31 se apaga.
+ * La imagen A se compone aquí, aparte, con el mismo código que la pantalla (referencia o compositor por líneas). */
+static void capture_frame(struct nds *n, struct nds_vset *s)
+{
+	struct nds_video *v = &n->vid;
+	const gpu2d_engine *ge = &s->frame.eng[0];
+	const uint32_t cap = (uint32_t)ge->regs[G2D_R_DISPCAP] | ((uint32_t)ge->regs[G2D_R_DISPCAP + 1] << 16);
+	uint16_t *cur = &n->io[NDS_CPU9].gen[0x64 >> 1];
+	const unsigned srcsel = (cap >> 29) & 3u, size = (cap >> 20) & 3u;
+	const unsigned eva = (cap & 31u) > 16u ? 16u : (cap & 31u), evb = ((cap >> 8) & 31u) > 16u ? 16u : ((cap >> 8) & 31u);
+	const unsigned width = size == 0 ? 128u : 256u, height = size == 0 ? 128u : size == 1 ? 64u : size == 2 ? 128u : 192u;
+	const int use3d = (cap >> 24) & 1u, usefifo = (cap >> 25) & 1u;
+	const uint32_t dc = g2d_dispcnt(ge);
+	uint8_t *wb = n->vram + nds_vram_bank_offset((cap >> 16) & 3u);
+	const uint8_t *rb = n->vram + nds_vram_bank_offset(G2D_DC_VRAMBANK(dc));
+	const uint32_t woff = ((cap >> 18) & 3u) * 0x8000u, roff = ((cap >> 26) & 3u) * 0x8000u;
+	const uint32_t *i3 = (const uint32_t *)(uintptr_t)ge->img3d_ea;
+	const uint16_t *aimg = NULL;
+	gpu2d_engine e = *ge;
+
+	/* se apaga el bit 31 si nadie lo volvió a escribir durante el cuadro */
+	if (cur[1] == ge->regs[G2D_R_DISPCAP + 1])
+		cur[1] &= 0x7FFFu;
+	if (srcsel != 1 && !(use3d && i3)) {
+		/* composición de A sin brillo maestro y con la pantalla en modo de gráficos */
+		e.regs[G2D_R_DISPCNT] &= (uint16_t)~G2D_DC_BLANK;
+		e.regs[G2D_R_DISPCNT + 1] = (uint16_t)((e.regs[G2D_R_DISPCNT + 1] & ~3u) | 1u);
+		e.regs[G2D_R_MASTER_BRIGHT] = 0;
+		e.out_ea = (uint64_t)(uintptr_t)v->capimg;
+		if (v->use_ref)
+			gpu2d_ref_engine(&e, v->capimg);
+		else
+			gpu2d_compose_engine(&v->comp, &e);
+		aimg = v->capimg;
+	}
+	for (unsigned y = 0; y < height; y++) {
+		for (unsigned x = 0; x < width; x++) {
+			unsigned ar = 0, ag = 0, ab = 0, aa = 0, br = 0, bg = 0, bb = 0, ba = 0;
+			unsigned r, g, b, a;
+			uint16_t px;
+
+			if (srcsel != 1) {
+				if (use3d) {
+					const uint32_t p = i3 ? i3[y * R3D_W + x] : 0;
+
+					aa = R3D_PX_A(p) != 0;
+					if (aa) {
+						ar = R3D_PX_R(p) >> 1;
+						ag = R3D_PX_G(p) >> 1;
+						ab = R3D_PX_B(p) >> 1;
+					}
+				} else {
+					const uint16_t p = aimg[y * GPU2D_W + x];
+
+					aa = 1;
+					ar = (p >> 11) & 31u;
+					ag = (p >> 6) & 31u;
+					ab = (p >> 1) & 31u;
+				}
+			}
+			if (srcsel != 0) {
+				uint16_t p;
+
+				if (usefifo) {
+					p = cap_rd16(&s->mmem[y][x * 2]);
+					ba = 1;
+				} else {
+					p = cap_rd16(rb + ((roff + (y * 256u + x) * 2u) & 0x1FFFFu));
+					ba = (p >> 15) & 1u;
+				}
+				br = p & 31u;
+				bg = (p >> 5) & 31u;
+				bb = (p >> 10) & 31u;
+			}
+			if (srcsel == 0) {
+				r = ar; g = ag; b = ab; a = aa;
+			} else if (srcsel == 1) {
+				r = br; g = bg; b = bb; a = ba;
+			} else {
+				r = (ar * eva + br * evb) >> 4;
+				g = (ag * eva + bg * evb) >> 4;
+				b = (ab * eva + bb * evb) >> 4;
+				if (r > 31) r = 31;
+				if (g > 31) g = 31;
+				if (b > 31) b = 31;
+				a = (eva && aa) || (evb && ba);
+			}
+			px = (uint16_t)(r | (g << 5) | (b << 10) | (a << 15));
+			{
+				uint8_t *d = wb + ((woff + (y * width + x) * 2u) & 0x1FFFFu);
+
+				d[0] = (uint8_t)px;
+				d[1] = (uint8_t)(px >> 8);
+			}
+		}
+	}
+	for (uint32_t pg = 0; pg < 8; pg++)
+		nds_video_vram_dirty(n, nds_vram_bank_offset((cap >> 16) & 3u) + pg * 0x4000u);
+}
+
 void nds_video_frame_end(struct nds *n)
 {
 	struct nds_video *v = &n->vid;
@@ -307,6 +415,8 @@ void nds_video_frame_end(struct nds *n)
 	if (!v->recording)
 		return;
 	v->recording = 0;
+	if (s->frame.eng[0].regs[G2D_R_DISPCAP + 1] & 0x8000u)
+		capture_frame(n, s);
 	s->powcnt1 = n->powcnt1;
 	v->last = v->cur;
 	v->rendered = 0;

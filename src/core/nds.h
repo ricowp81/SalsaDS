@@ -254,6 +254,7 @@ struct nds_video {
 	uint32_t mpos;     /* posición (píxel del cuadro) de la FIFO de memoria principal */
 	uint32_t frames;
 	struct nds_video_ops ops;
+	uint16_t capimg[GPU2D_W * GPU2D_H]; /* imagen del motor A para la captura de pantalla (DISPCAPCNT) */
 	uint16_t img[2][GPU2D_W * GPU2D_H]; /* host: RGBA5551 de los motores A y B del cuadro `last` */
 	int use_ref;        /* host: dibujar con la referencia píxel por píxel (1) o con el compositor por líneas (0) */
 	gpu2d_ctx comp;     /* espacio de trabajo del compositor del host */
