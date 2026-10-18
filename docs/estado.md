@@ -13,6 +13,7 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 - **Hecho**: al leer ROMCTRL con el bloque esperando palabra o fin, el reloj de esa CPU avanza hasta el siguiente evento (tope `ev_min`) en vez de
   ejecutar el bucle; mismo tiempo para el juego, ARM9 −9 % de instrucciones en NSMB (1 700 cuadros), −21 % de tiempo host en la carga del título.
   `test-host` verde (la ROM `periph` y los tamaños de tramo sin cambios).
+- **Paquete «SalsaDS núcleo» con el JIT (SLDS00009)** del commit `80f3332`: `build/salsads-nucleo-jit-fase46.pkg`, SHA-256 `1582a43f383eee6a1dded47dafe54438f0cca5beff2e5d7a75eff9aa13c06eed`. Sin probar en la PS3: medir la carga del título de NSMB.
 - No se tocó la latencia emulada del cartucho: acortarla sería adelantar la carga respecto a la DS real (opción posterior, con interruptor).
 
 ## 2026-10-18 — NSMB 1-3: tallos y nubes (3.6)
