@@ -578,7 +578,7 @@ void arec_code_write_slow(struct arec *j, uint32_t phys, uint32_t size)
 static struct ablock *compile(struct arec *j, uint32_t pc)
 {
 	static struct ai ins[AREC_MAX_INSN];
-	const struct arec_src src = { j->cfg.code_ptr, j->cfg.ctx, j->c->v5 != 0 };
+	const struct arec_src src = { j->cfg.code_ptr, j->cfg.ctx, j->c->v5 != 0, !(j->cfg.opts & AREC_OPT_FLAGS_MEM) };
 	uint32_t plo, phi;
 	unsigned n;
 	struct ablock *b;

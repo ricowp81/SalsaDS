@@ -79,6 +79,7 @@ struct arec_src {
 	const uint8_t *(*code_ptr)(void *ctx, uint32_t a, uint32_t *phys, uint32_t *avail);
 	void *ctx;
 	int v5; /* 1: ARMv5TE (ARM9); 0: ARMv4T (ARM7: sin CLZ, QADD, BLX, LDRD, CP15; LDR/LDM a pc sin cambio de estado) */
+	int cond_s; /* 1: las instrucciones de datos condicionales que fijan banderas se traducen (banderas en el CR); 0: el intérprete */
 };
 unsigned arec_decode(const struct arec_src *src, uint32_t pc, struct ai *out, unsigned max, uint32_t *phys_lo,
 		     uint32_t *phys_hi);

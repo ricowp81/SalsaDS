@@ -938,6 +938,12 @@ static void want_out(struct em *e, int prod, unsigned f)
 		e->mat[prod] = 1;
 }
 
+/* Datos condicional con S traducido (banderas en el CR; arec_dec.c, cond_s). */
+static int cond_s_dp(const struct em *e, const struct ai *x)
+{
+	return e->canon && x->kind == AI_DP && x->s && x->cond != AI_COND_AL;
+}
+
 static void analyze(struct em *e)
 {
 	const unsigned n = e->n;
@@ -1011,8 +1017,9 @@ static void analyze(struct em *e)
 		}
 		if (x->kind != AI_CALL && (x->fr & F_C & ~creads) && prod[2] >= 0)
 			e->need_cdata[prod[2]] = 1;
-		/* puntos con las banderas en memoria (calientes): llamada al intérprete (antes) */
-		if (x->kind == AI_CALL && !x->call_ro)
+		/* puntos con las banderas en memoria (calientes): llamada al intérprete (antes); con banderas en el CR también los datos
+		 * condicionales con S, que las quieren en sus bits canónicos */
+		if ((x->kind == AI_CALL && !x->call_ro) || cond_s_dp(e, x))
 			for (int f = 0; f < 4; f++)
 				if ((e->live_before[i] & fmask((unsigned)f)) && prod[f] >= 0)
 					want_out(e, prod[f], fmask((unsigned)f));
@@ -1033,9 +1040,9 @@ static void analyze(struct em *e)
 				if ((xl & fmask((unsigned)f)) && prod[f] >= 0)
 					want_out(e, prod[f], fmask((unsigned)f));
 		}
-		if (x->kind == AI_CALL && !x->call_ro) {
+		if ((x->kind == AI_CALL && !x->call_ro) || cond_s_dp(e, x)) {
 			for (int f = 0; f < 4; f++)
-				prod[f] = -1; /* después de la llamada, todo en memoria */
+				prod[f] = -1; /* después de la llamada, todo en memoria (o en sus bits canónicos) */
 		} else if (x->cond == AI_COND_AL || x->kind == AI_B) {
 			for (int f = 0; f < 4; f++)
 				if (x->fw & fmask((unsigned)f))
@@ -1060,7 +1067,7 @@ static void analyze(struct em *e)
 static uint8_t lookahead(struct em *e, uint32_t pc)
 {
 	struct arec *j = e->j;
-	const struct arec_src src = { j->cfg.code_ptr, j->cfg.ctx, j->c->v5 != 0 };
+	const struct arec_src src = { j->cfg.code_ptr, j->cfg.ctx, j->c->v5 != 0, !(j->cfg.opts & AREC_OPT_FLAGS_MEM) };
 	uint8_t live = 0, written = 0;
 	struct ablock *b = e->b;
 
@@ -2376,6 +2383,13 @@ static void emit_insn(struct em *e, const struct ai *x)
 		/* una llamada al intérprete necesita las banderas en memoria en los dos caminos */
 		if (x->kind == AI_CALL && !x->call_ro)
 			flags_for_call(e, x);
+		/* datos condicional con S (banderas en el CR): las vivas, en sus bits canónicos en los dos caminos */
+		if (cond_s_dp(e, x)) {
+			canonicalize(e, e->live_before[e->i] | e->live_after[e->i] | x->fr, 1);
+			e->need_flags[e->i] = e->live_after[e->i];
+			e->need_cond[e->i] = 0;
+			e->need_cdata[e->i] = 0;
+		}
 		skip = newlab(e);
 		e->pend += 1;
 		e->ipend += x->ninsn;
@@ -2427,10 +2441,14 @@ static void emit_insn(struct em *e, const struct ai *x)
 	}
 	e->xextra = 0;
 	if (cond) {
+		if (cond_s_dp(e, x))
+			canonicalize(e, e->live_after[e->i], 1);
 		/* el resto del costo de la instrucción, solo si se ejecutó */
 		if (x->cyc > 1 && !x->ends)
 			E(e, ppc_addis(RCYC, RCYC, (int32_t)(x->cyc - 1)));
 		bind(e, skip);
+		if (cond_s_dp(e, x))
+			fl_canon(e); /* (las dos ramas llegan con las vivas en sus bits canónicos) */
 	}
 }
 

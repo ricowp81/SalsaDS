@@ -79,7 +79,7 @@ static void dp_flags(struct ai *a)
 
 /* ---- ARM ---------------------------------------------------------------------------------------------- */
 
-static void dec_arm(uint32_t addr, uint32_t insn, int v5, struct ai *a)
+static void dec_arm(uint32_t addr, uint32_t insn, int v5, int cond_s, struct ai *a)
 {
 	const uint32_t cond = insn >> 28;
 	const unsigned hi = (insn >> 20) & 0xFF, lo = (insn >> 4) & 0xF;
@@ -438,8 +438,9 @@ static void dec_arm(uint32_t addr, uint32_t insn, int v5, struct ai *a)
 	}
 	if (a->cond != AI_COND_AL && a->cond != 0xF) {
 		a->fr |= arec_cond_reads(a->cond);
-		/* condicionales que fijan banderas: el intérprete (las dos ramas dejan banderas distintas) */
-		if (a->kind != AI_CALL && a->fw) {
+		/* condicionales que fijan banderas: el intérprete (las dos ramas dejan banderas distintas), salvo las de datos con las
+		 * banderas en el CR (cond_s: arec_emit.c las deja en sus bits canónicos en las dos ramas) */
+		if (a->kind != AI_CALL && a->fw && !(cond_s && a->kind == AI_DP && a->rd != 15)) {
 			callout(a);
 			a->fr |= arec_cond_reads(a->cond);
 		}
@@ -835,7 +836,7 @@ int arec_decode_one(const struct arec_src *src, uint32_t pc, struct ai *out, uin
 	} else {
 		if (a & 3)
 			return 0;
-		dec_arm(a, rd32le(p), src->v5, out);
+		dec_arm(a, rd32le(p), src->v5, src->cond_s, out);
 	}
 	return 1;
 }
@@ -865,7 +866,7 @@ unsigned arec_decode(const struct arec_src *src, uint32_t pc, struct ai *out, un
 
 			dec_thumb(a + used, rd16le(p + used), next, src->v5, x);
 		} else {
-			dec_arm(a + used, rd32le(p + used), src->v5, x);
+			dec_arm(a + used, rd32le(p + used), src->v5, src->cond_s, x);
 		}
 		used += x->size;
 		n++;
