@@ -40,7 +40,8 @@ enum rec_probe_status salsads_rec_probe(const char *marker, const char *tag, uns
  * zona o NULL (sin PS3MAPI, sin memoria, prueba fallida o saltada: `why`); entonces se usa la de salsads_rec_cache().
  * La zona queda fuera del segmento de texto: las llamadas del código generado a C van por mtctr/bctrl (el emisor lo
  * resuelve solo cuando un bl no llega). */
-#define REC_MAPI_BYTES (16u << 20)
+/* 8 MB (el doble de la del texto): cuesta 16 MB, porque se aparta la misma cantidad (ver rec_cache.c). */
+#define REC_MAPI_BYTES (8u << 20)
 void *salsads_rec_cache_mapi(size_t bytes, const char *marker, const char *tag, unsigned timeout_ms, char *why,
 			     size_t why_size, uint64_t *us);
 /* Devuelve las páginas de salsads_rec_cache_mapi (al salir de la aplicación). */

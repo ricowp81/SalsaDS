@@ -551,3 +551,13 @@ detalle y fuentes en `docs/fase0.md`, 0.2).
   (`far_calls`, sin intentar `bl`). Las tablas de bloques y enlaces se duplican desde 8 MB de caché (32768 bloques, ~8 MB del heap).
   Las páginas se devuelven al salir. Archivo `jit-sin-ps3mapi` para volver a la caché del texto (A/B). Qué medir: `DATO jit`
   (vaciados de la caché y bloques traducidos por cuadro) y el tiempo del ARM9, con y sin `jit-sin-ps3mapi`.
+- fase52 en la PS3 (2026-10-18, HEN 3.3.0, PS3MAPI 0x124): las páginas de `PROC_PAGE_ALLOCATE` **siguen contando como libres**
+  para el proceso: la siguiente reserva normal (el heap que crecía con las tablas del recompilador) recibió la misma memoria
+  física (una marca escrita en 0x70080000 apareció en el heap en 0x55180000) y llenar la tabla `wr_phys` con 0xFF borraba las
+  rutinas comunes: el primer bloque saltaba a 0xFFFFFFFF (`fnmadd.`, válida) y giraba sin volver (juego en negro). Arreglo:
+  justo después se pide la misma cantidad con `sysMemoryAllocate` y no se toca (absorbe esas páginas), comprobado página por
+  página con una marca; si no quedan todas apartadas, no se usa PS3MAPI. Con eso NSMB corre a 60 fps con 8 MB de caché, pero
+  **no gana nada**: siguen 6 vaciados (no eran por falta de espacio; se usan ~3 MB) y el ARM9 pasa de 5,73 a 6,09 ms por las
+  llamadas a C por CTR. Queda **experimental**, apagada: archivo `jit-ps3mapi` para probarla. Si un juego llena los 4 MB, lo
+  simple es agrandar la cola NOBITS del texto (Salsa64 usa 32 MB así). Diagnóstico que lo encontró: memoria del proceso leída en
+  vivo con webMAN (getmem de PS3MAPI), vigía del JIT y fotos de la primera palabra.

@@ -11,6 +11,8 @@ static int dbg_left = -1;
 
 #include "cpu/acore_priv.h"
 #include "jit/arec_priv.h"
+#include <stdio.h>
+
 #include "jit/ppcenc.h"
 
 #if defined(__powerpc64__) && defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -766,8 +768,11 @@ static struct arec *arec_new(struct acore *c, const struct arec_cfg *cfg, int ca
 	arec_map_begin(j);
 	arec_map_end(j);
 	arec_emit_common(j);
+	arec_dbg_first[0] = ((volatile uint32_t *)j->code)[0];
 	icache(j, j->code, j->code_base_used * 4);
+	arec_dbg_first[1] = ((volatile uint32_t *)j->code)[0];
 	reset_tables(j);
+	arec_dbg_first[2] = ((volatile uint32_t *)j->code)[0];
 	return j;
 }
 
@@ -776,6 +781,16 @@ struct arec *arec_create(struct acore *c, const struct arec_cfg *cfg)
 	if (!AREC_CAN_EXEC)
 		return NULL;
 	return arec_new(c, cfg, 1);
+}
+
+uint32_t arec_dbg_first[3];
+
+void arec_debug_layout(const struct arec *j, char *buf, size_t size)
+{
+	snprintf(buf, size, "código %p (%u KB), bloques %p (%u KB), enlaces %p, jl %p, pt %p, hash %p, codemap %p, j %p",
+		 (const void *)j->code, (unsigned)(j->code_words / 256), (const void *)j->blocks,
+		 (unsigned)(j->max_blocks * sizeof *j->blocks / 1024), (const void *)j->links, (const void *)j->jl,
+		 (const void *)j->pt, (const void *)j->hash, (const void *)j->pub.codemap, (const void *)j);
 }
 
 void arec_destroy(struct arec *j)

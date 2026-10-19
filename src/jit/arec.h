@@ -94,6 +94,11 @@ struct arec_pub {
 /* Crea el recompilador para `c` (solo ARMv5: el ARM9). NULL si este host no ejecuta PowerPC64 o falta memoria. */
 struct arec *arec_create(struct acore *c, const struct arec_cfg *cfg);
 void arec_destroy(struct arec *j);
+/* Diagnóstico: direcciones de la caché y de las tablas grandes (para ver si se solapan con otra memoria). */
+void arec_debug_layout(const struct arec *j, char *buf, size_t size);
+/* Diagnóstico: la primera palabra de la caché tras escribir las rutinas comunes, tras limpiar la caché de
+ * instrucciones y tras reiniciar las tablas (arec_create). */
+extern uint32_t arec_dbg_first[3];
 /* Corre la CPU hasta que c->cycles >= until (como acore_run). */
 void arec_run(struct arec *j, uint64_t until);
 /* Tira todo el código traducido (cambio de la vista de captación, reinicio). */

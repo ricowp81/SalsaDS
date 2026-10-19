@@ -36,6 +36,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <string.h>
 #include <sys/process.h>
 #include <sys/stat.h>
@@ -79,10 +80,11 @@
 /* Con este archivo las bandas del render 3D vuelven al reparto alterno (u, u+2, ...) en lugar del reparto por costo. */
 #define R3D_ALT_FLAG SALSADS_DATA_DIR "/reparto-alterno"
 #define JIT_MARKER SALSADS_DATA_DIR "/nucleo-jit.marker"
-/* Caché del recompilador pedida a PS3MAPI (16 MB fuera del binario, fase52): su propia marca, y con este archivo no se
- * intenta (se usa la de 4 MB del segmento de texto). */
+/* Caché del recompilador pedida a PS3MAPI (fase52, experimental): solo con este archivo; si no, la de 4 MB del segmento
+ * de texto. Con HEN 3.3.0 funciona apartando las páginas (rec_cache.c), pero en NSMB no ganó nada (los vaciados no eran
+ * por falta de espacio) y las llamadas a C por CTR cuestan ~6 % del ARM9. Su propia marca por si cuelga la consola. */
 #define JIT_MAPI_MARKER SALSADS_DATA_DIR "/nucleo-jit-ps3mapi.marker"
-#define JIT_NOMAPI_FLAG SALSADS_DATA_DIR "/jit-sin-ps3mapi"
+#define JIT_MAPI_FLAG SALSADS_DATA_DIR "/jit-ps3mapi"
 /* Tramo del planificador con el recompilador (ciclos del ARM9 entre los cambios de CPU; el intérprete usa 128). Cada
  * tramo es una entrada al código generado, y lo que cuesta en la PS3 es el cambio de CPU (cachés), no las instrucciones:
  * con tramos más largos hay menos. El número en JIT_QUANTUM_FILE (de 16 a 20000) lo cambia sin compilar otra vez. */
@@ -145,6 +147,9 @@ static void jit_watch_thread(void *arg)
 		{
 			const struct arec_pub *pb = (const struct arec_pub *)(const void *)nds->jit9;
 
+			if (jit_guard_ptr)
+				salsads_log("vigía jit %d: rutinas [0] 0x%08x [1] 0x%08x [0x77] 0x%08x", k, (unsigned)jit_guard_ptr[0],
+					    (unsigned)jit_guard_ptr[1], (unsigned)jit_guard_ptr[0x77]);
 			salsads_log("vigía jit %d: entradas %llu, bloques %llu, instr. traducidas %llu, intérprete %llu, "
 				    "llamadas %llu, lentas %llu/%llu; último bloque pc 0x%08x en 0x%llx; ARM9 r15 0x%08x; cuadros %u",
 				    k, (unsigned long long)pb->st.enters, (unsigned long long)pb->st.blocks_made,
@@ -1934,8 +1939,8 @@ int main(void)
 			void *mapi_code = NULL;
 			enum rec_probe_status ps;
 
-			if (stat(JIT_NOMAPI_FLAG, &jst) == 0) {
-				snprintf(mwhy, sizeof mwhy, "%s existe", JIT_NOMAPI_FLAG);
+			if (stat(JIT_MAPI_FLAG, &jst) != 0) {
+				snprintf(mwhy, sizeof mwhy, "experimental: crear %s para probarla", JIT_MAPI_FLAG);
 			} else {
 				mapi_code = salsads_rec_cache_mapi(REC_MAPI_BYTES, JIT_MAPI_MARKER, NUCLEO_VERSION, 2000, mwhy,
 								   sizeof mwhy, &us);
@@ -1959,6 +1964,8 @@ int main(void)
 				jc.far_calls = mapi_code != NULL;
 				jc.icache_flush = salsads_rec_flush;
 				if (nds_jit_attach(nds, &jc) == 0) {
+					const uint32_t w_after_attach = ((const volatile uint32_t *)jc.code)[0];
+
 					FILE *qf = fopen(JIT_QUANTUM_FILE, "r");
 					unsigned q = JIT_QUANTUM;
 
@@ -1979,6 +1986,22 @@ int main(void)
 					if (mapi_code) {
 						sys_ppu_thread_t wt;
 
+						{
+							char lay[320];
+							void *h = malloc(64);
+
+							arec_debug_layout(nds->jit9, lay, sizeof lay);
+							salsads_log("jit: memoria: %s; malloc(64) %p, sbrk %p", lay, h, sbrk(0));
+							{
+								const volatile uint32_t *q = (const volatile uint32_t *)mapi_code;
+
+								salsads_log("jit: primera palabra: al escribir 0x%08x, tras icbi 0x%08x, tras las tablas 0x%08x, "
+									    "al volver de attach 0x%08x, ahora 0x%08x",
+									    (unsigned)arec_dbg_first[0], (unsigned)arec_dbg_first[1],
+									    (unsigned)arec_dbg_first[2], (unsigned)w_after_attach, (unsigned)q[0]);
+							}
+							free(h);
+						}
 						jit_guard_ptr = (const volatile uint32_t *)mapi_code;
 						jit_guard_val[0] = jit_guard_ptr[0];
 						jit_guard_val[1] = jit_guard_ptr[1];
