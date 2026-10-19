@@ -172,6 +172,7 @@ typedef struct gpu2d_ctx {
 	uint16_t outbuf[2][GPU2D_W] __attribute__((aligned(128)));
 	uint8_t rawline[2][512] __attribute__((aligned(128)));
 	uint32_t l3d[2][GPU2D_W] __attribute__((aligned(128)));  /* línea de la capa 3D por paridad (Fase 3.2) */
+	uint32_t l3d_sh[GPU2D_W] __attribute__((aligned(16)));   /* la línea 3D corrida por BG0HOFS (solo si no es 0) */
 	g2d_v8 a3d[32] __attribute__((aligned(16)));            /* su alfa (0..31) en la línea que se compone */
 	uint32_t l3d_semi;                                       /* la línea tiene píxeles 3D translúcidos */
 	/* registro de cambios (por trozos) */
