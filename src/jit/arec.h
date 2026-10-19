@@ -139,6 +139,14 @@ unsigned arec_last_live(const struct arec *j);
 /* Bloques vivos y bytes de código usados (para el log). */
 void arec_usage(const struct arec *j, uint32_t *blocks, size_t *code_used, size_t *code_cap);
 
+/* Perfil del host (salsads-cpurun --jit-prof, tools/jit-perfil.py): con el perfil abierto, cada bloque que se traduce
+ * escribe en su prólogo su entrada en una traza (después de la prueba de presupuesto) y se describe en PREFIJO.blk
+ * (instrucciones, palabras por instrucción); la traza va a PREFIJO.tr con marcas de tramo y de cuadro. Cuesta unas 6
+ * palabras por bloque: solo para el host, nunca en la PS3. Abrirlo antes de traducir nada. */
+int arec_prof_open(const char *prefix);
+void arec_prof_frame(uint32_t frame, uint32_t icount9, uint32_t icount7);
+void arec_prof_close(void);
+
 /* Pruebas: traduce el bloque en `pc` (con el bit 0 en Thumb) sin ejecutarlo; devuelve el número de palabras
  * PowerPC o < 0. Corre en cualquier host (no hace falta poder ejecutar). */
 int arec_translate_only(struct acore *c, const struct arec_cfg *cfg, uint32_t pc, uint32_t *out, size_t cap);

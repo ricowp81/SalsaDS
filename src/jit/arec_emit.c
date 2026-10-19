@@ -45,6 +45,7 @@
 #define OFF_CP15_CTRL ((int32_t)offsetof(struct acore, cp15_ctrl))
 #define OFF_DTCM_REG ((int32_t)offsetof(struct acore, cp15_dtcm_reg))
 #define OFF_ITCM_REG ((int32_t)offsetof(struct acore, cp15_itcm_reg))
+#define OFF_PROF ((int32_t)offsetof(struct acore, jit_prof))
 
 #define CRB(f, b) ((f) * 4u + (b))
 #define LT 0u
@@ -76,6 +77,9 @@ struct floc {
 };
 
 uint32_t arec_bad_raw, arec_bad_addr; /* la última instrucción en la que falló el análisis (depuración) */
+int arec_prof_on;
+uint16_t arec_prof_ipos[AREC_MAX_INSN + 1];
+unsigned arec_prof_words;
 static uint32_t em_hot[EM_HOT_CAP], em_cold[EM_COLD_CAP]; /* un solo hilo traduce */
 
 struct em {
@@ -2233,9 +2237,22 @@ static int emit_try(struct arec *j, const struct ai *ins, unsigned n, struct abl
 		b_abs(e, j->ent_exit);
 		e->sec = SEC_HOT;
 	}
+	/* perfil del host: la entrada del bloque a la traza (después del presupuesto: solo lo que corre) */
+	arec_prof_words = 0;
+	if (arec_prof_on) {
+		const unsigned w0 = e->nh;
+
+		E(e, ppc_ld(3, RST, OFF_PROF));
+		li32(e, 4, (j->c->v5 ? 0u : 1u) << 31 | (j->prof_gen & 0xFFu) << 22 | (e->base & 0x3FFFFFu));
+		E(e, ppc_stw(4, 3, 0));
+		E(e, ppc_addi(3, 3, 4));
+		E(e, ppc_std(3, RST, OFF_PROF));
+		arec_prof_words = e->nh - w0;
+	}
 
 	for (unsigned i = 0; i < n; i++) {
 		e->i = i;
+		arec_prof_ipos[i] = (uint16_t)e->nh;
 		emit_insn(e, &ins[i]);
 		if (e->overflow)
 			return -1;
@@ -2245,6 +2262,7 @@ static int emit_try(struct arec *j, const struct ai *ins, unsigned n, struct abl
 			return -6;
 		}
 	}
+	arec_prof_ipos[n] = (uint16_t)e->nh;
 	/* caída del final */
 	{
 		const struct ai *last = &ins[n - 1];

@@ -18,6 +18,7 @@
 #include "core/nds.h"
 #include "gpu3d/gx_loop.h"
 #include "host/jitrun.h"
+#include "jit/arec.h"
 #include "util/endian.h"
 
 #define SDS_ADDR 0x02380000u
@@ -537,6 +538,7 @@ int main(int argc, char **argv)
 	double t0, t1;
 	int rc_gfx = 0;
 	int jit_nolink = 0, jit_far = 0, jit_nojl = 0, jit_arm7 = 1, jit_arm9 = 1, state_hash = 0;
+	const char *jit_prof = NULL; /* --jit-prof PREFIJO: traza de bloques para tools/jit-perfil.py */
 	unsigned pg_shift = 18;           /* --rom-paged PAGE_KB,CACHE_KB: fuerza fragmentos (por omisión 256 KB y 32 MB) */
 	size_t pg_cache = (size_t)32 << 20, whole_max = (size_t)64 << 20; /* --rom-whole-max MB */
 	int force_paged = 0;
@@ -684,6 +686,8 @@ int main(int argc, char **argv)
 			jit_far = 1;
 		else if (!strcmp(argv[i], "--jit-nojl"))
 			jit_nojl = 1;
+		else if (!strcmp(argv[i], "--jit-prof") && i + 1 < argc)
+			jit_prof = argv[++i];
 		else if (!strcmp(argv[i], "--lockstep"))
 			lockstep = 1;
 		else if (!strcmp(argv[i], "--rom-paged") && i + 1 < argc) {
@@ -752,6 +756,9 @@ int main(int argc, char **argv)
 			nds_snd_set_mode(&R, SND_MODE_ORIGINAL);
 		if (hj_lockstep_attach(&M, &R, jit_arm7, jit_arm9))
 			return 2;
+	} else if (jit_mode && jit_prof && arec_prof_open(jit_prof)) {
+		fprintf(stderr, "--jit-prof: no se pudo abrir %s.tr / %s.blk\n", jit_prof, jit_prof);
+		return 1;
 	} else if (jit_mode && hj_attach(&M, jit_mode == 2, jit_nolink, jit_far, jit_nojl, jit_arm7, jit_arm9, NULL, NULL)) {
 		return 2;
 	}
@@ -944,6 +951,7 @@ int main(int argc, char **argv)
 				gx_dump(path);
 			}
 			run_frame();
+			arec_prof_frame((uint32_t)f, (uint32_t)M.a9.icount, (uint32_t)M.a7.icount);
 			gx_hash_poll();
 			if (lockstep && hj_fail())
 				break;
@@ -976,6 +984,7 @@ int main(int argc, char **argv)
 			}
 		}
 		t1 = now();
+		arec_prof_close();
 		printf("fin: ARM9 pc 0x%08x cpsr 0x%08x%s, ARM7 pc 0x%08x cpsr 0x%08x%s; cuadros %llu\n", acore_pc(&M.a9), M.a9.cpsr,
 		       M.a9.halted ? " (en HALT)" : "", acore_pc(&M.a7), M.a7.cpsr, M.a7.halted ? " (en HALT)" : "",
 		       (unsigned long long)M.frames);

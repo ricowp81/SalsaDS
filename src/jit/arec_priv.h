@@ -165,7 +165,14 @@ struct arec {
 	unsigned last_live;    /* banderas exactas en la última salida (para --lockstep) */
 
 	uint64_t (*interp_fn)(void);
+	uint32_t prof_gen;     /* perfil: vaciados (la entrada de un bloque se repite tras vaciar) */
 };
+
+/* Perfil del host (arec_prof_open): la traza está abierta; el emisor deja la posición caliente de cada instrucción. */
+extern int arec_prof_on;
+extern uint16_t arec_prof_ipos[AREC_MAX_INSN + 1];
+extern unsigned arec_prof_words; /* palabras del prólogo que son del perfil */
+#define AREC_PROF_ESC 0x003FFFFFu  /* palabra de escape en la traza: la siguiente es una marca */
 
 /* arec_emit.c: traduce un bloque decodificado. Escribe en j->code a partir de j->code_used; devuelve las
  * palabras escritas o < 0 si no cupo. Llena b (salidas, ciclos). */

@@ -149,6 +149,7 @@ struct acore {
 	uint64_t jit_jl;         /* tabla de destinos indirectos */
 	uint64_t jit_fn[8];      /* direcciones de los ayudantes en C */
 	uint64_t jit_spill[8];   /* registros volátiles que sobreviven a una llamada en un camino frío */
+	uint64_t jit_prof;       /* perfil del host (arec_prof_open): siguiente palabra de la traza de bloques */
 	void *jit;               /* struct arec */
 };
 

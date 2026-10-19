@@ -120,12 +120,17 @@ static int must_exit(struct acore *c, struct arec *j)
 
 /* Devuelve el valor en los 32 bits bajos y, en el bit 32, si el bloque tiene que salir (una lectura de la E/S puede
  * atender un desborde de temporizador vencido y levantar una IRQ). */
+static void prof_slow_add(uint32_t a, unsigned cpu, unsigned wr);
+static int prof_slow_on;
+
 static uint64_t h_rd(struct acore *c, uint32_t a, uint32_t kind)
 {
 	struct arec *j = c->jit;
 	uint32_t v;
 
 	j->pub.st.slow_rd++;
+	if (prof_slow_on)
+		prof_slow_add(a, c->v5 ? 0u : 1u, 0);
 	j->exit_req = 0;
 	switch (kind) {
 	case MK_W:
@@ -157,6 +162,8 @@ static uint32_t h_wr(struct acore *c, uint32_t a, uint32_t v, uint32_t kind)
 	struct arec *j = c->jit;
 
 	j->pub.st.slow_wr++;
+	if (prof_slow_on)
+		prof_slow_add(a, c->v5 ? 0u : 1u, 1);
 	j->exit_req = 0;
 	switch (kind) {
 	case MK_W:
@@ -289,6 +296,113 @@ static uint64_t enter(struct arec *j, const uint32_t *code)
 #endif
 }
 
+/* ---- perfil del host (arec_prof_open) ------------------------------------------------------------------- */
+
+#define PROF_CAP (1u << 21)     /* palabras del búfer de la traza */
+#define PROF_ROOM 70000u        /* lo que puede escribir una entrada (un tramo de hasta 60 000 ciclos) */
+static FILE *prof_tr, *prof_bk;
+static uint32_t *prof_buf;
+static uint32_t prof_pos;
+
+/* accesos lentos por dirección (palabra alineada) y tipo, para ver de dónde vienen */
+#define PROF_SLOW 8192u
+static struct { uint32_t key; uint32_t cpu_wr; uint64_t n; } prof_slow[PROF_SLOW];
+
+static void prof_slow_add(uint32_t a, unsigned cpu, unsigned wr)
+{
+	const uint32_t key = (a & ~3u) | 1u; /* 0 = libre */
+	uint32_t h = ((key >> 2) * 2654435761u) >> 19;
+
+	for (unsigned k = 0; k < PROF_SLOW; k++, h = (h + 1) & (PROF_SLOW - 1)) {
+		if (prof_slow[h].key == key && prof_slow[h].cpu_wr == (cpu << 1 | wr)) {
+			prof_slow[h].n++;
+			return;
+		}
+		if (!prof_slow[h].key) {
+			prof_slow[h].key = key;
+			prof_slow[h].cpu_wr = cpu << 1 | wr;
+			prof_slow[h].n = 1;
+			return;
+		}
+	}
+}
+
+static void prof_drain(void)
+{
+	if (prof_pos && prof_tr)
+		fwrite(prof_buf, 4, prof_pos, prof_tr);
+	prof_pos = 0;
+}
+
+static void prof_put(uint32_t a, uint32_t b)
+{
+	if (prof_pos + 3 > PROF_CAP)
+		prof_drain();
+	prof_buf[prof_pos++] = AREC_PROF_ESC;
+	prof_buf[prof_pos++] = a;
+	prof_buf[prof_pos++] = b;
+}
+
+int arec_prof_open(const char *prefix)
+{
+	char path[512];
+
+	prof_buf = malloc(PROF_CAP * 4u + 64u);
+	snprintf(path, sizeof path, "%s.tr", prefix);
+	prof_tr = fopen(path, "wb");
+	snprintf(path, sizeof path, "%s.blk", prefix);
+	prof_bk = fopen(path, "w");
+	if (!prof_buf || !prof_tr || !prof_bk)
+		return -1;
+	arec_prof_on = 1;
+	return 0;
+}
+
+void arec_prof_frame(uint32_t frame, uint32_t icount9, uint32_t icount7)
+{
+	if (!arec_prof_on)
+		return;
+	{
+		/* AREC_PROF_SLOW_FROM: los accesos lentos se cuentan desde ese cuadro (la escena que interesa) */
+		static long from = -1;
+
+		if (from < 0) {
+			const char *e = getenv("AREC_PROF_SLOW_FROM");
+
+			from = e ? atol(e) : 0;
+		}
+		prof_slow_on = (long)frame + 1 >= from;
+	}
+	prof_put(0xF0000000u | (frame & 0xFFFFFFu), icount9);
+	prof_put(0xF1000000u, icount7);
+}
+
+void arec_prof_close(void)
+{
+	if (!arec_prof_on)
+		return;
+	prof_drain();
+	fclose(prof_tr);
+	for (unsigned k = 0; k < PROF_SLOW; k++)
+		if (prof_slow[k].key)
+			fprintf(prof_bk, "S %u %u %08x %llu\n", prof_slow[k].cpu_wr >> 1, prof_slow[k].cpu_wr & 1, prof_slow[k].key & ~3u,
+				(unsigned long long)prof_slow[k].n);
+	fclose(prof_bk);
+	arec_prof_on = 0;
+}
+
+/* Describe un bloque recién traducido: cpu vaciado entrada pc instrucciones caliente total perfil, y por instrucción
+ * palabra:thumb|tipo<<1:condición:palabras calientes. */
+static void prof_block(struct arec *j, const struct ablock *b, const struct ai *ins, unsigned n)
+{
+	fprintf(prof_bk, "B %u %u %u %08x %u %u %u %u", j->c->v5 ? 0u : 1u, j->prof_gen & 0xFFu, b->entry, b->pc, n, b->hot,
+		b->words, arec_prof_words);
+	for (unsigned i = 0; i < n; i++)
+		fprintf(prof_bk, " %x:%x:%x:%u", ins[i].raw, ins[i].thumb | ins[i].kind << 1, ins[i].cond,
+			(unsigned)(arec_prof_ipos[i + 1] - arec_prof_ipos[i]));
+	fprintf(prof_bk, "\n");
+}
+
 /* ---- tabla de bloques ------------------------------------------------------------------------------------ */
 
 static unsigned hslot(uint32_t pc)
@@ -340,6 +454,7 @@ void arec_flush(struct arec *j)
 	memcpy(j->pt + AREC_PAGES, j->wr_real, j->npages * sizeof *j->pt);
 	j->exit_req = 1;
 	j->pub.st.flushes++;
+	j->prof_gen++;
 }
 
 static void unlink_in(struct arec *j, struct ablock *b)
@@ -522,6 +637,8 @@ again:
 		}
 	}
 #endif
+	if (arec_prof_on)
+		prof_block(j, b, ins, n);
 	j->pub.st.blocks_made++;
 	j->pub.st.guest_made += n;
 	j->pub.st.host_words += (uint64_t)b->words;
@@ -568,6 +685,8 @@ void arec_run(struct arec *j, uint64_t until)
 
 	int jl_fill = 0;
 
+	if (arec_prof_on)
+		prof_put(0xA0000000u | (c->v5 ? 0u : 1u), (uint32_t)c->icount);
 	while (c->cycles < until) {
 		struct ablock *b;
 		uint32_t pc;
@@ -612,7 +731,14 @@ void arec_run(struct arec *j, uint64_t until)
 		j->pub.st.enters++;
 		j->pub.last_pc = pc;
 		j->pub.last_code = (uint64_t)(uintptr_t)(j->code + b->entry);
+		if (arec_prof_on) {
+			if (prof_pos + PROF_ROOM > PROF_CAP)
+				prof_drain();
+			c->jit_prof = (uint64_t)(uintptr_t)(prof_buf + prof_pos);
+		}
 		r = enter(j, j->code + b->entry);
+		if (arec_prof_on)
+			prof_pos = (uint32_t)((uint32_t *)(uintptr_t)c->jit_prof - prof_buf);
 		c->cpsr = (c->cpsr & 0x0FFFFFFFu) | (c->jit_nzcv & 0xF0000000u);
 #ifdef AREC_DEBUG
 		if (dbg_left < 0) {
