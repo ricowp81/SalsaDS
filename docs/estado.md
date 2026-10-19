@@ -561,3 +561,36 @@ detalle y fuentes en `docs/fase0.md`, 0.2).
   llamadas a C por CTR. Queda **experimental**, apagada: archivo `jit-ps3mapi` para probarla. Si un juego llena los 4 MB, lo
   simple es agrandar la cola NOBITS del texto (Salsa64 usa 32 MB así). Diagnóstico que lo encontró: memoria del proceso leída en
   vivo con webMAN (getmem de PS3MAPI), vigía del JIT y fotos de la primera palabra.
+
+## Fase 49: selector de ROM y abrir/cerrar juegos sin fugas de memoria (rama fase49)
+
+- **Selector** (`tests/phase1/nucleo/main.c`, el mismo programa de «SalsaDS núcleo» y «SalsaDS JIT núcleo»): al abrir la aplicación
+  lista los `*.nds` de `/dev_hdd0/salsads/` por nombre (con `opendir` de newlib, nada de libsysfs). Cruceta o stick izquierdo
+  para moverse (repite al mantener), L1/R1 o izquierda/derecha saltan una página, **X abre**, **O sale de SalsaDS**. Texto sobre
+  fondo liso con «SalsaDS» y la versión; la combinación de salida está escrita en la propia pantalla. La última ROM elegida se
+  guarda en `/dev_hdd0/salsads/ultima-rom.txt` y el cursor empieza en ella. Si no hay ningún `.nds`, ofrece la ROM de carga
+  integrada. Los botones que ya estaban apretados al entrar al selector (la B del juego, por ejemplo) no cuentan.
+- **Salir del juego al selector: SELECT + START del DS3 mantenidos 1 s.** Aparece un medidor pasados los primeros 250 ms. No choca
+  con los controles de la DS (la DS reinicia con L+R+START+SELECT; L2 cambia la distribución, R2 es el toque, L3 recentra,
+  L3+R3 muestra la línea de estado). Al soltar antes de 1 s no pasa nada (el juego sí recibió Select y Start).
+- **Memoria** (detalle en `docs/memory-budget.md`): se reserva una vez al arrancar y se reutiliza entre juegos la estructura
+  `nds` (≈ 10,2 MB, `nds_init` la deja en blanco), las texturas del RSX, la interfaz del RSX, los seis SPE (quedan en espera de
+  trabajos; sus autopruebas corren una sola vez), la salida de audio y el recompilador del ARM9 (se prueba y se crea una vez; `nds_init`
+  lo recrea con los mismos tamaños, y al cerrar se vacía su caché). Lo que depende de la ROM sale de **páginas de 1 MB del
+  sistema** (`sysMemoryAllocate`), fuera del heap: la ROM entera y la caché de páginas del modo por fragmentos (nuevo
+  `nds_rom_set_allocator` en `src/core/cart.c`); se devuelven en `game_close`. El cierre espera lo que haya en vuelo (sonido,
+  geometría, render 3D, composición 2D, fences del RSX), escribe el guardado y suelta la ROM.
+- **Informe en el log al cerrar cada juego**: reservado por subsistema; cambio frente al cierre anterior (heap en uso, libres,
+  bloques, arena, tope del heap, memoria de usuario libre del sistema por la syscall 352); y desde el tercer cierre el acumulado
+  frente al segundo con veredicto «FUGA»/«sin fuga» (tolerancia 4096 bytes). Líneas «memoria al arrancar / tras cerrar el juego /
+  al salir».
+- **Pruebas**: `src/host/ciclos.c` (`salsads-ciclos`) abre y cierra 12 veces la ROM de carga, entera y por fragmentos, con
+  `nds_init` sobre la misma estructura, y exige que el heap en uso y la arena no crezcan; corre en LE, en BE (qemu) y en BE con el
+  recompilador (`--jit`), dentro de `tools/build.sh test-host`. En RPCS3 (config del intérprete del PPU, `salsads-interp.yml`; con la
+  config normal el SPE r3d-1 muere por «Illegal instruction» también en la versión anterior): `tools/rpcs3-run.py nucleo-jit --rom
+  tests/roms/homebrew/carga.nds --frames 40 --ciclos 5 --config tools/rpcs3/salsads-interp.yml` → 5 aperturas, RESULTADO OK, heap
+  y tope sin cambio entre cierres. RPCS3 no implementa la syscall 352: allí «usuario libre» sale en 0.
+- Sin probar en la PS3 real: el selector con el mando, el medidor de salida, que `sysMemoryAllocate` de 32 MB/64 MB devuelva todo
+  (la memoria de usuario libre debe quedar igual tras cada cierre) y el recompilador recreado en `nds_init` entre juegos.
+- Paquete con el JIT (SLDS00009) del commit `8057fbc`: `build/salsads-nucleo-jit-fase49.pkg`, SHA-256
+  `0fea0e710ff1ef6420f2e0d0b5e855eb89f31cd641d95e61e5b628f10a678e3a`. Sin probar en la PS3.

@@ -13,12 +13,17 @@ CORE_SRCS := $(wildcard $(ROOT)/src/core/*.c) $(wildcard $(ROOT)/src/bios/*.c) $
 HDRS      := $(wildcard $(ROOT)/src/core/*.h $(ROOT)/src/cpu/*.h $(ROOT)/src/jit/*.h $(ROOT)/src/host/*.h $(ROOT)/src/util/*.h $(ROOT)/src/gpu2d/*.h $(ROOT)/src/gpu3d/*.h $(ROOT)/src/audio/*.h)
 
 .PHONY: all clean
-all: $(OUT)/salsads-cpurun $(OUT)/armbench
+all: $(OUT)/salsads-cpurun $(OUT)/armbench $(OUT)/salsads-ciclos
 
 $(OUT)/salsads-cpurun: cpurun.c jitrun.c $(CORE_SRCS) $(CPU_SRCS) $(HDRS)
 	@mkdir -p $(OUT)
 	@echo "  CC      salsads-cpurun"
 	@$(CC) $(CFLAGS) cpurun.c jitrun.c $(CORE_SRCS) $(CPU_SRCS) -o $@ -lm
+
+$(OUT)/salsads-ciclos: ciclos.c jitrun.c $(CORE_SRCS) $(CPU_SRCS) $(HDRS)
+	@mkdir -p $(OUT)
+	@echo "  CC      salsads-ciclos"
+	@$(CC) $(CFLAGS) ciclos.c jitrun.c $(CORE_SRCS) $(CPU_SRCS) -o $@ -lm
 
 $(OUT)/armbench: armbench.c $(CPU_SRCS) $(ROOT)/src/jit/loops.c
 	@mkdir -p $(OUT)

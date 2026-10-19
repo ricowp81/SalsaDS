@@ -32,6 +32,27 @@ Cifras en MB. **Previsto** = estimación de diseño (todavía no hay núcleo);
 | Código, pilas, heap de newlib | 16 | | |
 | **Total previsto** | **≈ 230** | | Con una ROM de 128 MB no cabe junto con todo lo demás en ~210 MB: decidir el tope de ROM o leerla por demanda |
 
+## Abrir y cerrar juegos (Fase 49)
+
+El programa de la PS3 puede abrir y cerrar juegos sin cerrar la aplicación (selector de ROM). Regla: lo que no depende de la ROM
+se reserva **una vez al arrancar** y se reutiliza; lo que depende de ella sale de páginas de 1 MB del sistema (fuera del heap de
+newlib) y se devuelve al cerrar. La razón es la de Salsa64: memoria pedida al heap a mitad de una partida queda por encima de la
+ROM, el heap no puede devolver el hueco y la ROM grande siguiente deja de caber aunque sobre memoria.
+
+| Qué | Cuándo se reserva | Cuándo se suelta |
+|---|---|---|
+| Estructura `nds` (≈ 10,2 MB: RAM, VRAM, instantáneas de video, estado del sonido…) | al arrancar | al salir; cada juego la deja en blanco con `nds_init` |
+| Texturas del RSX (1 MB), interfaz del RSX (2 MB), seis SPE y sus autopruebas | al arrancar | al salir (los SPE quedan en espera entre juegos) |
+| Recompilador del ARM9: caché de código de 4 MB (en el texto) y tablas | al arrancar (tras la prueba de la caché) | al salir; `nds_init` recrea las tablas con los mismos tamaños y `game_close` vacía la caché |
+| Salida de audio | al arrancar | al salir |
+| ROM entera (≤ 64 MB) | al abrir el juego, páginas de 1 MB del sistema | al cerrarlo |
+| Caché de páginas de la ROM por fragmentos (32 MB) | al abrir el juego, páginas de 1 MB del sistema (`nds_rom_set_allocator`) | al cerrarlo (`nds_rom_free`) |
+| Cabecera de la ROM por fragmentos (4 KB), tablas de la caché (≈ 20 KB), archivo abierto | al abrir el juego | al cerrarlo |
+
+Cada cierre escribe en `nucleo.log` el reservado por subsistema y la diferencia frente al cierre anterior (heap en uso, libres y
+bloques, arena, tope del heap, memoria de usuario libre del sistema); desde el tercer cierre compara con el segundo y dice
+«FUGA» o «sin fuga» (tolerancia 4096 bytes). La prueba del host (`salsads-ciclos`) hace lo mismo con el heap de glibc en LE y BE.
+
 ## Memoria local del RSX (GDDR3)
 
 | Uso | Previsto | Medido | Notas |
