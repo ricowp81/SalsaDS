@@ -23,7 +23,7 @@ in this repository and the `.pkg` packages are published in GitHub Releases.
 | 1 | Core with interpreters: ARM9 (ARMv5TE) and ARM7 (ARMv4T), memory map, IRQ, timers, DMA, IPC, cartridge, SPI with generated firmware, HLE BIOS and direct boot | done |
 | 2 | 2D engines A and B and sound on SPEs (16 channels), compositor with per-line register log | done; runs on the PS3 |
 | 3 | 3D: geometry engine and SPE rasterizer | working, with known inaccuracies; still being refined |
-| 4 | ARM/Thumb to PPC64 recompiler (JIT) | working in the main package; performance work in progress |
+| 4 | ARM/Thumb to PPC64 recompiler (JIT) for the ARM9 and the ARM7 | working in the main package; performance work in progress |
 | 5 | HD internal resolution, filters, save states, profiling | not started |
 
 The day-to-day log, with what was measured and what is pending, is
