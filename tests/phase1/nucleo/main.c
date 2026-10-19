@@ -1615,10 +1615,8 @@ static void render_frame(void)
 		int swap = 1, show = 1, dset = set;
 
 		if (spu_on) {
-			/* el 2D se entrega en la línea 262 (tras esperar el 3D), ya dentro de esta pasada: los SPE lo componen mientras
-			 * termina de emularse y se dibuja ese, el mismo cuadro que antes (un cuadro de retraso, como la DS más uno) */
-			prev = sub;
-			sub.valid = 0;
+			/* el 2D de esta pasada se entregó en la línea 262, casi al final de la emulación: se recoge el de la pasada
+			 * anterior (los SPE lo compusieron mientras se emulaba esta) y el de esta se recoge en la siguiente */
 			show = prev.valid;
 			if (show) {
 				vid_collect(&prev);
@@ -1639,6 +1637,8 @@ static void render_frame(void)
 				if (autotest_verify && frame_no % 30u == 20u)
 					vid_verify(&prev);
 			}
+			prev = sub;
+			sub.valid = 0;
 		} else {
 			/* sin SPE: el compositor del host dibuja el cuadro y se copia a la textura */
 			nds_video_render_host(nds);
