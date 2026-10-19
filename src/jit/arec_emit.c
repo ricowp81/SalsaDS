@@ -94,7 +94,9 @@ struct em {
 	unsigned nlab;
 	struct efix fix[EM_FIX];
 	unsigned nfix;
-	uint32_t base;       /* índice de palabra en la caché donde va a quedar el bloque */
+	uint32_t base;       /* (sin uso)
+				 */
+	uint32_t hb, cb;     /* al cerrar: dónde quedan la sección caliente y la fría */
 	uint32_t block_id;
 	struct ablock *b;
 
@@ -195,10 +197,10 @@ static void bc_rare(struct em *e, unsigned bo, unsigned bi, unsigned l)
 	E(e, ppc_bc(bo, bi, 0));
 }
 
-/* posición final (índice de palabra dentro del bloque) */
+/* posición final (índice de palabra en la caché): la sección caliente va en `hb` y la fría en `cb` (place_block) */
 static uint32_t final_pos(const struct em *e, unsigned sec, unsigned pos)
 {
-	return sec == SEC_HOT ? pos : e->nh + pos;
+	return sec == SEC_HOT ? e->hb + pos : e->cb + pos;
 }
 
 /* salto a una palabra de la caché (se resuelve al cerrar el bloque, cuando se conoce la posición final) */
@@ -2390,6 +2392,63 @@ static void emit_insn(struct em *e, const struct ai *x)
 	}
 }
 
+/* ---- sitio en la caché: ventanas caliente/fría ----------------------------------------------------------- */
+
+void arec_set_window(struct arec *j, uint32_t w)
+{
+	j->win = w;
+	j->hot_top = w;
+	j->cold_bot = w + AREC_WIN <= j->code_words ? w + AREC_WIN : (uint32_t)j->code_words;
+	if (j->cfg.opts & AREC_OPT_NO_SPLIT)
+		j->cold_bot = (uint32_t)j->code_words;
+	j->code_used = (j->cfg.opts & AREC_OPT_NO_SPLIT) ? w : j->cold_bot;
+}
+
+/* Sitio para un bloque de nh palabras calientes y nc frías. Lo caliente crece desde el principio de la ventana en curso y lo frío
+ * desde su final: las secciones calientes de los bloques quedan juntas (la huella que lee el PPE por cuadro es solo eso) y de
+ * cualquier palabra caliente a cualquier fría de la misma ventana llega un bc (±32 KB). Un bloque más grande que una ventana
+ * va entero (caliente y fría seguidas) en ventanas nuevas. Con AREC_OPT_NO_SPLIT, la forma anterior: fría después de la
+ * caliente. 0 si no queda sitio. */
+static int place_block(struct arec *j, unsigned nh, unsigned nc, uint32_t *hb, uint32_t *cb)
+{
+	if (j->cfg.opts & AREC_OPT_NO_SPLIT) {
+		if (j->hot_top + nh + nc > j->code_words)
+			return 0;
+		*hb = j->hot_top;
+		*cb = j->hot_top + nh;
+		j->hot_top += nh + nc;
+		j->code_used = j->hot_top;
+		return 1;
+	}
+	if (nh + nc <= j->cold_bot - j->hot_top) {
+		*hb = j->hot_top;
+		j->hot_top += nh;
+		j->cold_bot -= nc;
+		*cb = j->cold_bot;
+		return 1;
+	}
+	{
+		const uint32_t next = j->win + AREC_WIN; /* (la ventana en curso no se reusa) */
+
+		if (nh + nc > AREC_WIN) {
+			if (next + nh + nc > j->code_words)
+				return 0;
+			*hb = next;
+			*cb = next + nh;
+			arec_set_window(j, next + nh + nc);
+			return 1;
+		}
+		if (next + nh + nc > j->code_words)
+			return 0;
+		arec_set_window(j, next);
+		*hb = j->hot_top;
+		j->hot_top += nh;
+		j->cold_bot -= nc;
+		*cb = j->cold_bot;
+		return 1;
+	}
+}
+
 /* Traduce; con far = 1 las llamadas a C van siempre por CTR. Devuelve palabras o < 0. */
 static int emit_try(struct arec *j, const struct ai *ins, unsigned n, struct ablock *b, uint32_t block_id, int far)
 {
@@ -2403,7 +2462,7 @@ static int emit_try(struct arec *j, const struct ai *ins, unsigned n, struct abl
 	e->j = j;
 	e->b = b;
 	e->block_id = block_id;
-	e->base = (uint32_t)j->code_used;
+	e->base = 0;
 	e->ins = ins;
 	e->n = n;
 	e->strict = j->cfg.strict;
@@ -2458,7 +2517,7 @@ static int emit_try(struct arec *j, const struct ai *ins, unsigned n, struct abl
 		const unsigned w0 = e->nh;
 
 		E(e, ppc_ld(3, RST, OFF_PROF));
-		li32(e, 4, (j->c->v5 ? 0u : 1u) << 31 | (j->prof_gen & 0xFFu) << 22 | (e->base & 0x3FFFFFu));
+		li32(e, 4, (j->c->v5 ? 0u : 1u) << 31 | (j->prof_gen & 0xFFu) << 22 | (e->block_id & 0x3FFFFFu));
 		E(e, ppc_stw(4, 3, 0));
 		E(e, ppc_addi(3, 3, 4));
 		E(e, ppc_std(3, RST, OFF_PROF));
@@ -2499,20 +2558,19 @@ static int emit_try(struct arec *j, const struct ai *ins, unsigned n, struct abl
 	/* cierre: caliente + fría, arreglos de saltos */
 	{
 		const unsigned total = e->nh + e->nc;
-		uint32_t *dst;
+		uint32_t *dst = j->code;
 
-		if (j->code_used + total > j->code_words)
+		if (!place_block(j, e->nh, e->nc, &e->hb, &e->cb))
 			return -2;
-		dst = j->code + j->code_used;
-		memcpy(dst, e->hot, e->nh * 4);
-		memcpy(dst + e->nh, e->cold, e->nc * 4);
+		memcpy(dst + e->hb, e->hot, e->nh * 4);
+		memcpy(dst + e->cb, e->cold, e->nc * 4);
 		for (unsigned k = 0; k < e->nfix; k++) {
 			const struct efix *f = &e->fix[k];
 			const uint32_t at = final_pos(e, f->sec, f->at);
 			int64_t d;
 
 			if (f->kind == 2 || f->kind == 4) {
-				d = ((int64_t)f->lab - (int64_t)(e->base + at)) * 4;
+				d = ((int64_t)f->lab - (int64_t)at) * 4;
 				dst[at] = (dst[at] & ~0x03FFFFFCu) | ((uint32_t)d & 0x03FFFFFCu);
 				continue;
 			}
@@ -2544,10 +2602,11 @@ static int emit_try(struct arec *j, const struct ai *ins, unsigned n, struct abl
 		for (unsigned k = 0; k < b->nexits; k++) {
 			const uint32_t s = b->exits[k].site;
 
-			b->exits[k].site = e->base + final_pos(e, s >> 31, s & 0x7FFFFFFFu);
-			b->exits[k].stub = e->base + final_pos(e, e->lab_sec[b->exits[k].stub], e->lab_pos[b->exits[k].stub]);
+			b->exits[k].site = final_pos(e, s >> 31, s & 0x7FFFFFFFu);
+			b->exits[k].stub = final_pos(e, e->lab_sec[b->exits[k].stub], e->lab_pos[b->exits[k].stub]);
 		}
-		b->entry = e->base;
+		b->entry = e->hb;
+		b->cold = e->cb;
 		b->words = total;
 		b->hot = e->nh;
 		return (int)total;

@@ -1128,7 +1128,7 @@ void test_arec(void)
 	run_profile(0); /* ARM9 */
 	run_profile(1); /* ARM7 */
 	/* las formas anteriores (banderas en memoria, sin pistas, búsqueda de destinos copiada en cada salida) siguen probadas */
-	prof_opts = AREC_OPT_FLAGS_MEM | AREC_OPT_NO_HINTS | AREC_OPT_JL_INLINE;
+	prof_opts = AREC_OPT_FLAGS_MEM | AREC_OPT_NO_HINTS | AREC_OPT_JL_INLINE | AREC_OPT_NO_SPLIT;
 	run_profile(0);
 	run_profile(1);
 	prof_opts = 0;

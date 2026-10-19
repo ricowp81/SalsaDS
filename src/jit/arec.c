@@ -395,8 +395,8 @@ void arec_prof_close(void)
  * palabra:thumb|tipo<<1:condición:palabras calientes. */
 static void prof_block(struct arec *j, const struct ablock *b, const struct ai *ins, unsigned n)
 {
-	fprintf(prof_bk, "B %u %u %u %08x %u %u %u %u", j->c->v5 ? 0u : 1u, j->prof_gen & 0xFFu, b->entry, b->pc, n, b->hot,
-		b->words, arec_prof_words);
+	fprintf(prof_bk, "B %u %u %u %08x %u %u %u %u %u", j->c->v5 ? 0u : 1u, j->prof_gen & 0xFFu, (unsigned)(b - j->blocks), b->pc,
+		n, b->hot, b->words, arec_prof_words, b->entry);
 	for (unsigned i = 0; i < n; i++)
 		fprintf(prof_bk, " %x:%x:%x:%u", ins[i].raw, ins[i].thumb | ins[i].kind << 1, ins[i].cond,
 			(unsigned)(arec_prof_ipos[i + 1] - arec_prof_ipos[i]));
@@ -444,7 +444,7 @@ static void reset_tables(struct arec *j)
 	memset(j->phys_blocks, 0, j->nphys16 * sizeof *j->phys_blocks);
 	j->nblocks = 0;
 	j->nlinks = 0;
-	j->code_used = j->code_base_used;
+	arec_set_window(j, (uint32_t)j->code_base_used);
 }
 
 void arec_flush(struct arec *j)
@@ -598,8 +598,9 @@ again:
 	}
 	j->nblocks++;
 	b->ninsn = (uint16_t)n;
-	icache(j, j->code + b->entry, (size_t)b->words * 4);
-	j->code_used += (size_t)b->words;
+	icache(j, j->code + b->entry, (size_t)b->hot * 4);
+	if (b->words > b->hot)
+		icache(j, j->code + b->cold, (size_t)(b->words - b->hot) * 4);
 	/* tablas */
 	b->hnext = j->hash[hslot(pc)];
 	j->hash[hslot(pc)] = id;
@@ -630,9 +631,9 @@ again:
 		const char *d = getenv("AREC_DUMP");
 
 		if (d && (*d == 0x2A || strtoul(d, NULL, 16) == (pc & ~1u))) {
-			fprintf(stderr, "bloque %08x: %u instr, %u palabras en %u\n", pc, n, b->words, b->entry);
+			fprintf(stderr, "bloque %08x: %u instr, %u palabras en %u (fría en %u)\n", pc, n, b->words, b->entry, b->cold);
 			for (uint32_t k = 0; k < b->words; k++)
-				fprintf(stderr, "%08x%c", j->code[b->entry + k], (k & 7) == 7 ? '\n' : ' ');
+				fprintf(stderr, "%08x%c", j->code[(k < b->hot ? b->entry : b->cold - b->hot) + k], (k & 7) == 7 ? '\n' : ' ');
 			fprintf(stderr, "\n");
 		}
 	}
@@ -969,7 +970,8 @@ int arec_translate_only(struct acore *c, const struct arec_cfg *cfg, uint32_t pc
 		return -1;
 	b = compile(j, pc);
 	if (b && b->words <= cap) {
-		memcpy(out, j->code + b->entry, (size_t)b->words * 4);
+		memcpy(out, j->code + b->entry, (size_t)b->hot * 4);
+		memcpy(out + b->hot, j->code + b->cold, (size_t)(b->words - b->hot) * 4);
 		n = (int)b->words;
 	}
 	arec_destroy(j);

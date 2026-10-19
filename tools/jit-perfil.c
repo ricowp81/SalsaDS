@@ -46,6 +46,7 @@ struct blk {
 	uint32_t raw[MAXI];
 	uint64_t execs;
 	uint64_t l1m, l2m;
+	uint32_t entry;  /* índice de palabra de la sección caliente en la caché */
 	uint32_t packed; /* --packed: dirección (palabras) si las secciones calientes estuvieran juntas, sin las frías */
 };
 
@@ -69,7 +70,7 @@ static void ht_put(uint32_t key, uint32_t idx)
 
 	while (ht[h] != 0xFFFFFFFFu && blks[ht[h]].key != key)
 		h = (h + 1) & htmask;
-	ht[h] = idx; /* un bloque con la misma entrada (tras un vaciado sin cambio de generación) reemplaza al viejo */
+	ht[h] = idx; /* (no debería repetirse: el id de un bloque no se reusa hasta el siguiente vaciado) */
 }
 
 static int ht_get(uint32_t key)
@@ -141,12 +142,12 @@ static void load_blk(const char *path)
 	ht = malloc((htmask + 1) * 4);
 	memset(ht, 0xFF, (htmask + 1) * 4);
 	while (getline(&line, &cap, f) > 0) {
-		unsigned cpu, gen, entry, pc, n, hot, words, prof;
+		unsigned cpu, gen, id, pc, n, hot, words, prof, entry;
 		int off;
 		char *p;
 		struct blk *b;
 
-		if (sscanf(line, "B %u %u %u %x %u %u %u %u%n", &cpu, &gen, &entry, &pc, &n, &hot, &words, &prof, &off) != 8)
+		if (sscanf(line, "B %u %u %u %x %u %u %u %u %u%n", &cpu, &gen, &id, &pc, &n, &hot, &words, &prof, &entry, &off) != 9)
 			continue;
 		if (nblks == capblks) {
 			capblks *= 2;
@@ -154,7 +155,8 @@ static void load_blk(const char *path)
 		}
 		b = &blks[nblks];
 		memset(b, 0, sizeof *b);
-		b->key = cpu << 31 | (gen & 0xFFu) << 22 | (entry & 0x3FFFFFu);
+		b->key = cpu << 31 | (gen & 0xFFu) << 22 | (id & 0x3FFFFFu);
+		b->entry = entry;
 		b->pc = pc;
 		b->n = (uint16_t)n;
 		b->hot = (uint16_t)hot;
@@ -438,7 +440,7 @@ int main(int argc, char **argv)
 				if (idx < 0)
 					continue;
 				b = &blks[idx];
-				base = (cpu ? CODE7_OFF : 0u) + (packed_mode ? b->packed : (v & 0x3FFFFFu)) * 4u;
+				base = (cpu ? CODE7_OFF : 0u) + (packed_mode ? b->packed : b->entry) * 4u;
 				for (uint32_t pg = base >> 12; pg <= (base + (uint32_t)(b->hot - b->prof) * 4u - 1u) >> 12; pg++)
 					erat_touch(pg, cpu);
 				l0 = base / LINE;

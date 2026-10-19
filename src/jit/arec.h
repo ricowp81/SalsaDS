@@ -68,6 +68,7 @@ enum { AREC_EV_SERVICE = 0, AREC_EV_BLOCK = 1, AREC_EV_STEP = 2 };
 #define AREC_OPT_FLAGS_MEM 1u  /* banderas entre bloques en memoria (c->jit_nzcv) en vez de en el CR (cr2–cr4) */
 #define AREC_OPT_NO_HINTS 2u   /* saltos a los caminos fríos sin la pista estática de «no se toma» */
 #define AREC_OPT_JL_INLINE 4u  /* búsqueda de destinos indirectos copiada en cada salida en vez de la rutina común */
+#define AREC_OPT_NO_SPLIT 8u   /* la sección fría de cada bloque justo después de la caliente (sin ventanas caliente/fría) */
 
 /* Estadísticas (se acumulan; las reinicia el dueño con memset). */
 struct arec_stats {

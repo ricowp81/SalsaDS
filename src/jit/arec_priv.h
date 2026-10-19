@@ -100,7 +100,8 @@ struct ablock_exit {
 
 struct ablock {
 	uint32_t pc;        /* con el bit 0 = Thumb */
-	uint32_t entry;     /* índice de palabra en la caché */
+	uint32_t entry;     /* índice de palabra en la caché (el principio de la sección caliente) */
+	uint32_t cold;      /* índice de la sección fría (en otra parte de la ventana: arec_emit.c, place_block) */
 	uint32_t words;
 	uint16_t ninsn, maxcyc;
 	uint32_t hot;       /* palabras de la sección caliente */
@@ -137,7 +138,9 @@ struct arec {
 	int can_exec;
 
 	uint32_t *code;      /* caché de código */
-	size_t code_words, code_used, code_base_used; /* code_base_used: trampolín y rutinas comunes */
+	size_t code_words, code_used, code_base_used; /* code_base_used: trampolín y rutinas comunes; code_used: final de la
+							* ventana en curso (lo que ya no se puede reusar sin vaciar) */
+	uint32_t win, hot_top, cold_bot;              /* ventana en curso: lo caliente crece desde abajo y lo frío desde arriba */
 	uint32_t ent_enter, ent_exit;                  /* índices de las rutinas comunes */
 	uint32_t ent_rd, ent_wr, ent_call;             /* caminos lentos compartidos (llamadas con bl desde los bloques) */
 	uint32_t ent_callf;                            /* ent_call con las banderas del CR a c->jit_nzcv y de vuelta */
@@ -175,6 +178,10 @@ extern int arec_prof_on;
 extern uint16_t arec_prof_ipos[AREC_MAX_INSN + 1];
 extern unsigned arec_prof_words; /* palabras del prólogo que son del perfil */
 #define AREC_PROF_ESC 0x003FFFFFu  /* palabra de escape en la traza: la siguiente es una marca */
+
+#define AREC_WIN 8192u /* palabras por ventana de código (32 KB: un bc llega de cualquier palabra de la ventana a cualquier otra) */
+/* Ventana nueva desde la palabra `w` (arec_emit.c). */
+void arec_set_window(struct arec *j, uint32_t w);
 
 /* arec_emit.c: traduce un bloque decodificado. Escribe en j->code a partir de j->code_used; devuelve las
  * palabras escritas o < 0 si no cupo. Llena b (salidas, ciclos). */
