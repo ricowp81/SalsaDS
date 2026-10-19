@@ -105,6 +105,8 @@ static void on_exec_cpu(int cpu, int ev, uint64_t until)
 	if (ls_failed)
 		return;
 	cur_cpu = cpu;
+	/* la referencia corre dentro del tramo del JIT: el mismo final de tramo (los sondeos que saltan hasta ahí, nds_poll_skip) */
+	ref->slice_end = jm->slice_end;
 	switch (ev) {
 	case AREC_EV_SERVICE:
 		acore_service(b, until);

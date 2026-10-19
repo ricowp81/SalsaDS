@@ -332,14 +332,11 @@ uint32_t nds_cart_read(struct nds *n, int cpu, uint32_t off, int sz)
 	if (cpu != nds_cart_owner(n) || off < 0x1A0u || off + (uint32_t)sz > 0x1C0u)
 		return 0;
 	/* Camino rápido del sondeo: si la CPU lee ROMCTRL (0x1A4..0x1A7) mientras el bloque espera su siguiente palabra (o su fin),
-	 * el reloj de esa CPU avanza de una vez hasta el instante del evento en vez de girar en el bucle del juego: el juego ve
-	 * el mismo tiempo (el siguiente sondeo ya cae en el evento) sin que el intérprete o el JIT ejecuten miles de lecturas. */
-	if (c->busy && !c->drq && off < 0x1A8u && off + (uint32_t)sz > 0x1A4u && n->ev[EV_CART] != NDS_NEVER) {
-		const uint64_t now = nds_cpu_now(n, cpu), t = n->ev_min < n->ev[EV_CART] ? n->ev_min : n->ev[EV_CART];
-
-		if (t > now)
-			nds_core(n, cpu)->cycles += cpu ? (t - now + 1) >> 1 : t - now;
-	}
+	 * el reloj de esa CPU avanza de una vez hasta el instante del evento (o hasta el final del tramo si el evento ya venció
+	 * dentro de él) en vez de girar en el bucle del juego: el juego ve el mismo tiempo (el siguiente sondeo ya cae en el
+	 * evento) sin que el intérprete o el JIT ejecuten miles de lecturas. */
+	if (c->busy && !c->drq && off < 0x1A8u && off + (uint32_t)sz > 0x1A4u)
+		nds_poll_skip(n, cpu, EV_CART);
 	memset(img, 0, sizeof img);
 	wr16le(img + 0, (uint16_t)((c->auxcnt & 0xE043u) | (nds_cpu_now(n, cpu) < c->spi_done ? 0x80u : 0u)));
 	wr16le(img + 2, c->auxdata);

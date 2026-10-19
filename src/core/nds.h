@@ -395,6 +395,8 @@ struct nds {
 	uint64_t time;    /* ciclos del ARM9 que el planificador ya dio por vividos */
 	uint64_t ev[EV_COUNT];
 	uint64_t ev_min;  /* caché: cota inferior del próximo evento (se afina al procesar eventos) */
+	uint64_t slice_end; /* fin del tramo que corren las CPUs (ciclos del ARM9): los eventos que venzan antes se atienden recién
+			     * ahí, así que una CPU que sondea algo que solo cambia con un evento puede adelantar su reloj hasta aquí */
 	uint32_t line;    /* línea que muestran los eventos (0-262) */
 	uint32_t quantum; /* ciclos del ARM9 por tramo */
 	uint64_t frames;  /* cuadros completos (a cada inicio del VBlank) */

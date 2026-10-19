@@ -70,6 +70,20 @@ void nds_event_set(struct nds *n, int ev, uint64_t when)
 		n->ev_min = when;
 }
 
+void nds_poll_skip(struct nds *n, int cpu, int ev)
+{
+	const uint64_t now = nds_cpu_now(n, cpu);
+	uint64_t t;
+
+	if (n->ev[ev] == NDS_NEVER)
+		return;
+	t = n->ev_min < n->ev[ev] ? n->ev_min : n->ev[ev];
+	if (t <= now)
+		t = n->slice_end;
+	if (t > now)
+		nds_core(n, cpu)->cycles += cpu ? (t - now + 1) >> 1 : t - now;
+}
+
 /* ---- video: DISPSTAT, VCOUNT --------------------------------------------------------------------------- */
 
 static inline uint32_t lyc_of(uint16_t ds)
@@ -593,6 +607,7 @@ void nds_sched_run(struct nds *n, uint64_t until)
 			if (slice > n->time) {
 				uint64_t c0 = 0, c1 = 0, c2 = 0;
 
+				n->slice_end = slice;
 				if (clk)
 					c0 = clk();
 				if (idle9)

@@ -249,6 +249,8 @@ uint32_t nds_spi_read(struct nds *n, uint32_t off, int sz)
 	const struct nds_spi *s = &n->spi;
 	uint8_t img[4] = { 0 };
 
+	if (s->busy && off < 0x1C2u) /* sondeo de SPICNT.7: hasta el evento que termina la transferencia (nds_poll_skip) */
+		nds_poll_skip(n, NDS_CPU7, EV_SPI);
 	wr16le(img, (uint16_t)((s->cnt & 0xCF03u) | ((unsigned)s->busy << 7)));
 	img[2] = s->data;
 	if (off < 0x1C0u || off + (uint32_t)sz > 0x1C4u)

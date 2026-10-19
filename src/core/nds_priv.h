@@ -72,6 +72,10 @@ void nds_io_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v);
 void nds_sched_init(struct nds *n);
 void nds_sched_run(struct nds *n, uint64_t until);
 void nds_event_set(struct nds *n, int ev, uint64_t when);
+/* Una CPU sondea un registro que solo cambia con el evento `ev` (el bit de ocupado del cartucho o del SPI): su reloj avanza de
+ * una vez hasta el primer evento pendiente o, si ya venció dentro del tramo en curso, hasta el final del tramo (los eventos se
+ * atienden recién ahí; hasta entonces el registro no cambia y la CPU solo giraría en el bucle del juego). */
+void nds_poll_skip(struct nds *n, int cpu, int ev);
 void nds_irq_update(struct nds *n, int cpu);
 void nds_halt_check(struct nds *n);
 void nds_cpu_halt(struct nds *n, int cpu); /* HALT: espera IE & IF (ARM7) o la línea de IRQ (ARM9) */
