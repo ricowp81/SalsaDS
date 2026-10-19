@@ -35,9 +35,7 @@
 #define SND_LINE 128                 /* bytes de la línea de caché de cada canal */
 #define SND_LOG_MAX 2048             /* escrituras a registros por trabajo */
 #define SND_TICKS_MAX 640            /* ticks por trabajo (un cuadro lleva 547; sobra para retrasos) */
-#define SND_OUT_MAX 1600             /* muestras estéreo de salida por trabajo (cabe un cuadro estirado un 40 %) */
-#define SND_ADJ_MIN (-0.40f)         /* corrección de razón: estira hasta 1/(1-0,40) = 1,67x (emulación a 10 cuadros/s no, a ~36 sí) */
-#define SND_ADJ_MAX 0.03f
+#define SND_OUT_MAX 1024             /* muestras estéreo de salida por trabajo */
 #define SND_HIST 32
 
 /* modos (snd_state.mode) */
@@ -80,7 +78,7 @@ typedef struct snd_state {
 	/* remuestreo */
 	float hist[2][SND_HIST];         /* últimas SND_HIST muestras nativas de cada canal (la ventana del FIR) */
 	float frac;                      /* fase dentro de la muestra nativa, [0, 1) */
-	float ratio_adj;                 /* corrección de la razón de remuestreo, [SND_ADJ_MIN, SND_ADJ_MAX]; <0 estira el audio, 0 = ninguna */
+	float ratio_adj;                 /* corrección de la razón de remuestreo (control de deriva), 0 = ninguna */
 	uint32_t mode;
 	/* resultados del último trabajo */
 	uint32_t busy;                   /* bit c: canal c encendido; bit 16 y 17: captura 0 y 1 */

@@ -393,21 +393,6 @@ static inline float fir_dot(const float *c, const float *x)
 }
 #endif
 
-/* Limitador suave tras el FIR (el filtro rebasa 0 dBFS hasta ~1 dBFS en señales cercanas al máximo): identidad hasta
- * SND_KNEE y, por encima, una curva racional que sube con la misma pendiente y tiende a 1.0 sin alcanzarlo. */
-#define SND_KNEE 0.92f
-static inline float soft_limit(float x)
-{
-	const float ax = x < 0.0f ? -x : x;
-	float t, y;
-
-	if (ax <= SND_KNEE)
-		return x;
-	t = (ax - SND_KNEE) * (1.0f / (1.0f - SND_KNEE));
-	y = SND_KNEE + (1.0f - SND_KNEE) * (t / (1.0f + t));
-	return x < 0.0f ? -y : y;
-}
-
 static uint32_t snd_resample(snd_state *st, const float *wl, const float *wr, uint32_t n, float *out, uint32_t out_max)
 {
 	const float ratio = (SND_RATE_NATIVE / SND_RATE_OUT) * (1.0f + st->ratio_adj);
@@ -430,8 +415,8 @@ static uint32_t snd_resample(snd_state *st, const float *wl, const float *wr, ui
 		ph = (uint32_t)pf;
 		a = pf - (float)ph;
 		fir_coefs(c, snd_fir[ph], snd_fir[ph + 1], a);
-		out[2 * produced] = soft_limit(fir_dot(c, wl + (k - SND_FIR_BEFORE)));
-		out[2 * produced + 1] = soft_limit(fir_dot(c, wr + (k - SND_FIR_BEFORE)));
+		out[2 * produced] = fir_dot(c, wl + (k - SND_FIR_BEFORE));
+		out[2 * produced + 1] = fir_dot(c, wr + (k - SND_FIR_BEFORE));
 		produced++;
 		f += ratio;
 	}

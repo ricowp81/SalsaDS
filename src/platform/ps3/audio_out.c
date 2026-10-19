@@ -7,7 +7,6 @@
 #include "platform/ps3/audio_out.h"
 
 #include <audio/audio.h>
-#include "audio/snd_rate.h"
 #include <string.h>
 #include <sys/event_queue.h>
 #include <sys/systime.h>
@@ -35,7 +34,6 @@ static struct {
 
 static volatile uint64_t c_pushed, c_dropped, c_blocks, c_silent, c_busy;
 static volatile uint32_t c_underruns, c_late, c_peak;
-static snd_rate rate;
 
 static float *block_ptr(uint32_t b)
 {
@@ -140,7 +138,6 @@ int audio_out_init(void)
 	int rc;
 
 	memset(&port, 0, sizeof port);
-	rate.integ = rate.out = 0.0f;
 	head = tail = 0;
 	c_pushed = c_dropped = c_blocks = c_silent = c_busy = 0;
 	c_underruns = c_late = c_peak = 0;
@@ -177,11 +174,12 @@ int audio_out_is_open(void)
 
 float audio_out_ratio_adj(void)
 {
-	if (!port.open || !port.started) {
-		rate.integ = rate.out = 0.0f;
+	float adj;
+
+	if (!port.open || !port.started)
 		return 0.0f;
-	}
-	return snd_rate_update(&rate, level(), TARGET); /* rango [-40 %, +3 %]: ver audio/snd_rate.h */
+	adj = ((float)level() - (float)TARGET) * (0.02f / (float)TARGET);
+	return adj > 0.02f ? 0.02f : adj < -0.02f ? -0.02f : adj;
 }
 
 void audio_out_stats(struct audio_out_stats *s, int reset_peak)

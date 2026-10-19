@@ -36,10 +36,12 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <string.h>
 #include <sys/process.h>
 #include <sys/stat.h>
 #include <sys/systime.h>
+#include <sys/thread.h>
 #include <sysutil/sysutil.h>
 #include <sysutil/video.h>
 
@@ -78,6 +80,11 @@
 /* Con este archivo las bandas del render 3D vuelven al reparto alterno (u, u+2, ...) en lugar del reparto por costo. */
 #define R3D_ALT_FLAG SALSADS_DATA_DIR "/reparto-alterno"
 #define JIT_MARKER SALSADS_DATA_DIR "/nucleo-jit.marker"
+/* Caché del recompilador pedida a PS3MAPI (fase52, experimental): solo con este archivo; si no, la de 4 MB del segmento
+ * de texto. Con HEN 3.3.0 funciona apartando las páginas (rec_cache.c), pero en NSMB no ganó nada (los vaciados no eran
+ * por falta de espacio) y las llamadas a C por CTR cuestan ~6 % del ARM9. Su propia marca por si cuelga la consola. */
+#define JIT_MAPI_MARKER SALSADS_DATA_DIR "/nucleo-jit-ps3mapi.marker"
+#define JIT_MAPI_FLAG SALSADS_DATA_DIR "/jit-ps3mapi"
 /* Tramo del planificador con el recompilador (ciclos del ARM9 entre los cambios de CPU; el intérprete usa 128). Cada
  * tramo es una entrada al código generado, y lo que cuesta en la PS3 es el cambio de CPU (cachés), no las instrucciones:
  * con tramos más largos hay menos. El número en JIT_QUANTUM_FILE (de 16 a 20000) lo cambia sin compilar otra vez. */
@@ -119,6 +126,42 @@ static volatile int quit;
 static int autotest, failures;
 
 static struct nds *nds;
+
+static volatile uint32_t vid_frames_seen; /* copia de frame_no para el hilo vigía */
+/* Guardia de la caché de PS3MAPI: las dos primeras palabras de las rutinas comunes del recompilador. Si cambian, otra
+ * reserva recibió la misma dirección y reemplazó la página: se apaga el JIT (el intérprete sigue) en vez de saltar a
+ * memoria ajena. */
+static const volatile uint32_t *jit_guard_ptr;
+static uint32_t jit_guard_val[2];
+#ifdef NUCLEO_JIT
+/* Hilo vigía del JIT con la caché de PS3MAPI (diagnóstico de la fase52: con ella el juego se quedaba en negro sin
+ * dejar rastro). Cada medio segundo, durante 40 s, anota los contadores del recompilador y el último bloque al que
+ * entró; si el hilo principal se queda trabado dentro del código generado, las últimas líneas dicen dónde. */
+static void jit_watch_thread(void *arg)
+{
+	(void)arg;
+	for (int k = 0; k < 80 && !quit; k++) {
+		sysUsleep(500000);
+		if (!nds || !nds->jit9)
+			continue;
+		{
+			const struct arec_pub *pb = (const struct arec_pub *)(const void *)nds->jit9;
+
+			if (jit_guard_ptr)
+				salsads_log("vigía jit %d: rutinas [0] 0x%08x [1] 0x%08x [0x77] 0x%08x", k, (unsigned)jit_guard_ptr[0],
+					    (unsigned)jit_guard_ptr[1], (unsigned)jit_guard_ptr[0x77]);
+			salsads_log("vigía jit %d: entradas %llu, bloques %llu, instr. traducidas %llu, intérprete %llu, "
+				    "llamadas %llu, lentas %llu/%llu; último bloque pc 0x%08x en 0x%llx; ARM9 r15 0x%08x; cuadros %u",
+				    k, (unsigned long long)pb->st.enters, (unsigned long long)pb->st.blocks_made,
+				    (unsigned long long)pb->st.guest_made, (unsigned long long)pb->st.interp_steps,
+				    (unsigned long long)pb->st.callouts, (unsigned long long)pb->st.slow_rd,
+				    (unsigned long long)pb->st.slow_wr, (unsigned)pb->last_pc, (unsigned long long)pb->last_code,
+				    (unsigned)nds->a9.r[15], (unsigned)vid_frames_seen);
+		}
+	}
+	sysThreadExit(0);
+}
+#endif
 static uint8_t *rom_buf;
 /* ROM por fragmentos (docs/memory-budget.md): si el archivo pasa de ROM_WHOLE_MAX_MB (o existe ROM_PAGED_FLAG) se queda abierto y
  * el núcleo lee páginas de ROM_PAGE_KB bajo demanda; rom_buf pasa a ser solo la cabecera (4 KB). */
@@ -1615,10 +1658,8 @@ static void render_frame(void)
 		int swap = 1, show = 1, dset = set;
 
 		if (spu_on) {
-			/* el 2D se entrega en la línea 262 (tras esperar el 3D), ya dentro de esta pasada: los SPE lo componen mientras
-			 * termina de emularse y se dibuja ese, el mismo cuadro que antes (un cuadro de retraso, como la DS más uno) */
-			prev = sub;
-			sub.valid = 0;
+			/* el 2D de esta pasada se entregó en la línea 262, casi al final de la emulación: se recoge el de la pasada
+			 * anterior (los SPE lo compusieron mientras se emulaba esta) y el de esta se recoge en la siguiente */
 			show = prev.valid;
 			if (show) {
 				vid_collect(&prev);
@@ -1639,6 +1680,8 @@ static void render_frame(void)
 				if (autotest_verify && frame_no % 30u == 20u)
 					vid_verify(&prev);
 			}
+			prev = sub;
+			sub.valid = 0;
 		} else {
 			/* sin SPE: el compositor del host dibuja el cuadro y se copia a la textura */
 			nds_video_render_host(nds);
@@ -1671,6 +1714,7 @@ static void render_frame(void)
 	put(M_DRAW, tb_us(tb7 - tb6));
 	put(M_END, tb_us(tb_clock() - tb7));
 	frame_no++;
+	vid_frames_seen = frame_no;
 	save_flush(0);
 	if (++stat_n >= STATS_FRAMES)
 		log_stats();
@@ -1764,58 +1808,6 @@ int main(void)
 	save_load();
 	salsads_log("ROM: %s; entrada ARM9 0x%08x, ARM7 0x%08x; cuántos bytes ocupa el núcleo: %u", rom_name,
 		    (unsigned)rd32le(rom_buf + 0x24), (unsigned)rd32le(rom_buf + 0x34), (unsigned)sizeof *nds);
-#ifdef NUCLEO_JIT
-	{
-		struct stat jst;
-
-		if (stat(NOJIT_FLAG, &jst) == 0) {
-			salsads_log("jit: %s existe: el ARM9 con el intérprete (el respaldo)", NOJIT_FLAG);
-		} else if (autotest) {
-			salsads_log("jit: prueba automática (RPCS3): su texto es de solo lectura, no se intenta; el ARM9 con el intérprete (el respaldo)");
-		} else {
-			char why[160];
-			uint64_t us = 0;
-			const enum rec_probe_status ps = salsads_rec_probe(JIT_MARKER, NUCLEO_VERSION, 2000, why, sizeof why, &us);
-
-			if (ps == REC_PROBE_OK) {
-				struct nds_jit_cfg jc;
-
-				memset(&jc, 0, sizeof jc);
-				jc.code = salsads_rec_cache();
-				jc.code_bytes = REC_CACHE_BYTES;
-				jc.icache_flush = salsads_rec_flush;
-				if (nds_jit_attach(nds, &jc) == 0) {
-					FILE *qf = fopen(JIT_QUANTUM_FILE, "r");
-					unsigned q = JIT_QUANTUM;
-
-					if (qf) {
-						unsigned v = 0;
-
-						if (fscanf(qf, "%u", &v) == 1 && v >= 16 && v <= 20000)
-							q = v;
-						fclose(qf);
-					}
-					nds->quantum = q;
-					salsads_log("jit: tramo del planificador de %u ciclos del ARM9 (%s)", q,
-						    q == JIT_QUANTUM ? "el de omisión" : JIT_QUANTUM_FILE);
-					jit_on = 1;
-					arec_stats(nds->jit9); /* (las estadísticas empiezan en cero) */
-					((struct arec_pub *)(void *)nds->jit9)->clock_ns = jit_clock_ns;
-					salsads_rec_marker(JIT_MARKER, NUCLEO_VERSION, 1);
-					salsads_log("jit: el ARM9 con el recompilador (caché de código de %u MB, prueba de %u µs)",
-						    REC_CACHE_BYTES >> 20, (unsigned)us);
-				} else {
-					salsads_log("jit: el recompilador no se pudo crear (sin memoria): el ARM9 con el intérprete");
-				}
-			} else if (ps == REC_PROBE_SKIPPED) {
-				salsads_log("jit: el ARM9 con el intérprete: %s", why);
-			} else {
-				salsads_log("jit: la prueba de la caché %s: %s; el ARM9 con el intérprete (el respaldo)",
-					    ps == REC_PROBE_HUNG ? "no volvió" : "falló", why);
-			}
-		}
-	}
-#endif
 
 	if (rsxkit_init(NULL) != 0) {
 		salsads_log("RESULTADO nucleo: FALLO rsxkit_init");
@@ -1930,12 +1922,125 @@ int main(void)
 	} else {
 		snd_on = 0;
 	}
+	/* El JIT se prepara al final del arranque (fase52): las páginas de PS3MAPI no quedan apartadas en el mapa de
+	 * memoria del proceso, y una reserva posterior (RSX, SPE, audio) podía recibir la misma dirección y reemplazar la
+	 * página con las rutinas comunes del recompilador (en la PS3: 0x60000000 en 0xFF y el juego en negro). */
+#ifdef NUCLEO_JIT
+	{
+		struct stat jst;
+
+		if (stat(NOJIT_FLAG, &jst) == 0) {
+			salsads_log("jit: %s existe: el ARM9 con el intérprete (el respaldo)", NOJIT_FLAG);
+		} else if (autotest) {
+			salsads_log("jit: prueba automática (RPCS3): su texto es de solo lectura, no se intenta; el ARM9 con el intérprete (el respaldo)");
+		} else {
+			char why[160], mwhy[160];
+			uint64_t us = 0;
+			void *mapi_code = NULL;
+			enum rec_probe_status ps;
+
+			if (stat(JIT_MAPI_FLAG, &jst) != 0) {
+				snprintf(mwhy, sizeof mwhy, "experimental: crear %s para probarla", JIT_MAPI_FLAG);
+			} else {
+				mapi_code = salsads_rec_cache_mapi(REC_MAPI_BYTES, JIT_MAPI_MARKER, NUCLEO_VERSION, 2000, mwhy,
+								   sizeof mwhy, &us);
+				if (mapi_code)
+					atexit(salsads_rec_cache_mapi_free);
+			}
+			if (mapi_code)
+				salsads_log("jit: caché por PS3MAPI: %s", mwhy);
+			else
+				salsads_log("jit: caché por PS3MAPI no (%s): se usa la del segmento de texto", mwhy);
+			ps = mapi_code ? REC_PROBE_OK : salsads_rec_probe(JIT_MARKER, NUCLEO_VERSION, 2000, why, sizeof why, &us);
+
+			if (ps == REC_PROBE_OK) {
+				struct nds_jit_cfg jc;
+
+				memset(&jc, 0, sizeof jc);
+				jc.code = mapi_code ? mapi_code : salsads_rec_cache();
+				jc.code_bytes = mapi_code ? REC_MAPI_BYTES : REC_CACHE_BYTES;
+				/* la zona de PS3MAPI está lejos del texto (0x70000000): ningún bl llega a C, así que se emite de una
+				 * vez por mtctr/bctrl en lugar de intentar el bl y repetir cada bloque */
+				jc.far_calls = mapi_code != NULL;
+				jc.icache_flush = salsads_rec_flush;
+				if (nds_jit_attach(nds, &jc) == 0) {
+					const uint32_t w_after_attach = ((const volatile uint32_t *)jc.code)[0];
+
+					FILE *qf = fopen(JIT_QUANTUM_FILE, "r");
+					unsigned q = JIT_QUANTUM;
+
+					if (qf) {
+						unsigned v = 0;
+
+						if (fscanf(qf, "%u", &v) == 1 && v >= 16 && v <= 20000)
+							q = v;
+						fclose(qf);
+					}
+					nds->quantum = q;
+					salsads_log("jit: tramo del planificador de %u ciclos del ARM9 (%s)", q,
+						    q == JIT_QUANTUM ? "el de omisión" : JIT_QUANTUM_FILE);
+					jit_on = 1;
+					arec_stats(nds->jit9); /* (las estadísticas empiezan en cero) */
+					((struct arec_pub *)(void *)nds->jit9)->clock_ns = jit_clock_ns;
+					salsads_rec_marker(JIT_MARKER, NUCLEO_VERSION, 1);
+					if (mapi_code) {
+						sys_ppu_thread_t wt;
+
+						{
+							char lay[320];
+							void *h = malloc(64);
+
+							arec_debug_layout(nds->jit9, lay, sizeof lay);
+							salsads_log("jit: memoria: %s; malloc(64) %p, sbrk %p", lay, h, sbrk(0));
+							{
+								const volatile uint32_t *q = (const volatile uint32_t *)mapi_code;
+
+								salsads_log("jit: primera palabra: al escribir 0x%08x, tras icbi 0x%08x, tras las tablas 0x%08x, "
+									    "al volver de attach 0x%08x, ahora 0x%08x",
+									    (unsigned)arec_dbg_first[0], (unsigned)arec_dbg_first[1],
+									    (unsigned)arec_dbg_first[2], (unsigned)w_after_attach, (unsigned)q[0]);
+							}
+							free(h);
+						}
+						jit_guard_ptr = (const volatile uint32_t *)mapi_code;
+						jit_guard_val[0] = jit_guard_ptr[0];
+						jit_guard_val[1] = jit_guard_ptr[1];
+
+						sysThreadCreate(&wt, jit_watch_thread, NULL, 1500, 16 * 1024, 0, "jit-vigia");
+					}
+					salsads_log("jit: el ARM9 con el recompilador (caché de código de %u MB %s, prueba de %u µs)",
+						    (unsigned)(jc.code_bytes >> 20), mapi_code ? "de PS3MAPI" : "en el texto",
+						    (unsigned)us);
+				} else {
+					salsads_log("jit: el recompilador no se pudo crear (sin memoria): el ARM9 con el intérprete");
+				}
+			} else if (ps == REC_PROBE_SKIPPED) {
+				salsads_log("jit: el ARM9 con el intérprete: %s", why);
+			} else {
+				salsads_log("jit: la prueba de la caché %s: %s; el ARM9 con el intérprete (el respaldo)",
+					    ps == REC_PROBE_HUNG ? "no volvió" : "falló", why);
+			}
+		}
+	}
+#endif
 	si = rsxkit_screen_info();
 	cur_w = (int)si->width;
 	cur_h = (int)si->height;
 	salsads_log("salida %dx%d%s", cur_w, cur_h, autotest ? " (prueba automática: RPCS3 no mide)" : "");
 
 	while (!quit) {
+#ifdef NUCLEO_JIT
+		if (jit_guard_ptr && (jit_guard_ptr[0] != jit_guard_val[0] || jit_guard_ptr[1] != jit_guard_val[1])) {
+			salsads_log("jit: las rutinas de la caché de PS3MAPI cambiaron (0x%08x 0x%08x en vez de 0x%08x 0x%08x) en el "
+				    "cuadro %u: otra reserva tomó su dirección; se apaga el JIT y sigue el intérprete",
+				    (unsigned)jit_guard_ptr[0], (unsigned)jit_guard_ptr[1], (unsigned)jit_guard_val[0],
+				    (unsigned)jit_guard_val[1], (unsigned)frame_no);
+			nds_jit_detach(nds);
+			jit_on = 0;
+			jit_guard_ptr = NULL;
+			salsads_rec_marker(JIT_MARKER, NUCLEO_VERSION, 0);
+		}
+#endif
 		render_frame();
 		if (autotest && frame_no >= autotest_frames) {
 			autotest_check();

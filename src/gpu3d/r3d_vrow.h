@@ -239,7 +239,7 @@ R3D_INLINE v4u vr_mod6(v4u a, v4u b)
 R3D_INLINE void r3d_vrow(r3d_ctx *c, const r3d_rstate *rs, r3d_stats *st, const r3d_poly *p, const r3d_row *row,
 			 uint32_t *col, uint32_t *dep, uint32_t *att, const int LIN, const int TEX)
 {
-	const int32_t L = row->den, xl = row->xl;
+	const int32_t L = row->den, xl = row->xl, xo = row->xo;
 	const uint32_t uL = L > 0 ? (uint32_t)L : 1u;
 	const int32_t x0 = xl < 0 ? 0 : xl, x1 = row->xr > R3D_W ? R3D_W : row->xr;
 	const uint32_t wl = row->l.w, wr = row->r.w;
@@ -251,7 +251,7 @@ R3D_INLINE void r3d_vrow(r3d_ctx *c, const r3d_rstate *rs, r3d_stats *st, const 
 	const float rcp = 1.0f / (float)uL;
 	const v4f rcpv = vsf(rcp);
 	const v4u Lv = vs(uL), wlv = vs(wl), wrv = vs(wr), zlv = vs(zl);
-	const v4i xl_v = (v4i){ xl, xl, xl, xl }, x0_v = (v4i){ x0, x0, x0, x0 }, x1_v = (v4i){ x1, x1, x1, x1 };
+	const v4i xl_v = (v4i){ xo, xo, xo, xo }, x0_v = (v4i){ x0, x0, x0, x0 }, x1_v = (v4i){ x1, x1, x1, x1 };
 	const v4i xle_v = (v4i){ row->xle, row->xle, row->xle, row->xle }, xrs_v = (v4i){ row->xrs, row->xrs, row->xrs, row->xrs };
 	const v4u alledge = row->alledge ? vs(~0u) : vs(0);
 	uint32_t zq = 0, zr_ = 0, zneg = 0;

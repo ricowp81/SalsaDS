@@ -144,6 +144,16 @@ G2D_INLINE g2d_v8 g2d_v8_put(g2d_v8 v, int k, uint16_t x)
 {
 	return spu_insert(x, v, k);
 }
+/* Ocho palabras de 32 bits (q alineado a 16) separadas en sus mitades altas y bajas. */
+G2D_INLINE void g2d_v8_split32(const uint32_t *q, g2d_v8 *hi, g2d_v8 *lo)
+{
+	static const vec_uchar16 phi = { 0, 1, 4, 5, 8, 9, 12, 13, 16, 17, 20, 21, 24, 25, 28, 29 };
+	static const vec_uchar16 plo = { 2, 3, 6, 7, 10, 11, 14, 15, 18, 19, 22, 23, 26, 27, 30, 31 };
+	const vec_uint4 a = *(const vec_uint4 *)(const void *)q, b = *(const vec_uint4 *)(const void *)(q + 4);
+
+	*hi = (g2d_v8)spu_shuffle(a, b, phi);
+	*lo = (g2d_v8)spu_shuffle(a, b, plo);
+}
 
 /* Patrones de shuffle por desplazamiento (no hay suma de bytes en el SPU). */
 static const vec_uchar16 g2d_window_pat[8] = {
@@ -371,6 +381,13 @@ G2D_INLINE g2d_v8 g2d_v8_put(g2d_v8 v, int k, uint16_t x)
 {
 	v.l[k] = x;
 	return v;
+}
+G2D_INLINE void g2d_v8_split32(const uint32_t *q, g2d_v8 *hi, g2d_v8 *lo)
+{
+	for (int i = 0; i < 8; i++) {
+		hi->l[i] = (uint16_t)(q[i] >> 16);
+		lo->l[i] = (uint16_t)q[i];
+	}
 }
 
 G2D_INLINE g2d_v8 g2d_v8_expand4(const uint8_t *p, uint32_t base, int hflip)

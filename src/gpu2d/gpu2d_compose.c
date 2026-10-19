@@ -1267,23 +1267,39 @@ static void draw_affine(gpu2d_ctx *c, const g2d_job *j, int b, uint32_t p)
 static void draw_3d(gpu2d_ctx *c, const g2d_job *j, uint32_t p)
 {
 	const uint32_t hofs = j->regs[G2D_R_BGHOFS] & 0x1FFu;
-	uint16_t px[8], al[8];
-	uint32_t semi = 0;
+	const uint32_t *line = c->l3d[p];
+	const g2d_v8 m31 = g2d_v8_splat(31), zero = g2d_v8_splat(0), tr = g2d_v8_splat(G2D_TRANSP);
+	const g2d_v8 one = g2d_v8_splat(1), two = g2d_v8_splat(2), opaque = g2d_v8_splat(0x8000);
+	g2d_v8 semi = zero;
 
-	for (int v = 0; v < 32; v++) {
-		for (int k = 0; k < 8; k++) {
-			const uint32_t xs = ((uint32_t)(v * 8 + k) + hofs) & 0x1FFu;
-			const uint32_t q = xs < GPU2D_W ? c->l3d[p][xs] : 0u;
-			const uint32_t a = (q >> 24) & 31u;
+	/* Con desplazamiento (raro) se arma la línea corrida; lo de siempre (BG0HOFS = 0) va directo. Ocho píxeles a la vez:
+	 * en el SPE el bucle escalar de antes (un uint16 por almacenamiento) era la mayor parte de las capas del motor A. */
+	if (hofs) {
+		for (uint32_t x = 0; x < GPU2D_W; x++) {
+			const uint32_t xs = (x + hofs) & 0x1FFu;
 
-			px[k] = a ? (uint16_t)(0x8000u | g2d_3d_555(q)) : (uint16_t)G2D_TRANSP;
-			al[k] = (uint16_t)(a | ((uint32_t)g2d_3d_lsb(q) << 5)); /* alfa y los bits bajos del color de 6 bits */
-			semi |= a != 0 && a != 31;
+			c->l3d_sh[x] = xs < GPU2D_W ? line[xs] : 0u;
 		}
-		memcpy(&c->bg[0][8 + v], px, 16);
-		memcpy(&c->a3d[v], al, 16);
+		line = c->l3d_sh;
 	}
-	c->l3d_semi = semi;
+	for (int v = 0; v < 32; v++) {
+		g2d_v8 hi, lo, a, col, lsb, nz;
+
+		g2d_v8_split32(line + v * 8, &hi, &lo);
+		a = g2d_v8_and(g2d_v8_shr(hi, 8), m31);
+		/* g2d_3d_555: R en los bits 1-5, G en 9-13, B en 17-21 (bits 1-5 de la mitad alta) */
+		col = g2d_v8_or(g2d_v8_and(g2d_v8_shr(lo, 1), m31),
+				g2d_v8_or(g2d_v8_shl(g2d_v8_and(g2d_v8_shr(lo, 9), m31), 5),
+					  g2d_v8_shl(g2d_v8_and(g2d_v8_shr(hi, 1), m31), 10)));
+		/* g2d_3d_lsb: bit 0 (R), bit 8 (G) y bit 16 (B, bit 0 de la mitad alta) */
+		lsb = g2d_v8_or(g2d_v8_and(lo, one),
+				g2d_v8_or(g2d_v8_and(g2d_v8_shr(lo, 7), two), g2d_v8_shl(g2d_v8_and(hi, one), 2)));
+		nz = g2d_v8_andc(g2d_v8_splat(0xFFFF), g2d_v8_eq(a, zero));
+		c->bg[0][8 + v] = g2d_v8_sel(tr, g2d_v8_or(col, opaque), nz);
+		c->a3d[v] = g2d_v8_or(a, g2d_v8_shl(lsb, 5)); /* alfa y los bits bajos del color de 6 bits */
+		semi = g2d_v8_or(semi, g2d_v8_andc(nz, g2d_v8_eq(a, m31)));
+	}
+	c->l3d_semi = g2d_v8_any(semi);
 }
 
 /* Máscaras de ventana: para cada capa (0..3 fondos, 4 OBJ, 5 efectos) un vector de 0xFFFF donde se permite */

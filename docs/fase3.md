@@ -807,3 +807,8 @@ casi coplanar (3438 píxeles distintos), también sin los polígonos de objetos 
 profundidad de los polígonos casi coplanares y no se cambió ninguna regla de profundidad: con las w interpoladas de las aristas el parche va por
 delante del suelo en ≈ 14 000 de w de 1 400 000 (≈ 55 escalones de 16 bits). Siguiente paso: medir en la PS3 con un cuadro fijo (volcado de
 profundidad por píxel del suelo y del parche) o contrastar con otro emulador de la DS real.
+
+# Fase 3.8 — Tallos inclinados a la derecha
+
+Ver `docs/estado.md` (rama fase50). Regla: izquierda x-mayor hacia la derecha (ortográfica) -> `row.xo = redondeo(X(y))` si es menor que `xl`,
+`den += xl - xo`, atributos de la izquierda en la y de la línea. Escenas 41 a 45 de `gx3d`.

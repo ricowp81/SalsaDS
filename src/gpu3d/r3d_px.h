@@ -263,6 +263,7 @@ typedef struct r3d_end {
 
 typedef struct r3d_row {
 	int32_t xl, xle;     /* tramo [xl, xr); la arista izquierda ocupa [xl, xle) */
+	int32_t xo;          /* origen de la interpolación a lo largo de la línea: k = x - xo (xo <= xl; casi siempre xl) */
 	int32_t xrs, xr;     /* la derecha [xrs, xr) */
 	r3d_end l, r;        /* atributos en xl y en xr */
 	int32_t den;         /* denominador de la interpolación a lo largo de la línea (xr - xl, o uno más con aristas inclinadas) */
@@ -474,7 +475,7 @@ R3D_INLINE int r3d_ymajor(int32_t dx, int32_t dy)
 	return adx < dy || (adx == dy && dx > 0);
 }
 
-/* `oym`: la otra arista de la línea (la derecha para la izquierda y al revés) es y-mayor. Bordes de la línea y con una arista: la izquierda da el primer píxel (y el final de su tramo de arista), la derecha
+/* Bordes de la línea y con una arista: la izquierda da el primer píxel (y el final de su tramo de arista), la derecha
  * el final exclusivo (y el principio de su tramo). Modelo ajustado a melonDS con la escena 13 de la ROM gx3d
  * (tools/r3d-fit.py; docs/fase3.md, 3.2):
  *   y-mayor (|dx| < dy, o |dx| = dy hacia la derecha):  izquierda piso(X(y)) (con 1/2^18 menos si la pendiente es negativa); derecha piso(X(y))
@@ -483,7 +484,7 @@ R3D_INLINE int r3d_ymajor(int32_t dx, int32_t dy)
  *             va a la derecha, redondeo(X(y+1) - 1/2^18) si va a la izquierda; en la última línea de la arista, x1
  *   tramo de arista «gordo»: una izquierda x-mayor que va a la izquierda cubre hasta redondeo(X(y)); una derecha x-mayor
  *   que va a la derecha empieza en redondeo(X(y)). */
-static inline void r3d_edge_x(const r3d_v *a, const r3d_v *b, int32_t y, int right, int oym, int32_t *xb, int32_t *xrun, r3d_end *e)
+static inline void r3d_edge_x(const r3d_v *a, const r3d_v *b, int32_t y, int right, int32_t *xb, int32_t *xrun, r3d_end *e)
 {
 	const int32_t dy = b->y - a->y, dx = b->x - a->x, adx = dx < 0 ? -dx : dx;
 	const int32_t xf = r3d_xfix(a, b, y);
@@ -512,10 +513,10 @@ static inline void r3d_edge_x(const r3d_v *a, const r3d_v *b, int32_t y, int rig
 			pos = -pos;
 		if (pos > adx)
 			pos = adx;
-		/* ortográfica: los atributos siguen la y, en el extremo de afuera del tramo de la línea [melonDS]; la izquierda que va hacia la
-		 * derecha, si la derecha es y-mayor (los cuadriláteros apilados de un tallo), también en la y de la línea siguiente (3.6) */
+		/* ortográfica: los atributos siguen la y, en el extremo de afuera del tramo de la línea [melonDS]; la izquierda que va hacia la derecha
+		 * en la y de la línea (su interpolación arranca en el origen xo de la línea, 3.8) */
 		if (a->w == b->w)
-			r3d_end_at(e, a, b, (uint32_t)(y - a->y + (right ? dx > 0 : (dx < 0 || oym))), (uint32_t)dy);
+			r3d_end_at(e, a, b, (uint32_t)(y - a->y + (right ? dx > 0 : dx < 0)), (uint32_t)dy);
 		else {
 			r3d_end_at(e, a, b, (uint32_t)pos, (uint32_t)adx);
 			/* la w y la z de la arista siguen la y, no la x (docs/fase3.md, 3.5): al seguir la x del píxel entero saltaban de
@@ -544,6 +545,7 @@ static inline int r3d_row_at(const r3d_poly *p, int32_t y, r3d_row *row)
 		}
 		row->xl = p->v[il].x;
 		row->xr = p->v[ir].x + 1;
+		row->xo = row->xl;
 		row->xle = row->xl + 1;
 		row->xrs = row->xr - 1;
 		r3d_end_of(&row->l, &p->v[il]);
@@ -556,8 +558,8 @@ static inline int r3d_row_at(const r3d_poly *p, int32_t y, r3d_row *row)
 		return 0;
 	if (!r3d_chain_edge(p, p->ldir, y, &la, &lb) || !r3d_chain_edge(p, -p->ldir, y, &ra, &rb))
 		return 0;
-	r3d_edge_x(la, lb, y, 0, r3d_ymajor(rb->x - ra->x, rb->y - ra->y), &xl, &xle, &row->l);
-	r3d_edge_x(ra, rb, y, 1, r3d_ymajor(lb->x - la->x, lb->y - la->y), &xr, &xrs, &row->r);
+	r3d_edge_x(la, lb, y, 0, &xl, &xle, &row->l);
+	r3d_edge_x(ra, rb, y, 1, &xr, &xrs, &row->r);
 	/* los tramos gordos de las aristas x-mayores que van hacia afuera */
 	if (xle > xr)
 		xr = xle;
@@ -574,6 +576,7 @@ static inline int r3d_row_at(const r3d_poly *p, int32_t y, r3d_row *row)
 	row->xle = xle > xl + 1 ? (xle < xr ? xle : xr) : xl + 1;
 	row->xrs = xrs < xr - 1 ? (xrs > xl ? xrs : xl) : xr - 1;
 	row->xr = xr;
+	row->xo = xl;
 	row->alledge = y == p->ytop || y == p->ybot - 1;
 	/* Denominador de la interpolación a lo largo de la línea: xr - xl, y uno más cuando la arista derecha es inclinada y
 	 * y-mayor (medido contra melonDS con paralelogramos, escena 22 de gx3d; con la derecha vertical o x-mayor no cambia). */
@@ -586,6 +589,16 @@ static inline int r3d_row_at(const r3d_poly *p, int32_t y, r3d_row *row)
 
 		if (xo > xr)
 			row->den = xo - xl;
+	}
+	/* Izquierda x-mayor que va hacia la derecha (ortográfica): la interpolación a lo largo de la línea arranca en la x de esta línea de la arista
+	 * (redondeada), que queda a la izquierda del primer píxel dibujado (3.8) */
+	if (la->w == lb->w && !r3d_ymajor(lb->x - la->x, lb->y - la->y) && lb->x > la->x) {
+		const int32_t xs = r3d_fx(r3d_xfix(la, lb, y) + (1 << 17));
+
+		if (xs < xl) {
+			row->xo = xs;
+			row->den += xl - xs;
+		}
 	}
 	return 1;
 }
@@ -823,7 +836,7 @@ static inline __attribute__((always_inline)) void r3d_draw_row(const r3d_poly *p
 	if (x0 >= x1)
 		return;
 	{
-		const uint32_t k0 = (uint32_t)(x0 - row->xl);
+		const uint32_t k0 = (uint32_t)(x0 - row->xo);
 
 		if (lin) {
 			r3d_dda_init(&dr, row->l.r, row->r.r, L, k0);
@@ -840,7 +853,7 @@ static inline __attribute__((always_inline)) void r3d_draw_row(const r3d_poly *p
 	}
 	st->pixels += (uint32_t)(x1 - x0);
 	for (int32_t x = x0; x < x1; x++) {
-		const uint32_t k = (uint32_t)(x - row->xl);
+		const uint32_t k = (uint32_t)(x - row->xo);
 		const int edge = row->alledge || x < row->xle || x >= row->xrs;
 		uint32_t f, d, a0, c;
 		const uint32_t zcur = zu, fcur = fu;

@@ -10,6 +10,10 @@
 #include <sys/thread.h>
 
 #include "jit/ppcenc.h"
+#include "ps3mapi.h"
+
+#include <sys/memory.h>
+#include <sys/process.h>
 
 __asm__("	.section .salsads_rec_cache,\"ax\",@nobits\n"
 	"	.balign 65536\n"
@@ -40,6 +44,9 @@ static struct {
 	volatile int done;
 	volatile int ok;
 	const char *marker, *tag;
+	unsigned char *base;   /* zona que se prueba */
+	size_t bytes;
+	int zeroed;            /* 1: tiene que llegar en ceros (la cola NOBITS) */
 	char why[128];
 } probe;
 
@@ -90,11 +97,11 @@ static void marker_write(const char *what)
 static void probe_thread(void *arg)
 {
 	(void)arg;
-	volatile uint32_t *cache = (volatile uint32_t *)salsads_rec_cache_mem;
-	volatile uint32_t *end = (volatile uint32_t *)(salsads_rec_cache_mem + REC_CACHE_BYTES - 128);
+	volatile uint32_t *cache = (volatile uint32_t *)probe.base;
+	volatile uint32_t *end = (volatile uint32_t *)(probe.base + probe.bytes - 128);
 	int r;
 
-	if (cache[0] != 0 || end[0] != 0) {
+	if (probe.zeroed && (cache[0] != 0 || end[0] != 0)) {
 		snprintf(probe.why, sizeof probe.why, "la caché no llegó en ceros (0x%08x, 0x%08x)", (unsigned)cache[0],
 			 (unsigned)end[0]);
 		goto fail;
@@ -114,8 +121,8 @@ static void probe_thread(void *arg)
 		snprintf(probe.why, sizeof probe.why, "la ejecución al final dio %d en vez de 19", r);
 		goto fail;
 	}
-	for (size_t off = 0; off < REC_CACHE_BYTES; off += 65536) {
-		volatile uint32_t *w = (volatile uint32_t *)(salsads_rec_cache_mem + off + 64);
+	for (size_t off = 0; off < probe.bytes; off += 65536) {
+		volatile uint32_t *w = (volatile uint32_t *)(probe.base + off + 64);
 		*w = *w;
 	}
 	for (int k = 0; k < 3; k++)
@@ -131,12 +138,15 @@ out:
 	sysThreadExit(0);
 }
 
-enum rec_probe_status salsads_rec_probe(const char *marker, const char *tag, unsigned timeout_ms, char *why,
-					size_t why_size, uint64_t *us)
+static enum rec_probe_status probe_zone(unsigned char *base, size_t bytes, int zeroed, const char *marker,
+				       const char *tag, unsigned timeout_ms, char *why, size_t why_size, uint64_t *us)
 {
 	memset(&probe, 0, sizeof probe);
 	probe.marker = marker;
 	probe.tag = tag;
+	probe.base = base;
+	probe.bytes = bytes;
+	probe.zeroed = zeroed;
 	why[0] = '\0';
 	if (marker_has(marker, tag)) {
 		snprintf(why, why_size, "una prueba anterior cerró la aplicación o falló; borrar %s para repetirla", marker);
@@ -168,6 +178,126 @@ enum rec_probe_status salsads_rec_probe(const char *marker, const char *tag, uns
 	}
 	remove(marker);
 	return REC_PROBE_OK;
+}
+
+enum rec_probe_status salsads_rec_probe(const char *marker, const char *tag, unsigned timeout_ms, char *why,
+					size_t why_size, uint64_t *us)
+{
+	return probe_zone(salsads_rec_cache_mem, REC_CACHE_BYTES, 1, marker, tag, timeout_ms, why, why_size, us);
+}
+
+/* Tabla de páginas de PROC_PAGE_ALLOCATE: una entrada por página (la primera es la zona). */
+static u64 mapi_table[64];
+static int mapi_held;
+/* Con HEN 3.3.0 (PS3MAPI 0x124) las páginas que entrega PROC_PAGE_ALLOCATE siguen contando como libres para el
+ * proceso: la siguiente reserva normal (el heap que crecía con las tablas del recompilador) recibía la misma memoria
+ * física, y llenar esas tablas borraba las rutinas comunes (PS3 real, 2026-10-18: una marca escrita en 0x70080000
+ * apareció en el heap en 0x55180000). Por eso, justo después, se pide la misma cantidad con sysMemoryAllocate y no
+ * se toca nunca: absorbe esas páginas. Se comprueba página por página con una marca; si alguna no quedó absorbida,
+ * no se usa PS3MAPI. */
+static sys_mem_addr_t mapi_soak;
+
+static int mapi_soak_pages(unsigned char *code, size_t bytes, char *why, size_t why_size)
+{
+	const size_t pages = bytes >> 20, off = 0x40;
+	unsigned found = 0;
+
+	if (sysMemoryAllocate(bytes, SYS_MEMORY_PAGE_SIZE_1M, &mapi_soak) != 0) {
+		mapi_soak = 0;
+		snprintf(why, why_size, "no hubo %u MB para apartar las páginas de PS3MAPI", (unsigned)(bytes >> 20));
+		return -1;
+	}
+	for (size_t k = 0; k < pages; k++)
+		*(volatile uint32_t *)(code + (k << 20) + off) = 0x5A1D0000u | (uint32_t)k;
+	__asm__ volatile("sync" : : : "memory");
+	for (size_t k = 0; k < pages; k++)
+		for (size_t m = 0; m < pages; m++)
+			if (*(const volatile uint32_t *)(uintptr_t)(mapi_soak + (m << 20) + off) == (0x5A1D0000u | (uint32_t)k)) {
+				found++;
+				break;
+			}
+	for (size_t k = 0; k < pages; k++)
+		*(volatile uint32_t *)(code + (k << 20) + off) = 0;
+	if (found != pages) {
+		snprintf(why, why_size, "solo %u de %u páginas de PS3MAPI quedaron apartadas (las demás las comparte otra memoria)",
+			 found, (unsigned)pages);
+		sysMemoryFree(mapi_soak);
+		mapi_soak = 0;
+		return -1;
+	}
+	return 0;
+}
+
+void *salsads_rec_cache_mapi(size_t bytes, const char *marker, const char *tag, unsigned timeout_ms, char *why,
+			     size_t why_size, uint64_t *us)
+{
+	s32 core = 0, rc;
+
+	why[0] = '\0';
+	*us = 0;
+	if (bytes > sizeof mapi_table / sizeof mapi_table[0] * (1u << 20) || (bytes & 0xFFFFF)) {
+		snprintf(why, why_size, "tamaño no válido (%u bytes)", (unsigned)bytes);
+		return NULL;
+	}
+	if (marker_has(marker, tag)) {
+		snprintf(why, why_size, "una prueba anterior cerró la aplicación o falló; borrar %s para repetirla", marker);
+		return NULL;
+	}
+	if (!mapi_available(&core)) {
+		snprintf(why, why_size, "PS3MAPI no disponible (0x%08x)", (unsigned)core);
+		return NULL;
+	}
+	/* PROC_PAGE_ALLOCATE con páginas ejecutables (y PROC_PAGE_FREE con la tabla de dos direcciones) llegaron con el
+	 * núcleo 0x0124 (Cobra 8.5, Mamba 8.4, HEN al día). Con núcleos anteriores puede faltar o, en Cobra 8.2, colgar la
+	 * consola: no se intenta. */
+	if (core < PS3MAPI_CORE_DYNAREC) {
+		snprintf(why, why_size, "PS3MAPI %x es anterior al %x (páginas ejecutables)", (unsigned)core,
+			 (unsigned)PS3MAPI_CORE_DYNAREC);
+		return NULL;
+	}
+	/* La marca va antes de la reserva: si la llamada al núcleo congela la consola, el siguiente arranque no la repite
+	 * (el hilo con plazo de la prueba no ayuda contra eso). */
+	probe.marker = marker;
+	probe.tag = tag;
+	marker_write("probando");
+	memset(mapi_table, 0, sizeof mapi_table);
+	rc = mapi_page_alloc(sysProcessGetPid(), bytes, MAPI_PAGE_1M, 1, mapi_table);
+	if (rc != 0 || !mapi_table[0]) {
+		snprintf(why, why_size, "PS3MAPI %x: la reserva de %u MB falló (0x%08x)", (unsigned)core,
+			 (unsigned)(bytes >> 20), (unsigned)rc);
+		marker_write("falló");
+		return NULL;
+	}
+	mapi_held = 1;
+	if (mapi_soak_pages((unsigned char *)(uintptr_t)mapi_table[0], bytes, why, why_size) != 0) {
+		salsads_rec_cache_mapi_free();
+		marker_write("falló");
+		return NULL;
+	}
+	remove(marker); /* la reserva volvió: probe_zone pone su propia marca (y no debe verla como de un arranque anterior) */
+	if (probe_zone((unsigned char *)(uintptr_t)mapi_table[0], bytes, 0, marker, tag, timeout_ms, why, why_size, us) !=
+	    REC_PROBE_OK) {
+		/* si el hilo quedó colgado no se libera: la zona puede estar en uso */
+		if (probe.done)
+			salsads_rec_cache_mapi_free();
+		return NULL;
+	}
+	snprintf(why, why_size, "PS3MAPI %x, %u MB en 0x%llx (apartados con otros %u MB en 0x%llx)", (unsigned)core,
+		 (unsigned)(bytes >> 20), (unsigned long long)mapi_table[0], (unsigned)(bytes >> 20),
+		 (unsigned long long)mapi_soak);
+	return (void *)(uintptr_t)mapi_table[0];
+}
+
+void salsads_rec_cache_mapi_free(void)
+{
+	if (mapi_held) {
+		mapi_page_free(sysProcessGetPid(), mapi_table);
+		mapi_held = 0;
+	}
+	if (mapi_soak) {
+		sysMemoryFree(mapi_soak);
+		mapi_soak = 0;
+	}
 }
 
 void salsads_rec_marker(const char *marker, const char *tag, int on)

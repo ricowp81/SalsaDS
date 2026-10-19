@@ -11,6 +11,8 @@ static int dbg_left = -1;
 
 #include "cpu/acore_priv.h"
 #include "jit/arec_priv.h"
+#include <stdio.h>
+
 #include "jit/ppcenc.h"
 
 #if defined(__powerpc64__) && defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -607,6 +609,8 @@ void arec_run(struct arec *j, uint64_t until)
 		c->jit_nzcv = c->cpsr & 0xF0000000u;
 		j->exit_req = 0;
 		j->pub.st.enters++;
+		j->pub.last_pc = pc;
+		j->pub.last_code = (uint64_t)(uintptr_t)(j->code + b->entry);
 		r = enter(j, j->code + b->entry);
 		c->cpsr = (c->cpsr & 0x0FFFFFFFu) | (c->jit_nzcv & 0xF0000000u);
 #ifdef AREC_DEBUG
@@ -725,10 +729,17 @@ static struct arec *arec_new(struct acore *c, const struct arec_cfg *cfg, int ca
 	j->can_exec = can_exec;
 	j->code = cfg->code;
 	j->code_words = cfg->code_bytes / 4;
-	j->max_blocks = MAX_BLOCKS;
-	j->max_links = MAX_LINKS;
-	j->blocks = calloc(MAX_BLOCKS, sizeof *j->blocks);
-	j->links = calloc(MAX_LINKS, sizeof *j->links);
+	/* Las tablas crecen con la caché (4 MB: 16384 bloques; desde 8 MB, el doble), para que con la caché grande de
+	 * PS3MAPI no se vacíe por bloques antes que por código (NSMB: ~540 bytes de código por bloque). Cada bloque son
+	 * ~250 bytes del heap: 32768 son 8 MB. */
+	{
+		const uint32_t k = cfg->code_bytes >= (8u << 20) ? 2u : 1u;
+
+		j->max_blocks = MAX_BLOCKS * k;
+		j->max_links = MAX_LINKS * k;
+	}
+	j->blocks = calloc(j->max_blocks, sizeof *j->blocks);
+	j->links = calloc(j->max_links, sizeof *j->links);
 	j->jl = calloc(AREC_JL_SIZE, sizeof *j->jl);
 	j->pt = calloc(2u * AREC_PAGES, sizeof *j->pt);
 	j->wr_real = calloc(AREC_PAGES, sizeof *j->wr_real);
@@ -757,8 +768,11 @@ static struct arec *arec_new(struct acore *c, const struct arec_cfg *cfg, int ca
 	arec_map_begin(j);
 	arec_map_end(j);
 	arec_emit_common(j);
+	arec_dbg_first[0] = ((volatile uint32_t *)j->code)[0];
 	icache(j, j->code, j->code_base_used * 4);
+	arec_dbg_first[1] = ((volatile uint32_t *)j->code)[0];
 	reset_tables(j);
+	arec_dbg_first[2] = ((volatile uint32_t *)j->code)[0];
 	return j;
 }
 
@@ -767,6 +781,16 @@ struct arec *arec_create(struct acore *c, const struct arec_cfg *cfg)
 	if (!AREC_CAN_EXEC)
 		return NULL;
 	return arec_new(c, cfg, 1);
+}
+
+uint32_t arec_dbg_first[3];
+
+void arec_debug_layout(const struct arec *j, char *buf, size_t size)
+{
+	snprintf(buf, size, "código %p (%u KB), bloques %p (%u KB), enlaces %p, jl %p, pt %p, hash %p, codemap %p, j %p",
+		 (const void *)j->code, (unsigned)(j->code_words / 256), (const void *)j->blocks,
+		 (unsigned)(j->max_blocks * sizeof *j->blocks / 1024), (const void *)j->links, (const void *)j->jl,
+		 (const void *)j->pt, (const void *)j->hash, (const void *)j->pub.codemap, (const void *)j);
 }
 
 void arec_destroy(struct arec *j)
