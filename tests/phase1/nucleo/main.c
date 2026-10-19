@@ -78,6 +78,13 @@
 #include "rsxkit/text.h"
 #include "rsxkit/ui.h"
 
+/* La geometría se ejecuta en el sexto SPE por omisión (el SPE vectorizado tarda ~7,9 ms por cuadro en Mario Kart DS contra
+ * ~2,8 del PPE, pero libera al hilo principal de la geometría; antes de la vectorización el SPE escalar tardaba 35 ms).
+ * Con este archivo vuelve al PPE. */
+#define GEOM_PPE_FLAG SALSADS_DATA_DIR "/geometria-ppe"
+/* Con este archivo las bandas del render 3D vuelven al reparto alterno (u, u+2, ...) en lugar del reparto por costo. */
+#define R3D_ALT_FLAG SALSADS_DATA_DIR "/reparto-alterno"
+
 #ifdef NUCLEO_JIT
 /* «SalsaDS JIT núcleo» (Fase 4): el ARM9 con el recompilador (src/jit/arec*); caché de código y prueba con respaldo de la
  * Fase 0.7 (tests/phase0/jit-arm/rec_cache.c). Archivos: NOJIT_FLAG fuerza el intérprete; JIT_MARKER marca la prueba y el
@@ -85,12 +92,6 @@
 #include "jit/arec.h"
 #include "rec_cache.h"
 #define NOJIT_FLAG SALSADS_DATA_DIR "/nucleo-jit-nojit"
-/* La geometría se ejecuta en el sexto SPE por omisión (el SPE vectorizado tarda ~7,9 ms por cuadro en Mario Kart DS contra
- * ~2,8 del PPE, pero libera al hilo principal de la geometría; antes de la vectorización el SPE escalar tardaba 35 ms).
- * Con este archivo vuelve al PPE. */
-#define GEOM_PPE_FLAG SALSADS_DATA_DIR "/geometria-ppe"
-/* Con este archivo las bandas del render 3D vuelven al reparto alterno (u, u+2, ...) en lugar del reparto por costo. */
-#define R3D_ALT_FLAG SALSADS_DATA_DIR "/reparto-alterno"
 #define JIT_MARKER SALSADS_DATA_DIR "/nucleo-jit.marker"
 /* Caché del recompilador pedida a PS3MAPI (fase52, experimental): solo con este archivo; si no, la de 4 MB del segmento
  * de texto. Con HEN 3.3.0 funciona apartando las páginas (rec_cache.c), pero en NSMB no ganó nada (los vaciados no eran
@@ -258,8 +259,15 @@ static void sysutil_cb(u64 status, u64 param, void *usrdata)
 {
 	(void)param;
 	(void)usrdata;
-	if (status == SYSUTIL_EXIT_GAME)
+	if (status == SYSUTIL_EXIT_GAME) {
 		quit = 1;
+#ifdef NUCLEO_JIT
+		/* Salir desde el XMB es a propósito: se quita ya la marca del JIT, por si el sistema cierra la aplicación
+		 * antes de que game_close la quite (si no, el siguiente arranque se queda con el intérprete). */
+		if (jit_on)
+			salsads_rec_marker(JIT_MARKER, NUCLEO_VERSION, 0);
+#endif
+	}
 }
 
 static bool wait_hook(void *ctx, const rsxkit_wait_info *info)
