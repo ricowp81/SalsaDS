@@ -605,6 +605,8 @@ void nds_sched_run(struct nds *n, uint64_t until)
 					c1 = clk();
 				if (idle7)
 					idle_to(&n->a7, (slice + 1) >> 1);
+				else if (n->jit7)
+					arec_run(n->jit7, (slice + 1) >> 1);
 				else
 					acore_run(&n->a7, (slice + 1) >> 1);
 				if (clk) {

@@ -50,7 +50,7 @@ void nds_init(struct nds *n)
 	const uint32_t dbg = n->dbg;
 	const struct nds_snd_ops sops = n->snd.ops;
 	const uint32_t smode = n->snd.mode;
-	struct arec *const jit9 = n->jit9;
+	struct arec *const jit9 = n->jit9, *const jit7 = n->jit7;
 	const struct nds_jit_cfg jcfg = n->jit_cfg;
 	void *const jit_user = n->jit_user;
 
@@ -87,8 +87,9 @@ void nds_init(struct nds *n)
 	nds_gx_init(n);
 	n->snd.mode = smode;
 	n->jit_user = jit_user;
-	if (jit9) {
+	if (jit9 || jit7) {
 		n->jit9 = jit9;
+		n->jit7 = jit7;
 		n->jit_cfg = jcfg;
 		nds_jit_reinit(n);
 	}

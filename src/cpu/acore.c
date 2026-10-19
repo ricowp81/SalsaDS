@@ -285,9 +285,10 @@ void acore_step_insn(struct acore *c)
 
 void acore_exec_arm(struct acore *c, uint32_t insn)
 {
-	if ((insn >> 28) == 0xF)
-		acore_arm_uncond(c, insn);
-	else
+	if ((insn >> 28) == 0xF) {
+		if (c->v5) /* en ARMv4 la condición 1111 es «nunca» (como en step_one) */
+			acore_arm_uncond(c, insn);
+	} else
 		acore_arm_table[c->v5][((insn >> 16) & 0xFF0u) | ((insn >> 4) & 0xFu)](c, insn);
 }
 

@@ -1,7 +1,7 @@
-# Fase 4 — Recompilador ARMv5TE → PowerPC64 para el ARM9
+# Fase 4 — Recompilador ARMv5TE → PowerPC64 para el ARM9 (y ARMv4T para el ARM7)
 
-El ARM9 corre en el PPE con un recompilador dinámico propio (ARM y Thumb), integrado en la máquina de la DS. El ARM7
-sigue con el intérprete. Código propio (GPL-2.0-or-later), escrito desde el manual de arquitectura de ARM, GBATEK, la
+El ARM9 corre en el PPE con un recompilador dinámico propio (ARM y Thumb), integrado en la máquina de la DS. El ARM7 usa
+el mismo recompilador en su perfil ARMv4T (sección «El ARM7 en el recompilador», más abajo). Código propio (GPL-2.0-or-later), escrito desde el manual de arquitectura de ARM, GBATEK, la
 Power ISA 2.02 y lo medido en la PS3 en la Fase 0 (§0.3 y §0.7); el diseño toma las ideas del recompilador MIPS → PPC64
 de Salsa64 (bloques con enlace por parcheo de un salto, mapa de código para invalidar, caminos fríos aparte, caminos
 lentos compartidos). No viene de ningún emulador (ni melonDS ni NooDS, GPLv3).
@@ -276,12 +276,73 @@ Qué mirar en `nucleo.log`, cada ~2 s:
 
 En RPCS3 (texto de solo lectura) corre el respaldo con el intérprete: sirve para ver que el paquete arranca, no para el JIT.
 
+## El ARM7 en el recompilador
+
+El ARM7 (ARM7TDMI, ARMv4T) corre con el mismo traductor (`src/jit/arec*`), que ahora lee `c->v5` para saber qué CPU es. Es una
+instancia aparte (`n->jit7`) con su caché de código, sus tablas y su mapa de memoria. En la PS3 medido con el intérprete: 3–4 ms por
+cuadro en todos los juegos (≈ 9 MIPS dentro de su CPU; NSMB nivel 12,3 ms = ARM9 5,6 + ARM7 3,8 + eventos 2,7; MKDS carrera 20–21 =
+13,9 + 3,2 + 3,3). Meta: ARM7 < 1 ms por cuadro. **Sin medir en la PS3 con el recompilador.**
+
+### Qué cambia respecto del ARM9
+
+| Tema | ARM9 (ARMv5TE) | ARM7 (ARMv4T) | En el traductor |
+|---|---|---|---|
+| CLZ, QADD y familia, SMULxy, BLX (registro e inmediato), BKPT, LDRD/STRD, PLD | sí | indefinidas | `callout` (el intérprete las trata como indefinidas, `acore_arm.c`) |
+| condición 1111 | espacio incondicional (BLX inmediato, PLD) | «nunca» | `AI_NOP` de 1 ciclo (y `acore_exec_arm` ya no la ejecuta en ARMv4) |
+| CP15 (MCR/MRC p15) | rutas rápidas en línea (`FK_CP15NOP`, `FK_MRC`) | no hay coprocesador: indefinida | `callout` sin `call_ro` (el CPSR que guarda la excepción lleva las banderas) |
+| LDR / LDM a pc | cambia de estado por el bit 0 | no cambia (ARM: alinea a 4; Thumb POP {pc}: a 2) | `xchg = v5`; en el emisor el destino sale de r3 con la alineación del estado |
+| LDRH impar / LDRSH impar | alinea | LDRH rota por 8; LDRSH se porta como LDRSB | el emisor manda las cargas de media palabra con el bit 0 puesto al camino lento (los ayudantes ya usaban `c->v5`) |
+| STM con la base en la lista y escritura de vuelta | guarda la base vieja | guarda la nueva si no es el primer registro | `callout` solo en ese caso (ARM y Thumb STMIA) |
+| máscara de MSR | Q (bit 27) | sin Q | `FK_MSR` sobre SPSR usa `0xF00000FF` |
+| TCM, DTCM, ITCM | sí | no | la tabla de páginas es solo el bus |
+| mapa de memoria | `rgn_*[ARM9]` + TCM | `rgn_*[ARM7]`: RAM principal, WRAM compartida, WRAM propia (64 KB en 0x03800000); BIOS 7 (HLE) en 0–0x3FFF | `src/core/jit.c`: `code_ptr7`, `remap7` |
+| reloj | ciclos del ARM9 | ciclos del ARM7 (el planificador le da `(tramo + 1) / 2`) | ninguno: el traductor cuenta ciclos de la CPU |
+| HALT | CP15 c7 (espera de IRQ) | SWI Halt / IntrWait (HLE) | las SWI van por el intérprete (`h_call`); si la CPU queda en HALT o salta, el bloque sale |
+
+Lo demás (banderas, ciclos, bloques, enlaces, destinos indirectos, ruta lenta, modo rápido y estricto, `--lockstep`) es el mismo código.
+MUL con S sigue dejando C y V como estaban (como el intérprete).
+
+### Memoria y caché
+
+- **Caché de código**: la zona de 4 MB del segmento de texto pasa a 5 MB (`REC_CACHE_BYTES`) y se reparte: el ARM9 conserva los 4 MB y el
+  ARM7 usa el último MB (`nds_jit_cfg.code7_bytes`; en el host, los mismos 5 MB). Las dos quedan dentro del alcance de `bl` al texto.
+  Con la caché de PS3MAPI (experimental, 8 MB) el ARM7 también se queda con el último MB.
+- **Tablas del ARM7** (heap, ≈ 5,6 MB; el ARM9 ≈ 12): las dos tablas de punteros de 2 MB (lectura y escritura, el código las indexa con
+  toda la dirección), 4096 bloques como tope (`cfg.max_blocks`), enlaces ×4, y las matrices de apoyo del mapa acotadas a las páginas de
+  0 a 0x04000000 (`cfg.map_pages`: solo hay RAM y WRAM ahí; todo lo demás va por la ruta lenta).
+- **Invalidación**: el espacio físico de los dos es el de `struct nds` desde `itcm`; el del ARM9 acaba en el final de `swram` y el del ARM7
+  en el final de `wram7`. Toda escritura (`NDS_CODE_WRITE`, DMA, HLE de la BIOS, captura de sonido) avisa a los dos. Un cambio de WRAMCNT
+  rehace y vacía los dos.
+- Cada juego: `nds_init` recrea las dos instancias con la misma configuración; `game_close` vacía las cachés.
+
+### Interruptores y seguridad en la PS3
+
+- `/dev_hdd0/salsads/arm7-nojit`: el ARM7 con el intérprete (el ARM9 sigue con el recompilador). `nucleo-jit-nojit` sigue forzando el
+  intérprete en las dos.
+- **La marca `nucleo-jit.marker` protege a las dos CPUs**: se pone mientras hay código traducido de cualquiera y se quita al cerrar el
+  juego, al salir desde el XMB o al apagar el JIT; si la aplicación muere con ella puesta, el siguiente arranque de esa versión no usa el
+  recompilador en ninguna (borrarla para reintentar). El ARM7 solo se activa si la prueba de la caché del ARM9 pasó.
+- La línea `jit:` del arranque dice qué lleva el ARM7: `el ARM7 con el recompilador (caché propia de 1024 KB, tablas propias)`, o
+  `con el intérprete` (con el motivo si es `arm7-nojit` o falta de memoria; si no hay recompilador, `el ARM9 y el ARM7 con el intérprete`).
+- `DATO jit7` (cada ~2 s) trae lo mismo que `DATO jit` para el ARM7: entradas por cuadro, bloques, llamadas al intérprete, ruta lenta,
+  invalidaciones, uso de la caché. `DATO desglose` ya daba el ARM7 en ms por cuadro.
+
+### Pruebas
+
+- `tests/unit/test_arec.c` corre ahora en dos perfiles (ARM9 y ARM7): los mismos programas al azar (ARM y Thumb, estrictos y rápidos) con lo de
+  ARMv5 sustituido por equivalentes válidos (una de cada 20 queda indefinida, para probar el camino) más LDM/STM con la base en la lista, y casos
+  dirigidos de ARMv4T (LDR/LDM/POP a pc con el bit 0, LDRH y LDRSH impares por la ruta rápida y la lenta, STM y STMIA con la base en la lista,
+  condición 1111, instrucciones de ARMv5 indefinidas).
+- `tools/test-host.sh`: las ROMs con `--jit` (ahora las dos CPUs), con `--jit-no9` (solo el ARM7), con `--jit-no7`; `--lockstep` compara las dos
+  CPUs bloque por bloque (`jitrun.c`: un aviso por CPU); y el resumen del estado de la máquina (`--state-hash`: registros, RAM, WRAM, VRAM,
+  paleta, OAM e imágenes) en modo estricto con el ARM7 solo, el ARM9 solo y los dos, contra el intérprete, en `cpuarm`, `irq`, `periph`, `demo`
+  y `carga`.
+
 ## Qué falta
 
 - **Medir en la PS3** (lo dice el paquete): ms del ARM9 por cuadro, cuánto pesan las entradas por tramo (unas 2000–4500 por
   cuadro: el tramo del planificador es de 128 ciclos del ARM9), las llamadas al intérprete y la ruta lenta.
-- **ARM7 en el recompilador** (ARMv4T: las reglas de `v5` del intérprete — LDR pc sin cambio de estado, LDM/STM con la base,
-  LDRH no alineado que rota, MUL que destruye C —, otra tabla de páginas y su propio espacio físico) y, después, en el hilo 1.
+- **ARM7 en el recompilador**: hecho (sección anterior); falta medirlo en la PS3 y, después, llevarlo al hilo 1.
 - **Medir la segunda ronda en la PS3** (mismas escenas, tramo de 1024 y de 128 con `nucleo-jit-tramo`).
 - **Optimizaciones** según lo que diga la consola: que el planificador deje correr al ARM9 más allá de los eventos que no lo
   tocan (los del motor de geometría, sobre todo) o detecte los bucles de sondeo de IPC; entrada y salida más baratas (hoy guardan

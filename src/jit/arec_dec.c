@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SalsaDS — recompilador: decodificación de ARM (ARMv5TE) y Thumb a una representación común (struct ai).
+ * SalsaDS — recompilador: decodificación de ARM y Thumb (ARMv5TE del ARM9 y ARMv4T del ARM7) a una representación
+ * común (struct ai). Con v5 = 0 (el ARM7) lo que es de ARMv5 queda como llamada al intérprete (que lo trata como
+ * indefinido, igual que acore_arm.c) y los saltos por carga de pc no cambian de estado.
  *
  * Thumb se traduce a la instrucción ARM equivalente cuando la semántica (resultado, banderas y ciclos del
  * intérprete) es la misma; lo que no tiene equivalente exacto o es raro va como AI_CALL (lo ejecuta el
@@ -77,7 +79,7 @@ static void dp_flags(struct ai *a)
 
 /* ---- ARM ---------------------------------------------------------------------------------------------- */
 
-static void dec_arm(uint32_t addr, uint32_t insn, struct ai *a)
+static void dec_arm(uint32_t addr, uint32_t insn, int v5, struct ai *a)
 {
 	const uint32_t cond = insn >> 28;
 	const unsigned hi = (insn >> 20) & 0xFF, lo = (insn >> 4) & 0xF;
@@ -93,6 +95,10 @@ static void dec_arm(uint32_t addr, uint32_t insn, struct ai *a)
 
 	if (cond == 0xF) {
 		a->cond = AI_COND_AL;
+		if (!v5) { /* ARMv4: la condición «nunca»: no se ejecuta (1 ciclo) */
+			a->kind = AI_NOP;
+			return;
+		}
 		if ((insn & 0x0E000000u) == 0x0A000000u) { /* BLX inmediato */
 			const int32_t off = ((int32_t)(insn << 8) >> 6) + (int32_t)((insn >> 24) & 1) * 2;
 
@@ -170,6 +176,8 @@ static void dec_arm(uint32_t addr, uint32_t insn, struct ai *a)
 
 				if (!load && lo != 0xB) {
 					callout(a);
+					if (!v5)
+						break; /* indefinida en ARMv4 */
 					/* LDRD (lo = D) / STRD (lo = F): par par distinto de r14, sin r15 */
 					a->rn = (insn >> 16) & 15;
 					a->rd = (insn >> 12) & 15;
@@ -229,7 +237,7 @@ static void dec_arm(uint32_t addr, uint32_t insn, struct ai *a)
 					callout(a);
 				break;
 			}
-			if (b27_25 == 0 && lo == 0x3 && hi == 0x12) {
+			if (v5 && b27_25 == 0 && lo == 0x3 && hi == 0x12) {
 				a->kind = AI_BX;
 				a->rm = insn & 15;
 				a->link = 1;
@@ -241,7 +249,7 @@ static void dec_arm(uint32_t addr, uint32_t insn, struct ai *a)
 					callout(a);
 				break;
 			}
-			if (b27_25 == 0 && lo == 0x1 && hi == 0x16) {
+			if (v5 && b27_25 == 0 && lo == 0x1 && hi == 0x16) {
 				a->kind = AI_CLZ;
 				a->rd = (insn >> 12) & 15;
 				a->rm = insn & 15;
@@ -351,7 +359,7 @@ static void dec_arm(uint32_t addr, uint32_t insn, struct ai *a)
 			}
 			a->cyc += 2;
 			a->ends = 1;
-			a->xchg = 1;
+			a->xchg = (uint8_t)v5;
 		}
 		break;
 	case 4: {
@@ -365,8 +373,9 @@ static void dec_arm(uint32_t addr, uint32_t insn, struct ai *a)
 		a->pre = (insn >> 24) & 1;
 		a->up = (insn >> 23) & 1;
 		a->wb = (insn >> 21) & 1;
-		if ((insn & (1u << 22)) || list == 0 || a->rn == 15 || (a->load && a->wb && ((list >> a->rn) & 1))) {
-			callout(a);
+		if ((insn & (1u << 22)) || list == 0 || a->rn == 15 || (a->load && a->wb && ((list >> a->rn) & 1)) ||
+		    (!v5 && !a->load && a->wb && ((list >> a->rn) & 1) && (list & ((1u << a->rn) - 1)))) {
+			callout(a); /* (ARMv4: STM con la base en la lista guarda la nueva si no es el primer registro) */
 			break;
 		}
 		{
@@ -376,7 +385,7 @@ static void dec_arm(uint32_t addr, uint32_t insn, struct ai *a)
 			if (a->load && (list & 0x8000u)) {
 				a->cyc += 2;
 				a->ends = 1;
-				a->xchg = 1;
+				a->xchg = (uint8_t)v5;
 			}
 		}
 		break;
@@ -400,7 +409,7 @@ static void dec_arm(uint32_t addr, uint32_t insn, struct ai *a)
 			break;
 		}
 		callout(a);
-		if (lo & 1) {   /* MCR / MRC */
+		if (v5 && (lo & 1)) {   /* MCR / MRC (en ARMv4 no hay coprocesador: indefinidas, con las banderas leídas) */
 			const uint32_t rd = (insn >> 12) & 15;
 
 			if (!(insn & (1u << 20)) || rd != 15) { /* MRC a r15 escribe NZCV */
@@ -721,7 +730,8 @@ static void dec_thumb(uint32_t addr, uint32_t insn, uint32_t next, int v5, struc
 		const unsigned rb = (insn >> 8) & 7;
 		const uint32_t list = insn & 0xFF;
 
-		if (!list || (((insn >> 11) & 1) && ((list >> rb) & 1))) {
+		if (!list || (((insn >> 11) & 1) && ((list >> rb) & 1)) ||
+		    (!v5 && !((insn >> 11) & 1) && ((list >> rb) & 1) && (list & ((1u << rb) - 1)))) {
 			callout(a);
 			break;
 		}
@@ -821,11 +831,11 @@ int arec_decode_one(const struct arec_src *src, uint32_t pc, struct ai *out, uin
 	if (thumb) {
 		const uint32_t next = avail >= 4 ? rd16le(p + 2) : 0xFFFFFFFFu;
 
-		dec_thumb(a, rd16le(p), next, 1, out);
+		dec_thumb(a, rd16le(p), next, src->v5, out);
 	} else {
 		if (a & 3)
 			return 0;
-		dec_arm(a, rd32le(p), out);
+		dec_arm(a, rd32le(p), src->v5, out);
 	}
 	return 1;
 }
@@ -853,9 +863,9 @@ unsigned arec_decode(const struct arec_src *src, uint32_t pc, struct ai *out, un
 		if (thumb) {
 			const uint32_t next = used + 4 <= avail ? rd16le(p + used + 2) : 0xFFFFFFFFu;
 
-			dec_thumb(a + used, rd16le(p + used), next, 1, x);
+			dec_thumb(a + used, rd16le(p + used), next, src->v5, x);
 		} else {
-			dec_arm(a + used, rd32le(p + used), x);
+			dec_arm(a + used, rd32le(p + used), src->v5, x);
 		}
 		used += x->size;
 		n++;

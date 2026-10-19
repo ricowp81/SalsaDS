@@ -325,6 +325,39 @@ if tools/build-ppc64.sh host >build/logs/build-ppc64-run.log 2>&1; then
 		tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --jit --jit-far --jit-nojl tests/roms/homebrew/$rom.nds >"build/logs/rom-$rom-jitfar.log" 2>&1
 		check_rom "JITf" "$rom" "build/logs/rom-$rom-jitfar.log"
 	done
+	# --- Recompilador del ARM7 (ARMv4T) ---------------------------------------------------------------------------
+	# --jit conecta los dos recompiladores (el del ARM7 con su caché y sus tablas); --jit-no9 deja al ARM9 con el intérprete
+	# (el ARM7 solo), --jit-no7 al revés. --lockstep (más abajo) compara las dos CPUs contra el intérprete. Y el estado de la
+	# máquina (registros, RAM, WRAM, VRAM, imágenes) en modo estricto tiene que dar el mismo resumen que con el intérprete.
+	for rom in $ROMS carga; do
+		args=""
+		[ "$rom" = carga ] && args="$CARGA_ARGS"
+		tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --jit --jit-no9 $args tests/roms/homebrew/$rom.nds >"build/logs/rom-$rom-jit7.log" 2>&1
+		if [ "$rom" = carga ]; then
+			check_carga JIT7 build/logs/rom-carga-jit7.log
+		else
+			check_rom "JIT7" "$rom" "build/logs/rom-$rom-jit7.log"
+		fi
+	done
+	for rom in cpuarm irq; do
+		tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --jit --jit-no7 tests/roms/homebrew/$rom.nds >"build/logs/rom-$rom-jit9.log" 2>&1
+		check_rom "JIT9" "$rom" "build/logs/rom-$rom-jit9.log"
+	done
+	for rom in cpuarm irq periph demo carga; do
+		tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --frames 150 --state-hash tests/roms/homebrew/$rom.nds >"build/logs/hash-$rom-interp.log" 2>&1
+		for mode in "--jit-strict" "--jit-strict --jit-no9" "--jit-strict --jit-no7"; do
+			tag=$(echo "$mode" | tr -d ' -')
+			tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --frames 150 --state-hash $mode tests/roms/homebrew/$rom.nds >"build/logs/hash-$rom-$tag.log" 2>&1
+			a=$(grep '^state-hash:' "build/logs/hash-$rom-interp.log")
+			b=$(grep '^state-hash:' "build/logs/hash-$rom-$tag.log")
+			if [ -n "$a" ] && [ "$a" = "$b" ]; then
+				printf '%-4s OK     estado %s (%s): igual al del intérprete\n' HASH "$rom" "$mode"
+			else
+				printf '%-4s FALLO  estado %s (%s): %s contra %s\n' HASH "$rom" "$mode" "$b" "$a"
+				fail=1
+			fi
+		done
+	done
 	for rom in $ROMS; do
 		tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --lockstep tests/roms/homebrew/$rom.nds >"build/logs/rom-$rom-lockstep.log" 2>&1
 		if grep -q '^LOCKSTEP: sin diferencias' "build/logs/rom-$rom-lockstep.log"; then

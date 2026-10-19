@@ -93,6 +93,10 @@
 #include "jit/arec.h"
 #include "rec_cache.h"
 #define NOJIT_FLAG SALSADS_DATA_DIR "/nucleo-jit-nojit"
+/* Con este archivo solo el ARM7 vuelve al intérprete (el ARM9 sigue con el recompilador). El ARM7 comparte la marca de seguridad
+ * del recompilador (JIT_MARKER): si la aplicación muere con código traducido de cualquiera de las dos CPUs, el siguiente arranque
+ * de esta versión usa el intérprete en las dos. */
+#define ARM7_NOJIT_FLAG SALSADS_DATA_DIR "/arm7-nojit"
 #define JIT_MARKER SALSADS_DATA_DIR "/nucleo-jit.marker"
 /* Caché del recompilador pedida a PS3MAPI (fase52, experimental): solo con este archivo; si no, la de 4 MB del segmento
  * de texto. Con HEN 3.3.0 funciona apartando las páginas (rec_cache.c), pero en NSMB no ganó nada (los vaciados no eran
@@ -1154,7 +1158,7 @@ static uint32_t pct(int m, unsigned p)
 
 static uint64_t prev_i9, prev_i7, prev_silent;
 #ifdef NUCLEO_JIT
-static struct arec_stats prev_js;
+static struct arec_stats prev_js, prev_js7;
 #endif
 
 static void log_stats(void)
@@ -1356,6 +1360,29 @@ static void log_stats(void)
 			salsads_log("DATO jit-llamadas: por cuadro y clase: %s", o ? cl : "ninguna");
 		}
 		prev_js = *js;
+	}
+	if (jit_on && nds->jit7) {
+		const struct arec_stats *js = arec_stats(nds->jit7), *p = &prev_js7;
+		uint32_t live;
+		size_t used, cap;
+
+		arec_usage(nds->jit7, &live, &used, &cap);
+		salsads_log("DATO jit7: ARM7, por cuadro (promedio de %u): %llu entradas, %llu bloques traducidos (%llu instr., %u.%03u ms "
+			    "traduciendo); salidas: %llu por pc, %llu por presupuesto, %llu con estado, %llu tras un acceso lento; caídas al "
+			    "intérprete: %llu llamadas desde el bloque, %llu pasos del despachador (%llu sin código traducible); ruta lenta: "
+			    "%llu lecturas, %llu escrituras; %llu escrituras a líneas con código, %llu bloques invalidados; en total: %u bloques "
+			    "vivos, código %u de %u KB, %llu vaciados, %llu descartados",
+			    n, (unsigned long long)((js->enters - p->enters) / n), (unsigned long long)((js->blocks_made - p->blocks_made) / n),
+			    (unsigned long long)((js->guest_made - p->guest_made) / n),
+			    (unsigned)((js->compile_ns - p->compile_ns) / n / 1000000u), (unsigned)((js->compile_ns - p->compile_ns) / n / 1000u % 1000u),
+			    (unsigned long long)((js->exits_pc - p->exits_pc) / n), (unsigned long long)((js->exits_budget - p->exits_budget) / n),
+			    (unsigned long long)((js->exits_state - p->exits_state) / n), (unsigned long long)((js->mem_exits - p->mem_exits) / n),
+			    (unsigned long long)((js->callouts - p->callouts) / n), (unsigned long long)((js->interp_steps - p->interp_steps) / n),
+			    (unsigned long long)((js->no_code - p->no_code) / n), (unsigned long long)((js->slow_rd - p->slow_rd) / n),
+			    (unsigned long long)((js->slow_wr - p->slow_wr) / n), (unsigned long long)((js->code_wr - p->code_wr) / n),
+			    (unsigned long long)((js->inval_blocks - p->inval_blocks) / n), (unsigned)live, (unsigned)(used >> 10),
+			    (unsigned)(cap >> 10), (unsigned long long)js->flushes, (unsigned long long)js->bad_blocks);
+		prev_js7 = *js;
 	}
 #endif
 	salsads_log("DATO MIPS: ARM9 %.2f, ARM7 %.2f (instrucciones entre el tiempo dentro de cada CPU: %u cuadros con perfil); "
@@ -2074,8 +2101,11 @@ static int game_open(const char *path)
 	salsads_log("ROM: %s; entrada ARM9 0x%08x, ARM7 0x%08x; cuántos bytes ocupa el núcleo: %u", rom_name,
 		    (unsigned)rd32le(rom_buf + 0x24), (unsigned)rd32le(rom_buf + 0x34), (unsigned)sizeof *nds);
 #ifdef NUCLEO_JIT
-	if (jit_on && nds->jit9) {
-		((struct arec_pub *)(void *)nds->jit9)->clock_ns = jit_clock_ns;
+	if (jit_on && (nds->jit9 || nds->jit7)) {
+		if (nds->jit9)
+			((struct arec_pub *)(void *)nds->jit9)->clock_ns = jit_clock_ns;
+		if (nds->jit7)
+			((struct arec_pub *)(void *)nds->jit7)->clock_ns = jit_clock_ns;
 		salsads_rec_marker(JIT_MARKER, NUCLEO_VERSION, 1);
 	}
 #endif
@@ -2116,6 +2146,8 @@ static void game_close(void)
 		salsads_log("cierre: vaciando la caché del recompilador");
 		if (nds->jit9)
 			arec_flush(nds->jit9); /* el código traducido era de este juego */
+		if (nds->jit7)
+			arec_flush(nds->jit7);
 		salsads_rec_marker(JIT_MARKER, NUCLEO_VERSION, 0);
 	}
 #endif
@@ -2542,9 +2574,9 @@ int main(void)
 		struct stat jst;
 
 		if (stat(NOJIT_FLAG, &jst) == 0) {
-			salsads_log("jit: %s existe: el ARM9 con el intérprete (el respaldo)", NOJIT_FLAG);
+			salsads_log("jit: %s existe: el ARM9 y el ARM7 con el intérprete (el respaldo)", NOJIT_FLAG);
 		} else if (autotest) {
-			salsads_log("jit: prueba automática (RPCS3): su texto es de solo lectura, no se intenta; el ARM9 con el intérprete (el respaldo)");
+			salsads_log("jit: prueba automática (RPCS3): su texto es de solo lectura, no se intenta; el ARM9 y el ARM7 con el intérprete (el respaldo)");
 		} else {
 			char why[160], mwhy[160];
 			uint64_t us = 0;
@@ -2575,6 +2607,13 @@ int main(void)
 				 * vez por mtctr/bctrl en lugar de intentar el bl y repetir cada bloque */
 				jc.far_calls = mapi_code != NULL;
 				jc.icache_flush = salsads_rec_flush;
+				/* el ARM7 (ARMv4T) con su propio recompilador: la cola de la caché (REC_ARM7_BYTES) y tablas propias */
+				if (stat(ARM7_NOJIT_FLAG, &jst) == 0) {
+					salsads_log("jit: %s existe: el ARM7 con el intérprete", ARM7_NOJIT_FLAG);
+				} else {
+					jc.arm7 = 1;
+					jc.code7_bytes = REC_ARM7_BYTES;
+				}
 				if (nds_jit_attach(nds, &jc) == 0) {
 					const uint32_t w_after_attach = ((const volatile uint32_t *)jc.code)[0];
 
@@ -2594,6 +2633,8 @@ int main(void)
 					jit_on = 1;
 					arec_stats(nds->jit9); /* (las estadísticas empiezan en cero) */
 					((struct arec_pub *)(void *)nds->jit9)->clock_ns = jit_clock_ns;
+					if (nds->jit7)
+						((struct arec_pub *)(void *)nds->jit7)->clock_ns = jit_clock_ns;
 					salsads_rec_marker(JIT_MARKER, NUCLEO_VERSION, 1);
 					if (mapi_code) {
 						sys_ppu_thread_t wt;
@@ -2620,16 +2661,18 @@ int main(void)
 
 						sysThreadCreate(&wt, jit_watch_thread, NULL, 1500, 16 * 1024, 0, "jit-vigia");
 					}
-					salsads_log("jit: el ARM9 con el recompilador (caché de código de %u MB %s, prueba de %u µs)",
-						    (unsigned)(jc.code_bytes >> 20), mapi_code ? "de PS3MAPI" : "en el texto",
-						    (unsigned)us);
+					salsads_log("jit: el ARM9 con el recompilador (caché de código de %u KB %s, prueba de %u µs); el ARM7 %s",
+						    (unsigned)((jc.code_bytes - (nds->jit7 ? jc.code7_bytes : 0)) >> 10), mapi_code ? "de PS3MAPI" : "en el texto",
+						    (unsigned)us,
+						    nds->jit7 ? "con el recompilador (caché propia de 1024 KB, tablas propias)"
+							      : (jc.arm7 ? "con el intérprete (el recompilador del ARM7 no se pudo crear: sin memoria)" : "con el intérprete"));
 				} else {
-					salsads_log("jit: el recompilador no se pudo crear (sin memoria): el ARM9 con el intérprete");
+					salsads_log("jit: el recompilador no se pudo crear (sin memoria): el ARM9 y el ARM7 con el intérprete");
 				}
 			} else if (ps == REC_PROBE_SKIPPED) {
-				salsads_log("jit: el ARM9 con el intérprete: %s", why);
+				salsads_log("jit: el ARM9 y el ARM7 con el intérprete: %s", why);
 			} else {
-				salsads_log("jit: la prueba de la caché %s: %s; el ARM9 con el intérprete (el respaldo)",
+				salsads_log("jit: la prueba de la caché %s: %s; el ARM9 y el ARM7 con el intérprete (el respaldo)",
 					    ps == REC_PROBE_HUNG ? "no volvió" : "falló", why);
 			}
 		}

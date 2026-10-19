@@ -4,6 +4,30 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-19 — El ARM7 en el recompilador
+
+- **Hecho**: el ARM7 (ARMv4T) usa el mismo recompilador que el ARM9, como instancia aparte (`n->jit7`: caché de código propia, tablas propias, mapa de
+  RAM principal, WRAM compartida y WRAM del ARM7, BIOS 7 en HLE). Lo que cambia de ARMv5 a ARMv4T está en el decodificador y el emisor (`c->v5`):
+  CLZ, QADD, BLX, LDRD/STRD, CP15 y BKPT son indefinidas (van al intérprete), la condición 1111 es «nunca», LDR/LDM/POP a pc no cambian de estado,
+  LDRH/LDRSH impares, STM con la base en la lista y la máscara de MSR. Detalle, memoria y seguridad en `docs/fase4.md` («El ARM7 en el recompilador»).
+- **Memoria**: la zona de código del texto pasa de 4 a 5 MB (4 del ARM9, 1 del ARM7); el heap suma ≈ 5,6 MB (las dos tablas de punteros de 2 MB y
+  tablas acotadas; `docs/memory-budget.md`).
+- **Seguridad**: `nucleo-jit.marker` protege a las dos CPUs (si la aplicación muere con código traducido de cualquiera, el siguiente arranque usa el
+  intérprete en las dos); `/dev_hdd0/salsads/arm7-nojit` deja solo al ARM7 con el intérprete. La línea `jit:` del arranque dice cómo va el ARM7
+  y `DATO jit7` trae sus contadores por cuadro.
+- **Pruebas** (qemu-ppc64; los tiempos no valen): `tools/build.sh test-host` verde en LE, BE y SAN (BE: 8 077 525 comprobaciones de las unitarias, 0 fallos;
+  `test_arec` corre ahora los perfiles ARM9 y ARM7), ROMs con `--jit`, `--jit-no9` y `--jit-no7`, `--lockstep` de las dos CPUs contra el intérprete, `ciclos --jit`,
+  y el resumen del estado de la máquina (`--state-hash`) de `cpuarm`, `irq`, `periph`, `demo` y `carga` igual al del intérprete en modo estricto. Con respaldos del autor,
+  1500 cuadros de New Super Mario Bros., Super Mario 64 DS y Mario Kart DS: mismo resumen (registros y contadores de las dos CPUs, RAM, WRAM, VRAM,
+  paleta, OAM y las dos imágenes) con el intérprete, con los dos recompiladores y con el del ARM7 solo, todos en modo estricto.
+- **Contadores del ARM7 en modo rápido** (host, tramo de 1024, 1500 cuadros; por cuadro): NSMB 192 entradas, 258 llamadas al intérprete, 893 lecturas y
+  232 escrituras lentas, 27,5 k instrucciones, código 499 KB; SM64DS 150 entradas, 430 llamadas, 489 / 551, 21,6 k, 438 KB; MKDS 281 entradas, 1048
+  llamadas (602 SWI de Thumb), 1755 / 580, 53,4 k, 491 KB; sin pasos del despachador (MKDS: 1437 en total) y 2 vaciados en toda la corrida.
+- **Sin medir en la PS3.** Qué mirar: `DATO desglose` (ARM7 en ms por cuadro; meta < 1 ms, con el intérprete 3–4), `DATO jit7`, y la línea `jit:`. El riesgo es la
+  entrada y salida: el ARM9 cuesta ≈ 9 µs por tramo en la consola (`docs/fase4.md`, segunda ronda); el ARM7 entra 150–280 veces por cuadro (≈ 143 instrucciones
+  por entrada en NSMB), así que si cada entrada cuesta lo mismo serían 1,4–2,5 ms y no se llegaría a la meta **[est]**. Comparar en la misma escena con y sin `arm7-nojit`.
+- Paquete «SalsaDS JIT núcleo» (SLDS00009): `build/salsads-arm7jit.pkg`, SHA-256 en el informe de la rama.
+
 ## 2026-10-18 — ROM por fragmentos (fase48)
 
 - `src/core/cart.c`: `nds_load_rom_paged` lee la ROM por páginas (256 KB en la PS3, caché LRU de 32 MB, lectura adelantada síncrona de la página siguiente en acceso secuencial); cabecera, ARM9/ARM7 se leen al inicio sin caché. `nds_load_rom` (entera) no cambia. El host y `tests/phase1/nucleo/main.c` eligen fragmentos si la ROM pasa de 64 MB (`ROM_WHOLE_MAX_MB`) o con `/dev_hdd0/salsads/rom-paged`; host: `--rom-paged PAGE_KB,CACHE_KB`, `--rom-whole-max MB`. Presupuesto en `memory-budget.md`.

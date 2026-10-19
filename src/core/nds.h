@@ -104,16 +104,20 @@ enum nds_ev {
 struct nds;
 struct arec;
 
-/* Recompilador del ARM9 (Fase 4, src/core/jit.c y src/jit/arec*): memoria de código y opciones. */
+/* Recompiladores del ARM9 y del ARM7 (Fase 4, src/core/jit.c y src/jit/arec*): memoria de código y opciones. */
 struct nds_jit_cfg {
 	void *code;          /* escribible y ejecutable (en la PS3, la cola del segmento de texto) */
-	size_t code_bytes;
+	size_t code_bytes;   /* con el ARM7 incluye su parte (code7_bytes) */
+	int arm7;            /* 1: el ARM7 (ARMv4T) también va con recompilador, con su propia caché y tablas */
+	int no_arm9;         /* 1: el ARM9 sigue con el intérprete (probar o medir el ARM7 solo) */
+	size_t code7_bytes;  /* la cola de `code` que usa el ARM7 (el ARM9 usa el resto); con arm7 = 1 */
 	int strict;          /* mismos ciclos que el intérprete (para --lockstep) */
 	int no_link;         /* cada bloque vuelve al despachador (para --lockstep) */
 	int no_inline_jl;    /* sin búsqueda de destinos indirectos en línea */
 	int far_calls;       /* llamadas a C por CTR (prueba) */
 	void (*icache_flush)(const void *p, size_t n);
 	void (*on_exec)(void *ctx, int ev, uint64_t until); /* ctx = la struct nds */
+	void (*on_exec7)(void *ctx, int ev, uint64_t until); /* lo mismo para el ARM7 */
 };
 
 struct nds_timer {
@@ -421,10 +425,11 @@ struct nds {
 	uint64_t (*prof_clock)(void);
 	struct nds_video vid;
 	struct nds_snd snd;
-	/* recompilador del ARM9 (NULL = intérprete); sobrevive a nds_init */
-	struct arec *jit9;
+	/* recompiladores del ARM9 y del ARM7 (NULL = intérprete); sobreviven a nds_init */
+	struct arec *jit9, *jit7;
 	struct nds_jit_cfg jit_cfg;
-	uint32_t jit_phys;   /* tamaño del espacio físico con código posible (de `itcm` al final de `swram`); 0 sin JIT */
+	uint32_t jit_phys;   /* tamaño del espacio físico con código posible (de `itcm` al final de `swram`, o de `wram7` con el ARM7); 0 sin JIT */
+	uint32_t jit_phys9;  /* el del ARM9: de `itcm` al final de `swram` */
 	void *jit_user;      /* para el dueño (lockstep) */
 	uint32_t dbg; /* NDS_DBG_*: trazas de depuración por `log` (0 = ninguna; solo el corredor del host las activa) */
 };
@@ -453,8 +458,9 @@ void nds_rom_set_allocator(void *(*alloc)(size_t), void (*release)(void *));
 void nds_rom_stats(const struct nds *n, uint64_t *acc, uint64_t *miss, uint64_t *ra);
 /* Arranque directo: carga los binarios ARM9/ARM7, arma la memoria y los registros. 0 = bien. */
 int nds_boot_direct(struct nds *n);
-/* Recompilador del ARM9: lo conecta (0) o dice que no se puede en este host o sin memoria (-1: sigue el
- * intérprete). Se puede llamar antes o después de nds_init / nds_boot_direct. */
+/* Recompiladores (el del ARM9 y, con cfg->arm7, el del ARM7): los conecta (0) o dice que no se puede en este host o sin
+ * memoria (-1: sigue el intérprete). Si el del ARM9 se crea y el del ARM7 no, devuelve 0 y n->jit7 queda en NULL. Se puede
+ * llamar antes o después de nds_init / nds_boot_direct. */
 int nds_jit_attach(struct nds *n, const struct nds_jit_cfg *cfg);
 void nds_jit_detach(struct nds *n);
 

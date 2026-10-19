@@ -1,6 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SalsaDS — pruebas del recompilador ARMv5TE → PowerPC64 (Fase 4, src/jit/arec*).
+ * SalsaDS — pruebas del recompilador ARMv5TE (ARM9) y ARMv4T (ARM7) → PowerPC64 (Fase 4, src/jit/arec*).
+ *
+ * Todo se corre en dos perfiles: el del ARM9 (con ITCM y DTCM) y el del ARM7 (ARMv4T: sin TCM ni CP15; en las direcciones
+ * bajas hay una memoria de 32 KB para los vectores, como la BIOS HLE del ARM7). En el perfil del ARM7 los programas al azar
+ * no llevan lo que es de ARMv5 (salvo una fracción chica, que prueba el camino «indefinida») y hay casos dirigidos de lo que
+ * cambia en ARMv4T (LDR/LDM/POP a pc sin cambio de estado, LDRH impar, STM con la base en la lista, condición 1111).
  *
  * Una máquina mínima (RAM de 1 MB espejada en 0x02000000, E/S de prueba en 0x04000000 por la ruta lenta, ITCM en 0 y
  * DTCM en 0x0B000000) con dos CPUs: una con el recompilador y otra con el intérprete. En ppc64 (qemu, big-endian) el
@@ -29,6 +34,7 @@
 #define AM_IO 0x04000000u
 
 struct am {
+	int v4;            /* perfil del ARM7 */
 	struct acore c;
 	uint8_t itcm[ACORE_ITCM_SIZE], dtcm[ACORE_DTCM_SIZE];
 	uint8_t ram[AM_RAM];
@@ -55,6 +61,8 @@ static uint32_t am_r8(struct acore *c, uint32_t a)
 {
 	struct am *m = c->user;
 
+	if (m->v4 && a < ACORE_ITCM_SIZE)
+		return m->itcm[a];
 	if ((a >> 24) == 2)
 		return m->ram[a & (AM_RAM - 1)];
 	if ((a >> 24) == 4)
@@ -65,6 +73,8 @@ static uint32_t am_r16(struct acore *c, uint32_t a)
 {
 	struct am *m = c->user;
 
+	if (m->v4 && a < ACORE_ITCM_SIZE)
+		return rd16le(m->itcm + a);
 	if ((a >> 24) == 2)
 		return rd16le(m->ram + (a & (AM_RAM - 1)));
 	if ((a >> 24) == 4)
@@ -75,6 +85,8 @@ static uint32_t am_r32(struct acore *c, uint32_t a)
 {
 	struct am *m = c->user;
 
+	if (m->v4 && a < ACORE_ITCM_SIZE)
+		return rd32le(m->itcm + a);
 	if ((a >> 24) == 2)
 		return rd32le(m->ram + (a & (AM_RAM - 1)));
 	if ((a >> 24) == 4)
@@ -85,6 +97,19 @@ static void am_wr(struct acore *c, uint32_t a, uint32_t v, unsigned sz)
 {
 	struct am *m = c->user;
 
+	if (m->v4 && a < ACORE_ITCM_SIZE) {
+		uint8_t *p = m->itcm + a;
+
+		if (sz == 4)
+			wr32le(p, v);
+		else if (sz == 2)
+			wr16le(p, (uint16_t)v);
+		else
+			*p = (uint8_t)v;
+		if (m->j)
+			arec_code_write(m->j, PH_ITCM + a, sz);
+		return;
+	}
 	if ((a >> 24) == 2) {
 		uint8_t *p = m->ram + (a & (AM_RAM - 1));
 
@@ -117,7 +142,7 @@ static const uint8_t *am_code(void *ctx, uint32_t a, uint32_t *phys, uint32_t *a
 {
 	struct am *m = ctx;
 
-	if ((uint64_t)a < m->c.itcm_rd_len) {
+	if (m->v4 ? a < ACORE_ITCM_SIZE : (uint64_t)a < m->c.itcm_rd_len) {
 		const uint32_t o = a & (ACORE_ITCM_SIZE - 1);
 
 		*phys = PH_ITCM + o;
@@ -152,25 +177,34 @@ static void am_map(struct am *m)
 
 		arec_map_set(j, a >> 14, p, p, PH_RAM + (a & (AM_RAM - 1)));
 	}
-	for (uint32_t a = 0; a < m->c.itcm_rd_len; a += 0x4000u) {
+	for (uint32_t a = 0; a < (m->v4 ? ACORE_ITCM_SIZE : m->c.itcm_rd_len); a += 0x4000u) {
 		uint8_t *p = m->itcm + (a & (ACORE_ITCM_SIZE - 1));
 
 		arec_map_set(j, a >> 14, p, p, PH_ITCM + (a & (ACORE_ITCM_SIZE - 1)));
 	}
-	if (m->c.dtcm_rd_len)
+	if (!m->v4 && m->c.dtcm_rd_len)
 		arec_map_set(j, m->c.dtcm_base >> 14, m->dtcm, m->dtcm, AREC_PHYS_NONE);
 	arec_map_end(j);
 }
+
+static int prof_v4; /* perfil en curso: 0 ARM9, 1 ARM7 */
 
 static void am_init(struct am *m, int jit, int strict)
 {
 	if (m->j)
 		arec_destroy(m->j);
 	memset(m, 0, sizeof *m);
-	acore_init(&m->c, ACORE_ARM9, &am_bus, m);
-	acore_attach_tcm(&m->c, m->itcm, m->dtcm);
-	/* ITCM 32 KB en 0, DTCM 16 KB en 0x0B000000 */
-	acore_set_tcm_state(&m->c, 0x00050078u, 0x0000000Cu, 0x0B00000Au);
+	m->v4 = prof_v4;
+	acore_init(&m->c, prof_v4 ? ACORE_ARM7 : ACORE_ARM9, &am_bus, m);
+	if (!prof_v4) {
+		acore_attach_tcm(&m->c, m->itcm, m->dtcm);
+		/* ITCM 32 KB en 0, DTCM 16 KB en 0x0B000000 */
+		acore_set_tcm_state(&m->c, 0x00050078u, 0x0000000Cu, 0x0B00000Au);
+	} else {
+		/* vectores: cada uno es un salto a sí mismo (aparca ahí) */
+		for (unsigned v = 1; v < 8; v++)
+			wr32le(m->itcm + 4 * v, 0xEAFFFFFEu);
+	}
 	acore_set_cpsr(&m->c, ACORE_MODE_SYS);
 	m->c.r[13] = AM_STACK;
 	if (jit) {
@@ -187,9 +221,14 @@ static void am_init(struct am *m, int jit, int strict)
 		cfg.code_ptr = am_code;
 		cfg.ctx = m;
 		cfg.phys_size = PH_SIZE;
+		if (prof_v4) { /* como el ARM7 de la máquina: tablas acotadas */
+			cfg.map_pages = 0x04000000u >> AREC_PAGE_SHIFT;
+			cfg.max_blocks = 4096;
+		}
 		m->j = arec_create(&m->c, &cfg);
 		if (m->j) {
-			m->c.itcm_hook = itcm_hook;
+			if (!prof_v4)
+				m->c.itcm_hook = itcm_hook;
 			am_map(m);
 		}
 	}
@@ -233,8 +272,12 @@ static uint32_t gen_arm(uint32_t addr, unsigned left)
 	const uint32_t cond = arm_cond() << 28;
 
 	if (k < 5) { /* lo que el recompilador hace en línea con el intérprete de respaldo (FK_* de arec_priv.h) */
-		const unsigned rd = rn(10), rm = rn(10), q = rn(13);
+		const unsigned rd = rn(10), rm = rn(10);
+		unsigned q = rn(13);
 
+		/* ARMv4T: LDRD/STRD y CP15 no existen (indefinidas); una de cada 20 se deja para probar ese camino */
+		if (prof_v4 && q >= 2 && q <= 7 && rn(20))
+			q = q <= 4 ? 8u : 0u;
 		switch (q) {
 		case 0:
 			return cond | 0x01000090u | (rn(2) << 22) | 12u << 16 | rd << 12 | rm;           /* SWP(B) rd, rm, [r12] */
@@ -304,8 +347,11 @@ static uint32_t gen_arm(uint32_t addr, unsigned left)
 			       9u << 4 | rn(10);
 		}
 	}
-	if (k < 50) /* CLZ */
+	if (k < 50) { /* CLZ (ARMv4T: MOV rd, rm, salvo una de cada 20, que es indefinida) */
+		if (prof_v4 && rn(20))
+			return cond | 0x01A00000u | rn(10) << 12 | rn(13);
 		return cond | 0x016F0F10u | rn(10) << 12 | rn(13);
+	}
 	if (k < 72) { /* LDR/STR palabra y byte */
 		const unsigned load = rn(2), byte = rn(3) == 0, rd = load ? rn(10) : rn(13);
 		const unsigned base = rn(5) == 0 ? 11 : 12;
@@ -331,6 +377,13 @@ static uint32_t gen_arm(uint32_t addr, unsigned left)
 	if (k < 90) { /* LDM/STM con la pila (pares equilibrados: STMDB sp! / LDMIA sp!) */
 		const unsigned list = (rnd() & 0x3FF) | (rn(4) == 0 ? 0x4000u : 0) | 1u;
 		(void)addr;
+		if (prof_v4 && rn(4) == 0) { /* LDM/STM con la base r12 o r11 (a veces en la lista, con escritura de vuelta) */
+			const unsigned rb = rn(2) ? 12u : 11u, ld = rn(2), pre = rn(2), up = rn(2), wb = rn(2);
+			const unsigned lst = ((rnd() & 0x3FF) | (rn(2) ? 1u << rb : 0u)) & (rb == 12 ? 0x1FFFu : 0x0FFFu);
+
+			if (lst)
+				return cond | 4u << 25 | pre << 24 | up << 23 | wb << 21 | ld << 20 | rb << 16 | lst;
+		}
 		if (rn(2))
 			return cond | 0x092D0000u | list; /* STMDB sp!, {…} */
 		return cond | 0x08BD0000u | (list & 0x3FF);        /* LDMIA sp!, {…} */
@@ -393,6 +446,8 @@ static uint16_t gen_thumb(unsigned left)
 		return (uint16_t)(0xD000u | rn(14) << 8 | rn(3));
 	if (k < 98) /* BX lr o MOV pc, lr (lr apunta al final) */
 		return rn(2) ? (uint16_t)0x4770u : (uint16_t)0x46F7u;
+	if (prof_v4 && k == 98) /* STMIA r6!, {lista con r6}: ARMv4 guarda la base nueva si no es el primer registro */
+		return (uint16_t)(0xC000u | 6u << 8 | (rnd() & 0x3Fu) | 0x40u);
 	return (uint16_t)(0x4000u | rn(16) << 6 | rn(8) << 3 | rn(8));
 }
 
@@ -819,6 +874,169 @@ static void test_waits(void)
 	CHECK(same_state("esperas del bus", 99));
 }
 
+/* ---- ARMv4T (perfil del ARM7) ------------------------------------------------------------------------------- */
+
+static void both_ram32(uint32_t a, uint32_t v)
+{
+	uint8_t b[4];
+
+	wr32le(b, v);
+	put_both(a, b, 4);
+}
+
+static void start_arm(void)
+{
+	acore_set_pc(&MJ.c, AM_CODE);
+	acore_set_pc(&MI.c, AM_CODE);
+}
+
+/* LDR pc, LDM {pc} y POP {pc} no cambian de estado en ARMv4T: el bit 0 del valor cargado no pasa a Thumb. */
+static void test_v4_pc_loads(void)
+{
+	static const uint32_t tgt[] = { 0xE3A05007u, 0xEAFFFFFEu }; /* mov r5, #7; b . */
+	static const uint16_t tth[] = { 0x2507, 0xE7FE };           /* movs r5, #7; b . */
+	uint8_t b[4];
+
+	/* LDR pc, [r12] con el valor (AM_CODE + 0x40) | 1 */
+	setup_both(1);
+	if (!MJ.j)
+		return;
+	load_prog(tgt, 2, AM_CODE + 0x40);
+	both_ram32(AM_DATA + 0x400, (AM_CODE + 0x40) | 1u);
+	both_ram32(AM_CODE, 0xE59CF000u); /* ldr pc, [r12] */
+	MJ.c.r[12] = MI.c.r[12] = AM_DATA + 0x400;
+	start_arm();
+	run_both(40);
+	CHECK(same_state("v4: LDR pc con el bit 0", 0));
+	CHECK_EQ(MJ.c.r[5], 7);
+	CHECK_EQ(MJ.c.cpsr & ACORE_T, 0);
+	/* LDMIA r12, {r1, pc} */
+	setup_both(1);
+	load_prog(tgt, 2, AM_CODE + 0x40);
+	both_ram32(AM_DATA + 0x400, 1);
+	both_ram32(AM_DATA + 0x404, (AM_CODE + 0x40) | 1u);
+	both_ram32(AM_CODE, 0xE89C8002u); /* ldmia r12, {r1, pc} */
+	MJ.c.r[12] = MI.c.r[12] = AM_DATA + 0x400;
+	start_arm();
+	run_both(40);
+	CHECK(same_state("v4: LDM con pc y el bit 0", 0));
+	CHECK_EQ(MJ.c.r[5], 7);
+	CHECK_EQ(MJ.c.cpsr & ACORE_T, 0);
+	/* Thumb: POP {pc} con una dirección par se queda en Thumb */
+	setup_both(1);
+	for (unsigned i = 0; i < 2; i++) {
+		wr16le(b, tth[i]);
+		put_both(AM_CODE + 0x40 + 2 * i, b, 2);
+	}
+	wr16le(b, 0xBD00); /* pop {pc} */
+	put_both(AM_CODE, b, 2);
+	both_ram32(AM_STACK, AM_CODE + 0x40);
+	MJ.c.r[13] = MI.c.r[13] = AM_STACK;
+	acore_bx(&MJ.c, AM_CODE | 1);
+	acore_bx(&MI.c, AM_CODE | 1);
+	run_both(40);
+	CHECK(same_state("v4: POP {pc} en Thumb", 0));
+	CHECK_EQ(MJ.c.r[5], 7);
+	CHECK(MJ.c.cpsr & ACORE_T);
+}
+
+/* LDRH / LDRSH con dirección impar (rotan o se portan como LDRSB en ARMv4), por la ruta rápida y por la lenta. */
+static void test_v4_unaligned_half(void)
+{
+	static const uint32_t prog[] = {
+		0xE1DC00B1u, /* ldrh r0, [r12, #1] */
+		0xE1DC10F1u, /* ldrsh r1, [r12, #1] */
+		0xE1DC20B3u, /* ldrh r2, [r12, #3] */
+		0xE1DB30B1u, /* ldrh r3, [r11, #1] (E/S) */
+		0xE1DB40F1u, /* ldrsh r4, [r11, #1] (E/S) */
+		0xEAFFFFFEu,
+	};
+
+	setup_both(1);
+	if (!MJ.j)
+		return;
+	load_prog(prog, 6, AM_CODE);
+	both_ram32(AM_DATA + 0x400, 0x8081F2F3u);
+	both_ram32(AM_DATA + 0x404, 0x80F0A5B6u);
+	MJ.c.r[11] = MI.c.r[11] = AM_IO + 0x200;
+	MJ.c.r[12] = MI.c.r[12] = AM_DATA + 0x400;
+	start_arm();
+	run_both(60);
+	CHECK(same_state("v4: LDRH impar", 0));
+	CHECK_EQ(MJ.c.r[0], 0xF30000F2u); /* la media palabra alineada es 0xF2F3, rotada 8 */
+}
+
+/* STM con la base en la lista y escritura de vuelta: ARMv4 guarda la base nueva si no es el primer registro. */
+static void test_v4_stm_base(void)
+{
+	static const uint32_t prog[] = {
+		0xE8AC1002u, /* stmia r12!, {r1, r12} */
+		0xE8A10006u, /* stmia r1!, {r1, r2} */
+		0xE92C1002u, /* stmdb r12!, {r1, r12} */
+		0xEAFFFFFEu,
+	};
+
+	setup_both(1);
+	if (!MJ.j)
+		return;
+	load_prog(prog, 4, AM_CODE);
+	MJ.c.r[1] = MI.c.r[1] = AM_DATA + 0x300;
+	MJ.c.r[2] = MI.c.r[2] = 0x1234;
+	MJ.c.r[12] = MI.c.r[12] = AM_DATA + 0x400;
+	start_arm();
+	run_both(60);
+	CHECK(same_state("v4: STM con la base en la lista", 0));
+	/* Thumb: STMIA r6!, {r0, r6} */
+	setup_both(1);
+	{
+		uint8_t b[2];
+
+		wr16le(b, 0xC641); /* stmia r6!, {r0, r6} */
+		put_both(AM_CODE, b, 2);
+		wr16le(b, 0xE7FE);
+		put_both(AM_CODE + 2, b, 2);
+	}
+	MJ.c.r[6] = MI.c.r[6] = AM_DATA + 0x300;
+	acore_bx(&MJ.c, AM_CODE | 1);
+	acore_bx(&MI.c, AM_CODE | 1);
+	run_both(30);
+	CHECK(same_state("v4: STMIA con la base en la lista", 0));
+}
+
+/* La condición 1111 es «nunca» en ARMv4 (1 ciclo); lo de ARMv5 es indefinido y toma el vector. */
+static void test_v4_undefined(void)
+{
+	static const uint32_t bad[] = {
+		0xF3A00001u, /* cond 1111: nunca */
+		0xE16F1F12u, /* clz r1, r2 */
+		0xE1021053u, /* qadd r1, r3, r2 */
+		0xE12FFF33u, /* blx r3 */
+		0xE1C200D0u, /* ldrd r0, [r2] */
+		0xEE070F3Eu, /* mcr p15, 0, r0, c7, c14, 1 */
+		0xEE190F11u, /* mrc p15, 0, r0, c9, c1, 0 */
+		0xE1200070u, /* bkpt */
+		0xF57FF000u, /* pld (cond 1111) */
+	};
+
+	for (unsigned k = 0; k < sizeof bad / sizeof bad[0]; k++) {
+		static const uint32_t tail[] = { 0xE2855001u, 0xEAFFFFFEu };
+
+		setup_both(1);
+		if (!MJ.j)
+			return;
+		both_ram32(AM_CODE, bad[k]);
+		load_prog(tail, 2, AM_CODE + 4);
+		MJ.c.r[3] = MI.c.r[3] = AM_CODE + 0x20;
+		start_arm();
+		run_both(40);
+		CHECK(same_state("v4: lo de ARMv5", k));
+		if (k == 0 || k == 8) /* nunca: sigue con el add */
+			CHECK_EQ(MJ.c.r[5], 1);
+		else /* indefinida: vector 4 */
+			CHECK_EQ(MJ.c.cpsr & ACORE_MODE_MASK, ACORE_MODE_UND);
+	}
+}
+
 static void test_translate_any_host(void)
 {
 	static struct am T;
@@ -856,6 +1074,33 @@ static void test_translate_any_host(void)
 	}
 }
 
+static void run_profile(int v4)
+{
+	prof_v4 = v4;
+	test_irq_mid_block();
+	test_msr_irq();
+	test_literal();
+	test_smc();
+	if (!v4)
+		test_calls();
+	test_waits();
+	if (v4) {
+		test_v4_pc_loads();
+		test_v4_unaligned_half();
+		test_v4_stm_base();
+		test_v4_undefined();
+	}
+	for (unsigned s = 1; s <= 300; s++)
+		fuzz_arm(s, 1);
+	for (unsigned s = 1; s <= 300; s++)
+		fuzz_thumb(s, 1);
+	for (unsigned s = 1; s <= 100; s++) {
+		fuzz_arm(1000 + s, 0);
+		fuzz_thumb(1000 + s, 0);
+	}
+	prof_v4 = 0;
+}
+
 void test_arec(void)
 {
 	test_translate_any_host();
@@ -869,29 +1114,14 @@ void test_arec(void)
 
 		const int st = getenv("AREC_FAST") ? 0 : 1;
 
+		prof_v4 = getenv("AREC_V4") != NULL;
 		if (getenv("AREC_THUMB"))
 			CHECK(fuzz_thumb_n(sd, st, cut));
 		else
 			CHECK(fuzz_arm_n(sd, st, cut));
+		prof_v4 = 0;
 		return;
 	}
-	test_irq_mid_block();
-	test_msr_irq();
-	test_literal();
-	test_smc();
-	test_calls();
-	test_waits();
-	for (unsigned s = 1; s <= 300; s++)
-		fuzz_arm(s, 1);
-	for (unsigned s = 1; s <= 300; s++)
-		fuzz_thumb(s, 1);
-	{
-		const int before = check_failed;
-
-		for (unsigned s = 1; s <= 100; s++) {
-			fuzz_arm(1000 + s, 0);
-			fuzz_thumb(1000 + s, 0);
-		}
-		(void)before;
-	}
+	run_profile(0); /* ARM9 */
+	run_profile(1); /* ARM7 */
 }

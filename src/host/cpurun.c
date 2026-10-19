@@ -476,6 +476,34 @@ static int stuck_in_vector(const struct nds *n, const char **which, uint32_t *pc
 	return 0;
 }
 
+/* --state-hash: un resumen del estado de la máquina (registros y contadores de las dos CPUs, RAM, WRAM, VRAM, paleta, OAM y la
+ * imagen de las dos pantallas): dos corridas con el mismo hash dejaron la misma máquina (intérprete contra recompilador). */
+static void print_state_hash(struct nds *n)
+{
+	static uint16_t top[NDS_SCREEN_W * NDS_SCREEN_H], bot[NDS_SCREEN_W * NDS_SCREEN_H];
+	uint64_t hc = 0xCBF29CE484222325ull, hm = hc, hs = hc;
+	const struct acore *cs[2] = { &n->a9, &n->a7 };
+
+	for (int k = 0; k < 2; k++) {
+		hc = fnv(hc, cs[k]->r, sizeof cs[k]->r);
+		hc = fnv(hc, &cs[k]->cpsr, sizeof cs[k]->cpsr);
+		hc = fnv(hc, &cs[k]->cycles, sizeof cs[k]->cycles);
+		hc = fnv(hc, &cs[k]->icount, sizeof cs[k]->icount);
+	}
+	hm = fnv(hm, n->ram, sizeof n->ram);
+	hm = fnv(hm, n->swram, sizeof n->swram);
+	hm = fnv(hm, n->wram7, sizeof n->wram7);
+	hm = fnv(hm, n->vram, sizeof n->vram);
+	hm = fnv(hm, n->pal, sizeof n->pal);
+	hm = fnv(hm, n->oam, sizeof n->oam);
+	nds_screens(n, top, bot);
+	hs = fnv(hs, top, sizeof top);
+	hs = fnv(hs, bot, sizeof bot);
+	printf("state-hash: cpus %016llx memoria %016llx pantallas %016llx; cuadros %llu, ARM9 %llu instr., ARM7 %llu instr.\n",
+	       (unsigned long long)hc, (unsigned long long)hm, (unsigned long long)hs, (unsigned long long)n->frames,
+	       (unsigned long long)n->a9.icount, (unsigned long long)n->a7.icount);
+}
+
 int main(int argc, char **argv)
 {
 	uint64_t max_cycles = 4000000000ull;
@@ -508,7 +536,7 @@ int main(int argc, char **argv)
 	uint8_t *rom;
 	double t0, t1;
 	int rc_gfx = 0;
-	int jit_nolink = 0, jit_far = 0, jit_nojl = 0;
+	int jit_nolink = 0, jit_far = 0, jit_nojl = 0, jit_arm7 = 1, jit_arm9 = 1, state_hash = 0;
 	unsigned pg_shift = 18;           /* --rom-paged PAGE_KB,CACHE_KB: fuerza fragmentos (por omisión 256 KB y 32 MB) */
 	size_t pg_cache = (size_t)32 << 20, whole_max = (size_t)64 << 20; /* --rom-whole-max MB */
 	int force_paged = 0;
@@ -644,6 +672,12 @@ int main(int argc, char **argv)
 			jit_mode = 1;
 		else if (!strcmp(argv[i], "--jit-strict"))
 			jit_mode = 2;
+		else if (!strcmp(argv[i], "--state-hash"))
+			state_hash = 1;
+		else if (!strcmp(argv[i], "--jit-no7"))
+			jit_arm7 = 0;
+		else if (!strcmp(argv[i], "--jit-no9"))
+			jit_arm9 = 0;
 		else if (!strcmp(argv[i], "--jit-nolink"))
 			jit_nolink = 1;
 		else if (!strcmp(argv[i], "--jit-far"))
@@ -716,9 +750,9 @@ int main(int argc, char **argv)
 		nds_init(&R);
 		if (snd_original)
 			nds_snd_set_mode(&R, SND_MODE_ORIGINAL);
-		if (hj_lockstep_attach(&M, &R))
+		if (hj_lockstep_attach(&M, &R, jit_arm7, jit_arm9))
 			return 2;
-	} else if (jit_mode && hj_attach(&M, jit_mode == 2, jit_nolink, jit_far, jit_nojl, NULL)) {
+	} else if (jit_mode && hj_attach(&M, jit_mode == 2, jit_nolink, jit_far, jit_nojl, jit_arm7, jit_arm9, NULL, NULL)) {
 		return 2;
 	}
 	if (romf)
@@ -953,6 +987,10 @@ int main(int argc, char **argv)
 			printf("planificador: %.1f tramos, %.1f saltos ociosos y %.1f eventos por cuadro; %.1f us por cuadro\n",
 			       (double)M.st.slices / (double)frames, (double)M.st.jumps / (double)frames,
 			       (double)M.st.events / (double)frames, (t1 - t0) * 1e6 / (double)frames);
+		if (stats && M.prof_clock)
+			printf("tiempo por cuadro (con --gx-clock; los relojes cuestan): ARM9 %.1f us, ARM7 %.1f us, eventos %.1f us; ARM7 %.0f instr. por cuadro\n",
+			       (double)M.st.prof_a9 / 1e3 / (double)frames, (double)M.st.prof_a7 / 1e3 / (double)frames,
+			       (double)M.st.prof_ev / 1e3 / (double)frames, (double)M.a7.icount / (double)frames);
 		if (M.cart.paged) {
 			uint64_t acc, miss, ra;
 
@@ -975,8 +1013,10 @@ int main(int argc, char **argv)
 		}
 		if (stats)
 			print_gx_stats(M.frames), gx_cmds();
-		if (M.jit9)
+		if (M.jit9 || M.jit7)
 			hj_print_stats(&M);
+		if (state_hash)
+			print_state_hash(&M);
 		if (lockstep && hj_fail())
 			rc_gfx = 1;
 		if (gxdump_path)
@@ -1111,8 +1151,10 @@ int main(int argc, char **argv)
 		}
 		if (stats)
 			print_gx_stats(M.frames), gx_cmds();
-		if (M.jit9)
+		if (M.jit9 || M.jit7)
 			hj_print_stats(&M);
+		if (state_hash)
+			print_state_hash(&M);
 		if (lockstep && hj_fail())
 			rc_gfx = 1;
 		if (gxdump_path)

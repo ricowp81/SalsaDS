@@ -78,6 +78,7 @@ enum {
 struct arec_src {
 	const uint8_t *(*code_ptr)(void *ctx, uint32_t a, uint32_t *phys, uint32_t *avail);
 	void *ctx;
+	int v5; /* 1: ARMv5TE (ARM9); 0: ARMv4T (ARM7: sin CLZ, QADD, BLX, LDRD, CP15; LDR/LDM a pc sin cambio de estado) */
 };
 unsigned arec_decode(const struct arec_src *src, uint32_t pc, struct ai *out, unsigned max, uint32_t *phys_lo,
 		     uint32_t *phys_hi);
@@ -150,6 +151,7 @@ struct arec {
 
 	/* tablas de la ruta rápida: rd[AREC_PAGES] seguida de wr[AREC_PAGES] (el código suma 2 MB para escribir) */
 	uint8_t **pt;
+	uint32_t npages;     /* páginas de 16 KB que el dueño llega a mapear (las de wr_real, wr_phys y phys_pages) */
 	uint8_t **wr_real;   /* lo que tendría wr sin el código */
 	uint32_t *wr_phys;   /* página física de escritura (>> 14) por página, o AREC_PHYS_NONE */
 	/* por página física de 16 KB: bloques que la tocan y las páginas que la escriben */

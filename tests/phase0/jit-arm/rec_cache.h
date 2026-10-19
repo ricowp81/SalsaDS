@@ -17,7 +17,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define REC_CACHE_BYTES (4u << 20)
+/* 5 MB: 4 del ARM9 y 1 del ARM7 (la cola de la zona; src/core/jit.c reparte). */
+#define REC_CACHE_BYTES (5u << 20)
+#define REC_ARM7_BYTES (1u << 20)
 
 void *salsads_rec_cache(void);
 /* Vacía la caché de instrucciones para [p, p + n): dcbst, sync, icbi, isync. */

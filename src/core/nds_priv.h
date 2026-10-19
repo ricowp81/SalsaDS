@@ -17,14 +17,19 @@
 #define NDS_UNLIKELY(x) (x)
 #endif
 
-/* Escritura a memoria (puntero del host `p`): si el recompilador tiene código traducido ahí, lo invalida. Sin JIT,
- * jit_phys es 0 y no hace nada. */
+/* Escritura a memoria (puntero del host `p`): si algún recompilador tiene código traducido ahí, lo invalida. Sin JIT,
+ * jit_phys es 0 y no hace nada. El espacio físico (desplazamiento desde `itcm`) es el mismo para los dos: el del ARM9
+ * llega hasta el final de `swram` y el del ARM7 hasta el final de `wram7`. */
 static inline void NDS_CODE_WRITE(struct nds *n, const uint8_t *p, unsigned size)
 {
 	const uintptr_t off = (uintptr_t)p - (uintptr_t)n->itcm;
 
-	if (NDS_UNLIKELY(off < n->jit_phys))
-		arec_code_write(n->jit9, (uint32_t)off, size);
+	if (NDS_UNLIKELY(off < n->jit_phys)) {
+		if (n->jit9 && off < n->jit_phys9)
+			arec_code_write(n->jit9, (uint32_t)off, size);
+		if (n->jit7)
+			arec_code_write(n->jit7, (uint32_t)off, size);
+	}
 }
 void nds_code_write_range(struct nds *n, const uint8_t *p, size_t len);
 void nds_jit_wramcnt(struct nds *n);

@@ -872,7 +872,7 @@ static void analyze(struct em *e)
 static uint8_t lookahead(struct em *e, uint32_t pc)
 {
 	struct arec *j = e->j;
-	const struct arec_src src = { j->cfg.code_ptr, j->cfg.ctx };
+	const struct arec_src src = { j->cfg.code_ptr, j->cfg.ctx, j->c->v5 != 0 };
 	uint8_t live = 0, written = 0;
 	struct ablock *b = e->b;
 
@@ -1075,7 +1075,7 @@ static void emit_call_fast(struct em *e, const struct ai *x, unsigned P)
 				mask |= 0x0000FF00u;
 			if (fm & 1)
 				mask |= 0x000000FFu;
-			mask &= 0xF80000FFu;
+			mask &= e->j->c->v5 ? 0xF80000FFu : 0xF00000FFu; /* (el bit Q solo existe en ARMv5TE) */
 			E(e, ppc_lwz(3, RST, OFF_BANK));
 			E(e, ppc_cmplwi(1, 3, 0));
 			bc_to(e, BO_T, CRB(1, EQ), join);
@@ -1855,6 +1855,11 @@ static void emit_mem(struct em *e, const struct ai *x, unsigned P)
 		E(e, ppc_rlwinm(8, ra, 0, 30, 31));
 		E(e, ppc_cmplwi(6, 8, 0));
 		bc_to(e, BO_F, CRB(6, EQ), cold);
+	} else if (x->load && x->msz == 2 && !e->j->c->v5) {
+		/* ARMv4: LDRH impar rota por 8 y LDRSH impar se porta como LDRSB (el ARMv5 alinea): por el camino lento */
+		E(e, ppc_rlwinm(8, ra, 0, 31, 31));
+		E(e, ppc_cmplwi(6, 8, 0));
+		bc_to(e, BO_F, CRB(6, EQ), cold);
 	}
 	page_lookup(e, ra, !x->load, cold);
 	E(e, ppc_rlwinm(8, ra, 0, 18, x->msz == 4 ? 29 : x->msz == 2 ? 30 : 31));
@@ -1932,10 +1937,13 @@ static void emit_mem(struct em *e, const struct ai *x, unsigned P)
 		e->sec = save;
 	}
 	if (x->load && x->rd == 15) {
-		/* LDR pc (ARMv5: con cambio de estado) */
-		E(e, ppc_rlwinm(4, 3, 1, 30, 30));
-		E(e, ppc_xori(4, 4, 2));
-		E(e, ppc_andc(3, 3, 4));
+		if (x->xchg) { /* LDR pc (ARMv5: con cambio de estado) */
+			E(e, ppc_rlwinm(4, 3, 1, 30, 30));
+			E(e, ppc_xori(4, 4, 2));
+			E(e, ppc_andc(3, 3, 4));
+		} else { /* ARMv4: sin cambio de estado (LDR pc solo existe en ARM) */
+			E(e, ppc_rlwinm(3, 3, 0, 0, 29));
+		}
 		exit_indirect(e, 0, 0, F_ALL);
 	}
 }
@@ -2030,7 +2038,10 @@ static void emit_block(struct em *e, const struct ai *x, unsigned P)
 			E(e, ppc_rlwinm(4, 3, 1, 30, 30));
 			E(e, ppc_xori(4, 4, 2));
 			E(e, ppc_andc(3, 3, 4));
-		} else {
+		} else if (x->thumb) { /* ARMv4, POP {pc}: sigue en Thumb */
+			E(e, ppc_rlwinm(3, 3, 0, 0, 30));
+			E(e, ppc_ori(3, 3, 1));
+		} else { /* ARMv4, LDM con pc: sigue en ARM */
 			E(e, ppc_rlwinm(3, 3, 0, 0, 29));
 		}
 		exit_indirect(e, 0, 0, F_ALL);

@@ -337,7 +337,7 @@ void arec_flush(struct arec *j)
 {
 	reset_tables(j);
 	/* la tabla de escritura vuelve a ser la real (ya no hay código) */
-	memcpy(j->pt + AREC_PAGES, j->wr_real, AREC_PAGES * sizeof *j->pt);
+	memcpy(j->pt + AREC_PAGES, j->wr_real, j->npages * sizeof *j->pt);
 	j->exit_req = 1;
 	j->pub.st.flushes++;
 }
@@ -437,7 +437,7 @@ void arec_code_write_slow(struct arec *j, uint32_t phys, uint32_t size)
 static struct ablock *compile(struct arec *j, uint32_t pc)
 {
 	static struct ai ins[AREC_MAX_INSN];
-	const struct arec_src src = { j->cfg.code_ptr, j->cfg.ctx };
+	const struct arec_src src = { j->cfg.code_ptr, j->cfg.ctx, j->c->v5 != 0 };
 	uint32_t plo, phi;
 	unsigned n;
 	struct ablock *b;
@@ -677,15 +677,15 @@ void arec_run(struct arec *j, uint64_t until)
 void arec_map_begin(struct arec *j)
 {
 	memset(j->pt, 0, 2u * AREC_PAGES * sizeof *j->pt);
-	memset(j->wr_real, 0, AREC_PAGES * sizeof *j->wr_real);
-	for (uint32_t i = 0; i < AREC_PAGES; i++)
+	memset(j->wr_real, 0, j->npages * sizeof *j->wr_real);
+	for (uint32_t i = 0; i < j->npages; i++)
 		j->wr_phys[i] = AREC_PHYS_NONE;
 }
 
 void arec_map_set(struct arec *j, uint32_t page, uint8_t *rd, uint8_t *wr, uint32_t wr_phys)
 {
-	if (page >= AREC_PAGES)
-		return;
+	if (page >= j->npages)
+		return; /* fuera de lo que el dueño dijo que mapea (cfg.map_pages): ruta lenta */
 	j->pt[page] = rd;
 	j->wr_real[page] = wr;
 	j->wr_phys[page] = (wr && wr_phys != AREC_PHYS_NONE && wr_phys < j->cfg.phys_size) ? wr_phys >> 14 : AREC_PHYS_NONE;
@@ -697,7 +697,7 @@ void arec_map_end(struct arec *j)
 	uint32_t pos = 0;
 
 	memset(j->phys_cnt, 0, j->nphys16 * sizeof *j->phys_cnt);
-	for (uint32_t g = 0; g < AREC_PAGES; g++)
+	for (uint32_t g = 0; g < j->npages; g++)
 		if (j->wr_phys[g] != AREC_PHYS_NONE)
 			j->phys_cnt[j->wr_phys[g]]++;
 	for (uint32_t p = 0; p < j->nphys16; p++) {
@@ -705,10 +705,10 @@ void arec_map_end(struct arec *j)
 		pos += j->phys_cnt[p];
 		j->phys_cnt[p] = 0;
 	}
-	for (uint32_t g = 0; g < AREC_PAGES; g++) {
+	for (uint32_t g = 0; g < j->npages; g++) {
 		const uint32_t p = j->wr_phys[g];
 
-		if (p != AREC_PHYS_NONE && j->phys_first[p] + j->phys_cnt[p] < AREC_PAGES)
+		if (p != AREC_PHYS_NONE && j->phys_first[p] + j->phys_cnt[p] < j->npages)
 			j->phys_pages[j->phys_first[p] + j->phys_cnt[p]++] = g;
 		wr[g] = (p != AREC_PHYS_NONE && j->phys_blocks[p]) ? NULL : j->wr_real[g];
 	}
@@ -720,7 +720,7 @@ static struct arec *arec_new(struct acore *c, const struct arec_cfg *cfg, int ca
 {
 	struct arec *j;
 
-	if (!c->v5 || !cfg->code || cfg->code_bytes < 65536 || !cfg->code_ptr || !cfg->phys_size)
+	if (!cfg->code || cfg->code_bytes < 65536 || !cfg->code_ptr || !cfg->phys_size)
 		return NULL;
 	j = calloc(1, sizeof *j);
 	if (!j)
@@ -734,22 +734,27 @@ static struct arec *arec_new(struct acore *c, const struct arec_cfg *cfg, int ca
 	 * PS3MAPI no se vacíe por bloques antes que por código (NSMB: ~540 bytes de código por bloque). Cada bloque son
 	 * ~250 bytes del heap: 32768 son 8 MB. */
 	{
-		const uint32_t k = cfg->code_bytes >= (8u << 20) ? 2u : 1u;
+		const uint32_t k = cfg->code_bytes >= (6u << 20) ? 2u : 1u;
 
 		j->max_blocks = MAX_BLOCKS * k;
 		j->max_links = MAX_LINKS * k;
+		if (cfg->max_blocks) { /* el ARM7: poco código, tablas chicas */
+			j->max_blocks = cfg->max_blocks;
+			j->max_links = cfg->max_blocks * 4u;
+		}
 	}
+	j->npages = cfg->map_pages && cfg->map_pages < AREC_PAGES ? cfg->map_pages : AREC_PAGES;
 	j->blocks = calloc(j->max_blocks, sizeof *j->blocks);
 	j->links = calloc(j->max_links, sizeof *j->links);
 	j->jl = calloc(AREC_JL_SIZE, sizeof *j->jl);
 	j->pt = calloc(2u * AREC_PAGES, sizeof *j->pt);
-	j->wr_real = calloc(AREC_PAGES, sizeof *j->wr_real);
-	j->wr_phys = calloc(AREC_PAGES, sizeof *j->wr_phys);
+	j->wr_real = calloc(j->npages, sizeof *j->wr_real);
+	j->wr_phys = calloc(j->npages, sizeof *j->wr_phys);
 	j->nphys16 = (cfg->phys_size + 0x3FFFu) >> 14;
 	j->phys_blocks = calloc(j->nphys16, sizeof *j->phys_blocks);
 	j->phys_first = calloc(j->nphys16, sizeof *j->phys_first);
 	j->phys_cnt = calloc(j->nphys16, sizeof *j->phys_cnt);
-	j->phys_pages = calloc(AREC_PAGES, sizeof *j->phys_pages);
+	j->phys_pages = calloc(j->npages, sizeof *j->phys_pages);
 	j->nbuckets = (cfg->phys_size + (1u << AREC_BUCKET_SHIFT) - 1) >> AREC_BUCKET_SHIFT;
 	j->bucket_head = calloc(j->nbuckets, sizeof *j->bucket_head);
 	j->pub.codemap = calloc((cfg->phys_size >> AREC_LINE_SHIFT) + 1, 1);

@@ -20,10 +20,10 @@ __asm__("	.section .salsads_rec_cache,\"ax\",@nobits\n"
 	"	.balign 65536\n"
 	"	.globl salsads_rec_cache_mem\n"
 	"salsads_rec_cache_mem:\n"
-	"	.space 4194304\n"  /* REC_CACHE_BYTES */
+	"	.space 5242880\n"  /* REC_CACHE_BYTES */
 	"	.previous\n");
 extern unsigned char salsads_rec_cache_mem[];
-_Static_assert(REC_CACHE_BYTES == 4194304, "actualizar el .space de arriba");
+_Static_assert(REC_CACHE_BYTES == 5242880, "actualizar el .space de arriba");
 
 void *salsads_rec_cache(void)
 {

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SalsaDS — recompilador dinámico ARMv5TE (ARM y Thumb) → PowerPC64 para el ARM9 (Fase 4).
+ * SalsaDS — recompilador dinámico ARM y Thumb → PowerPC64 para el ARM9 (ARMv5TE, Fase 4) y el ARM7 (ARMv4T).
  *
  * Código propio (GPL-2.0-or-later), escrito desde el manual de arquitectura de ARM, GBATEK, la Power ISA 2.02 y
  * lo medido en la PS3 (docs/fase0.md §0.3 y §0.7); el diseño sigue al recompilador MIPS → PPC64 de Salsa64
@@ -54,6 +54,9 @@ struct arec_cfg {
 	const uint8_t *(*code_ptr)(void *ctx, uint32_t a, uint32_t *phys, uint32_t *avail);
 	void *ctx;
 	uint32_t phys_size;  /* tamaño del espacio físico (múltiplo de 16 KB) */
+	uint32_t map_pages;  /* páginas de 16 KB (desde la dirección 0) que el dueño llega a mapear en arec_map_set (0: todas); las
+			      * tablas de apoyo de la ruta rápida se acotan a ese número (las dos de punteros siempre cubren todo) */
+	uint32_t max_blocks; /* tope de bloques vivos (0: según el tamaño de la caché) */
 	/* Para --lockstep: lo llama el despachador después de cada cosa que ejecuta (AREC_EV_*). */
 	void (*on_exec)(void *ctx, int ev, uint64_t until);
 };
@@ -92,7 +95,8 @@ struct arec_pub {
 	volatile uint64_t last_code;
 };
 
-/* Crea el recompilador para `c` (solo ARMv5: el ARM9). NULL si este host no ejecuta PowerPC64 o falta memoria. */
+/* Crea el recompilador para `c` (ARMv5 del ARM9 o ARMv4T del ARM7: lo dice `c->v5`). NULL si este host no ejecuta PowerPC64 o
+ * falta memoria. */
 struct arec *arec_create(struct acore *c, const struct arec_cfg *cfg);
 void arec_destroy(struct arec *j);
 /* Diagnóstico: direcciones de la caché y de las tablas grandes (para ver si se solapan con otra memoria). */

@@ -1,12 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SalsaDS — el recompilador del ARM9 en el corredor del host (salsads-cpurun): --jit, --jit-strict y --lockstep.
+ * SalsaDS — los recompiladores del ARM9 y del ARM7 en el corredor del host (salsads-cpurun): --jit, --jit-strict y
+ * --lockstep (--jit-no7 y --jit-no9 dejan una de las dos CPUs con el intérprete).
  *
  * El código generado es PowerPC64 big-endian: corre bajo qemu-ppc64 (tools/qemu-ppc64.sh); en la Mac (arm64) el
  * recompilador no se puede crear y estas opciones fallan con un mensaje.
  *
  * --lockstep: una segunda máquina idéntica con el intérprete. Las dos avanzan tramo por tramo del planificador; dentro
- * del tramo del ARM9, después de cada bloque traducido (sin enlaces, con los ciclos exactos del intérprete), la
+ * del tramo de cada CPU, después de cada bloque traducido (sin enlaces, con los ciclos exactos del intérprete), la
  * referencia ejecuta las mismas instrucciones y se comparan los registros, el CPSR (las banderas que la salida dejó
  * exactas), los ciclos y las instrucciones. Al final de cada tramo, las dos CPUs enteras; cada 2048 tramos, la memoria.
  */
@@ -21,13 +22,15 @@
 #include <sys/mman.h>
 #endif
 
-#define CODE_BYTES (4u << 20)
+#define CODE_BYTES (5u << 20) /* 4 MB del ARM9 y 1 MB del ARM7 */
+#define CODE7_BYTES (1u << 20)
 
 static uint8_t code_mem[CODE_BYTES] __attribute__((aligned(65536)));
 
 static struct nds *ref;      /* máquina de referencia (--lockstep) */
 static struct nds *jm;       /* la del JIT */
 static uint64_t ls_checks, ls_slices;
+static int cur_cpu; /* CPU del último aviso (0 = ARM9, 1 = ARM7) */
 static int ls_failed;
 
 int hj_fail(void)
@@ -73,33 +76,35 @@ static int same_cpu(const struct acore *a, const struct acore *b, unsigned live,
 
 static void fail(const char *what, const char *why, uint32_t pc0)
 {
+	const struct acore *a = cur_cpu ? &jm->a7 : &jm->a9, *b = cur_cpu ? &ref->a7 : &ref->a9;
+
 	if (ls_failed)
 		return;
 	ls_failed = 1;
-	printf("LOCKSTEP: DIFERENCIA después de %s (bloque en %08x), cuadro %llu, t=%llu: %s\n", what, pc0,
+	printf("LOCKSTEP: DIFERENCIA (ARM%d) después de %s (bloque en %08x), cuadro %llu, t=%llu: %s\n", cur_cpu ? 7 : 9, what, pc0,
 	       (unsigned long long)jm->frames, (unsigned long long)jm->time, why);
-	printf("  JIT: pc %08x cpsr %08x", acore_pc(&jm->a9), jm->a9.cpsr);
+	printf("  JIT: pc %08x cpsr %08x", acore_pc(a), a->cpsr);
 	for (int k = 0; k < 15; k++)
-		printf(" r%d=%08x", k, jm->a9.r[k]);
-	printf("\n  ref: pc %08x cpsr %08x", acore_pc(&ref->a9), ref->a9.cpsr);
+		printf(" r%d=%08x", k, a->r[k]);
+	printf("\n  ref: pc %08x cpsr %08x", acore_pc(b), b->cpsr);
 	for (int k = 0; k < 15; k++)
-		printf(" r%d=%08x", k, ref->a9.r[k]);
+		printf(" r%d=%08x", k, b->r[k]);
 	printf("\n");
 	jm->stop = ref->stop = 1;
 }
 
 static uint32_t blk_pc;
 
-static void on_exec(void *ctx, int ev, uint64_t until)
+static void on_exec_cpu(int cpu, int ev, uint64_t until)
 {
-	struct nds *n = ctx;
-	struct acore *b = &ref->a9;
+	struct acore *b = cpu ? &ref->a7 : &ref->a9;
+	struct acore *a = cpu ? &jm->a7 : &jm->a9;
 	char why[160];
 	unsigned live = 15;
 
-	(void)n;
 	if (ls_failed)
 		return;
+	cur_cpu = cpu;
 	switch (ev) {
 	case AREC_EV_SERVICE:
 		acore_service(b, until);
@@ -108,9 +113,9 @@ static void on_exec(void *ctx, int ev, uint64_t until)
 		acore_step_insn(b);
 		break;
 	default:
-		while (b->icount < jm->a9.icount)
+		while (b->icount < a->icount)
 			acore_step_insn(b);
-		live = arec_last_live(jm->jit9);
+		live = arec_last_live(cpu ? jm->jit7 : jm->jit9);
 		break;
 	}
 	ls_checks++;
@@ -122,13 +127,26 @@ static void on_exec(void *ctx, int ev, uint64_t until)
 			fail("un bloque (eventos)", why, blk_pc);
 			return;
 		}
-	if (!same_cpu(&jm->a9, b, live, why, sizeof why))
+	if (!same_cpu(a, b, live, why, sizeof why))
 		fail(ev == AREC_EV_BLOCK ? "un bloque" : ev == AREC_EV_STEP ? "un paso del intérprete" : "una interrupción", why,
 		     blk_pc);
-	blk_pc = acore_pc(&jm->a9);
+	blk_pc = acore_pc(a);
 }
 
-int hj_attach(struct nds *n, int strict, int no_link, int far, int no_jl, void (*ev)(void *, int, uint64_t))
+static void on_exec9(void *ctx, int ev, uint64_t until)
+{
+	(void)ctx;
+	on_exec_cpu(0, ev, until);
+}
+
+static void on_exec7(void *ctx, int ev, uint64_t until)
+{
+	(void)ctx;
+	on_exec_cpu(1, ev, until);
+}
+
+int hj_attach(struct nds *n, int strict, int no_link, int far, int no_jl, int arm7, int arm9, void (*ev9)(void *, int, uint64_t),
+	      void (*ev7)(void *, int, uint64_t))
 {
 	struct nds_jit_cfg cfg;
 
@@ -145,7 +163,11 @@ int hj_attach(struct nds *n, int strict, int no_link, int far, int no_jl, void (
 	cfg.no_link = no_link;
 	cfg.far_calls = far;
 	cfg.no_inline_jl = no_jl;
-	cfg.on_exec = ev;
+	cfg.arm7 = arm7;
+	cfg.no_arm9 = !arm9;
+	cfg.code7_bytes = arm7 ? CODE7_BYTES : 0;
+	cfg.on_exec = ev9;
+	cfg.on_exec7 = ev7;
 	if (nds_jit_attach(n, &cfg)) {
 		fprintf(stderr, "el recompilador no corre en este host (el código es PowerPC64 big-endian: usar qemu-ppc64)\n");
 		return -1;
@@ -153,11 +175,11 @@ int hj_attach(struct nds *n, int strict, int no_link, int far, int no_jl, void (
 	return 0;
 }
 
-int hj_lockstep_attach(struct nds *m, struct nds *r)
+int hj_lockstep_attach(struct nds *m, struct nds *r, int arm7, int arm9)
 {
 	jm = m;
 	ref = r;
-	return hj_attach(m, 1, 1, 0, 1, on_exec);
+	return hj_attach(m, 1, 1, 0, 1, arm7, arm9, arm9 ? on_exec9 : NULL, arm7 ? on_exec7 : NULL);
 }
 
 /* Un tramo de las dos máquinas y la comparación de las dos enteras. */
@@ -209,6 +231,7 @@ static void ls_slice(uint64_t k)
 	if (!(ls_slices & 2047u)) {
 		if (memcmp(jm->ram, ref->ram, NDS_RAM_SIZE) || memcmp(jm->itcm, ref->itcm, sizeof jm->itcm) ||
 		    memcmp(jm->dtcm, ref->dtcm, sizeof jm->dtcm) || memcmp(jm->swram, ref->swram, sizeof jm->swram) ||
+		    memcmp(jm->wram7, ref->wram7, sizeof jm->wram7) ||
 		    memcmp(jm->vram, ref->vram, sizeof jm->vram) || memcmp(jm->pal, ref->pal, sizeof jm->pal) ||
 		    memcmp(jm->oam, ref->oam, sizeof jm->oam)) {
 			uint32_t o = 0;
@@ -237,9 +260,8 @@ void hj_lockstep_cycles(uint64_t k)
 		ls_slice(t1 - jm->time);
 }
 
-void hj_print_stats(struct nds *n)
+static void print_stats_one(struct arec *j, const char *who)
 {
-	struct arec *j = n->jit9;
 	const struct arec_stats *s;
 	uint32_t blocks;
 	size_t used, cap;
@@ -248,11 +270,11 @@ void hj_print_stats(struct nds *n)
 		return;
 	s = arec_stats(j);
 	arec_usage(j, &blocks, &used, &cap);
-	printf("recompilador: %llu bloques traducidos (%llu instr., %.1f palabras PPC por instr., %.1f calientes), %u vivos, código %zu de %zu KB; "
+	printf("recompilador %s: %llu bloques traducidos (%llu instr., %.1f palabras PPC por instr., %.1f calientes), %u vivos, código %zu de %zu KB; "
 	       "%llu entradas, %llu enlaces; salidas: %llu pc, %llu enlace, %llu estado, %llu presupuesto, %llu tras almacenamiento; "
 	       "%llu llamadas al intérprete, %llu pasos interpretados (%llu sin código); lentos %llu lect. %llu escr.; "
 	       "%llu escrituras a código, %llu bloques invalidados, %llu vaciados; %llu banderas en frío\n",
-	       (unsigned long long)s->blocks_made, (unsigned long long)s->guest_made,
+	       who, (unsigned long long)s->blocks_made, (unsigned long long)s->guest_made,
 	       s->guest_made ? (double)s->host_words / (double)s->guest_made : 0.0,
 	       s->guest_made ? (double)s->host_hot / (double)s->guest_made : 0.0, blocks, used >> 10, cap >> 10,
 	       (unsigned long long)s->enters, (unsigned long long)s->links, (unsigned long long)s->exits_pc,
@@ -261,11 +283,17 @@ void hj_print_stats(struct nds *n)
 	       (unsigned long long)s->no_code, (unsigned long long)s->slow_rd, (unsigned long long)s->slow_wr,
 	       (unsigned long long)s->code_wr, (unsigned long long)s->inval_blocks, (unsigned long long)s->flushes,
 	       (unsigned long long)s->cold_flags);
-	printf("recompilador, llamadas al intérprete por clase:");
+	printf("recompilador %s, llamadas al intérprete por clase:", who);
 	for (int k = 0; k < AREC_CALL_KINDS; k++)
 		if (s->call_by[k])
 			printf(" %s %llu;", arec_call_kind_name[k], (unsigned long long)s->call_by[k]);
 	printf("\n");
+}
+
+void hj_print_stats(struct nds *n)
+{
+	print_stats_one(n->jit9, "ARM9");
+	print_stats_one(n->jit7, "ARM7");
 	if (ref)
 		printf("LOCKSTEP: %s, %llu comparaciones, %llu tramos\n", ls_failed ? "FALLO" : "sin diferencias",
 		       (unsigned long long)ls_checks, (unsigned long long)ls_slices);

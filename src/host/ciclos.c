@@ -5,7 +5,7 @@
  * Repite, con la misma estructura `nds` y el mismo orden que el programa de la PS3 (tests/phase1/nucleo/main.c):
  * nds_init, cargar la ROM (entera o por fragmentos), arranque directo, unos cuadros, cerrar (nds_rom_free y soltar la
  * ROM). Comprueba que el heap en uso no crece entre cierres (tolerancia de unos KB) y que el tope del heap tampoco,
- * pasados los ciclos de calentamiento. Con --jit el recompilador del ARM9 se conecta una sola vez y sobrevive a los
+ * pasados los ciclos de calentamiento. Con --jit los recompiladores del ARM9 y del ARM7 se conectan una sola vez y sobreviven a los
  * ciclos (nds_init lo recrea), como en la consola; solo corre en PowerPC64 (qemu).
  *
  *   salsads-ciclos [--ciclos N] [--cuadros N] [--jit] ROM.nds
@@ -119,7 +119,7 @@ int main(int argc, char **argv)
 		return 2;
 	}
 	nds_init(&M);
-	if (jit && hj_attach(&M, 0, 0, 0, 0, NULL)) {
+	if (jit && hj_attach(&M, 0, 0, 0, 0, 1, 1, NULL, NULL)) {
 		fprintf(stderr, "sin recompilador en este host: se prueba con el intérprete\n");
 		jit = 0;
 	}
