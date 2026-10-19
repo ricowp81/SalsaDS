@@ -2087,7 +2087,9 @@ static void game_close(void)
 {
 	struct mem_close_in in = { big_bytes(), rom_len };
 
+	salsads_log("cierre: guardado");
 	save_flush(1);
+	salsads_log("cierre: esperando sonido, geometría y 3D");
 	if (snd_on && nds->snd.prev >= 0)
 		snd_wait(NULL, nds->snd.prev);
 	if (geom_on) {
@@ -2096,6 +2098,7 @@ static void game_close(void)
 	}
 	if (r3d_on)
 		r3d_spe_wait(NULL);
+	salsads_log("cierre: esperando la composición 2D y el RSX");
 	if (spu_on) {
 		vid_collect(&sub);
 		vid_collect(&prev);
@@ -2109,11 +2112,13 @@ static void game_close(void)
 		}
 #ifdef NUCLEO_JIT
 	if (jit_on) {
+		salsads_log("cierre: vaciando la caché del recompilador");
 		if (nds->jit9)
 			arec_flush(nds->jit9); /* el código traducido era de este juego */
 		salsads_rec_marker(JIT_MARKER, NUCLEO_VERSION, 0);
 	}
 #endif
+	salsads_log("cierre: soltando la ROM");
 	nds_rom_free(nds);
 	nds->cart.rom = NULL;
 	rom_close();
@@ -2678,11 +2683,14 @@ int main(void)
 		}
 	}
 	/* Fin de la aplicación: ahora sí se detienen los SPE y el audio */
+	salsads_log("salida: deteniendo los SPE y el audio");
 	if (wk_snd)
 		spukit_worker_stop(wk_snd);
 	if (wk_geom)
 		spukit_worker_stop(wk_geom);
+	salsads_log("salida: audio");
 	audio_out_shutdown();
+	salsads_log("salida: SPE del 3D y del 2D");
 	for (int u = 0; u < 2; u++)
 		if (wk3d[u])
 			spukit_worker_stop(wk3d[u]);
