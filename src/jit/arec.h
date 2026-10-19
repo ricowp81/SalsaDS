@@ -70,6 +70,7 @@ enum { AREC_EV_SERVICE = 0, AREC_EV_BLOCK = 1, AREC_EV_STEP = 2 };
 #define AREC_OPT_JL_INLINE 4u  /* búsqueda de destinos indirectos copiada en cada salida en vez de la rutina común */
 #define AREC_OPT_NO_SPLIT 8u   /* la sección fría de cada bloque justo después de la caliente (sin ventanas caliente/fría) */
 #define AREC_OPT_NO_IDLE 16u   /* sin saltar los bucles de espera (un bloque que se repite a sí mismo sin efectos) */
+#define AREC_OPT_ALIGN_CHECK 32u /* LDR de palabra con la comprobación de alineación aparte (sin meterla en el índice de la tabla) */
 
 /* Estadísticas (se acumulan; las reinicia el dueño con memset). */
 struct arec_stats {

@@ -171,6 +171,8 @@ struct arec {
 
 	uint64_t (*interp_fn)(void);
 	uint32_t prof_gen;     /* perfil: vaciados (la entrada de un bloque se repite tras vaciar) */
+	int align_or;          /* ninguna página de lectura mapeada tiene los bits 14–15 del índice (direcciones 0x1xxxxxxx–0x3xxxxxxx,
+				* 0x5…, etc.): la desalineación de un LDR se puede meter ahí y cae en una página vacía (arec_emit.c) */
 };
 
 /* Perfil del host (arec_prof_open): la traza está abierta; el emisor deja la posición caliente de cada instrucción. */

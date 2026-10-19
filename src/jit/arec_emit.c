@@ -2091,18 +2091,28 @@ static void emit_mem(struct em *e, const struct ai *x, unsigned P)
 	if (!x->load)
 		rv = x->rd == 15 ? (li32(e, 10, x->pcv + 4), 10u) : G(x->rd);
 
-	if (x->load && x->msz == 4) {
-		/* LDR no alineado rota: por el camino lento */
-		E(e, ppc_rlwinm(8, ra, 0, 30, 31));
-		E(e, ppc_cmplwi(6, 8, 0));
-		bc_rare(e, BO_F, CRB(6, EQ), cold);
-	} else if (x->load && x->msz == 2 && !e->j->c->v5) {
-		/* ARMv4: LDRH impar rota por 8 y LDRSH impar se porta como LDRSB (el ARMv5 alinea): por el camino lento */
-		E(e, ppc_rlwinm(8, ra, 0, 31, 31));
-		E(e, ppc_cmplwi(6, 8, 0));
-		bc_rare(e, BO_F, CRB(6, EQ), cold);
+	/* LDR no alineado rota, y en el ARMv4 LDRH impar rota por 8 y LDRSH impar se porta como LDRSB (el ARMv5 alinea): por el
+	 * camino lento. Con align_or los bits bajos de la dirección entran en los bits 14–15 del índice de la tabla, donde ninguna
+	 * página está mapeada: la desalineación cae en el camino lento con la misma comprobación del puntero nulo. */
+	{
+		const unsigned amask = x->load && x->msz == 4 ? 3u : (x->load && x->msz == 2 && !e->j->c->v5) ? 1u : 0u;
+
+		if (amask && e->j->align_or && !(e->j->cfg.opts & AREC_OPT_ALIGN_CHECK)) {
+			E(e, ppc_rlwinm(6, ra, 21, 11, 28));
+			E(e, ppc_rlwinm(0, ra, 17, amask == 3u ? 13 : 14, 14)); /* bits 0–1 → bits 14–15 del índice (× 8) */
+			E(e, ppc_or(6, 6, 0));
+			E(e, ppc_ldx(7, RPT, 6));
+			E(e, ppc_cmpdi(1, 7, 0));
+			bc_rare(e, BO_T, CRB(1, EQ), cold);
+		} else {
+			if (amask) {
+				E(e, ppc_rlwinm(8, ra, 0, amask == 3u ? 30 : 31, 31));
+				E(e, ppc_cmplwi(6, 8, 0));
+				bc_rare(e, BO_F, CRB(6, EQ), cold);
+			}
+			page_lookup(e, ra, !x->load, cold);
+		}
 	}
-	page_lookup(e, ra, !x->load, cold);
 	E(e, ppc_rlwinm(8, ra, 0, 18, x->msz == 4 ? 29 : x->msz == 2 ? 30 : 31));
 	if (x->load) {
 		if (x->msz == 4)

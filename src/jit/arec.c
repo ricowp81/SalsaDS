@@ -876,6 +876,16 @@ void arec_map_end(struct arec *j)
 			j->phys_pages[j->phys_first[p] + j->phys_cnt[p]++] = g;
 		wr[g] = (p != AREC_PHYS_NONE && j->phys_blocks[p]) ? NULL : j->wr_real[g];
 	}
+	{
+		int ok = 1;
+
+		for (uint32_t g = 0; g < AREC_PAGES && ok; g++)
+			if ((g & 0xC000u) && j->pt[g])
+				ok = 0;
+		if (ok != j->align_or && j->nblocks)
+			arec_flush(j); /* (el código traducido dependía de la forma anterior) */
+		j->align_or = ok;
+	}
 }
 
 /* ---- creación ------------------------------------------------------------------------------------------------ */
