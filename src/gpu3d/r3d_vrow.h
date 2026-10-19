@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — línea del render 3D en vectores de 4 píxeles (Fase 3.4). Es la misma regla de r3d_px.h (`r3d_draw_row`, que
  * sigue siendo la referencia y la que usa r3d_ref.c), escrita para el SIMD del SPE: cuatro píxeles por vuelta, sin

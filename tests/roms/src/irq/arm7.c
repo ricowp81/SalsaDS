@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM irq, lado ARM7: las mismas pruebas que el ARM9 (irqt.h) con el manejador de libnds7, las SWI
  * de la BIOS del ARM7 (Halt, IntrWait, VBlankIntrWait) y el HALT con IME = 0, que en el ARM7 termina con

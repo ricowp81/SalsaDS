@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Aísla qué característica de una escena de `gfxrand` hace que SalsaDS y melonDS difieran.
 
     tools/gfx-bisect.py build/roms/gfxrand.nds SEMILLA [--only 0x01,0x02,...]

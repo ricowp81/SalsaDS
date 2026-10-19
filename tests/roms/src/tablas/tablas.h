@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — ROM tablas: tamaños y dirección de los resultados (compartidos por las dos CPUs). */
 #ifndef TABLAS_H
 #define TABLAS_H

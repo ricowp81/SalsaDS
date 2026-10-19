@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — interno de src/core: lo que comparten los archivos de la máquina. No lo incluye nadie más.
  */

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM dma, lado ARM9: las pruebas comunes (dmat.h) más lo propio del ARM9: DMAFILL, DMA a la VRAM y la
  * paleta, los modos de inicio en HBlank y al inicio de cada línea (solo en las líneas visibles) y que el DMA

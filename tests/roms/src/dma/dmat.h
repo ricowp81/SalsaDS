@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM dma: pruebas comunes del ARM9 y el ARM7. Quien la incluya define IS_ARM9 (0 o 1), BUF (zona de
  * memoria principal propia de la CPU, 64 KB) y WAIT_VBLANK() (espera de VBlank por VCOUNT).

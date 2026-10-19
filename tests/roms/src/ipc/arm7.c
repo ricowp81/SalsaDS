@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM ipc, lado ARM7: atiende las órdenes del ARM9 sobre IPCSYNC y las FIFO (ipc.h) y cuenta las IRQ
  * de sincronía que le llegan.

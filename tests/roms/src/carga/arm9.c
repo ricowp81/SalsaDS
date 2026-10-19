@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM carga, lado ARM9: trabajo continuo (kernel.h) para medir cuántas instrucciones por segundo corre
  * un intérprete con las dos CPUs ocupadas todo el tiempo. Repite iteraciones sin parar, compara cada resultado con

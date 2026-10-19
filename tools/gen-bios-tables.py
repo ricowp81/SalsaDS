@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Genera tests/roms/src/tablas/ref.h: las tablas de las SWI 1Ah-1Ch del ARM7 (seno, tono y volumen) a partir de su
 fórmula, y las compara con un volcado de lo que devuelve melonDS (ROM `tablas`).
 

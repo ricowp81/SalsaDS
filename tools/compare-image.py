@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Compara la pantalla de arriba de una imagen de SalsaDS con el banco A de VRAM que dejó melonDS.
 
     salsads-cpurun --screens sds.ppm ROM.nds          # 256×384: arriba y abajo

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — Fase 0.7 (c): el ARM7 en el hilo 1 del PPE.
  *

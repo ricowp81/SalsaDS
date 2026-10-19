@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Dibuja a PNG el cuadro de geometría que vuelca `salsads-cpurun --gx-dump` (depuración de la Fase 3.1).
 
   tools/gx-png.py gx.txt salida.png [--wire]

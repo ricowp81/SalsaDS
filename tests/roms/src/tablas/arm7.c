@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM tablas, lado ARM7: llama a las tres SWI de tablas de la BIOS del ARM7 (1Ah GetSineTable, 1Bh
  * GetPitchTable, 1Ch GetVolumeTable) con todos los índices válidos y deja los resultados en RAM principal

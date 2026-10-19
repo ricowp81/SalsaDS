@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — IPC entre el ARM9 y el ARM7 (Fase 1.2): IPCSYNC (4 bits en cada sentido más una IRQ) y las dos
  * colas FIFO de 16 palabras (IPCFIFOCNT, IPCFIFOSEND, IPCFIFORECV).

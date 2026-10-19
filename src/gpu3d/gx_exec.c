@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ejecución de las órdenes del motor de geometría (Fase 3.5). Ver gx_exec.h. Antes era la primera mitad de gx.c
  * (Fase 3.1); el tiempo, la FIFO y GXSTAT siguen en gx.c.

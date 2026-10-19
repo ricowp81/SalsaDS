@@ -26,3 +26,8 @@ __pycache__/
 
 # Volcados de memoria de qemu-user
 *.core
+
+# Volcados de memoria (core dumps)
+core
+!src/core/
+*.bak

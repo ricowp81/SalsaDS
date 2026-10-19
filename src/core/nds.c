@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — máquina de la DS: arranque de la estructura, ROM, ejecución, entrada y la imagen de las dos
  * pantallas (Fase 1.2). Ver nds.h.

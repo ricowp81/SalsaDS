@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Corre una ROM de prueba en los intérpretes de CPU de SalsaDS, nativo en la Mac
 # (cc), sin Docker. Compila src/host en build/mac y ejecuta salsads-cpurun.
 #   tools/cpurun.sh [opciones de salsads-cpurun] ROM.nds

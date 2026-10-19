@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ejecución de las órdenes del motor de geometría (Fase 3.5): matrices, vértices, iluminación, recorte, viewport
  * y armado de la lista de polígonos. Es la mitad del motor de geometría que no depende del tiempo: `gx_exec` recibe órdenes

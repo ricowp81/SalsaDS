@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Compila las pruebas unitarias para Linux ppc64 big-endian (la ABI de la
 # PS3) en build/ppc64, estáticas, para correrlas con qemu
 # (tools/qemu-ppc64.sh). Imágenes: tools/docker-image-ppc64.sh.

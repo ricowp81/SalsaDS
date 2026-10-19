@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — ROM carga: el bloque de la RAM principal donde las dos CPUs dejan sus contadores. */
 #ifndef CARGA_SHARED_H
 #define CARGA_SHARED_H

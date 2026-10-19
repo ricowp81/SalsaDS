@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ranura del cartucho (Fase 1.2): ROMCTRL, ROMCMD, ROMDATA y AUXSPI, para una ROM ya
  * desencriptada.

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Copia una ROM de prueba cambiando los cuatro bytes del código de juego de la cabecera (0x0C) por una semilla.
 
     tools/rom-seed.py gfxrand.nds salida.nds SEMILLA [--keep A:B] [--dbg N]

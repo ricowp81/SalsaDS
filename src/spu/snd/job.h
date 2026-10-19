@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — Fase 2.2: formato del trabajo entre el PPE y el SPE de audio (src/audio, src/spu/snd). */
 #ifndef SALSADS_SPE_SND_JOB_H
 #define SALSADS_SPE_SND_JOB_H

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — Fase 0.3: núcleos en ensamblador del PPE. Ver kernels.h.
  *

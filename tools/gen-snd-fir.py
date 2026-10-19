@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Genera src/audio/snd_fir.h: la tabla del FIR polifásico del remuestreo de la salida (32,7 kHz -> 48 kHz).
 
     tools/gen-snd-fir.py > src/audio/snd_fir.h

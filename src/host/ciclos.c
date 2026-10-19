@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — prueba de abrir y cerrar juegos muchas veces (Fase 49).
  *

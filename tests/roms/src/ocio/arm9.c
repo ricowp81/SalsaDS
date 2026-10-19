@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM ocio: las dos CPUs esperando el VBlank sin hacer nada más (IntrWait de la BIOS). Sirve para medir
  * cuánto cuesta un cuadro ocioso del planificador: por cuadro cada CPU ejecuta unas decenas de instrucciones

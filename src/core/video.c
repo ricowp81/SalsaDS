@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — video de la máquina: instantáneas por cuadro y registro de cambios por línea para los motores 2D
  * (Fase 2.1). Ver el comentario de `struct nds_video` en nds.h y el encabezado de src/gpu2d/gpu2d.h.

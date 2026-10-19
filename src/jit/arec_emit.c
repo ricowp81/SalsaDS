@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — recompilador: emisión de PowerPC64 (Power ISA 2.02, la del PPE) para un bloque decodificado.
  *

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Imagen del motor A de melonDS en un juego (sin que la ROM la pida): para comparar escenas de juegos con SalsaDS.
 
   tools/melonds-shot.py ROM.nds salida.ppm --wait 25

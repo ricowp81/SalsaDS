@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — efectos de color de los motores 2D (Fase 2.1): mezcla alfa, brillo y brillo maestro.
  *

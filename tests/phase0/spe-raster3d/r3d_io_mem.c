@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — Fase 0.4: E/S del núcleo en el PPE y el host (memcpy).
  *

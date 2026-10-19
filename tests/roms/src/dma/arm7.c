@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM dma, lado ARM7: las pruebas comunes (dmat.h) y el ancho de la cuenta (14 bits en los canales
  * 0 a 2, 16 en el 3). El ARM7 espera el VBlank mirando VCOUNT.

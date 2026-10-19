@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — referencia del motor de render 3D (Fase 3.2): el cuadro entero en memoria, los polígonos en el orden de la
  * DS uno detrás de otro, cada texel leído directo de la VRAM de la instantánea. Escrita para leerse; es la «verdad»

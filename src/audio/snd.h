@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — mezclador de sonido de la DS (Fase 2.2): los 16 canales del ARM7, SOUNDCNT/SOUNDBIAS, la captura y el
  * remuestreo a la salida de la PS3. Código portable: corre en el host, en el PPE y en un SPE (src/spu/snd).

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM bios, lado ARM9: las SWI de la BIOS (biost.h), con los filtros de diferencias que solo tiene
  * el ARM9, y el veredicto del ARM7.

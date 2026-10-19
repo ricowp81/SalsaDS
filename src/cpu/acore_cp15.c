@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — CP15 mínimo del ARM946E-S (ARM9 de la DS).
  *

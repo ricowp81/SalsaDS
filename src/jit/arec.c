@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — recompilador: despachador, caché de bloques, enlaces, invalidación y los ayudantes en C que llama el
  * código generado. Ver arec.h y docs/fase4.md. Código propio (GPL-2.0-or-later).

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — modelo en C de la semántica de ARM usado por las pruebas de
  * CPU (cpu9). Se escribió desde el manual de ARM (ARMv5TE) y se valida

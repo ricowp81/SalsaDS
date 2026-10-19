@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — sonido de la máquina (Fase 2.2): los registros del ARM7 (0x04000400-0x0400051F) y el reparto del trabajo al
  * mezclador de src/audio. Ver el encabezado de audio/snd.h para el modelo.

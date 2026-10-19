@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Lanza melonDS con una ROM, espera unos segundos y vuelca trozos de la memoria (y los registros) que ve el
 stub de GDB: sirve para comparar el estado de un juego con el de SalsaDS (`salsads-cpurun --dump`).
 

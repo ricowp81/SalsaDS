@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — secuencias de órdenes de prueba para el ejecutor del motor de geometría (Fase 3.5): un registro de órdenes
  * pseudoaleatorio pero determinista (matrices, pilas, luces, polígonos de los cuatro tipos, recortes, pruebas de caja). Lo usan

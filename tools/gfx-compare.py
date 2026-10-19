@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Compara la imagen del motor A de SalsaDS con la de melonDS en una ROM de gráficos (tests/roms/src/gfx).
 
     tools/gfx-compare.py build/roms/gfxrand.nds 1 2 3 ...          # una corrida por semilla (ROM con semilla)

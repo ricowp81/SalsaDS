@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Veredicto de viabilidad del JIT (Fase 0.7) a partir del log de jit-arm.
 
   tools/jit-veredicto.py ruta/a/jit-arm.log

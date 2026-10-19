@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Ejecuta make (o cualquier comando con --sh) dentro de la imagen del toolchain.
 #   tools/build.sh                 make all (programas de la Fase 0)
 #   tools/build.sh -C tests/phase0/empty pkg

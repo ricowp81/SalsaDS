@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — ROM carga: una iteración completa y las semillas. */
 #ifndef CARGA_ITER_H
 #define CARGA_ITER_H

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM save: la memoria de guardado del cartucho por AUXSPI (EEPROM de 0,5 KB, de 8 y 64 KB, FRAM de 32 KB
  * y Flash). El tipo y el tamaño del chip los pone el emulador (un archivo de guardado de ese tamaño); la ROM los

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — contexto del rasterizador por bandas (r3d_core.c, Fase 3.2). Está a la vista para que el núcleo del host
  * (struct nds) y el programa SPE lo reserven sin memoria dinámica; nadie fuera de r3d_core.c toca sus campos.

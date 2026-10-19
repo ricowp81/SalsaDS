@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM «gfxprobe»: ¿desde qué línea se ve un cambio de registro? Un fondo rojo sobre el color de fondo azul,
  * y ocho veces por cuadro la ROM apaga o enciende el fondo (DISPCNT): cuatro veces justo después de ver la línea L

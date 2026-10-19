@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — ROM ocio, lado ARM7: espera el VBlank sin hacer nada más. */
 #include <nds.h>
 

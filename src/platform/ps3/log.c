@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — logger para PS3 (TTY + UDP). Ver log.h.
  */

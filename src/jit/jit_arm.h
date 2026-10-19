@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — prueba mínima del JIT ARM → PPC64 (Fase 0.7).
  *

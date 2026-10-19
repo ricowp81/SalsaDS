@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — grupos nuevos de la ROM cpuarm: lo que cpu9 no cubre y lo que
  * cambia entre la ARM7 (ARMv4T) y la ARM9 (ARMv5TE). Se compila para las dos

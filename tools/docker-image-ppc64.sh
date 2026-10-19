@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Construye las imágenes para las pruebas big-endian en el host
 # (docker/ppc64.Dockerfile): compilador cruzado ppc64 y qemu-user.
 set -eu

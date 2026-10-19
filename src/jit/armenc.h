@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — codificación de instrucciones ARM para los programas de prueba
  * del JIT (Fase 0.7). Solo lo que usan los bucles: datos con operando

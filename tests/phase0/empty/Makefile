@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 PROGRAM := salsads-empty
 TITLE   := SalsaDS vacio
 APPID   := SLDS00002

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — motores 2D: referencia píxel por píxel (Fase 2.1).
  *

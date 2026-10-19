@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Ajusta las reglas de cobertura del rasterizador 3D contra una captura de melonDS (Fase 3.2).
 
     tools/r3d-fit.py mel-13.ppm            # escena 13 de la ROM gx3d (triángulos al azar, color plano)

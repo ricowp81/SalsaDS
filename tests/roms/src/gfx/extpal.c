@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM «gfxextpal»: paletas extendidas de fondos y de OBJ del motor A. Los bancos E (fondos) y F (OBJ) se
  * llenan como LCDC con colores que dependen de (ranura, número de paleta, color) y se mapean como paletas extendidas;

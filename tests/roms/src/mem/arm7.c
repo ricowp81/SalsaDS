@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM mem, lado ARM7: la WRAM del ARM7, la compartida vista desde el ARM7 y la VRAM que el ARM9
  * le asigna (bancos C y D). Atiende los pedidos del ARM9 por el buzón (hw.h).

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — pruebas del mezclador de sonido (src/audio, Fase 2.2): el modelo (volumen, balance, bucles, ADPCM, PSG, ruido),
  * que partir un trabajo en trozos da lo mismo que correrlo entero (el estado se arrastra), la captura y el remuestreo.
  * Lo que sale del mezclador se compara muestra a muestra con melonDS con la ROM `snd` (tools/snd-compare.py); aquí

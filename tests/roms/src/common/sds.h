@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — marco de pruebas para las ROMs homebrew de la DS (ARM9, y ARM7
  * con sds7.c: sin pantalla, su bloque de resultados va aparte).

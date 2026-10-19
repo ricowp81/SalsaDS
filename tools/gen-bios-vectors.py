@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Genera tests/roms/src/bios/vectors.h: datos de prueba de los descompresores de la BIOS (LZ77, RLE, Huffman,
 BitUnPack y los filtros de diferencias) con compresores escritos aquí desde la descripción de GBATEK. Los
 resultados esperados salen del dato original, no de ningún emulador.

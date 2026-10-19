@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — entrada: DualShock 3 → botones de la DS, y el puntero del táctil.
  *

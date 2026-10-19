@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — instrucciones ARM bajo prueba, una función por forma. Cada una
  * pone las banderas de entrada (msr cpsr_f), ejecuta la instrucción y lee el

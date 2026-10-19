@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — ROM demo: lo que el ARM7 deja al ARM9 en RAM principal cada cuadro. */
 #ifndef DEMO_SHARED_H
 #define DEMO_SHARED_H

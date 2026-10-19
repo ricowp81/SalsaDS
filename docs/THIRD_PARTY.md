@@ -5,8 +5,9 @@ comprobación de que es compatible con el destino. En `lib/rsxkit/` y
 `lib/spukit/` (MIT) no entra código GPL. Nada de material de Nintendo o Sony:
 ni ROMs comerciales, ni BIOS, firmware o claves de la DS.
 
-La licencia de SalsaDS está por decidir (pregunta abierta del plan del proyecto)
-local): hasta entonces no se copia código GPL de otros proyectos.
+SalsaDS es **GPL-2.0-or-later** (copyright de ricowp81); `lib/rsxkit/` y `lib/spukit/` son MIT.
+No se copia código de melonDS ni de NooDS (GPL-3.0, incompatible con GPL-2.0-o-posterior);
+de DeSmuME (GPL-2.0-o-posterior) sí se podría, registrándolo aquí antes.
 
 ## Bibliotecas propias (subtree)
 
@@ -19,9 +20,8 @@ local): hasta entonces no se copia código GPL de otros proyectos.
 
 Salsa64 es del mismo autor (GPL-2.0-or-later en origen). Se copió y adaptó
 (nombres, puerto, rutas) código y herramientas **propios**, no el adaptado de
-terceros que Salsa64 registra en su propio `THIRD_PARTY.md`. Mientras no se
-decida la licencia de SalsaDS, estos archivos se consideran del autor y su
-licencia se fija con esa decisión.
+terceros que Salsa64 registra en su propio `THIRD_PARTY.md`. Todos son del autor y
+quedan bajo la licencia de SalsaDS (GPL-2.0-or-later).
 
 | Archivo | Origen en Salsa64 | Notas |
 |---|---|---|

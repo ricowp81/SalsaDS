@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — Fase 0.4: formatos del rasterizador 3D de prueba (PPE, SPE y
  * host).

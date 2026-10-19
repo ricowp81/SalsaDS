@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — pruebas de la distribución de las dos pantallas (Fase 0.6). */
 #include <math.h>
 

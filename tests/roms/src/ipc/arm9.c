@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM ipc, lado ARM9: IPCSYNC (4 bits por sentido, IRQ) y las dos FIFO (16 palabras, banderas,
  * error, vaciado, IRQ por flanco). El ARM9 dirige: manda órdenes al ARM7 por el buzón de RAM y prueba el

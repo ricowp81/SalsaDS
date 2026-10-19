@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — ROM snd: direcciones compartidas (datos de origen y resultados). */
 #ifndef SND_H
 #define SND_H

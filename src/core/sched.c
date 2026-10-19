@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — planificador de eventos, interrupciones, temporizadores, DMA y temporización del video
  * (Fase 1.2).

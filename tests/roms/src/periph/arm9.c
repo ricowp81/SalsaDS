@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM periph, lado ARM9: división y raíz cuadrada por hardware, el cartucho (cabecera, identificador,
  * bloques por sondeo y por DMA, IRQ de fin), puertos varios y el estado de arranque.

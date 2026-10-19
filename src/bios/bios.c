@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — BIOS en HLE (Fase 1.2): bloques de BIOS propios y las llamadas SWI.
  *

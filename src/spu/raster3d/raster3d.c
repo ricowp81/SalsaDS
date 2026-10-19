@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — render 3D de la DS en un SPE (Fase 3.2). Trabajador de spukit: cada trabajo es un cuadro de geometría
  * (gx_frame en memoria principal) y la parte que le toca a este SPE (bandas alternas de 16 líneas); el rasterizador es

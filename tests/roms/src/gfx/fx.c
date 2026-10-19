@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM «gfxfx»: caracteriza los efectos de color del motor A contra melonDS. Dos rampas de colores de 32 pasos
  * en el eje X (un fondo de 8 bits con una tesela sólida por color), y por bandas de líneas se cambia BLDALPHA/BLDY

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM snd, lado ARM7: ejercita el sonido (los 16 canales, SOUNDCNT/SOUNDBIAS y la captura) con casos de una
  * sola señal y deja lo que sale del mezclador, capturado por SNDCAP0/1 (izquierdo y derecho, PCM16, una vez), en RAM

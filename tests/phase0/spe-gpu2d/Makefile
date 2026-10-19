@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 PROGRAM := salsads-spe-gpu2d
 TITLE   := SalsaDS 2D
 APPID   := SLDS00003

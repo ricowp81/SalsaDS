@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Números con 2 decimales sin printf de flotantes (la libc de la PS3 no los trae confiables):
  * "%u.%02u" con F2(v), y «+a.b» con un signo aparte. */
 #ifndef SALSADS_JIT_ARM_FIXED_H

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — motor de geometría de la DS en un SPE (Fase 3.5). Trabajador de spukit: cada trabajo es un trozo del registro de
  * órdenes que el motor de tiempo del PPE (src/gpu3d/gx.c) fue anotando al empezar cada orden; aquí se ejecutan con el mismo

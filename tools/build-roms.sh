@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Construye las ROMs de prueba de la DS (tests/roms) con BlocksDS dentro de
 # la imagen salsads-nds. Salida en build/roms/*.nds.
 #   tools/build-roms.sh            construye todas

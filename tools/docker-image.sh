@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Construye la imagen del toolchain de SalsaDS (salsads-toolchain) a partir de
 # la de Salsa64 (docker/Dockerfile): tarda segundos si la base ya existe.
 #   tools/docker-image.sh [args extra para docker build]

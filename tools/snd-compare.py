@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Compara las muestras del mezclador de SalsaDS con las de melonDS en la ROM `snd` (tests/roms/src/snd).
 
     tools/snd-compare.py [build/roms/snd.nds]            corre las dos y compara caso por caso

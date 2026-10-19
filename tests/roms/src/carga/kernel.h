@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM carga: el trabajo que hacen las dos CPUs. C99 portable (sin dependencias del orden de bytes ni
  * de la ISA): se compila para el ARM9 (ARMv5TE), para el ARM7 (ARMv4T) y, para sacar los valores de referencia,

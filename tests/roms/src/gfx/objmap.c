@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM «gfxobjmap»: ¿qué ve el motor 2D en la parte de la VRAM de OBJ que no tiene banco? Solo el banco G (16 KB)
  * está mapeado como VRAM de OBJ del motor A; OBJ de 8×8 y 8 bits leen teselas por todo el espacio de 256 KB. Los colores

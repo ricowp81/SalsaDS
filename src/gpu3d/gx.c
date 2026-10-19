@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — motor de geometría de la DS: FIFO, tiempo, GXSTAT, pilas (punteros y error) y cambio de búfer (Fase 3.1; la
  * ejecución de las órdenes pasó a gx_exec.c en la Fase 3.5). Ver gx.h para el diseño y el tiempo.

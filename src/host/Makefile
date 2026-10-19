@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 # SalsaDS — herramientas del host que usan la máquina de src/core y los intérpretes de src/cpu:
 #   salsads-cpurun   corre ROMs (tests/roms) y lee su veredicto; vuelca la imagen de las pantallas
 #   armbench         mide los MIPS de los intérpretes

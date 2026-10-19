@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — memoria de guardado del cartucho (AUXSPI): EEPROM, FRAM y Flash (Fase 1.3).
  *

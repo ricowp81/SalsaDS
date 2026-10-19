@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Corre un programa de SalsaDS en RPCS3 y espera su línea RESULTADO.
 
   tools/rpcs3-run.py empty                  (o la ruta a un .elf)

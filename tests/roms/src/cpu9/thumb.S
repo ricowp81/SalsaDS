@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — funciones en Thumb (ARMv4T/ARMv5T) de las pruebas de CPU del
  * ARM9. Se llaman desde código ARM con blx: así se prueban las instrucciones

@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Corre un programa de build/ppc64 con qemu-ppc64. El directorio de trabajo
 # es la raíz del repo; QEMU_TIMEOUT (segundos, 600 por omisión) corta las
 # corridas colgadas. stderr se junta con stdout dentro del contenedor (Docker

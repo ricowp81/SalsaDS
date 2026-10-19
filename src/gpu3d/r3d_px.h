@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — reglas del motor de render 3D de la DS (Fase 3.2), compartidas por la referencia (r3d_ref.c) y el
  * rasterizador por bandas de los SPE (r3d_core.c): las dos llaman a estas mismas funciones, así que dan los mismos

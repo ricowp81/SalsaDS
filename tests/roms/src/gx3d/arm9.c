@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM «gx3d» (Fase 3.2): escenas conocidas del motor de render 3D. Solo registros de hardware (GBATEK).
  *

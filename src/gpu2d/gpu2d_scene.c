@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — escenas sintéticas y aleatorias para el 2D (Fase 2.1). Ver gpu2d_scene.h.
  */

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — escenas sintéticas y aleatorias para el 2D (Fase 2.1): pruebas del compositor contra la referencia y
  * medición del costo en el SPE (tests/phase0/spe-gpu2d).

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — motor de render 3D de la DS (Fase 3.2): rasteriza un `gx_frame` (la lista de polígonos en pantalla que
  * deja el motor de geometría de la 3.1) en una imagen de 256×192 que el motor 2D A usa como su capa BG0.

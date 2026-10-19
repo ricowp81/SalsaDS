@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Núcleos y intérprete de tests/phase0/ppe-bench. Los de ensamblador solo
  * existen en PowerPC64 (qemu-ppc64, big-endian); el intérprete ARM corre en
  * todos los hosts y de paso prueba la memoria little-endian en los dos

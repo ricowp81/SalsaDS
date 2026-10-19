@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — interno del recompilador (src/jit/arec*.c). No lo incluye nadie más.
  */

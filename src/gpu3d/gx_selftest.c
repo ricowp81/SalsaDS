@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — secuencias de órdenes de prueba del ejecutor de geometría (Fase 3.5). Ver gx_selftest.h. */
 #include "gpu3d/gx_selftest.h"
 

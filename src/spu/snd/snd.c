@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — mezclador de sonido en un SPE (Fase 2.2).
  *

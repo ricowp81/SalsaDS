@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — rutinas en ensamblador de la ROM cpuarm (ARM9 y ARM7). Se
  * ensambla para las dos CPUs: lo que solo existe en ARMv5TE va dentro de

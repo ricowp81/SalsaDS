@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 @ SalsaDS — ROM bios: comprueba que las SWI de la BIOS conservan r4-r11 (la BIOS real solo toca r0-r3, r12 y lr).
 @ Cada rutina pone valores distintos en r4-r11, llama a la SWI y devuelve una máscara: el bit i vale 1 si r(4+i)
 @ cambió. Las SWI se llaman con el estado de r0-r3 que da el llamador en el caso del Halt.

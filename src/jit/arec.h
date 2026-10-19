@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — recompilador dinámico ARMv5TE (ARM y Thumb) → PowerPC64 para el ARM9 (Fase 4).
  *

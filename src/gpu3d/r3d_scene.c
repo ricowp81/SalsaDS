@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — escenas sintéticas del render 3D (Fase 3.2): un cuadro de geometría armado con el motor de geometría
  * real (gx.c, por sus puertos de órdenes) y una VRAM de prueba, deterministas a partir de una semilla. Las usan las

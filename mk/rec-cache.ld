@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Caché de código del recompilador: cola NOBITS al final del segmento de
  * texto de lv2 (hdr_text de lv2.ld). Es el único lugar escribible y

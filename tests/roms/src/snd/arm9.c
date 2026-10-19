@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM snd, lado ARM9: espera a que el ARM7 termine los casos de sonido (que dejan en RAM lo capturado del
  * mezclador, 0x02400000). Sin veredicto propio: las muestras se comparan con tools/snd-compare.py contra melonDS.

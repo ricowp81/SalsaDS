@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — «SalsaDS núcleo» (Fases 1 y 2.1): el núcleo de la DS en la PS3, con las dos pantallas.
  *

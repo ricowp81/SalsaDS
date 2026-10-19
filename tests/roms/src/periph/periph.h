@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM periph: órdenes del ARM9 al ARM7 y utilidades comunes (CRC16, lectura del cartucho).
  */

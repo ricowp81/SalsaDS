@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — codificación de instrucciones PowerPC (Power ISA 2.02, la del
  * PPE) para el JIT de la Fase 0.7. Nada de formas con punto, `mfcr`, `mtcrf`

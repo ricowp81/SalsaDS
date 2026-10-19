@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM irq, lado ARM9. Las pruebas están en irqt.h (las comparte con el ARM7). Con libnds:
  * irqSet/irqEnable, swiWaitForVBlank (en el ARM9 es código de libnds con el WFI de CP15) y las SWI 4 y 5 de

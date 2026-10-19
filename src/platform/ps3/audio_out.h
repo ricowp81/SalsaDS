@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — salida de audio de la PS3 (PSL1GHT, puerto de audio de 2 canales a 48 kHz, bloques de 256 muestras).
  *

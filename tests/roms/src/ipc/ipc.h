@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — ROM ipc: órdenes del ARM9 al ARM7 por el buzón. */
 #ifndef IPC_H
 #define IPC_H

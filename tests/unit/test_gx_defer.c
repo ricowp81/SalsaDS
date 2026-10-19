@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — el motor de geometría en modo diferido contra el directo (Fase 3.5).
  *
  * Dos motores reciben las mismas escrituras con los mismos instantes: uno ejecuta cada orden al empezar (directo) y el

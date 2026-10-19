@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — el recompilador del ARM9 (src/jit/arec*) conectado a la máquina de la DS (Fase 4).
  *

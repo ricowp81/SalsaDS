@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — grupos de pruebas de CPU de las ROMs cpu9 (ARM9, ARM946E-S,
  * ARMv5TE) y cpuarm (ARM9 y ARM7TDMI, ARMv4T). Con ARM7 definido se saltan

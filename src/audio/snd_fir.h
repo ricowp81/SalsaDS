@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Generado por tools/gen-snd-fir.py: no editar a mano. */
 #define SND_FIR_TAPS 32
 #define SND_FIR_BEFORE 15

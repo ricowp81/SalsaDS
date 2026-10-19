@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — pruebas del intérprete de CPU: registros de estado y modos con
  * banco, excepciones, interrupciones, HALT, ganchos de HLE, CP15 y las dos

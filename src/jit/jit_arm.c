@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — traductor ARM → PowerPC64 de la Fase 0.7. Ver jit_arm.h.
  *

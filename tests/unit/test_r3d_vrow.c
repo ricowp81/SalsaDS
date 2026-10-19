@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — línea del render 3D en vectores (src/gpu3d/r3d_vrow.h, Fase 3.4) contra la escalar (r3d_draw_row de r3d_px.h):
  * miles de líneas de polígonos al azar sin textura (modos, alfas, sombras, alambre, W/Z, translúcidos, niebla, prueba de

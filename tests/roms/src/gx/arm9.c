@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM gx: la FIFO de comandos del motor de geometría vista desde el ARM9, sin interpretar los comandos
  * (la geometría es de la Fase 3; en melonDS la IRQ 21 se pide por nivel): GXSTAT con la FIFO vacía, escrituras de comandos NOP por CPU y por DMA en modo 7

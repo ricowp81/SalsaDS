@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Genera tests/roms/src/snd/adpcm.h: un trozo de IMA-ADPCM (cabecera de 32 bits y nibbles) con una onda de prueba, con el
 codificador estándar de IMA (tabla de pasos de 89 entradas y ajuste de índice -1,-1,-1,-1,2,4,6,8), para la ROM `snd`.
 

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM bios: pruebas comunes del ARM9 y el ARM7 de las llamadas SWI de la BIOS (llamadas a mano, no por
  * las funciones por software de libnds). Quien la incluya define IS_ARM9 y BUF (64 KB de memoria propia).

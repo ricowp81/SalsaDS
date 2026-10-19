@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM demo: una demostración propia para ver el núcleo funcionando (la corre «SalsaDS núcleo»).
  *

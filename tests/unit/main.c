@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — corredor de las pruebas unitarias del host.
  *
  * Imprime el orden de bytes del host para que tools/test-host.sh compruebe

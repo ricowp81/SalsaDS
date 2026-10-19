@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM mem, lado ARM9: mapa de memoria de la Fase 1.2.
  *

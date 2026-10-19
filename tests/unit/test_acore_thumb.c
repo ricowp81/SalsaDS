@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — pruebas del intérprete de CPU: instrucciones Thumb de la ARM7
  * (ARMv4T) y la ARM9 (ARMv5TE). Mismo estilo que test_acore_arm.c; la ALU se

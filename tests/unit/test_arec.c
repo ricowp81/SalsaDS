@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — pruebas del recompilador ARMv5TE → PowerPC64 (Fase 4, src/jit/arec*).
  *

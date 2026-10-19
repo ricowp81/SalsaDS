@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — grupos de la ROM cpuarm que solo tienen sentido en la ARM9:
  * excepciones con los vectores en la ITCM (CP15 con V = 0) y CP15 con las TCM.

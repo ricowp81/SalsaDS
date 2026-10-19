@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 # SalsaDS — pruebas unitarias en el host. Desde la raíz: tools/build.sh test-host
 # (corre en little-endian con el gcc nativo del contenedor y en big-endian con
 # qemu-ppc64; ver tools/test-host.sh). Por omisión compila con AddressSanitizer

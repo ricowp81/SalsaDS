@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — rasterizador 3D por bandas de líneas (Fase 3.2): el código de los SPE. En el host y en el PPE compila
  * igual con la E/S de r3d_io.h (copias inmediatas que comprueban las reglas del DMA). Las reglas de la DS están en

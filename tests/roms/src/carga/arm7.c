@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM carga, lado ARM7: el mismo trabajo que el ARM9 (kernel.h) sin parar, con sus resultados comparados
  * contra los mismos valores esperados. No usa interrupciones ni HALT.

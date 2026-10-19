@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Rasterizador de tests/phase0/spe-raster3d: el núcleo que corre en el SPE,
  * compilado para el host con la E/S de memcpy (que solo copia al esperar
  * cada DMA), contra la referencia píxel a píxel.

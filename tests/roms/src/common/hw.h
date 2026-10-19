@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — registros y ayudas de hardware para las ROMs de prueba de la Fase 1.2 (ARM9 y ARM7). Solo
  * direcciones de GBATEK; no usa libnds salvo donde la ROM lo incluye aparte.

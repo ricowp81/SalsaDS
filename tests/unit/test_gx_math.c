@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — la aritmética barata del ejecutor de geometría (Fase 3.5) contra la de 64 bits de C: multiplicaciones de 32 bits con
  * trozos de 16, cocientes con estimación en coma flotante, el producto de matrices y las transformaciones en vectores de 4. Se
  * compila con GX_VEC, GX_SPLIT_MUL y GX_TEST (tests/unit/Makefile): en el host corre lo mismo que corre el SPE. */

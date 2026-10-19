@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — motor de geometría de la DS (Fase 3.1): FIFO de comandos, matrices, vértices, iluminación, recorte y
  * viewport. Produce, por cuadro, una lista de polígonos en coordenadas de pantalla que rasteriza la Fase 3.2.

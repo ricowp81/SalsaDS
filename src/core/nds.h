@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — máquina de la DS (Fase 1.2): mapa de memoria, planificador, IRQ, temporizadores, DMA, IPC,
  * cartucho, SPI, matemáticas por hardware, BIOS en HLE y arranque directo.

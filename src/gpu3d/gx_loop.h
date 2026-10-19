@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ejecutor de prueba del modo diferido del motor de geometría (Fase 3.5): ejecuta los trabajos en el acto, en el
  * mismo hilo, con ventanas de salida chicas y el registro por tramos, igual que lo hace el SPE de geometría (src/spu/geom).

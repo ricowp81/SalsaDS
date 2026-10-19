@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Envía un programa a la PS3 real.
 #   PS3_IP=x.x.x.x tools/deploy-ps3.sh ps3load build/salsads-empty/salsads-empty.self
 #   PS3_IP=x.x.x.x tools/deploy-ps3.sh ftp build/salsads-empty/salsads-empty.pkg

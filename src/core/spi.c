@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — bus SPI del ARM7 (Fase 1.2): firmware, pantalla táctil, gestión de energía y el reloj de tiempo
  * real (RTC).

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — juego de instrucciones ARM (ARMv4T y ARMv5TE) del intérprete.
  *

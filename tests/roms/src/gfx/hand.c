@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROMs «gfx*» de escenas hechas a mano (Fase 2.1): cada una monta una escena sencilla en los dos motores
  * (los mismos datos, las mismas posiciones) y deja la lista de píxeles que deben tener un color conocido, calculado

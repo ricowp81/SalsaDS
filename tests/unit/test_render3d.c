@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — pruebas del render 3D (Fase 3.2): el rasterizador por bandas (r3d_core.c, el código del SPE con la E/S de
  * memcpy que comprueba las reglas del DMA) contra la referencia (r3d_ref.c) en escenas armadas con el motor de

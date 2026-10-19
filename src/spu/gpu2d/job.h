@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — Fase 2.1: formato del trabajo entre el PPE y el SPE del compositor 2D (src/gpu2d). */
 #ifndef SALSADS_SPE_GPU2D_JOB_H
 #define SALSADS_SPE_GPU2D_JOB_H

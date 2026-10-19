@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — recompilador: decodificación de ARM (ARMv5TE) y Thumb a una representación común (struct ai).
  *

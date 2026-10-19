@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Memoria little-endian de la máquina emulada: debe dar lo mismo en un host
  * little-endian y en uno big-endian. */
 #include <string.h>

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Reduce los OBJ de una escena de `gfxrand` al grupo más chico que sigue haciendo diferir a SalsaDS y melonDS.
 
     tools/gfx-bisect-obj.py build/roms/gfxrand.nds SEMILLA

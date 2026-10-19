@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — registros de E/S de las dos CPUs (0x04000000): reparto por dirección hacia el planificador, el
  * IPC, el cartucho, el SPI, las matemáticas, los bancos de VRAM y el resto. Los registros sin comportamiento

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — marco de pruebas para el ARM7 (ver sds.h): la misma interfaz que
  * sds.c pero sin pantalla. Los resultados van a SDS_ARM7_RESULTS_ADDR; el

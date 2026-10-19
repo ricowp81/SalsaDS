@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — mezclador de sonido de la DS (ver snd.h). Código propio; el comportamiento sale de GBATEK y de lo medido
  * contra melonDS 1.1 con la ROM `snd` (tools/snd-compare.py). Sin asignaciones ni libc: compila en el SPE.

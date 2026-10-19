@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM «gfxmos»: mosaico de fondos y de OBJ contra melonDS. Fondo de texto con teselas de píxeles todos
  * distintos y desplazamiento, y un OBJ; el mosaico se pone grande para ver cómo se agrupan los píxeles. MOS = 0: solo

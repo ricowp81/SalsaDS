@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM «hola»: escribe en la VRAM en el modo de visualización
  * directa y reporta OK por el marco de pruebas (common/sds.h).

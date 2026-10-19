@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — caché de código del JIT en la PS3. Ver rec_cache.h.
  * Adaptado de la prueba de la caché de Salsa64 (src/platform/ps3/rec_cache.c).

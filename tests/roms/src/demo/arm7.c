@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM demo, lado ARM7: cada VBlank lee EXTKEYIN y, si el lápiz toca, la pantalla táctil por SPI, la
  * convierte a píxeles con la calibración del firmware y se lo deja al ARM9 (shared.h).

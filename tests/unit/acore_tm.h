@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — máquina de pruebas para los intérpretes de CPU (src/cpu).
  *

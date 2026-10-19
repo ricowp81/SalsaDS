@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 # «SalsaDS JIT núcleo» (Fase 4): el mismo programa que «SalsaDS núcleo» (tests/phase1/nucleo/main.c) con el ARM9 en el
 # recompilador ARMv5TE → PowerPC64 (src/jit/arec*), la caché de código de 4 MB y su prueba con respaldo de la Fase 0.7.
 PROGRAM := salsads-nucleo-jit

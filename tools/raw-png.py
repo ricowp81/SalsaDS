@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Convierte una imagen cruda de las pruebas de la Fase 0 a PNG.
 
   tools/raw-png.py rgba5551 imagen.rgba5551 salida.png [ancho alto]  (256×192 por omisión)

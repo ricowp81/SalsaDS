@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM cpuarm, lado ARM7 (ARM7TDMI, ARMv4T): corre los grupos de
  * cpu9 que existen en ARMv4T y los nuevos, y deja el veredicto en su propio

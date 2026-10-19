@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Pruebas unitarias del host en los dos órdenes de bytes:
 #   LE  gcc nativo del contenedor de la Mac (arm64 Linux, little-endian), con ASan/UBSan
 #   BE  ppc64 big-endian (la ABI de la PS3) con qemu-user (tools/qemu-ppc64.sh)

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — marco mínimo de pruebas unitarias. */
 #ifndef SALSADS_TESTS_CHECK_H
 #define SALSADS_TESTS_CHECK_H

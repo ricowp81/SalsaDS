@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — mide cuántas instrucciones por segundo da el intérprete de CPU
  * (src/cpu) en el host. No sirve para el rendimiento en la PS3: es un número

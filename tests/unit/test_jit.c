@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — pruebas del JIT ARM → PPC64 (Fase 0.7): codificaciones, el
  * intérprete de referencia contra el resultado calculado en C y contra el de
  * la Fase 0.3, la traducción de los programas en los tres modos de banderas

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — Fase 3.5: formato del trabajo entre el PPE y el SPE del motor de geometría (src/gpu3d/gx_exec.c). */
 #ifndef SALSADS_SPE_GEOM_JOB_H
 #define SALSADS_SPE_GEOM_JOB_H

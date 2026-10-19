@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — intérprete de referencia del subconjunto ARM del JIT (Fase 0.7).
  * Banderas completas; es la verdad contra la que se compara el código

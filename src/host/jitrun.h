@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — el recompilador del ARM9 en salsads-cpurun (jitrun.c). */
 #ifndef SALSADS_HOST_JITRUN_H
 #define SALSADS_HOST_JITRUN_H

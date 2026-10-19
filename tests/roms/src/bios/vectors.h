@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Generado por tools/gen-bios-vectors.py: no editar a mano. */
 #ifndef VECTORS_H
 #define VECTORS_H

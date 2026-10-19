@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — programas ARM de prueba del JIT (Fase 0.7).
  *

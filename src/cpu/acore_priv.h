@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — interno de los intérpretes de CPU (acore*.c). No lo incluye nadie más.
  */

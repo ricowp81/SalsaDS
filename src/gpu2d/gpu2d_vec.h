@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — vectores de 8 píxeles de 16 bits para el compositor 2D (Fase 2.1).
  *

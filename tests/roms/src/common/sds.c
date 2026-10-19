@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — marco de pruebas para las ROMs de la DS. Ver sds.h.
  *

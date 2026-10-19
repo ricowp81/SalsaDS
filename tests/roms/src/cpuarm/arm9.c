@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM cpuarm, lado ARM9: ejecuta los grupos de cpu9 (ARM y Thumb en
  * ARMv5TE), los nuevos (alineación, LDM/STM, modos, cambio de estado, Thumb,

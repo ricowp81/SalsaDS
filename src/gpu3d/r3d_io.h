@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — E/S del rasterizador por bandas (Fase 3.2): DMA del MFC en el SPE; en el host y en el PPE, copias
  * inmediatas que comprueban las reglas del DMA (alineación a 16 y tamaños de 1, 2, 4, 8 o múltiplos de 16, hasta

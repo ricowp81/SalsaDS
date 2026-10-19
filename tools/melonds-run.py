@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Corre una ROM de prueba en melonDS (emulador de referencia) y lee su veredicto.
 
   tools/melonds-run.py build/roms/hola.nds [--timeout 30] [--keep] [--vram FILE.ppm]

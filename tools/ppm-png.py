@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """PPM (P6) a PNG, con ampliación entera opcional.
 
   tools/ppm-png.py entrada.ppm salida.png [escala]

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 # ROMs de prueba de la DS. Se ejecuta dentro de la imagen salsads-nds
 # (tools/build-roms.sh). Toolchain: BlocksDS (arm-none-eabi-gcc, libnds,
 # ndstool); licencias en tests/roms/homebrew/AVISOS.md.

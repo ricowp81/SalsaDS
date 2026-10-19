@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Construye la imagen salsads-nds (BlocksDS fijado por digest, docker/nds.Dockerfile).
 set -eu
 cd "$(dirname "$0")/.."

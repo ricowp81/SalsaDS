@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — pruebas unitarias del motor de geometría (src/gpu3d/gx.c, Fase 3.1).
  *
  * El motor es portable y sin dependencias: aquí se maneja como lo hace el núcleo (escrituras a los puertos de órdenes y a

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — salida de audio de la PS3. Ver audio_out.h. Código propio; el orden de apertura y cierre del puerto es el de
  * PSL1GHT (audio/audio.h) y lo que Salsa64 midió en la consola: un recurso de audio que quede enganchado al proceso puede

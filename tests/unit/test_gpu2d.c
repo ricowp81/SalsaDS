@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — pruebas del 2D (Fase 2.1): la referencia píxel por píxel contra el compositor por líneas (con kernels
  * escalares), en little-endian y en big-endian, y las huellas de las escenas fijas, que tienen que ser las mismas en los
  * dos órdenes de bytes. Las escenas aleatorias salen de una semilla: perfil (3 bits bajos) y características apagadas

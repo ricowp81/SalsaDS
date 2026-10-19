@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — división y raíz cuadrada por hardware del ARM9 (DIVCNT/DIV_*, SQRTCNT/SQRT_*).
  *

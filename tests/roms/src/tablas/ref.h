@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Generado por tools/gen-bios-tables.py: tablas de las SWI 1Ah-1Ch del ARM7 (ver ese script). */
 static const uint16_t ref_sine[64] = {
 	0, 804, 1608, 2410, 3212, 4011, 4808, 5602, 6393, 7179, 7962, 8739,

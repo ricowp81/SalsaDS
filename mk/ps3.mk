@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 # mk/ps3.mk — reglas comunes para programas de SalsaDS con PSL1GHT.
 #
 # El Makefile de cada programa define, antes del include:

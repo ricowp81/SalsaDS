@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM «gfxrand»: una escena aleatoria de los motores 2D (registros, VRAM, paletas, OAM) que sale de una
  * semilla. La semilla viene de los cuatro bytes del código de juego de la cabecera (0x027FFE0C en RAM), que

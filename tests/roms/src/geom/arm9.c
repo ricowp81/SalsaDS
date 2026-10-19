@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM geom: el motor de geometría visto desde el ARM9 (Fase 3.1). Sin rasterizar nada: sólo lo que la CPU puede
  * leer de vuelta.

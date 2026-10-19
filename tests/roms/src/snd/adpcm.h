@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Generado por tools/gen-snd-data.py: IMA-ADPCM de prueba (cabecera + nibbles, bajo primero). */
 #define ADPCM_SAMPLES 249
 static const unsigned char adpcm_data[128] __attribute__((aligned(4))) = {

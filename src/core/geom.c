@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — pegamento del motor de geometría (src/gpu3d/gx.c) con la máquina: escrituras a GXFIFO y a los puertos de
  * órdenes, lectura de GXSTAT y de los resultados, IRQ 21 por nivel, DMA de modo 7 con la FIFO, y el cambio de búfer

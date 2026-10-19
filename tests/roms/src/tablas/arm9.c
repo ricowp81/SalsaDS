@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM tablas, lado ARM9: espera a que el ARM7 llene la tabla con las SWI 1Ah-1Ch y la deja en RAM
  * (0x02300000) y la compara con ref.h, que genera `tools/gen-bios-tables.py` a partir de la fórmula de cada tabla

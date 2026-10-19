@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — núcleo común de los intérpretes ARM9 (ARMv5TE) y ARM7 (ARMv4T):
  * estado, modos con banco de registros, excepciones, interrupciones y el

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ayudas para las ROMs de gráficos 2D (Fase 2.1). Solo registros de hardware (GBATEK), sin libnds.
  *

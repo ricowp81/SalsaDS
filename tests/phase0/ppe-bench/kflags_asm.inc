@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — Fase 0.3: los cuatro bucles de banderas NZCV (incluido por
  * kernels.c solo en PowerPC64). Registros: r14..r22 = r0..r8 del guest,

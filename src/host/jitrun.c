@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — el recompilador del ARM9 en el corredor del host (salsads-cpurun): --jit, --jit-strict y --lockstep.
  *

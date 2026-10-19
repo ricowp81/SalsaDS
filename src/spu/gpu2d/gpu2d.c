@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — composición 2D de una pantalla en un SPE (Fase 0.5, completada en la 2.1).
  *

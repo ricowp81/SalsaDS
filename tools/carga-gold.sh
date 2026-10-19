@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Calcula en el host los resultados esperados de la ROM carga (tests/roms/src/carga/gold.h) compilando el mismo
 # kernel.h. El resultado de una iteración no depende de la CPU: las dos usan las mismas semillas.
 #   tools/carga-gold.sh > tests/roms/src/carga/gold.h

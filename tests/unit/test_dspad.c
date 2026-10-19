@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — pruebas de la entrada (Fase 0.6): mapeo DS3 → DS, archivo de
  * configuración y puntero del táctil (stick e inclinación). */
 #include <math.h>

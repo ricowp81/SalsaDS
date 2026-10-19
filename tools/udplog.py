@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Receptor del logger UDP de SalsaDS (src/platform/ps3/log.c).
 
 Escucha en 0.0.0.0:18195 (broadcast o unicast desde la PS3), imprime cada

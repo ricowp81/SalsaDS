@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 # SalsaDS — se ejecuta dentro de la imagen salsads-toolchain (tools/build.sh).
 #   make            programas PS3 de las Fases 0 y 1
 #   make rsxkit     lib/rsxkit sola (build/rsxkit/librsxkit.a)

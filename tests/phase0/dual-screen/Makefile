@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 PROGRAM := salsads-dual-screen
 TITLE   := SalsaDS pantallas
 APPID   := SLDS00004

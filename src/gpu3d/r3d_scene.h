@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — escenas sintéticas del render 3D (Fase 3.2): pruebas unitarias y autoprueba de la PS3. */
 #ifndef SALSADS_GPU3D_R3D_SCENE_H
 #define SALSADS_GPU3D_R3D_SCENE_H

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM periph, lado ARM7: el bus SPI (firmware, pantalla táctil, gestión de energía), el RTC por el
  * puerto 0x04000138, EXTKEYIN y el cartucho cuando el ARM9 le cede la ranura. El firmware de las dos máquinas

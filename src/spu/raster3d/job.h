@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — Fase 3.2: formato del trabajo entre el PPE y los SPE del render 3D (src/gpu3d/r3d_core.c). */
 #ifndef SALSADS_SPE_RASTER3D_JOB_H
 #define SALSADS_SPE_RASTER3D_JOB_H

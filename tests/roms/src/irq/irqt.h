@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — ROM irq: pruebas comunes del ARM9 y el ARM7 (interrupciones, temporizadores y video).
  *

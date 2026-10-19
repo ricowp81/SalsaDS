@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SalsaDS — mapa de memoria del ARM9 y el ARM7 (Fase 1.2).
  *

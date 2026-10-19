@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SalsaDS — ejecutor de prueba del modo diferido (Fase 3.5). Ver gx_loop.h. */
 #include "gpu3d/gx_loop.h"
 
