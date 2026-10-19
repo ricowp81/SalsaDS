@@ -1669,8 +1669,11 @@ static void emit_dp(struct em *e, const struct ai *x)
 			cmode = x->ic;
 	} else if (x->o2 == O2_SHI) {
 		const unsigned rm = rget(e, x, x->rm, 5);
+		const int carry = s && logical && !(x->sht == 0 && x->sha == 0);
+		/* MOV con desplazamiento: directo en el registro de destino (si el acarreo, que sale de rm, no lo necesita intacto) */
+		const unsigned shd = (op == 13 && x->rd != 15 && (!carry || G(x->rd) != rm)) ? G(x->rd) : 6u;
 
-		rb = shift_imm(e, 6, rm, x->sht, x->sha);
+		rb = shift_imm(e, shd, rm, x->sht, x->sha);
 		if (s && logical && !(x->sht == 0 && x->sha == 0)) {
 			shift_imm_carry(e, 7, rm, x->sht, x->sha);
 			cmode = 2;
@@ -1699,6 +1702,8 @@ static void emit_dp(struct em *e, const struct ai *x)
 
 	/* resultado: con S o con rd = r15, en r3; si no, directo en el registro guest */
 	rt = (s || x->rd == 15 || test) ? 3u : G(x->rd);
+	if (op == 13 && x->rd != 15 && rb == G(x->rd))
+		rt = G(x->rd); /* (MOV con el desplazamiento ya hecho en el destino) */
 	/* con S, directo en el registro guest si no es uno de los operandos (las banderas los necesitan después) */
 	if (s && !test && x->rd != 15 && (!uses_rn || G(x->rd) != ra) && (bimm >= 0 || G(x->rd) != rb))
 		rt = G(x->rd);
@@ -1752,6 +1757,12 @@ static void emit_dp(struct em *e, const struct ai *x)
 			goto store_result;
 		}
 		/* SUB/CMP con S e inmediato: la resta en 64 bits y las vistas con inmediato */
+		if (s && (op == 2 || op == 10) && v == 0) { /* CMP/SUBS #0: el resultado es el operando */
+			if (!test && rt != ra)
+				E(e, ppc_mr(rt, ra));
+			flags_sub(e, ra, 0, 0, test ? ra : rt);
+			goto store_result;
+		}
 		if (s && (op == 2 || op == 10) && v <= 0x8000) {
 			E(e, ppc_addi(rt, ra, -(int32_t)v));
 			E(e, ppc_clrldi(rt, rt, 32));
@@ -1900,11 +1911,15 @@ static void mul_cyc(struct em *e, unsigned rs, int sgn)
 	} else {
 		E(e, ppc_ori(0, rs, 1));
 	}
+	/* ciclos = 4 − (ceros a la izquierda >> 3): los 4 van a lo pendiente (o, si la instrucción es condicional, a r29 en su
+	 * cuerpo) y aquí solo se resta lo que depende del operando */
 	E(e, ppc_cntlzw(0, 0));
-	E(e, ppc_subfic(0, 0, 39));
-	E(e, ppc_rlwinm(0, 0, 29, 3, 31));
-	E(e, ppc_sldi(0, 0, 16));
-	E(e, ppc_add(RCYC, RCYC, 0));
+	E(e, ppc_rlwinm(0, 0, 13, 13, 15)); /* (lz >> 3) << 16 */
+	E(e, ppc_subf(RCYC, 0, RCYC));
+	if (e->ins[e->i].cond != AI_COND_AL)
+		E(e, ppc_addis(RCYC, RCYC, 4));
+	else
+		e->pend += 4;
 }
 
 static void emit_mul(struct em *e, const struct ai *x)
@@ -2192,12 +2207,18 @@ static void emit_block(struct em *e, const struct ai *x, unsigned P)
 		start = -4 * (int32_t)n + (x->pre ? 0 : 4);
 		fin = -4 * (int32_t)n;
 	}
-	E(e, ppc_addi(11, base, start));
-	E(e, ppc_rlwinm(11, 11, 0, 0, 29));
+	if (start) {
+		E(e, ppc_addi(11, base, start));
+		E(e, ppc_rlwinm(11, 11, 0, 0, 29));
+	} else {
+		E(e, ppc_rlwinm(11, base, 0, 0, 29));
+	}
 	page_lookup(e, 11, !x->load, cold);
 	E(e, ppc_rlwinm(8, 11, 0, 18, 29));
-	E(e, ppc_cmplwi(6, 8, 0x4000u - 4u * n));
-	bc_rare(e, BO_T, CRB(6, GT), cold);
+	if (n > 1) { /* (una palabra alineada nunca cruza la página) */
+		E(e, ppc_cmplwi(6, 8, 0x4000u - 4u * n));
+		bc_rare(e, BO_T, CRB(6, GT), cold);
+	}
 	E(e, ppc_add(7, 7, 8));
 	if (x->wb)
 		E(e, ppc_addi(10, base, fin));
