@@ -446,6 +446,8 @@ int nds_load_rom(struct nds *n, const uint8_t *rom, size_t len);
 int nds_load_rom_paged(struct nds *n, int (*rd)(void *, uint64_t, uint8_t *, size_t), void *user, size_t len,
 		       unsigned page_shift, size_t cache_bytes);
 void nds_rom_free(struct nds *n);
+/* Reservador de la caché de páginas de la ROM (por omisión malloc/free); fijarlo antes de abrir un juego. */
+void nds_rom_set_allocator(void *(*alloc)(size_t), void (*release)(void *));
 /* Estadística de la caché de la ROM paginada (ceros con ROM entera). */
 void nds_rom_stats(const struct nds *n, uint64_t *acc, uint64_t *miss, uint64_t *ra);
 /* Arranque directo: carga los binarios ARM9/ARM7, arma la memoria y los registros. 0 = bien. */

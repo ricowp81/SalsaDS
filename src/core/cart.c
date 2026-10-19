@@ -98,6 +98,28 @@ void nds_cart_pread(struct nds_cart *c, uint32_t off, uint8_t *dst, uint32_t len
 		c->pg.errs++;
 }
 
+/* La caché de páginas (decenas de MB) puede venir de otro reservador (la PS3 la pide al sistema fuera del heap para poder
+ * devolverla al cerrar el juego); por omisión, malloc. Se fija una vez, antes de abrir ningún juego. */
+static void *(*rom_alloc_fn)(size_t) = malloc;
+static void (*rom_release_fn)(void *) = free;
+
+void nds_rom_set_allocator(void *(*alloc)(size_t), void (*release)(void *))
+{
+	rom_alloc_fn = alloc ? alloc : malloc;
+	rom_release_fn = release ? release : free;
+}
+
+static void *rom_mem_alloc(size_t n)
+{
+	return rom_alloc_fn(n);
+}
+
+static void rom_mem_release(void *p)
+{
+	if (p)
+		rom_release_fn(p);
+}
+
 int nds_load_rom_paged(struct nds *n, int (*rd)(void *, uint64_t, uint8_t *, size_t), void *user, size_t len,
 		       unsigned page_shift, size_t cache_bytes)
 {
@@ -127,7 +149,7 @@ int nds_load_rom_paged(struct nds *n, int (*rd)(void *, uint64_t, uint8_t *, siz
 	g->npages = (uint32_t)((len + ((size_t)1 << page_shift) - 1) >> page_shift);
 	if (g->nslots > g->npages)
 		g->nslots = g->npages < 2 ? 2 : g->npages;
-	g->mem = malloc((size_t)g->nslots << page_shift);
+	g->mem = rom_mem_alloc((size_t)g->nslots << page_shift);
 	g->map = malloc(sizeof(int32_t) * (g->npages + 1u));
 	g->slot_page = malloc(sizeof(uint32_t) * g->nslots);
 	g->slot_stamp = calloc(g->nslots, sizeof(uint64_t));
@@ -155,7 +177,7 @@ void nds_rom_free(struct nds *n)
 {
 	struct nds_rompg *g = &n->cart.pg;
 
-	free(g->mem);
+	rom_mem_release(g->mem);
 	free(g->map);
 	free(g->slot_page);
 	free(g->slot_stamp);
