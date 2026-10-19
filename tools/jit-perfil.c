@@ -10,12 +10,14 @@
  * cambios en el emisor, no para dar milisegundos de la PS3.
  *
  *   cc -O2 -o build/jit-perfil tools/jit-perfil.c
- *   build/jit-perfil PREFIJO [--from F] [--to F] [--series N] [--top N] [--ckb KB] [--dkb KB] [--cpu 0|1|2]
+ *   build/jit-perfil PREFIJO [--from F] [--to F] [--series N] [--top N] [--ckb KB] [--dkb KB] [--cpu 0|1|2] [--packed]
  *
  * --series N: una línea cada N cuadros (para elegir escenas). --ckb: código en C que corre en cada tramo (planificador,
  * eventos; ensucia la L1 y ocupa la L2), 8 KB por omisión. --dkb: datos que pasan por la L2 en cada cuadro (memoria
  * emulada, otros hilos), 1024 KB por omisión. --cpu: 0 ARM9, 1 ARM7, 2 las dos (lo que se reporta; la caché siempre
- * ve las dos).
+ * ve las dos). --packed: las secciones calientes de los bloques juntas (en el orden en que se tradujeron), como si las
+ * frías vivieran aparte; sirve para estimar qué daría separarlas. También cuenta fallos de una ERAT de instrucciones de 64
+ * entradas de 4 KB.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -44,11 +46,13 @@ struct blk {
 	uint32_t raw[MAXI];
 	uint64_t execs;
 	uint64_t l1m, l2m;
+	uint32_t packed; /* --packed: dirección (palabras) si las secciones calientes estuvieran juntas, sin las frías */
 };
 
 static struct blk *blks;
 static uint32_t nblks, capblks;
 static uint32_t *ht;
+static uint32_t pack_next[2];
 static uint32_t htmask;
 
 static uint32_t hfun(uint32_t k)
@@ -156,6 +160,8 @@ static void load_blk(const char *path)
 		b->hot = (uint16_t)hot;
 		b->words = (uint16_t)words;
 		b->prof = (uint16_t)prof;
+		b->packed = pack_next[cpu & 1];
+		pack_next[cpu & 1] = (pack_next[cpu & 1] + (hot - prof)) % (1u << 20);
 		p = line + off;
 		for (unsigned i = 0; i < n && i < MAXI; i++) {
 			unsigned raw, tk, cond, w;
@@ -223,6 +229,31 @@ static uint32_t frame_now;
 static uint64_t foot_lines[2];
 static uint64_t l1m_cpu[2], l2m_cpu[2], l1m_other, l2m_other;
 static int in_range;
+
+/* ERAT de instrucciones: 64 entradas de 4 KB (cada una cubre 4 KB aunque la página sea grande), LRU */
+static uint32_t erat_tag[64], erat_age[64], erat_clock;
+static uint64_t erat_miss[2];
+static int packed_mode;
+
+static void erat_touch(uint32_t page, int cpu)
+{
+	unsigned victim = 0;
+
+	erat_clock++;
+	for (unsigned w = 0; w < 64; w++) {
+		if (erat_tag[w] == page + 1) {
+			erat_age[w] = erat_clock;
+			return;
+		}
+		if (erat_age[w] < erat_age[victim])
+			victim = w;
+	}
+	erat_tag[victim] = page + 1;
+	erat_age[victim] = erat_clock;
+	if (cpu >= 0 && in_range)
+		erat_miss[cpu]++;
+}
+
 
 static void touch_code(uint32_t line, int cpu, struct blk *b)
 {
@@ -299,6 +330,8 @@ int main(int argc, char **argv)
 			ckb = (uint32_t)strtoul(argv[++i], NULL, 0);
 		else if (!strcmp(argv[i], "--dkb") && i + 1 < argc)
 			dkb = (uint32_t)strtoul(argv[++i], NULL, 0);
+		else if (!strcmp(argv[i], "--packed"))
+			packed_mode = 1;
 		else if (!strcmp(argv[i], "--cpu") && i + 1 < argc)
 			cpusel = atoi(argv[++i]);
 		else
@@ -342,6 +375,8 @@ int main(int argc, char **argv)
 					/* el código en C del planificador, los eventos y el despachador */
 					for (uint32_t q = 0; q < clines; q++)
 						touch_other(C_OFF / LINE + q, 1);
+					for (uint32_t q = 0; q < (clines * LINE + 4095u) / 4096u; q++)
+						erat_touch((C_OFF >> 12) + q, -1);
 					/* datos que pasan por la L2 (repartidos por tramo) */
 					dacc += dlines_frame;
 					while (dacc >= 1000u) { /* ~1000 tramos por cuadro */
@@ -403,7 +438,9 @@ int main(int argc, char **argv)
 				if (idx < 0)
 					continue;
 				b = &blks[idx];
-				base = (cpu ? CODE7_OFF : 0u) + (v & 0x3FFFFFu) * 4u;
+				base = (cpu ? CODE7_OFF : 0u) + (packed_mode ? b->packed : (v & 0x3FFFFFu)) * 4u;
+				for (uint32_t pg = base >> 12; pg <= (base + (uint32_t)(b->hot - b->prof) * 4u - 1u) >> 12; pg++)
+					erat_touch(pg, cpu);
 				l0 = base / LINE;
 				l1x = (base + (uint32_t)(b->hot - b->prof) * 4u - 1u) / LINE;
 				{
@@ -480,6 +517,8 @@ int main(int argc, char **argv)
 		       l1m_cpu[cpu] / nf, l2m_cpu[cpu] / nf,
 		       (hotw[cpu] * 1.0 + l1m_cpu[cpu] * 41.0 + l2m_cpu[cpu] * 380.0) / 3.2e6 / nf, hotw[cpu] / 3.2e6 / nf,
 		       l1m_cpu[cpu] * 41.0 / 3.2e6 / nf, l2m_cpu[cpu] * 380.0 / 3.2e6 / nf);
+		printf("fallos de la ERAT de instrucciones (64 × 4 KB) por cuadro: %.0f (~24 c: %.2f ms)\n", erat_miss[cpu] / nf,
+		       erat_miss[cpu] * 24.0 / 3.2e6 / nf);
 		printf("palabras por clase (por cuadro; palabras por instrucción de la clase; %% del total):\n");
 		for (int c = 0; c < NC; c++) {
 			if (!cls_w[cpu][c] && !cls_n[cpu][c])
