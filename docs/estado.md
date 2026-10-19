@@ -528,3 +528,12 @@ detalle y fuentes en `docs/fase0.md`, 0.2).
   margen) y el SPE1 deja de ir un 25 % por encima del SPE0; medir con `DATO raster3d` / `raster3d-latencia` y con `reparto-alterno` para el A/B.
   Paquete con el JIT (SLDS00009) del commit `1e712e3`: `build/salsads-nucleo-jit-fase47.pkg`, SHA-256
   `fa1e9cab105e444b1d3eaf9c5443adbbd920dd6481024cca490e3dc0dccbbbe6`. Sin probar en la PS3.
+- Rama fase52 (hecho, sin probar en la PS3): **caché del recompilador pedida a PS3MAPI**. En la PS3 real con HEN 4.91 (prueba
+  «Salsa64 JIT test» v2 del 2026-10-18) `PROC_PAGE_ALLOCATE` de la syscall 8 de Cobra/Mamba/webMAN da páginas ejecutables de 1 MB
+  (probadas hasta 32 MB, en 0x70000000) que se escriben directo y se ejecutan; limpiar 64 KB cuesta lo mismo que en el texto. Al
+  arrancar, `salsads_rec_cache_mapi` (tests/phase0/jit-arm/rec_cache.c) pide 16 MB y los prueba como la caché del texto (hilo con
+  plazo de 2 s, escribir/ejecutar/reescribir al principio y al final; marca propia `nucleo-jit-ps3mapi.marker`); si no hay PS3MAPI o
+  falla, sigue la cola NOBITS de 4 MB del texto. La zona está lejos del texto: el código generado llama a C por `mtctr`/`bctrl`
+  (`far_calls`, sin intentar `bl`). Las tablas de bloques y enlaces se duplican desde 8 MB de caché (32768 bloques, ~8 MB del heap).
+  Las páginas se devuelven al salir. Archivo `jit-sin-ps3mapi` para volver a la caché del texto (A/B). Qué medir: `DATO jit`
+  (vaciados de la caché y bloques traducidos por cuadro) y el tiempo del ARM9, con y sin `jit-sin-ps3mapi`.
