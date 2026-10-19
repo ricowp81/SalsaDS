@@ -71,6 +71,16 @@ check_snd() { # orden volcado
 		fail=1
 	fi
 }
+# Abrir y cerrar juegos muchas veces (Fase 49, src/host/ciclos.c): el heap en uso no crece entre cierres.
+check_ciclos() { # orden log
+	if grep -q "^OK ciclos" "$2"; then
+		printf '%-4s OK     ciclos: %s\n' "$1" "$(sed -n 's/^OK ciclos: //p' "$2")"
+	else
+		printf '%-4s FALLO  ciclos (ver %s)\n' "$1" "$2"
+		tail -n 6 "$2"
+		fail=1
+	fi
+}
 SND_ARGS="--frames 2500 --peek 0x02390834"
 check_demo() { # orden log
 	frames=$(sed -n 's/^peek 0x023a0004 = //p' "$2")
@@ -222,6 +232,8 @@ if tools/build.sh -C src/host >build/logs/build-host-run.log 2>&1; then
 	done
 	tools/build.sh --sh "build/host-run/salsads-cpurun $CARGA_ARGS tests/roms/homebrew/carga.nds" >build/logs/rom-carga-le.log 2>&1
 	check_carga LE build/logs/rom-carga-le.log
+	tools/build.sh --sh "build/host-run/salsads-ciclos --ciclos 12 tests/roms/homebrew/carga.nds" >build/logs/ciclos-le.log 2>&1
+	check_ciclos LE build/logs/ciclos-le.log
 	tools/build.sh --sh "build/host-run/salsads-cpurun --frames 600 --stats tests/roms/homebrew/ocio.nds" >build/logs/rom-ocio-le.log 2>&1
 	check_ocio LE build/logs/rom-ocio-le.log
 	rm -f build/logs/snd-le.bin
@@ -271,6 +283,10 @@ if tools/build-ppc64.sh host >build/logs/build-ppc64-run.log 2>&1; then
 	done
 	tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun $CARGA_ARGS tests/roms/homebrew/carga.nds >build/logs/rom-carga-be.log 2>&1
 	check_carga BE build/logs/rom-carga-be.log
+	tools/qemu-ppc64.sh build/ppc64-run/salsads-ciclos --ciclos 12 tests/roms/homebrew/carga.nds >build/logs/ciclos-be.log 2>&1
+	check_ciclos BE build/logs/ciclos-be.log
+	tools/qemu-ppc64.sh build/ppc64-run/salsads-ciclos --ciclos 12 --jit tests/roms/homebrew/carga.nds >build/logs/ciclos-jit.log 2>&1
+	check_ciclos JIT build/logs/ciclos-jit.log
 	tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --frames 600 --stats tests/roms/homebrew/ocio.nds >build/logs/rom-ocio-be.log 2>&1
 	check_ocio BE build/logs/rom-ocio-be.log
 	rm -f build/logs/snd-be.bin

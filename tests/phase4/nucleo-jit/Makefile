@@ -1,7 +1,7 @@
 # «SalsaDS JIT núcleo» (Fase 4): el mismo programa que «SalsaDS núcleo» (tests/phase1/nucleo/main.c) con el ARM9 en el
 # recompilador ARMv5TE → PowerPC64 (src/jit/arec*), la caché de código de 4 MB y su prueba con respaldo de la Fase 0.7.
 PROGRAM := salsads-nucleo-jit
-TITLE   := SalsaDS JIT núcleo
+TITLE   := SalsaDS
 APPID   := SLDS00009
 SRCS    := ../../phase1/nucleo/main.c ../../phase0/jit-arm/rec_cache.c
 COMMON  := src/platform/ps3/log.c src/platform/ps3/audio_out.c src/frontend/dspad.c src/frontend/layout.c \
@@ -36,5 +36,9 @@ LDFLAGS := -T $(abspath ../../../mk/rec-cache.ld) -T lv2.ld
 
 CFLAGS  := -DNUCLEO_VERSION=\"$(or $(SALSADS_VERSION),desconocida)\" -DNUCLEO_JIT '-DNUCLEO_TITLE="$(TITLE)"' \
            '-DNUCLEO_APPID="$(APPID)"' -I$(abspath ../../phase0/jit-arm) -I$(abspath ../../phase1/nucleo)
+
+# Ícono (320×176) y fondo (1920×1080) del XMB
+ICON0 := $(abspath ../../../assets/ps3/ICON0.PNG)
+PIC1  := $(abspath ../../../assets/ps3/PIC1.PNG)
 
 include ../../../mk/ps3.mk
