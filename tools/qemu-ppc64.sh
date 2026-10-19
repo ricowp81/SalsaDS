@@ -18,6 +18,6 @@ IMAGE="${SALSADS_QEMU_IMAGE:-salsads-qemu:dev}"
 # SALSADS_ROMS: carpeta de respaldos propios (fuera del repo) que se monta de solo lectura en /roms.
 ROMS_MOUNT=""
 [ -n "${SALSADS_ROMS:-}" ] && ROMS_MOUNT="-v ${SALSADS_ROMS}:/roms:ro"
-exec docker run --rm -i --user "$(id -u):$(id -g)" $ROMS_MOUNT -e AREC_TRACE -e AREC_DUMP -e AREC_SEED -e AREC_PROF_SLOW_FROM -e AREC_OPTS -e AREC_V4 -e AREC_CUT -e AREC_THUMB -e AREC_FAST -v "$ROOT:/src" -w /src "$IMAGE" \
+exec docker run --rm -i --user "$(id -u):$(id -g)" $ROMS_MOUNT -e AREC_TRACE -e AREC_DUMP -e AREC_SEED -e AREC_PROF_SLOW_FROM -e AREC_OPTS -e AREC_V4 -e AREC_PROF_CODE -e AREC_CUT -e AREC_THUMB -e AREC_FAST -v "$ROOT:/src" -w /src "$IMAGE" \
 	sh -c 'cpu=$1; shift; exec timeout "$0" qemu-ppc64-static -cpu "$cpu" "$@" 2>&1' \
 	"${QEMU_TIMEOUT:-600}" "${SALSADS_QEMU_CPU:-power9}" "$@"

@@ -419,6 +419,14 @@ static void prof_block(struct arec *j, const struct ablock *b, const struct ai *
 		fprintf(prof_bk, " %x:%x:%x:%u", ins[i].raw, ins[i].thumb | ins[i].kind << 1, ins[i].cond,
 			(unsigned)(arec_prof_ipos[i + 1] - arec_prof_ipos[i]));
 	fprintf(prof_bk, "\n");
+	if (getenv("AREC_PROF_CODE")) { /* el código caliente del bloque (para desensamblar) */
+		fprintf(prof_bk, "H %u", (unsigned)(b - j->blocks));
+		for (unsigned k = 0; k < b->hot; k++)
+			fprintf(prof_bk, " %08x", j->code[b->entry + k]);
+		for (unsigned i = 0; i <= n; i++)
+			fprintf(prof_bk, "%s%u", i ? "," : " @", (unsigned)arec_prof_ipos[i]);
+		fprintf(prof_bk, "\n");
+	}
 }
 
 /* ---- tabla de bloques ------------------------------------------------------------------------------------ */
