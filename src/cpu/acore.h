@@ -143,7 +143,7 @@ struct acore {
 
 	/* ---- estado del recompilador (src/jit/arec*; el código generado lo lee por desplazamiento) ---- */
 	uint32_t jit_nzcv;       /* NZCV en los bits 31-28 mientras corre código generado */
-	uint32_t jit_pad;
+	uint32_t jit_idle;       /* bucles de espera saltados por el recompilador (vueltas que cortaron el tramo; arec_emit.c) */
 	uint64_t jit_until;      /* límite de ciclos de la corrida en curso */
 	uint64_t jit_pt;         /* tabla de páginas de la ruta rápida */
 	uint64_t jit_jl;         /* tabla de destinos indirectos */

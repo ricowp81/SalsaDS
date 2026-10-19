@@ -46,6 +46,7 @@
 #define OFF_DTCM_REG ((int32_t)offsetof(struct acore, cp15_dtcm_reg))
 #define OFF_ITCM_REG ((int32_t)offsetof(struct acore, cp15_itcm_reg))
 #define OFF_PROF ((int32_t)offsetof(struct acore, jit_prof))
+#define OFF_IDLE ((int32_t)offsetof(struct acore, jit_idle))
 
 #define CRB(f, b) ((f) * 4u + (b))
 #define LT 0u
@@ -108,6 +109,7 @@ struct em {
 	int canon;           /* banderas entre bloques en el CR, en sus bits canónicos (N cr2.lt, Z cr2.eq, C cr3.lt, V cr4.lt) */
 	int hints;           /* saltos a caminos fríos raros con la pista de «no se toma» */
 	int jl_common;       /* salidas indirectas por la rutina común de búsqueda (ent_jl / ent_bx) */
+	int idle;            /* el bloque es un bucle de espera (idle_loop): la vuelta consume el resto del tramo */
 
 	/* banderas */
 	struct floc fl[4];
@@ -2148,13 +2150,14 @@ static void emit_mem(struct em *e, const struct ai *x, unsigned P)
 			/* bit 32: hay que salir después de la instrucción (una IRQ que levantó la lectura) */
 			E(e, ppc_srdi(10, 3, 32));
 			E(e, ppc_clrldi(dst, 3, 32));
-			if (!x->ends) {
+			if (!x->ends && !e->idle) {
 				E(e, ppc_cmpwi(0, 10, 0));
 				bc_to(e, BO_F, CRB(0, EQ), mx);
 				if (e->strict)
 					strict_overrun(e, P + x->cyc, mx);
 			}
-			b_to(e, join);
+			if (!e->idle) /* (en un bucle de espera, una carga lenta sale del bloque: su valor puede cambiar con el tiempo) */
+				b_to(e, join);
 			bind(e, mx);
 			if (!x->ends) {
 				if (wb)
@@ -2310,6 +2313,14 @@ static void emit_b(struct em *e, const struct ai *x)
 		bind(e, taken);
 		if (x->link)
 			li32(e, G(14), x->lrv);
+		if (e->idle && e->i == e->n - 1) {
+			/* bucle de espera: otra vuelta haría lo mismo hasta el final del tramo; el reloj llega ahí de una vez
+			 * (ciclos = límite, más los de esta vuelta) y el prólogo sale por presupuesto */
+			E(e, ppc_rldicl(RCYC, RCYC, 0, 48));
+			E(e, ppc_lwz(3, RST, OFF_IDLE));
+			E(e, ppc_addi(3, 3, 1));
+			E(e, ppc_stw(3, RST, OFF_IDLE));
+		}
 		exit_link(e, x->target, 2, 0, e->live_taken[e->i]);
 		e->sec = save;
 	}
@@ -2470,6 +2481,65 @@ static int place_block(struct arec *j, unsigned nh, unsigned nc, uint32_t *hb, u
 	}
 }
 
+/* ¿Es el bloque un bucle de espera? Un salto condicional hacia su propio principio al final y, antes, solo cargas (sin escritura
+ * de vuelta ni a pc) y operaciones de datos incondicionales que no leen banderas, donde todo registro que el bucle escribe se
+ * vuelve a calcular en cada vuelta antes de leerse: cada vuelta repite exactamente la anterior mientras la memoria no cambie, y
+ * la memoria (RAM, TCM) solo la cambian la otra CPU, la DMA y los eventos, que no corren hasta el final del tramo. Entonces la
+ * vuelta puede consumir el resto del tramo de una vez (lo mismo que giraría la CPU). Una carga que va por la ruta lenta (E/S,
+ * cuyo valor sí cambia con el tiempo) sale del bloque. No en modo estricto (los ciclos cambian). */
+static int idle_loop(const struct em *e)
+{
+	const unsigned n = e->n;
+	const struct ai *last = &e->ins[n - 1];
+	uint32_t wall = 0, w = 0;
+
+	if (e->strict || (e->j->cfg.opts & AREC_OPT_NO_IDLE) || n < 2 || n > 8 || last->kind != AI_B || last->cond == AI_COND_AL ||
+	    last->link || last->target != (e->ins[0].addr | e->ins[0].thumb))
+		return 0;
+	for (unsigned i = 0; i + 1 < n; i++) {
+		const struct ai *x = &e->ins[i];
+
+		if (x->cond != AI_COND_AL || x->fr)
+			return 0;
+		if (x->kind == AI_MEM) {
+			if (!x->load || x->rd == 15 || x->wb || !x->pre)
+				return 0;
+			wall |= 1u << x->rd;
+		} else if (x->kind == AI_DP) {
+			const int test = x->op >= 8 && x->op <= 11;
+
+			if (x->rd == 15 && !test)
+				return 0;
+			if (!test)
+				wall |= 1u << x->rd;
+		} else {
+			return 0;
+		}
+	}
+	for (unsigned i = 0; i + 1 < n; i++) {
+		const struct ai *x = &e->ins[i];
+		uint32_t rd = 0;
+
+		if (x->kind == AI_MEM) {
+			rd = 1u << x->rn;
+			if (x->o2 != O2_IMM)
+				rd |= 1u << x->rm;
+		} else {
+			if (x->op != 13 && x->op != 15)
+				rd = 1u << x->rn;
+			if (x->o2 != O2_IMM)
+				rd |= 1u << x->rm;
+			if (x->o2 == O2_SHR)
+				rd |= 1u << x->rs;
+		}
+		if (rd & wall & ~w)
+			return 0;
+		if (x->kind == AI_MEM || !(x->op >= 8 && x->op <= 11))
+			w |= 1u << x->rd;
+	}
+	return 1;
+}
+
 /* Traduce; con far = 1 las llamadas a C van siempre por CTR. Devuelve palabras o < 0. */
 static int emit_try(struct arec *j, const struct ai *ins, unsigned n, struct ablock *b, uint32_t block_id, int far)
 {
@@ -2510,6 +2580,7 @@ static int emit_try(struct arec *j, const struct ai *ins, unsigned n, struct abl
 			e->win_hi = e->win_lo + (2u << AREC_BUCKET_SHIFT);
 	}
 	analyze(e);
+	e->idle = idle_loop(e);
 
 	/* prólogo: ¿hay presupuesto? */
 	{

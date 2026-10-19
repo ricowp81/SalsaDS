@@ -299,6 +299,8 @@ void hj_print_stats(struct nds *n)
 {
 	print_stats_one(n->jit9, "ARM9");
 	print_stats_one(n->jit7, "ARM7");
+	printf("recompilador: bucles de espera saltados (vueltas que consumieron el resto del tramo): ARM9 %u, ARM7 %u\n",
+	       (unsigned)n->a9.jit_idle, (unsigned)n->a7.jit_idle);
 	if (ref)
 		printf("LOCKSTEP: %s, %llu comparaciones, %llu tramos\n", ls_failed ? "FALLO" : "sin diferencias",
 		       (unsigned long long)ls_checks, (unsigned long long)ls_slices);

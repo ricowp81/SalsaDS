@@ -742,6 +742,51 @@ static void test_literal(void)
 	CHECK(arec_stats(MJ.j)->inval_blocks >= 1);
 }
 
+/* Bucle de espera (modo rápido): la vuelta consume el resto del tramo de una vez; cuando la memoria cambia, el bucle termina como
+ * con el intérprete. */
+static void test_idle_loop(void)
+{
+	static const uint32_t prog[] = {
+		0xE3A00402u, /* mov r0, #0x02000000 */
+		0xE2800702u, /* add r0, r0, #0x80000   (AM_DATA) */
+		0xE5901000u, /* ldr r1, [r0] */
+		0xE3510000u, /* cmp r1, #0 */
+		0x1AFFFFFCu, /* bne ldr */
+		0xE3A02007u, /* mov r2, #7 */
+		0xEAFFFFFEu, /* b . */
+	};
+	uint8_t b[4];
+	uint32_t idle0;
+
+	setup_both(0);
+	if (!MJ.j)
+		return;
+	load_prog(prog, 7, AM_CODE);
+	wr32le(b, 1);
+	put_both(AM_DATA, b, 4);
+	acore_set_pc(&MJ.c, AM_CODE);
+	acore_set_pc(&MI.c, AM_CODE);
+	idle0 = MJ.c.jit_idle;
+	run_both(5000);
+	CHECK(MJ.c.cycles >= 5000u);
+	if (!(prof_opts & AREC_OPT_NO_IDLE)) {
+		CHECK(MJ.c.jit_idle > idle0);
+		CHECK(MJ.c.icount < MI.c.icount); /* (el JIT no dio todas las vueltas) */
+	} else {
+		CHECK(MJ.c.jit_idle == idle0);
+	}
+	CHECK_EQ(MJ.c.r[1], 1u);
+	CHECK_EQ(MJ.c.r[2], 0u);
+	CHECK(acore_pc(&MJ.c) >= AM_CODE + 8 && acore_pc(&MJ.c) <= AM_CODE + 16);
+	wr32le(b, 0);
+	put_both(AM_DATA, b, 4);
+	run_both(200);
+	CHECK_EQ(MJ.c.r[2], 7u);
+	CHECK_EQ(MI.c.r[2], 7u);
+	CHECK_EQ(MJ.c.r[1], 0u);
+	CHECK(same_state_q() || acore_pc(&MJ.c) == acore_pc(&MI.c));
+}
+
 /* MSR CPSR_c en línea que habilita la IRQ con la línea ya levantada: se toma en la instrucción siguiente. */
 static void test_msr_irq(void)
 {
@@ -1082,6 +1127,7 @@ static void run_profile(int v4)
 	test_irq_mid_block();
 	test_msr_irq();
 	test_literal();
+	test_idle_loop();
 	test_smc();
 	if (!v4)
 		test_calls();
@@ -1128,7 +1174,7 @@ void test_arec(void)
 	run_profile(0); /* ARM9 */
 	run_profile(1); /* ARM7 */
 	/* las formas anteriores (banderas en memoria, sin pistas, búsqueda de destinos copiada en cada salida) siguen probadas */
-	prof_opts = AREC_OPT_FLAGS_MEM | AREC_OPT_NO_HINTS | AREC_OPT_JL_INLINE | AREC_OPT_NO_SPLIT;
+	prof_opts = AREC_OPT_FLAGS_MEM | AREC_OPT_NO_HINTS | AREC_OPT_JL_INLINE | AREC_OPT_NO_SPLIT | AREC_OPT_NO_IDLE;
 	run_profile(0);
 	run_profile(1);
 	prof_opts = 0;

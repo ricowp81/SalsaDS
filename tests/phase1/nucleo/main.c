@@ -119,6 +119,7 @@ static const struct {
 	{ SALSADS_DATA_DIR "/jit-sin-pistas", AREC_OPT_NO_HINTS, "sin pistas estáticas de salto" },
 	{ SALSADS_DATA_DIR "/jit-salidas-copiadas", AREC_OPT_JL_INLINE, "búsqueda de destinos copiada en cada salida" },
 	{ SALSADS_DATA_DIR "/jit-sin-ventanas", AREC_OPT_NO_SPLIT, "código frío junto al caliente" },
+	{ SALSADS_DATA_DIR "/jit-sin-esperas", AREC_OPT_NO_IDLE, "sin saltar los bucles de espera" },
 };
 #define JIT_TIMES_FLAG SALSADS_DATA_DIR "/jit-tiempos"
 static int jit_on;
@@ -1414,8 +1415,16 @@ static void log_stats(void)
 							      (unsigned long long)(nr / n), (unsigned long long)(nw / n));
 			}
 			sl[o] = 0;
-			salsads_log("DATO jit-lentos: ARM9, accesos por la ruta lenta por cuadro y región (lecturas / escrituras): %s",
-				    o ? sl : "ninguno");
+			{
+				static uint32_t prev_idle9, prev_idle7;
+
+				salsads_log("DATO jit-lentos: ARM9, accesos por la ruta lenta por cuadro y región (lecturas / escrituras): %s; "
+					    "bucles de espera saltados por cuadro: ARM9 %u, ARM7 %u",
+					    o ? sl : "ninguno", (unsigned)((nds->a9.jit_idle - prev_idle9) / n),
+					    (unsigned)((nds->a7.jit_idle - prev_idle7) / n));
+				prev_idle9 = nds->a9.jit_idle;
+				prev_idle7 = nds->a7.jit_idle;
+			}
 			if (jit_times) {
 				uint64_t rd = 0, wr = 0;
 				const double ms = tb_hz ? 1e3 / (double)tb_hz / (double)n : 0.0;
