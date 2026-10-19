@@ -2167,14 +2167,15 @@ static void emit_mem(struct em *e, const struct ai *x, unsigned P)
 			/* bit 32: hay que salir después de la instrucción (una IRQ que levantó la lectura) */
 			E(e, ppc_srdi(10, 3, 32));
 			E(e, ppc_clrldi(dst, 3, 32));
-			if (!x->ends && !e->idle) {
+			if (!x->ends) {
 				E(e, ppc_cmpwi(0, 10, 0));
 				bc_to(e, BO_F, CRB(0, EQ), mx);
 				if (e->strict)
 					strict_overrun(e, P + x->cyc, mx);
 			}
-			if (!e->idle) /* (en un bucle de espera, una carga lenta sale del bloque: su valor puede cambiar con el tiempo) */
-				b_to(e, join);
+			if (e->idle) /* (bucle de espera: una carga lenta, cuyo valor cambia con el tiempo, quita el salto de esta vuelta) */
+				E(e, ppc_creqv(CRB(7, EQ), CRB(7, EQ), CRB(7, EQ)));
+			b_to(e, join);
 			bind(e, mx);
 			if (!x->ends) {
 				if (wb)
@@ -2332,11 +2333,16 @@ static void emit_b(struct em *e, const struct ai *x)
 			li32(e, G(14), x->lrv);
 		if (e->idle && e->i == e->n - 1) {
 			/* bucle de espera: otra vuelta haría lo mismo hasta el final del tramo; el reloj llega ahí de una vez
-			 * (ciclos = límite, más los de esta vuelta) y el prólogo sale por presupuesto */
+			 * (ciclos = límite, más los de esta vuelta) y el prólogo sale por presupuesto. No si en esta vuelta hubo una
+			 * carga por la ruta lenta (cr7.eq: E/S, que cambia con el tiempo) */
+			const unsigned plain = newlab(e);
+
+			bc_to(e, BO_T, CRB(7, EQ), plain);
 			E(e, ppc_rldicl(RCYC, RCYC, 0, 48));
 			E(e, ppc_lwz(3, RST, OFF_IDLE));
 			E(e, ppc_addi(3, 3, 1));
 			E(e, ppc_stw(3, RST, OFF_IDLE));
+			bind(e, plain);
 		}
 		exit_link(e, x->target, 2, 0, e->live_taken[e->i]);
 		e->sec = save;
@@ -2644,6 +2650,8 @@ static int emit_try(struct arec *j, const struct ai *ins, unsigned n, struct abl
 		arec_prof_words = e->nh - w0;
 	}
 
+	if (e->idle) /* cr7.eq: hubo una carga lenta en esta vuelta del bucle de espera */
+		E(e, ppc_crxor(CRB(7, EQ), CRB(7, EQ), CRB(7, EQ)));
 	for (unsigned i = 0; i < n; i++) {
 		e->i = i;
 		arec_prof_ipos[i] = (uint16_t)e->nh;
