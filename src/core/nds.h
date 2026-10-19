@@ -115,6 +115,7 @@ struct nds_jit_cfg {
 	int no_link;         /* cada bloque vuelve al despachador (para --lockstep) */
 	int no_inline_jl;    /* sin búsqueda de destinos indirectos en línea */
 	int far_calls;       /* llamadas a C por CTR (prueba) */
+	unsigned opts;       /* AREC_OPT_* (src/jit/arec.h): formas anteriores de las mejoras, para medir A/B */
 	void (*icache_flush)(const void *p, size_t n);
 	void (*on_exec)(void *ctx, int ev, uint64_t until); /* ctx = la struct nds */
 	void (*on_exec7)(void *ctx, int ev, uint64_t until); /* lo mismo para el ARM7 */

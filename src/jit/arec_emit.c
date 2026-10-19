@@ -66,7 +66,8 @@ enum { SEC_HOT = 0, SEC_COLD = 1 };
 
 struct efix {
 	uint16_t at;
-	uint8_t sec, kind; /* 0: b a una etiqueta, 1: bc a una etiqueta, 2: b a una palabra de la caché, 3: bl a una dirección */
+	uint8_t sec, kind; /* 0: b a una etiqueta, 1: bc a una etiqueta, 2: b a una palabra de la caché, 3: bl a una dirección,
+			    * 4: bl a una palabra de la caché, 5: bc a una etiqueta de un camino raro (con pista de «no se toma») */
 	uint32_t lab;      /* etiqueta, palabra de la caché o índice del ayudante */
 };
 
@@ -102,6 +103,9 @@ struct em {
 	unsigned pend, ipend; /* ciclos e instrucciones que faltan sumar a r29 */
 	unsigned xextra;      /* ciclos de más en las salidas desde el cuerpo de una instrucción condicional */
 	int strict, no_link, inline_jl, far;
+	int canon;           /* banderas entre bloques en el CR, en sus bits canónicos (N cr2.lt, Z cr2.eq, C cr3.lt, V cr4.lt) */
+	int hints;           /* saltos a caminos fríos raros con la pista de «no se toma» */
+	int jl_common;       /* salidas indirectas por la rutina común de búsqueda (ent_jl / ent_bx) */
 
 	/* banderas */
 	struct floc fl[4];
@@ -182,6 +186,15 @@ static void bc_to(struct em *e, unsigned bo, unsigned bi, unsigned l)
 	E(e, ppc_bc(bo, bi, 0));
 }
 
+/* bc a un camino que casi nunca se toma (ruta lenta de memoria, presupuesto, comprobaciones de los caminos rápidos): con
+ * `hints`, el salto lleva la pista estática de «no se toma» (BO = 0b0x110) y el PPE no lo predice con la tabla de historia,
+ * que con ~1 MB de código caliente por cuadro está llena de alias. Nunca para los saltos condicionales del programa. */
+static void bc_rare(struct em *e, unsigned bo, unsigned bi, unsigned l)
+{
+	addfix(e, 5, l);
+	E(e, ppc_bc(bo, bi, 0));
+}
+
 /* posición final (índice de palabra dentro del bloque) */
 static uint32_t final_pos(const struct em *e, unsigned sec, unsigned pos)
 {
@@ -258,6 +271,8 @@ static void add_cyc(struct em *e, unsigned c, unsigned ic)
 
 /* ---- salidas -------------------------------------------------------------------------------------------- */
 
+static void canonicalize(struct em *e, unsigned live, int commit);
+
 /* r4 = tipo | vivas << 4; r3 = valor. */
 static void exit_pc_const(struct em *e, uint32_t pc, unsigned live)
 {
@@ -274,6 +289,8 @@ static void exit_link(struct em *e, uint32_t target, unsigned xc, unsigned xi, u
 	uint32_t site_pos;
 	unsigned site_sec;
 
+	if (e->canon)
+		canonicalize(e, live, 0);
 	add_cyc(e, e->pend + xc + e->xextra, e->ipend + xi);
 	if (b->nexits >= AREC_MAX_EXITS) {
 		exit_pc_const(e, target, live);
@@ -304,9 +321,24 @@ static void exit_link(struct em *e, uint32_t target, unsigned xc, unsigned xi, u
 	b->exits[k].stub = (uint32_t)stub;
 }
 
-/* Salida por un destino calculado en r3 (ya con el bit 0 de Thumb y alineado): búsqueda en línea o despachador. */
-static void exit_indirect(struct em *e, unsigned xc, unsigned xi, unsigned live)
+/* Salida por un destino calculado en r3 (con el bit 0 de Thumb; alineado, o con `bx` = 1 la dirección de un BX/LDR pc
+ * del ARMv5 que todavía hay que alinear según ese bit): búsqueda en la tabla de destinos o despachador. Con `jl_common` la
+ * búsqueda es la rutina común (ent_bx / ent_jl): 2–3 palabras por salida en vez de ~16. */
+static void exit_indirect(struct em *e, unsigned xc, unsigned xi, unsigned live, int bx)
 {
+	if (e->canon)
+		canonicalize(e, live, 0);
+	if (e->jl_common) {
+		add_cyc(e, e->pend + xc + e->xextra, e->ipend + xi);
+		b_abs(e, bx ? e->j->ent_bx : e->j->ent_jl);
+		(void)live; /* la rutina sale con todas vivas: las salidas indirectas siempre pasan F_ALL */
+		return;
+	}
+	if (bx) {
+		E(e, ppc_rlwinm(4, 3, 1, 30, 30));
+		E(e, ppc_xori(4, 4, 2));
+		E(e, ppc_andc(3, 3, 4));
+	}
 	add_cyc(e, e->pend + xc + e->xextra, e->ipend + xi);
 	if (e->inline_jl) {
 		const unsigned miss = newlab(e);
@@ -340,6 +372,138 @@ static void fl_all_mem(struct em *e)
 	e->in_mem = F_ALL;
 	e->sc_hi = e->sc_lt = e->sc_gt = -1;
 	e->sub_mask = 0;
+}
+
+static void flags_to_mem_cr(struct em *e, unsigned need);
+
+/* Banderas en el CR entre bloques (`canon`): cada una en su bit canónico al entrar a un bloque, al salir y alrededor de las
+ * llamadas al intérprete que leen o escriben banderas. Dentro del bloque viven donde las deja quien las produce (como antes) y
+ * en cada salida se llevan a su bit con una operación del CR por bandera que no esté ya ahí. La entrada y la salida comunes y
+ * ent_callf las pasan entre el CR y c->jit_nzcv (mfcr y mtocrf: una vez por entrada al código generado, no por bloque). */
+static const uint8_t canon_bit[4] = { CRB(2, LT), CRB(2, EQ), CRB(3, LT), CRB(4, LT) };
+
+static void fl_canon(struct em *e)
+{
+	for (int i = 0; i < 4; i++) {
+		e->fl[i].t = L_CR;
+		e->fl[i].b = canon_bit[i];
+		e->fl[i].b2 = 0;
+		e->fl[i].inv = 0;
+	}
+	e->in_mem = 0;
+	e->sc_hi = e->sc_lt = e->sc_gt = -1;
+	e->sub_mask = 0;
+}
+
+static int loc_reads_bit(const struct floc *f, unsigned bit)
+{
+	return (f->t == L_CR && f->b == bit) || (f->t == L_XOR && (f->b == bit || f->b2 == bit));
+}
+
+/* Lleva las banderas `live` a sus bits canónicos. Con commit = 0 (un camino que sale del bloque) la ubicación que ve el resto
+ * del bloque no cambia; con commit = 1 queda la canónica y las que no están en `live` (muertas) quedan sin ubicación. */
+static void canonicalize(struct em *e, unsigned live, int commit)
+{
+	struct floc save[4];
+	const int8_t shi = e->sc_hi, slt = e->sc_lt, sgt = e->sc_gt;
+	const uint8_t smask = e->sub_mask, sin = e->in_mem;
+	unsigned pend = 0;
+
+	memcpy(save, e->fl, sizeof save);
+	for (unsigned i = 0; i < 4; i++) {
+		const struct floc *f = &e->fl[i];
+
+		if (!(live & fmask(i)))
+			continue;
+		if (f->t == L_MEM) {
+			e->bad = 1; /* una bandera viva sin ubicación: error del análisis (el bloque no se usa) */
+			continue;
+		}
+		if (!(f->t == L_CR && f->b == canon_bit[i] && !f->inv))
+			pend |= 1u << i;
+	}
+	while (pend) {
+		int pick = -1;
+
+		/* una cuyo bit canónico no lea ninguna otra pendiente */
+		for (unsigned i = 0; i < 4 && pick < 0; i++) {
+			int clash = 0;
+
+			if (!(pend & (1u << i)))
+				continue;
+			for (unsigned k = 0; k < 4; k++)
+				if (k != i && (pend & (1u << k)) && loc_reads_bit(&e->fl[k], canon_bit[i]))
+					clash = 1;
+			if (!clash)
+				pick = (int)i;
+		}
+		if (pick < 0) {
+			/* ciclo: una de ellas pasa primero por un bit temporal de cr5 (volátil, se usa enseguida) */
+			for (unsigned i = 0; i < 4; i++)
+				if (pend & (1u << i)) {
+					struct floc *f = &e->fl[i];
+					const unsigned t = CRB(5, i);
+
+					if (f->t == L_CR)
+						E(e, f->inv ? ppc_crnor(t, f->b, f->b) : ppc_cror(t, f->b, f->b));
+					else
+						E(e, f->inv ? ppc_creqv(t, f->b, f->b2) : ppc_crxor(t, f->b, f->b2));
+					f->t = L_CR;
+					f->b = (uint8_t)t;
+					f->inv = 0;
+					break;
+				}
+			continue;
+		}
+		{
+			struct floc *f = &e->fl[pick];
+			const unsigned t = canon_bit[pick];
+
+			switch (f->t) {
+			case L_K0:
+				E(e, ppc_crxor(t, t, t));
+				break;
+			case L_K1:
+				E(e, ppc_creqv(t, t, t));
+				break;
+			case L_CR:
+				E(e, f->inv ? ppc_crnor(t, f->b, f->b) : ppc_cror(t, f->b, f->b));
+				break;
+			default:
+				E(e, f->inv ? ppc_creqv(t, f->b, f->b2) : ppc_crxor(t, f->b, f->b2));
+				break;
+			}
+			f->t = L_CR;
+			f->b = (uint8_t)t;
+			f->b2 = 0;
+			f->inv = 0;
+			pend &= ~(1u << pick);
+		}
+	}
+	if (!commit) {
+		memcpy(e->fl, save, sizeof save);
+		e->sc_hi = shi;
+		e->sc_lt = slt;
+		e->sc_gt = sgt;
+		e->sub_mask = smask;
+		e->in_mem = sin;
+		return;
+	}
+	for (unsigned i = 0; i < 4; i++)
+		if (!(live & fmask(i)))
+			e->fl[i].t = L_MEM;
+	e->in_mem = 0;
+	e->sc_hi = e->sc_lt = e->sc_gt = -1;
+	e->sub_mask = 0;
+}
+
+/* Banderas `live` listas para salir del bloque por un camino frío: en memoria (forma anterior) o en sus bits canónicos. */
+static void flags_for_exit(struct em *e, unsigned live)
+{
+	if (e->canon)
+		canonicalize(e, live, 0);
+	else
+		flags_to_mem_cr(e, live);
 }
 
 /* descriptor para AH_FLAGS: 16 bits por bandera (tipo, bit, bit2, inv); las que no están en `want` quedan como en memoria */
@@ -404,7 +568,8 @@ static int loc_uses_field(const struct floc *f, unsigned field)
  * (no las escribe, `keep`) y están vivas se mudan a otro bit, o vuelven a memoria si ya están ahí. */
 static void protect_fields(struct em *e, unsigned fields, unsigned keep)
 {
-	const unsigned live = e->live_after[e->i] | e->live_before[e->i];
+	/* en modo estricto toda salida fría deja las cuatro exactas: ninguna está muerta */
+	const unsigned live = e->live_after[e->i] | e->live_before[e->i] | (e->strict ? F_ALL : 0u);
 
 	for (int i = 0; i < 4; i++) {
 		struct floc *f = &e->fl[i];
@@ -425,6 +590,11 @@ static void protect_fields(struct em *e, unsigned fields, unsigned keep)
 			const int nb = free_bit(e, live, fields);
 
 			if (nb < 0) { /* no hay bit: a memoria por el camino lento (raro) */
+				if (e->canon) {
+					e->bad = 1; /* (en el CR no hay a dónde: el intérprete hace la instrucción) */
+					f->t = L_MEM;
+					continue;
+				}
 				flags_to_mem_cr(e, fmask((unsigned)i));
 				e->in_mem |= (uint8_t)fmask((unsigned)i);
 				f->t = L_MEM;
@@ -754,6 +924,16 @@ static uint32_t next_pc(const struct ai *x)
 	return (x->addr + x->size) | x->thumb;
 }
 
+/* La bandera `f` de la instrucción `prod` sale del bloque (o la lee el intérprete): en memoria (forma anterior: la instrucción
+ * calcula NZCV en enteros) o en el CR, de donde la salida la lleva a su bit canónico. */
+static void want_out(struct em *e, int prod, unsigned f)
+{
+	if (e->canon)
+		e->need_flags[prod] |= (uint8_t)f;
+	else
+		e->mat[prod] = 1;
+}
+
 static void analyze(struct em *e)
 {
 	const unsigned n = e->n;
@@ -831,7 +1011,7 @@ static void analyze(struct em *e)
 		if (x->kind == AI_CALL && !x->call_ro)
 			for (int f = 0; f < 4; f++)
 				if ((e->live_before[i] & fmask((unsigned)f)) && prod[f] >= 0)
-					e->mat[prod[f]] = 1;
+					want_out(e, prod[f], fmask((unsigned)f));
 		/* puntos fríos (salida a mitad de bloque después de un acceso lento o de CP15): en el CR basta */
 		if (x->kind == AI_MEM || x->kind == AI_BLOCK || (x->kind == AI_CALL && x->call_ro))
 			for (int f = 0; f < 4; f++)
@@ -847,7 +1027,7 @@ static void analyze(struct em *e)
 				xl = F_ALL;
 			for (int f = 0; f < 4; f++)
 				if ((xl & fmask((unsigned)f)) && prod[f] >= 0)
-					e->mat[prod[f]] = 1;
+					want_out(e, prod[f], fmask((unsigned)f));
 		}
 		if (x->kind == AI_CALL && !x->call_ro) {
 			for (int f = 0; f < 4; f++)
@@ -868,7 +1048,7 @@ static void analyze(struct em *e)
 			xl |= e->live_after[n - 1];
 		for (int f = 0; f < 4; f++)
 			if ((xl & fmask((unsigned)f)) && prod[f] >= 0)
-				e->mat[prod[f]] = 1;
+				want_out(e, prod[f], fmask((unsigned)f));
 	}
 }
 
@@ -990,13 +1170,40 @@ static void shift_imm_carry(struct em *e, unsigned rt, unsigned rm, unsigned typ
 
 static void emit_cold_exit_mem(struct em *e, unsigned live, uint32_t next, unsigned cyc_after, unsigned ic_after)
 {
-	/* (en la sección fría) banderas vivas a memoria, ciclos e instrucciones, y salida con el pc siguiente */
-	flags_to_mem_cr(e, live);
+	/* (en la sección fría) banderas vivas a memoria (o a sus bits canónicos), ciclos e instrucciones, y salida con el pc
+	 * siguiente */
+	flags_for_exit(e, live);
 	add_cyc(e, cyc_after, ic_after);
 	exit_pc_const(e, next, live);
 }
 
 static void page_lookup(struct em *e, unsigned ra, int wr, unsigned cold);
+
+/* Antes de una llamada al intérprete que lee o escribe banderas: en memoria (forma anterior) o en sus bits canónicos, de donde
+ * ent_callf las pasa a c->jit_nzcv y las vuelve a cargar después (el intérprete puede cambiarlas). */
+static void flags_for_call(struct em *e, const struct ai *x)
+{
+	if (e->canon)
+		canonicalize(e, e->live_before[e->i] | x->fr | (x->cond != AI_COND_AL ? arec_cond_reads(x->cond) : 0u), 1);
+	else
+		flags_to_mem_cr(e, F_ALL);
+}
+
+/* Rutina de llamada al intérprete: con banderas en el CR, las instrucciones que las leen o escriben van por ent_callf. */
+static uint32_t call_entry(const struct em *e, const struct ai *x)
+{
+	return e->canon && !x->call_ro ? e->j->ent_callf : e->j->ent_call;
+}
+
+/* rt = NZCV (bits 31-28) desde los bits canónicos del CR; usa tmp */
+static void nzcv_from_cr(struct em *e, unsigned rt, unsigned tmp)
+{
+	E(e, ppc_mfcr(tmp));
+	E(e, ppc_rlwinm(rt, tmp, 8, 0, 0));    /* cr2.lt (bit 8) → bit 0 */
+	E(e, ppc_rlwimi(rt, tmp, 9, 1, 1));    /* cr2.eq (bit 10) → bit 1 */
+	E(e, ppc_rlwimi(rt, tmp, 10, 2, 2));   /* cr3.lt (bit 12) → bit 2 */
+	E(e, ppc_rlwimi(rt, tmp, 13, 3, 3));   /* cr4.lt (bit 16) → bit 3 */
+}
 
 /* Salta a `l` si la CPU está en modo usuario (CP15 y MSR CPSR_c se comportan distinto: lo hace el intérprete). */
 static void if_user(struct em *e, unsigned l)
@@ -1004,7 +1211,7 @@ static void if_user(struct em *e, unsigned l)
 	E(e, ppc_lwz(3, RST, OFF_CPSR));
 	E(e, ppc_rlwinm(3, 3, 0, 27, 31));
 	E(e, ppc_cmplwi(1, 3, 0x10));
-	bc_to(e, BO_T, CRB(1, EQ), l);
+	bc_rare(e, BO_T, CRB(1, EQ), l);
 }
 
 /* AI_CALL con camino rápido (x->fast): el caso común en línea; lo demás, el intérprete en el camino frío (con los
@@ -1018,7 +1225,7 @@ static void emit_call_fast(struct em *e, const struct ai *x, unsigned P)
 	unsigned xirq = 0;
 
 	if (!x->call_ro)
-		flags_to_mem_cr(e, F_ALL);
+		flags_for_call(e, x);
 	switch (x->fast) {
 	case FK_CP15NOP:
 		if_user(e, slow);
@@ -1051,7 +1258,10 @@ static void emit_call_fast(struct em *e, const struct ai *x, unsigned P)
 		}
 		/* CPSR: lo de memoria sin NZCV ni T (en ARM T = 0; en memoria puede estar viejo), más NZCV */
 		E(e, ppc_lwz(3, RST, OFF_CPSR));
-		E(e, ppc_lwz(4, RST, OFF_NZCV));
+		if (e->canon) /* NZCV de sus bits canónicos */
+			nzcv_from_cr(e, 4, 6);
+		else
+			E(e, ppc_lwz(4, RST, OFF_NZCV));
 		/* & 0x0FFFFFDF sin máscara que dé la vuelta (en 64 bits, rlwinm con mb > me copia la palabra baja arriba) */
 		E(e, ppc_rlwinm(5, 3, 0, 4, 25));
 		E(e, ppc_rlwimi(5, 3, 0, 27, 31));
@@ -1125,14 +1335,14 @@ static void emit_call_fast(struct em *e, const struct ai *x, unsigned P)
 		if (x->msz == 4) {
 			E(e, ppc_rlwinm(8, ra, 0, 30, 31));
 			E(e, ppc_cmplwi(6, 8, 0));
-			bc_to(e, BO_F, CRB(6, EQ), slow);
+			bc_rare(e, BO_F, CRB(6, EQ), slow);
 		}
 		page_lookup(e, ra, 0, slow);
 		E(e, ppc_rlwinm(6, ra, 21, 11, 28));
 		E(e, ppc_addis(6, 6, 0x20));
 		E(e, ppc_ldx(9, RPT, 6));
 		E(e, ppc_cmpdi(1, 9, 0));
-		bc_to(e, BO_T, CRB(1, EQ), slow);
+		bc_rare(e, BO_T, CRB(1, EQ), slow);
 		E(e, ppc_rlwinm(8, ra, 0, 18, x->msz == 4 ? 29 : 31));
 		if (x->msz == 4) {
 			E(e, ppc_lwbrx(3, 7, 8));
@@ -1155,7 +1365,7 @@ static void emit_call_fast(struct em *e, const struct ai *x, unsigned P)
 		page_lookup(e, 10, !x->load, slow);
 		E(e, ppc_rlwinm(8, 10, 0, 18, 29));
 		E(e, ppc_cmplwi(6, 8, 0x3FF8u));
-		bc_to(e, BO_T, CRB(6, GT), slow);
+		bc_rare(e, BO_T, CRB(6, GT), slow);
 		E(e, ppc_addi(9, 8, 4));
 		if (x->load) {
 			E(e, ppc_lwbrx(3, 7, 8));
@@ -1185,13 +1395,13 @@ static void emit_call_fast(struct em *e, const struct ai *x, unsigned P)
 		li32(e, 5, at);
 		li32(e, 6, e->strict ? e->rem_max[e->i] : 0xFFFFu);
 		E(e, ppc_li(7, (int32_t)(P + 1)));
-		bl_abs(e, e->j->ent_call);
+		bl_abs(e, call_entry(e, x));
 		if (x->cyc > 1)
 			E(e, ppc_addis(RCYC, RCYC, -(int32_t)(x->cyc - 1)));
 		E(e, ppc_cmpwi(0, 3, 0));
 		bc_to(e, BO_T, CRB(0, EQ), join);
 		if (x->call_ro)
-			flags_to_mem_cr(e, live);
+			flags_for_exit(e, live);
 		add_cyc(e, P + x->cyc, e->ipend);
 		E(e, ppc_li(3, 0));
 		E(e, ppc_li(4, (int32_t)(2 | live << 4)));
@@ -1202,9 +1412,13 @@ static void emit_call_fast(struct em *e, const struct ai *x, unsigned P)
 		}
 		e->sec = save;
 	}
-	/* MRS: las banderas no cambian (quedaron también en memoria) */
-	if (!x->call_ro)
-		e->in_mem = F_ALL;
+	/* MRS: las banderas no cambian (quedaron también en memoria); con banderas en el CR, ent_callf las deja en sus bits */
+	if (!x->call_ro) {
+		if (e->canon)
+			fl_canon(e);
+		else
+			e->in_mem = F_ALL;
+	}
 }
 
 /* AI_CALL: el intérprete ejecuta la instrucción con los registros en memoria. */
@@ -1219,12 +1433,12 @@ static void emit_call(struct em *e, const struct ai *x, unsigned P)
 		return;
 	}
 	if (!x->call_ro)
-		flags_to_mem_cr(e, F_ALL); /* las que no dejó la instrucción que las fijó (no debería pasar) */
+		flags_for_call(e, x); /* (en memoria: las que no dejó la instrucción que las fijó, no debería pasar) */
 	li32(e, 4, x->raw);
 	li32(e, 5, at);
 	li32(e, 6, e->strict ? e->rem_max[e->i] : 0xFFFFu);
 	E(e, ppc_li(7, (int32_t)(P + 1)));
-	bl_abs(e, e->j->ent_call);
+	bl_abs(e, call_entry(e, x));
 	E(e, ppc_cmpwi(0, 3, 0));
 	bc_to(e, BO_F, CRB(0, EQ), ex);
 	{
@@ -1233,15 +1447,19 @@ static void emit_call(struct em *e, const struct ai *x, unsigned P)
 		e->sec = SEC_COLD;
 		bind(e, ex);
 		if (x->call_ro)
-			flags_to_mem_cr(e, live);
+			flags_for_exit(e, live);
 		add_cyc(e, P + 1, e->ipend);
 		E(e, ppc_li(3, 0));
 		E(e, ppc_li(4, (int32_t)(2 | live << 4)));
 		b_abs(e, e->j->ent_exit);
 		e->sec = save;
 	}
-	if (!x->call_ro)
-		fl_all_mem(e);
+	if (!x->call_ro) {
+		if (e->canon)
+			fl_canon(e);
+		else
+			fl_all_mem(e);
+	}
 }
 
 /* ---- proceso de datos ----------------------------------------------------------------------------------- */
@@ -1661,7 +1879,7 @@ store_result:
 		} else {
 			E(e, ppc_rlwinm(3, rt, 0, 0, 29));
 		}
-		exit_indirect(e, 0, 0, F_ALL);
+		exit_indirect(e, 0, 0, F_ALL, 0);
 		return;
 	}
 	if (rt != G(x->rd))
@@ -1764,7 +1982,7 @@ static void page_lookup(struct em *e, unsigned ra, int wr, unsigned cold)
 		E(e, ppc_addis(6, 6, 0x20));
 	E(e, ppc_ldx(7, RPT, 6));
 	E(e, ppc_cmpdi(1, 7, 0));
-	bc_to(e, BO_T, CRB(1, EQ), cold);
+	bc_rare(e, BO_T, CRB(1, EQ), cold);
 }
 
 /* LDR rd, [pc, #±imm] (el «literal pool»): la dirección se conoce al traducir. Si la palabra está en la memoria del propio
@@ -1858,12 +2076,12 @@ static void emit_mem(struct em *e, const struct ai *x, unsigned P)
 		/* LDR no alineado rota: por el camino lento */
 		E(e, ppc_rlwinm(8, ra, 0, 30, 31));
 		E(e, ppc_cmplwi(6, 8, 0));
-		bc_to(e, BO_F, CRB(6, EQ), cold);
+		bc_rare(e, BO_F, CRB(6, EQ), cold);
 	} else if (x->load && x->msz == 2 && !e->j->c->v5) {
 		/* ARMv4: LDRH impar rota por 8 y LDRSH impar se porta como LDRSB (el ARMv5 alinea): por el camino lento */
 		E(e, ppc_rlwinm(8, ra, 0, 31, 31));
 		E(e, ppc_cmplwi(6, 8, 0));
-		bc_to(e, BO_F, CRB(6, EQ), cold);
+		bc_rare(e, BO_F, CRB(6, EQ), cold);
 	}
 	page_lookup(e, ra, !x->load, cold);
 	E(e, ppc_rlwinm(8, ra, 0, 18, x->msz == 4 ? 29 : x->msz == 2 ? 30 : 31));
@@ -1941,14 +2159,10 @@ static void emit_mem(struct em *e, const struct ai *x, unsigned P)
 		e->sec = save;
 	}
 	if (x->load && x->rd == 15) {
-		if (x->xchg) { /* LDR pc (ARMv5: con cambio de estado) */
-			E(e, ppc_rlwinm(4, 3, 1, 30, 30));
-			E(e, ppc_xori(4, 4, 2));
-			E(e, ppc_andc(3, 3, 4));
-		} else { /* ARMv4: sin cambio de estado (LDR pc solo existe en ARM) */
+		/* ARMv5: con cambio de estado (alinea la rutina de salida); ARMv4: sin cambio (LDR pc solo existe en ARM) */
+		if (!x->xchg)
 			E(e, ppc_rlwinm(3, 3, 0, 0, 29));
-		}
-		exit_indirect(e, 0, 0, F_ALL);
+		exit_indirect(e, 0, 0, F_ALL, x->xchg != 0);
 	}
 }
 
@@ -1981,7 +2195,7 @@ static void emit_block(struct em *e, const struct ai *x, unsigned P)
 	page_lookup(e, 11, !x->load, cold);
 	E(e, ppc_rlwinm(8, 11, 0, 18, 29));
 	E(e, ppc_cmplwi(6, 8, 0x4000u - 4u * n));
-	bc_to(e, BO_T, CRB(6, GT), cold);
+	bc_rare(e, BO_T, CRB(6, GT), cold);
 	E(e, ppc_add(7, 7, 8));
 	if (x->wb)
 		E(e, ppc_addi(10, base, fin));
@@ -2030,7 +2244,7 @@ static void emit_block(struct em *e, const struct ai *x, unsigned P)
 			bc_to(e, BO_T, CRB(0, EQ), join);
 		bind(e, ex);
 		/* salida con el estado en memoria (el intérprete ya dejó r15 y el CPSR) */
-		flags_to_mem_cr(e, live);
+		flags_for_exit(e, live);
 		add_cyc(e, P + x->cyc, e->ipend);
 		E(e, ppc_li(3, 0));
 		E(e, ppc_li(4, (int32_t)(2 | live << 4)));
@@ -2039,16 +2253,14 @@ static void emit_block(struct em *e, const struct ai *x, unsigned P)
 	}
 	if (pcload) {
 		if (x->xchg) {
-			E(e, ppc_rlwinm(4, 3, 1, 30, 30));
-			E(e, ppc_xori(4, 4, 2));
-			E(e, ppc_andc(3, 3, 4));
+			/* ARMv5: cambio de estado por el bit 0 (lo alinea la rutina de salida) */
 		} else if (x->thumb) { /* ARMv4, POP {pc}: sigue en Thumb */
 			E(e, ppc_rlwinm(3, 3, 0, 0, 30));
 			E(e, ppc_ori(3, 3, 1));
 		} else { /* ARMv4, LDM con pc: sigue en ARM */
 			E(e, ppc_rlwinm(3, 3, 0, 0, 29));
 		}
-		exit_indirect(e, 0, 0, F_ALL);
+		exit_indirect(e, 0, 0, F_ALL, x->xchg != 0);
 	}
 }
 
@@ -2086,10 +2298,7 @@ static void emit_bx(struct em *e, const struct ai *x)
 	if (x->link)
 		li32(e, G(14), x->lrv);
 	/* destino: bit 0 = Thumb (alinea a 2) o ARM (alinea a 4) */
-	E(e, ppc_rlwinm(4, 3, 1, 30, 30));
-	E(e, ppc_xori(4, 4, 2));
-	E(e, ppc_andc(3, 3, 4));
-	exit_indirect(e, 0, 0, F_ALL);
+	exit_indirect(e, 0, 0, F_ALL, 1);
 }
 
 static void emit_bllo(struct em *e, const struct ai *x)
@@ -2107,7 +2316,7 @@ static void emit_bllo(struct em *e, const struct ai *x)
 		E(e, ppc_rlwinm(3, 3, 0, 0, 29));
 	}
 	li32(e, G(14), x->lrv);
-	exit_indirect(e, 0, 0, F_ALL);
+	exit_indirect(e, 0, 0, F_ALL, 0);
 }
 
 /* ---- bloque --------------------------------------------------------------------------------------------- */
@@ -2122,7 +2331,7 @@ static void emit_insn(struct em *e, const struct ai *x)
 	if (cond) {
 		/* una llamada al intérprete necesita las banderas en memoria en los dos caminos */
 		if (x->kind == AI_CALL && !x->call_ro)
-			flags_to_mem_cr(e, F_ALL);
+			flags_for_call(e, x);
 		skip = newlab(e);
 		e->pend += 1;
 		e->ipend += x->ninsn;
@@ -2201,8 +2410,14 @@ static int emit_try(struct arec *j, const struct ai *ins, unsigned n, struct abl
 	e->no_link = j->cfg.no_link;
 	e->inline_jl = !j->cfg.no_link && !j->cfg.no_inline_jl;
 	e->far = far;
+	e->canon = !(j->cfg.opts & AREC_OPT_FLAGS_MEM);
+	e->hints = !(j->cfg.opts & AREC_OPT_NO_HINTS);
+	e->jl_common = e->inline_jl && !(j->cfg.opts & AREC_OPT_JL_INLINE);
 	b->nexits = 0;
-	fl_all_mem(e);
+	if (e->canon)
+		fl_canon(e);
+	else
+		fl_all_mem(e);
 	tmpb_next = 0;
 
 	for (unsigned i = 0; i < n; i++)
@@ -2224,10 +2439,10 @@ static int emit_try(struct arec *j, const struct ai *ins, unsigned n, struct abl
 			E(e, ppc_sradi(3, RCYC, 16));
 			E(e, ppc_addi(3, 3, (int32_t)maxcyc));
 			E(e, ppc_cmpdi(0, 3, 0));
-			bc_to(e, BO_T, CRB(0, GT), out);
+			bc_rare(e, BO_T, CRB(0, GT), out);
 		} else {
 			E(e, ppc_cmpdi(0, RCYC, 0));
-			bc_to(e, BO_F, CRB(0, LT), out);
+			bc_rare(e, BO_F, CRB(0, LT), out);
 		}
 		e->sec = SEC_COLD;
 		bind(e, out);
@@ -2275,6 +2490,11 @@ static int emit_try(struct arec *j, const struct ai *ins, unsigned n, struct abl
 	}
 	if (e->overflow)
 		return -1;
+	if (e->bad) {
+		arec_bad_raw = ins[n - 1].raw;
+		arec_bad_addr = ins[n - 1].addr | ins[n - 1].thumb;
+		return -6;
+	}
 
 	/* cierre: caliente + fría, arreglos de saltos */
 	{
@@ -2315,6 +2535,9 @@ static int emit_try(struct arec *j, const struct ai *ins, unsigned n, struct abl
 				if (d < -32768 || d > 32767)
 					return -4;
 				dst[at] = (dst[at] & ~0xFFFCu) | ((uint32_t)d & 0xFFFCu);
+				/* pista estática «no se toma» (at = 0b10 en BO) para los caminos raros que van a la sección fría */
+				if (f->kind == 5 && e->hints && f->sec == SEC_HOT && e->lab_sec[f->lab] == SEC_COLD)
+					dst[at] |= 1u << 22;
 			}
 		}
 		/* salidas: posiciones finales */
@@ -2345,10 +2568,36 @@ int arec_emit_block(struct arec *j, const struct ai *ins, unsigned n, struct abl
 
 #define FRAME 256
 
+/* p[n..] = CR (campos 2–4) con NZCV de r0 en sus bits canónicos; usa r5 */
+static unsigned cr_from_nzcv(uint32_t *p, unsigned n)
+{
+	p[n++] = ppc_rlwinm(5, 0, 24, 8, 8);   /* N: bit 0 → cr2.lt */
+	p[n++] = ppc_rlwimi(5, 0, 23, 10, 10); /* Z: bit 1 → cr2.eq */
+	p[n++] = ppc_rlwimi(5, 0, 22, 12, 12); /* C: bit 2 → cr3.lt */
+	p[n++] = ppc_rlwimi(5, 0, 19, 16, 16); /* V: bit 3 → cr4.lt */
+	p[n++] = ppc_mtocrf(2, 5);
+	p[n++] = ppc_mtocrf(3, 5);
+	p[n++] = ppc_mtocrf(4, 5);
+	return n;
+}
+
+/* p[n..] = c->jit_nzcv desde los bits canónicos del CR; usa `a` y `b` */
+static unsigned nzcv_store(uint32_t *p, unsigned n, unsigned a, unsigned b)
+{
+	p[n++] = ppc_mfcr(a);
+	p[n++] = ppc_rlwinm(b, a, 8, 0, 0);
+	p[n++] = ppc_rlwimi(b, a, 9, 1, 1);
+	p[n++] = ppc_rlwimi(b, a, 10, 2, 2);
+	p[n++] = ppc_rlwimi(b, a, 13, 3, 3);
+	p[n++] = ppc_stw(b, RST, OFF_NZCV);
+	return n;
+}
+
 int arec_emit_common(struct arec *j)
 {
 	uint32_t *p = j->code;
 	unsigned n = 0;
+	const int canon = !(j->cfg.opts & AREC_OPT_FLAGS_MEM);
 
 	/* entrada: r3 = c, r4 = código */
 	j->ent_enter = 0;
@@ -2367,12 +2616,18 @@ int arec_emit_common(struct arec *j)
 	p[n++] = ppc_subf(RCYC, 0, RCYC);
 	p[n++] = ppc_sldi(RCYC, RCYC, 16);
 	p[n++] = ppc_ld(RPT, RST, OFF_PT);
+	if (canon) { /* banderas de c->jit_nzcv a sus bits canónicos del CR */
+		p[n++] = ppc_lwz(0, RST, OFF_NZCV);
+		n = cr_from_nzcv(p, n);
+	}
 	p[n++] = ppc_mtctr(4);
 	p[n++] = PPC_BCTR;
 
 	/* salida: r3 = valor, r4 = tipo | vivas << 4 */
 	j->ent_exit = n;
 	p[n++] = 30u << 26 | 4u << 21 | 3u << 16 | (56u & 31u) << 11 | (0u) << 6 | ((56u >> 5) & 1u) << 1 | 3u << 2; /* rldimi r3,r4,56,0 */
+	if (canon) /* banderas de sus bits canónicos a c->jit_nzcv */
+		n = nzcv_store(p, n, 5, 6);
 	for (unsigned r = 0; r < 15; r++)
 		p[n++] = ppc_stw(G(r), RST, OFF_R(r));
 	p[n++] = ppc_sradi(5, RCYC, 16);
@@ -2392,16 +2647,42 @@ int arec_emit_common(struct arec *j)
 	p[n++] = ppc_mtcrf(0x38, 0);
 	p[n++] = PPC_BLR;
 
+	/* Búsqueda común de destinos indirectos (exit_indirect): r3 = destino con el bit 0 de Thumb. ent_bx lo alinea antes como
+	 * un BX (Thumb a 2, ARM a 4). Si no está en la tabla, sale al despachador con las cuatro banderas vivas. */
+	j->ent_bx = n;
+	p[n++] = ppc_rlwinm(4, 3, 1, 30, 30);
+	p[n++] = ppc_xori(4, 4, 2);
+	p[n++] = ppc_andc(3, 3, 4);
+	j->ent_jl = n;
+	p[n++] = ppc_ld(4, RST, OFF_JL);
+	p[n++] = ppc_rlwinm(5, 3, 3, 14, 27); /* ((pc >> 1) & (AREC_JL_SIZE - 1)) * 16 */
+	p[n++] = ppc_add(4, 4, 5);
+	p[n++] = ppc_lwz(5, 4, 0);
+	p[n++] = ppc_cmplw(0, 5, 3);
+	p[n++] = ppc_bc(BO_F | (j->cfg.opts & AREC_OPT_NO_HINTS ? 0u : 2u), CRB(0, EQ), 16); /* fallo (raro): +4 palabras */
+	p[n++] = ppc_ld(5, 4, 8);
+	p[n++] = ppc_mtctr(5);
+	p[n++] = PPC_BCTR;
+	p[n++] = ppc_li(4, (int32_t)(0 | F_ALL << 4));
+	p[n] = ppc_b((int32_t)(((int64_t)j->ent_exit - (int64_t)n) * 4));
+	n++;
+
 	/* Caminos lentos compartidos: los llama el camino frío de cada acceso con bl (LR libre en el código generado).
 	 * Entrada: r4 = dirección, r7 = K (ciclos del bloque hasta la captación de la instrucción: c->cycles = límite +
 	 * (r29 >> 16) + K, como los deja el intérprete), y según la rutina r5/r6. Guardan r11 (la escritura de vuelta del
 	 * acceso), r7 y LR en c->jit_spill; dejan r29 como corresponde al c->cycles que haya dejado el ayudante. */
 	{
 		const int32_t SP0 = (int32_t)offsetof(struct acore, jit_spill);
-		const unsigned kinds[3] = { AH_RD, AH_WR, AH_CALL };
-		uint32_t *ents[3] = { &j->ent_rd, &j->ent_wr, &j->ent_call };
+		const unsigned kinds[4] = { AH_RD, AH_WR, AH_CALL, AH_CALL };
+		uint32_t *ents[4] = { &j->ent_rd, &j->ent_wr, &j->ent_call, &j->ent_callf };
 
-		for (unsigned q = 0; q < 3; q++) {
+		for (unsigned q = 0; q < 4; q++) {
+			const int flags = q == 3 && canon; /* ent_callf: banderas del CR a memoria y de vuelta */
+
+			if (q == 3 && !canon) {
+				j->ent_callf = j->ent_call;
+				break;
+			}
 			*ents[q] = n;
 			p[n++] = ppc_mflr(0);
 			p[n++] = ppc_std(0, RST, SP0 + 16);
@@ -2415,6 +2696,8 @@ int arec_emit_common(struct arec *j)
 			p[n++] = ppc_add(8, 8, 9);
 			p[n++] = ppc_add(8, 8, 7);
 			p[n++] = ppc_std(8, RST, OFF_CYCLES);
+			if (flags)
+				n = nzcv_store(p, n, 0, 8);
 			p[n++] = ppc_mr(3, RST);
 			{
 				const uint64_t target = j->c->jit_fn[kinds[q]];
@@ -2427,6 +2710,10 @@ int arec_emit_common(struct arec *j)
 					p[n++] = ppc_mtctr(0);
 					p[n++] = PPC_BCTRL;
 				}
+			}
+			if (flags) { /* el intérprete pudo cambiarlas */
+				p[n++] = ppc_lwz(0, RST, OFF_NZCV);
+				n = cr_from_nzcv(p, n);
 			}
 			if (kinds[q] == AH_CALL)
 				for (unsigned r = 0; r < 15; r++)

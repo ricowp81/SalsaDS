@@ -46,6 +46,7 @@ struct arec_cfg {
 	int no_link;         /* 1: sin enlaces entre bloques ni búsqueda de destinos en línea (cada bloque vuelve) */
 	int no_inline_jl;    /* 1: sin búsqueda de destinos indirectos en línea (los enlaces directos siguen) */
 	int far_calls;       /* 1: llamadas a C siempre por mtctr/bctrl (prueba el camino lejano) */
+	unsigned opts;       /* AREC_OPT_*: vuelve a la forma anterior de cada mejora (para medir A/B en la consola) */
 	/* Vacía la caché de instrucciones para [p, p + n) (dcbst/sync/icbi/isync en la PS3). */
 	void (*icache_flush)(const void *p, size_t n);
 	/* De dónde sale el código: puntero a los bytes de la instrucción en `a` (vista de captación, little-endian),
@@ -62,6 +63,11 @@ struct arec_cfg {
 };
 
 enum { AREC_EV_SERVICE = 0, AREC_EV_BLOCK = 1, AREC_EV_STEP = 2 };
+
+/* Opciones (bits de arec_cfg.opts): cada una deja una mejora como estaba antes, para compararla en la PS3. */
+#define AREC_OPT_FLAGS_MEM 1u  /* banderas entre bloques en memoria (c->jit_nzcv) en vez de en el CR (cr2–cr4) */
+#define AREC_OPT_NO_HINTS 2u   /* saltos a los caminos fríos sin la pista estática de «no se toma» */
+#define AREC_OPT_JL_INLINE 4u  /* búsqueda de destinos indirectos copiada en cada salida en vez de la rutina común */
 
 /* Estadísticas (se acumulan; las reinicia el dueño con memset). */
 struct arec_stats {

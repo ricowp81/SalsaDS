@@ -9,6 +9,8 @@ struct nds;
 
 /* Conecta los recompiladores de `n`: el del ARM9 si arm9 y el del ARM7 si arm7 (0 = bien; -1 = este host no ejecuta
  * PowerPC64). */
+/* --jit-opts N: AREC_OPT_* (formas anteriores de las mejoras del recompilador) */
+extern unsigned hj_opts;
 int hj_attach(struct nds *n, int strict, int no_link, int far, int no_jl, int arm7, int arm9, void (*ev9)(void *, int, uint64_t),
 	      void (*ev7)(void *, int, uint64_t));
 /* --lockstep: `m` con los recompiladores (estrictos y sin enlaces), `r` la referencia con el intérprete. */

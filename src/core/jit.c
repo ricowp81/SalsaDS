@@ -277,6 +277,7 @@ int nds_jit_attach(struct nds *n, const struct nds_jit_cfg *jc)
 	cfg.no_link = jc->no_link;
 	cfg.no_inline_jl = jc->no_inline_jl;
 	cfg.far_calls = jc->far_calls;
+	cfg.opts = jc->opts;
 	cfg.icache_flush = jc->icache_flush;
 	cfg.code_ptr = code_ptr;
 	cfg.ctx = n;
@@ -299,6 +300,7 @@ int nds_jit_attach(struct nds *n, const struct nds_jit_cfg *jc)
 		cfg.no_link = jc->no_link;
 		cfg.no_inline_jl = jc->no_inline_jl;
 		cfg.far_calls = jc->far_calls;
+		cfg.opts = jc->opts;
 		cfg.icache_flush = jc->icache_flush;
 		cfg.code_ptr = code_ptr7;
 		cfg.ctx = n;

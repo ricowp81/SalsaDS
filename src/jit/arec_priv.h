@@ -140,6 +140,8 @@ struct arec {
 	size_t code_words, code_used, code_base_used; /* code_base_used: trampolín y rutinas comunes */
 	uint32_t ent_enter, ent_exit;                  /* índices de las rutinas comunes */
 	uint32_t ent_rd, ent_wr, ent_call;             /* caminos lentos compartidos (llamadas con bl desde los bloques) */
+	uint32_t ent_callf;                            /* ent_call con las banderas del CR a c->jit_nzcv y de vuelta */
+	uint32_t ent_jl, ent_bx;                       /* búsqueda común de destinos indirectos (ent_bx alinea como BX) */
 	uint64_t enter_opd[3];                         /* descriptor ELFv1 de la entrada */
 
 	struct ablock *blocks;

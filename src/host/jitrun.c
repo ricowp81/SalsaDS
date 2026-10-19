@@ -27,6 +27,8 @@
 
 static uint8_t code_mem[CODE_BYTES] __attribute__((aligned(65536)));
 
+unsigned hj_opts; /* --jit-opts: AREC_OPT_* */
+
 static struct nds *ref;      /* máquina de referencia (--lockstep) */
 static struct nds *jm;       /* la del JIT */
 static uint64_t ls_checks, ls_slices;
@@ -165,6 +167,7 @@ int hj_attach(struct nds *n, int strict, int no_link, int far, int no_jl, int ar
 	cfg.no_link = no_link;
 	cfg.far_calls = far;
 	cfg.no_inline_jl = no_jl;
+	cfg.opts = hj_opts;
 	cfg.arm7 = arm7;
 	cfg.no_arm9 = !arm9;
 	cfg.code7_bytes = arm7 ? CODE7_BYTES : 0;

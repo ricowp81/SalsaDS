@@ -686,6 +686,8 @@ int main(int argc, char **argv)
 			jit_far = 1;
 		else if (!strcmp(argv[i], "--jit-nojl"))
 			jit_nojl = 1;
+		else if (!strcmp(argv[i], "--jit-opts") && i + 1 < argc)
+			hj_opts = (unsigned)strtoul(argv[++i], NULL, 0);
 		else if (!strcmp(argv[i], "--jit-prof") && i + 1 < argc)
 			jit_prof = argv[++i];
 		else if (!strcmp(argv[i], "--lockstep"))

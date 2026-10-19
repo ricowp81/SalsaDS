@@ -188,6 +188,7 @@ static void am_map(struct am *m)
 }
 
 static int prof_v4; /* perfil en curso: 0 ARM9, 1 ARM7 */
+static unsigned prof_opts; /* AREC_OPT_*: las formas anteriores de las mejoras del emisor */
 
 static void am_init(struct am *m, int jit, int strict)
 {
@@ -218,6 +219,7 @@ static void am_init(struct am *m, int jit, int strict)
 		cfg.code_bytes = sizeof code_mem;
 		cfg.strict = strict;
 		cfg.no_link = 0;
+		cfg.opts = prof_opts;
 		cfg.code_ptr = am_code;
 		cfg.ctx = m;
 		cfg.phys_size = PH_SIZE;
@@ -1115,6 +1117,7 @@ void test_arec(void)
 		const int st = getenv("AREC_FAST") ? 0 : 1;
 
 		prof_v4 = getenv("AREC_V4") != NULL;
+		prof_opts = getenv("AREC_OPTS") ? (unsigned)strtoul(getenv("AREC_OPTS"), NULL, 0) : 0u;
 		if (getenv("AREC_THUMB"))
 			CHECK(fuzz_thumb_n(sd, st, cut));
 		else
@@ -1124,4 +1127,9 @@ void test_arec(void)
 	}
 	run_profile(0); /* ARM9 */
 	run_profile(1); /* ARM7 */
+	/* las formas anteriores (banderas en memoria, sin pistas, búsqueda de destinos copiada en cada salida) siguen probadas */
+	prof_opts = AREC_OPT_FLAGS_MEM | AREC_OPT_NO_HINTS | AREC_OPT_JL_INLINE;
+	run_profile(0);
+	run_profile(1);
+	prof_opts = 0;
 }
