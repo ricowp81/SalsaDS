@@ -4,6 +4,27 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-19 — Rendimiento del ARM9 en el recompilador (rama arm9-perf)
+
+- **Perfil del host**: `salsads-cpurun --jit-prof` (traza de bloques en qemu-ppc64) y `tools/jit-perfil.c` (palabras por clase,
+  huella de código por cuadro, modelo de L1/L2/ERAT, bloques más caros). Mostró: ~1,2 MB de código caliente distinto por cuadro en
+  la carrera de MKDS (más que la L2), datos con S a 11 palabras por instrucción (banderas a memoria en cada salida), BX a 17,5, las
+  secciones frías intercaladas con las calientes, un sondeo de memoria como bloque más corrido en MKDS y NSMB, y en las cargas
+  91 000 lecturas de ROMCTRL por cuadro (el salto de la fase46 casi nunca actuaba).
+- **Hecho** (detalle y tabla en `docs/fase4.md`, «Tercera ronda»): sondeo de ROMCTRL/SPICNT hasta el final del tramo
+  (`nds_poll_skip`); banderas entre bloques en el CR; pistas estáticas en los caminos raros; búsqueda común de destinos
+  indirectos; ventanas de 32 KB caliente/fría; bucles de espera que consumen el tramo; desalineación de LDR en el índice de la
+  tabla; menos palabras en MUL, LDM/STM, CMP #0 y MOV; datos condicionales con S traducidos.
+- **Host (qemu, modelo)**: MKDS carrera −25 % de palabras calientes, −35 % de huella, modelo 2,35 → 1,57 ms; NSMB −23 %, −31 %,
+  2,18 → 1,54 ms; cargas de MKDS con el intérprete: un tercio de las instrucciones del ARM9.
+- **Interruptores en /dev_hdd0/salsads** (cada uno vuelve a la forma anterior de una mejora): `jit-banderas-memoria`,
+  `jit-sin-pistas`, `jit-salidas-copiadas`, `jit-sin-ventanas`, `jit-sin-esperas`; `jit-tiempos` mide dónde se va el tiempo del
+  ARM9 (`DATO jit-tiempo`, `DATO jit-lentos`).
+- **Paridad**: `tools/build.sh test-host` verde; NSMB, SM64DS y MKDS (1500 cuadros): `--lockstep` sin diferencias y el mismo resumen
+  del estado que el intérprete en modo estricto.
+- **Sin medir en la PS3.** Qué mirar: `DATO desglose` en las mismas escenas que arm7-jit; con `jit-tiempos`, el reparto del ARM9; el
+  A/B de cada interruptor. Paquete «SalsaDS JIT núcleo» (SLDS00009): `build/salsads-arm9perf.pkg`, SHA-256 en el informe de la rama.
+
 ## 2026-10-19 — El ARM7 en el recompilador
 
 - **Hecho**: el ARM7 (ARMv4T) usa el mismo recompilador que el ARM9, como instancia aparte (`n->jit7`: caché de código propia, tablas propias, mapa de

@@ -6,7 +6,8 @@ Power ISA 2.02 y lo medido en la PS3 en la Fase 0 (§0.3 y §0.7); el diseño to
 de Salsa64 (bloques con enlace por parcheo de un salto, mapa de código para invalidar, caminos fríos aparte, caminos
 lentos compartidos). No viene de ningún emulador (ni melonDS ni NooDS, GPLv3).
 
-Estado: **correcto contra el intérprete en qemu-ppc64** (modo estricto y `--lockstep`). Primera medición en la PS3 (SM64DS en
+Estado: **correcto contra el intérprete en qemu-ppc64** (modo estricto y `--lockstep`). Tercera ronda (rama arm9-perf, abajo):
+banderas entre bloques en el CR, ventanas caliente/fría, bucles de espera, sondeo de ROMCTRL; sin medir en la PS3. Primera medición en la PS3 (SM64DS en
 juego, 2026-10-18): ARM9 13,3 ms por cuadro de trabajo (17–22 en escenas pesadas; 44–49 con el intérprete); la segunda ronda
 («Segunda ronda», abajo) está sin medir en la consola.
 
@@ -35,7 +36,7 @@ juego, 2026-10-18): ARM9 13,3 ms por cuadro de trabajo (17–22 en escenas pesad
 | r30 | tabla de páginas de lectura (la de escritura está 2 MB después) |
 | r31 | `struct acore` |
 | r0, r3–r12 | temporales (r0 nunca como base de `addi` ni de un acceso: vale 0) |
-| cr2–cr4 | vistas de las banderas (no volátiles: sobreviven a las llamadas a C de los caminos lentos) |
+| cr2–cr4 | banderas (no volátiles: sobreviven a las llamadas a C de los caminos lentos); entre bloques, en sus bits canónicos: N cr2.lt, Z cr2.eq, C cr3.lt, V cr4.lt |
 | cr0, cr1, cr5–cr7 | temporales |
 
 La entrada desde C (`arec_enter`, generada al principio de la caché) guarda r14–r31 y el CR, carga los registros
@@ -44,6 +45,9 @@ guest de `c->r[]` y salta al bloque; la salida común los devuelve a memoria, su
 quedaron exactas.
 
 ### Bloques, presupuesto y modos
+
+(Desde la tercera ronda la caché se reparte en ventanas de 32 KB: la sección caliente de cada bloque crece desde el principio de
+la ventana y la fría desde el final, así que el código que corre queda junto; `AREC_OPT_NO_SPLIT` vuelve a ponerlas seguidas.)
 
 Un bloque va desde `pc` (con el bit 0 = Thumb; el modo de la CPU no entra en la clave: los registros con banco se
 cambian en memoria) hasta un salto incondicional, un salto condicional hacia atrás o 64 instrucciones; los saltos
@@ -84,7 +88,13 @@ Decisión de la 0.7: CR por instrucción, sin `mfcr` ni formas con punto en el c
   suelto, es `cr2.lt ^ cr4.lt`. Una suma: N/Z en cr2, el acarreo con `cmplw res, a` y V calculado en cr4. Las lógicas: N/Z
   y el acarreo del desplazador. Las condiciones que mezclan productores se arman con operaciones del CR (`crand`,
   `crxor`…) en un bit temporal.
-- Las banderas se escriben en memoria (`c->jit_nzcv`, en enteros, ~13 instrucciones) **solo en la instrucción que las fija
+- **Entre bloques las banderas viven en el CR** (tercera ronda, abajo): al entrar a un bloque están en sus bits canónicos (N
+  cr2.lt, Z cr2.eq, C cr3.lt, V cr4.lt) y cada salida lleva las vivas ahí con una operación del CR por bandera que no esté ya
+  (`canonicalize`). La entrada y la salida comunes las pasan entre el CR y `c->jit_nzcv` (mfcr una vez por salida al
+  despachador); las llamadas al intérprete que leen o escriben banderas van por `ent_callf`, que hace lo mismo alrededor de la
+  llamada. Las instrucciones de datos condicionales con S se traducen: antes y después de ellas las vivas quedan en sus bits
+  canónicos. Lo que sigue en esta sección es la forma anterior, que queda con `AREC_OPT_FLAGS_MEM`.
+- Forma anterior: las banderas se escriben en memoria (`c->jit_nzcv`, en enteros, ~13 instrucciones) **solo en la instrucción que las fija
   y solo si están vivas** en una llamada al intérprete o en una salida del bloque. «Vivas en una salida» sale de una vista
   adelante del código de destino: se decodifica en línea recta (siguiendo B y BL) hasta que las cuatro se escriben; si se lee
   alguna antes o hay un salto condicional, un salto indirecto o una llamada al intérprete, se dan por vivas. Lo mirado se
@@ -252,6 +262,91 @@ Descartado: no escribir NZCV en las vueltas de función. Las funciones de compar
 familia, flotante por software) devuelven el resultado en las banderas; sin saber a dónde vuelve, la salida tiene que dejarlas
 exactas.
 
+## Tercera ronda (rama arm9-perf)
+
+Medido en la PS3 con los dos recompiladores (arm7-jit): New Super Mario Bros. en un nivel, ARM9 ~6–10 ms por cuadro; Mario Kart
+DS en carrera, ~8,5–9,5 ms; en las cargas el ARM9 va al tope (22–28 ms). Meta: ARM9 ≤ 6 ms en juego y cargas más cortas.
+
+### Perfil del host
+
+`salsads-cpurun --jit --jit-prof PREFIJO` (en qemu-ppc64) guarda la entrada de cada bloque que corre y la descripción de cada
+bloque traducido (palabras calientes por instrucción guest; con `AREC_PROF_CODE=1` también el código, para desensamblar);
+`tools/jit-perfil.c` (`cc -O2 -o build/jit-perfil tools/jit-perfil.c`) lo lee: palabras por clase de instrucción, huella de
+código caliente por cuadro, fallos de un modelo de L1 de instrucciones (32 KB, 2 vías) y de L2 (512 KB, 8 vías, con código C y
+datos de relleno), de la ERAT de instrucciones, y los bloques más caros. `--packed` estima qué daría juntar las secciones
+calientes; `--series N` ayuda a elegir escenas. Es un modelo para ordenar cambios, no da milisegundos de la PS3: con la
+calibración de Salsa64 (1 ciclo por palabra, 41 por fallo de L1 y 380 por fallo de L2) explica ~2,4 ms de los ~8,5 que mide la
+consola en la carrera de MKDS. `AREC_PROF_SLOW_FROM=N` cuenta los accesos lentos por dirección desde el cuadro N.
+
+Lo que mostró (MKDS en carrera, cuadros 2500–3000; NSMB en el mapa del mundo 1 se parece):
+
+- ~2,0 M palabras calientes por cuadro (9,9 por instrucción) y **1,2 MB de código caliente distinto por cuadro**: más que la L2.
+  Perfil plano (el bloque más caro, 3 %).
+- Por clase: LDR/STR 39 %, datos con S 22 % (11,4 palabras: casi toda bandera viva al salir del bloque se calculaba en enteros
+  y se escribía en memoria), BX/BLX 7 % (17,5 palabras: la búsqueda de destinos copiada en cada salida), LDM/STM 11 %.
+- Las secciones frías intercaladas con las calientes: con las calientes juntas la huella bajaría ~28 %.
+- El bloque más corrido en los dos juegos era un sondeo de memoria (`ldr; cmp #0; bne` a sí mismo), ~4500 vueltas por cuadro.
+- En las cargas, 91 000 lecturas de ROMCTRL por cuadro: el salto del sondeo de la fase46 casi nunca actuaba.
+- Accesos lentos en la carrera (por cuadro): GXFIFO ~1900 escrituras, DIVCNT/SQRTCNT ~1300 lecturas, IME/IE/IF ~600. En el host
+  una escritura a GXFIFO cuesta ~10–20 ns (con la geometría diferida, como en la PS3).
+
+### Cambios
+
+| Cambio | Interruptor (archivo en /dev_hdd0/salsads; bit de `arec_cfg.opts`) |
+|---|---|
+| Sondeo de ROMCTRL (y de SPICNT en el ARM7) salta al final del tramo si el evento ya venció (`nds_poll_skip`) | — (núcleo; también con el intérprete) |
+| Banderas entre bloques en el CR (bits canónicos), `ent_callf`, datos condicionales con S traducidos | `jit-banderas-memoria` (`AREC_OPT_FLAGS_MEM`) |
+| Pista estática «no se toma» en los saltos a caminos raros | `jit-sin-pistas` (`AREC_OPT_NO_HINTS`) |
+| Búsqueda común de destinos indirectos (`ent_bx` / `ent_jl`) | `jit-salidas-copiadas` (`AREC_OPT_JL_INLINE`) |
+| Ventanas de 32 KB: lo caliente abajo, lo frío arriba | `jit-sin-ventanas` (`AREC_OPT_NO_SPLIT`) |
+| Bucles de espera: la vuelta consume el resto del tramo | `jit-sin-esperas` (`AREC_OPT_NO_IDLE`) |
+| Desalineación de LDR en el índice de la tabla de páginas | solo `AREC_OPT_ALIGN_CHECK` (sin archivo) |
+| MUL, LDM/STM, CMP #0, MOV con desplazamiento: menos palabras | — |
+
+Con `jit-tiempos` el paquete mide con el timebase dónde se va el tiempo del ARM9 (`DATO jit-tiempo`: código generado neto,
+accesos lentos, intérprete, despachador y traducción, µs de código por entrada) y el costo de cada acceso lento por región
+(`DATO jit-lentos`, que sin el archivo da solo cuántos y los bucles de espera saltados).
+
+### Resultados (host, qemu-ppc64; el modelo no son tiempos de la PS3)
+
+Mismo corredor y mismos cuadros, con todas las formas anteriores (`--jit-opts 63`) contra las mejoras (tramo de 1024, modo
+rápido). MKDS: la demostración en carrera, cuadros 2500–3000; NSMB: el mapa del mundo 1 con 3D, cuadros 3800–4400 (la partida del
+autor; el nivel no se alcanzó con el guion de teclas).
+
+| | MKDS antes → después | NSMB antes → después |
+|---|---|---|
+| instrucciones del ARM9 por cuadro (contador) | 202 600 → 183 900 (bucles de espera) | 297 600 → 283 500 |
+| palabras calientes corridas por cuadro | 1 929 000 → 1 439 000 (−25 %) | 3 003 000 → 2 322 000 (−23 %) |
+| palabras por instrucción | 9,52 → 7,82 | 10,09 → 8,19 |
+| huella de código caliente por cuadro | 1202 → 780 KB (−35 %) | 612 → 420 KB (−31 %) |
+| fallos del modelo: L1 de instrucciones / L2 | 41 300 / 10 200 → 24 200 / 6800 | 46 800 / 5400 → 26 800 / 4000 |
+| modelo (1 ciclo por palabra, 41 por fallo de L1, 380 de L2) | 2,35 → 1,57 ms (−33 %) | 2,18 → 1,54 ms (−29 %) |
+| entradas al código generado en 3000 / 4400 cuadros | 2,40 M → 2,29 M | 5,25 M → 5,25 M |
+| datos con S, palabras por instrucción | 11,4 → 4,2 | 11,2 → 3,8 |
+| BX/BLX, palabras | 17,5 → 5,5 | 17,8 → 6,1 |
+
+Por cambio (MKDS, mismos cuadros): banderas en el CR, pistas y búsqueda común −15 % de palabras y −10 % de huella; ventanas −22 %
+de huella (sin cambiar las palabras); bucles de espera −9 % de instrucciones (el sondeo pasa de 4440 a 225 vueltas por cuadro);
+MUL/LDM/CMP #0/MOV y la alineación de LDR, −2…−4 % de palabras. Cargas (MKDS, cuadros 50–150, con el intérprete en la Mac): el ARM9
+ejecuta un tercio de las instrucciones; el corredor, 5,4 → 1,6 ms por cuadro.
+
+Estimación para la PS3 **[est]**: si el tiempo del ARM9 sigue a la huella y a las palabras como en Salsa64 (Δt ≈ 0,58·Δpalabras
++ 0,08·Δlíneas), −20…−30 % en juego (MKDS ~8,5–9,5 → ~6–7 ms; NSMB nivel ~6–10 → ~4,5–7,5 ms) y cargas a la mitad o menos; la
+meta de 6 ms depende de cuánto pesen los accesos lentos y el despachador, que es lo que mide `jit-tiempos`.
+
+Paridad: `tools/build.sh test-host` verde (LE, BE, SAN, test_arec con las dos formas, ROMs con `--jit`, `--lockstep`, resumen del
+estado, ciclos); con los respaldos, 1500 cuadros de NSMB, SM64DS y MKDS: `--lockstep` sin diferencias y el mismo resumen del
+estado que el intérprete en modo estricto (NSMB 109 M comparaciones, SM64DS 62 M, MKDS 75 M).
+
+### Qué medir en la PS3
+
+1. Mismas escenas (NSMB en un nivel, MKDS en carrera, una carga de cada uno) con el paquete tal cual: `DATO desglose` (ARM9),
+   `DATO jit`, `DATO jit-lentos`. Comparar con los logs de arm7-jit.
+2. Con `jit-tiempos`: cuánto es código generado, cuánto accesos lentos (y cuáles), cuánto intérprete y despachador. Decide la
+   siguiente ronda (código: más compacto; accesos lentos: caminos rápidos para GXFIFO / divisor; despachador: tramos).
+3. A/B de cada interruptor (uno por vez, misma escena, varias ventanas): `jit-banderas-memoria`, `jit-sin-pistas`,
+   `jit-salidas-copiadas`, `jit-sin-ventanas`, `jit-sin-esperas`.
+
 ## Paquete «SalsaDS JIT núcleo» (SLDS00009)
 
 `tools/build.sh -C tests/phase4/nucleo-jit pkg` → `build/salsads-nucleo-jit/salsads-nucleo-jit.pkg`. Es «SalsaDS núcleo»
@@ -270,6 +365,9 @@ Qué mirar en `nucleo.log`, cada ~2 s:
   en total, bloques vivos, código usado de 4096 KB, vaciados (si suben seguido, la caché es chica) y bloques descartados
   (deberían ser 0).
 - `DATO jit-llamadas`: las caídas al intérprete por clase y por cuadro (lo que no tiene camino rápido).
+- `DATO jit-lentos`: los accesos por la ruta lenta por región (GXFIFO aparte) y los bucles de espera saltados; con
+  `/dev_hdd0/salsads/jit-tiempos`, también `DATO jit-tiempo` (dónde se va el tiempo del ARM9) y el costo de cada acceso lento.
+- La línea `jit: opciones del recompilador`: qué interruptores de la tercera ronda están puestos.
 - La línea `jit:` del arranque: si la prueba de la caché pasó o por qué se usa el intérprete, y el tramo del planificador
   (1024 por omisión; un número de 16 a 20 000 en `/dev_hdd0/salsads/nucleo-jit-tramo` lo cambia, para comparar en la misma
   escena con 128).
@@ -349,3 +447,6 @@ MUL con S sigue dejando C y V como estaban (como el intérprete).
   18 registros y usan `mfcr`/`mtcrf` de varios campos); LDM/STM a la E/S sin el intérprete; CMP condicionales; fusión cmp+salto;
   la caché de código (4 MB) llega al 70 % en SM64DS en 1500 cuadros: más grande o desalojo por mitades como en Salsa64.
 - Contrastar en una DS el efecto del modo rápido (la CPU ve los eventos hasta un bloque tarde).
+- Tercera ronda: medir en la PS3 (sección «Tercera ronda», «Qué medir en la PS3»). Candidatos que quedan, según lo que diga
+  `jit-tiempos`: caminos rápidos para GXFIFO y el divisor (accesos lentos), rutinas compartidas de acceso a memoria (menos huella
+  a cambio de bl/blr), suma de 64 bits ADDS+ADC, LDM/STM más cortos, menos salidas por tramo.
