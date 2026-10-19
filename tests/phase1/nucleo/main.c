@@ -9,9 +9,17 @@
  * al terminar la emulación del siguiente (un cuadro de latencia). Si los SPE no arrancan, el PPE dibuja con el
  * compositor del host.
  *
- * ROM: /dev_hdd0/salsads/rom.nds si existe (un respaldo del autor, ya desencriptado, o una ROM propia); si no,
- * la ROM de carga propia (tests/roms/src/carga: las dos CPUs ocupadas sin parar, con sus resultados comprobados),
- * embebida en el ejecutable. Para ver la demostración, copiar tests/roms/homebrew/demo.nds como rom.nds.
+ * Selector de ROM: al abrir la aplicación lista los *.nds de /dev_hdd0/salsads/ (por nombre; cruceta o stick izquierdo para
+ * moverse, L1/R1 o izquierda/derecha saltan de página, X abre, O sale de la aplicación). Recuerda la última elegida en
+ * /dev_hdd0/salsads/ultima-rom.txt. Si no hay ninguna, ofrece la ROM de carga propia (tests/roms/src/carga: las dos CPUs
+ * ocupadas sin parar, con sus resultados comprobados), embebida en el ejecutable. Dentro del juego, SELECT + START del DS3
+ * mantenidos 1 s cierran el juego y vuelven al selector. Con la prueba automática (RPCS3) no hay selector: corre rom.nds si
+ * existe (o la ROM de carga) tantas veces como diga ciclos.txt, abriendo y cerrando el juego, y comprueba que la memoria no crece.
+ *
+ * Memoria entre juegos (docs/memory-budget.md): lo grande de tamaño fijo se reserva una vez al arrancar (la estructura `nds`,
+ * las texturas del RSX, los seis SPE, la caché de código y las tablas del recompilador) y se reutiliza; lo que depende de la ROM
+ * (la ROM entera o la caché de páginas del modo por fragmentos) sale de páginas de 1 MB del sistema, fuera del heap, y se
+ * devuelve al cerrar. Cada cierre escribe en el log la memoria libre y la diferencia frente al cierre anterior.
  *
  * Guardado: el chip de guardado del cartucho (AUXSPI) se guarda en /dev_hdd0/salsads/saves/<código de juego>.sav
  * (uno por juego); se carga al arrancar si existe y se escribe a los pocos segundos de que el juego escriba y al salir.
@@ -29,14 +37,18 @@
  * Con el archivo de prueba automática (RPCS3) corre 150 cuadros con entrada sintética, comprueba que los dos
  * procesadores corrieron y que la imagen de la demostración es la esperada, y sale.
  */
+#include <dirent.h>
 #include <io/pad.h>
 #include <malloc.h>
 #include <math.h>
+#include <ppu-lv2.h>
 #include <ppu-types.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/memory.h>
 #include <sys/process.h>
 #include <sys/stat.h>
 #include <sys/systime.h>
@@ -120,6 +132,8 @@ static int autotest, failures;
 
 static struct nds *nds;
 static uint8_t *rom_buf;
+static int rom_buf_pages; /* rom_buf sale de las páginas del sistema (big_alloc) o es la cabecera de 4 KB del modo por fragmentos */
+static int rom_buf_owned; /* rom_buf se suelta al cerrar (no es la ROM de carga embebida) */
 /* ROM por fragmentos (docs/memory-budget.md): si el archivo pasa de ROM_WHOLE_MAX_MB (o existe ROM_PAGED_FLAG) se queda abierto y
  * el núcleo lee páginas de ROM_PAGE_KB bajo demanda; rom_buf pasa a ser solo la cabecera (4 KB). */
 #ifndef ROM_WHOLE_MAX_MB
@@ -152,7 +166,7 @@ static int rom_file_rd(void *user, uint64_t off, uint8_t *dst, size_t len)
 	return (int)fread(dst, 1, len, f);
 }
 static size_t rom_len;
-static const char *rom_name;
+static char rom_name[200];
 
 static struct sds_padcfg cfg;
 static struct sds_input input;
@@ -219,57 +233,139 @@ static void core_log(void *ctx, const char *msg)
 	salsads_log("núcleo: %s", msg);
 }
 
+/* ---- memoria grande fuera del heap ------------------------------------------------------------------------------------
+ *
+ * La ROM entera (hasta 64 MB) y la caché de páginas del modo por fragmentos (32 MB) se piden al sistema en páginas de 1 MB y se
+ * devuelven al cerrar cada juego. En el heap de newlib, cualquier cosa que el primer juego reserve «para siempre» a mitad de
+ * la partida queda por encima de la ROM: al soltarla el heap no puede devolver el hueco (el tope está ocupado) y la ROM grande
+ * siguiente ya no cabe aunque sobre memoria (la fuga entre juegos de Salsa64). Las páginas del sistema no dependen de eso. */
+#define BIG_MAX 4
+static struct {
+	void *p;
+	size_t bytes;
+} big[BIG_MAX];
+
+static void *big_alloc(size_t len)
+{
+	const size_t bytes = (len + (1u << 20) - 1) & ~(((size_t)1 << 20) - 1);
+	sys_mem_addr_t addr = 0;
+
+	for (int i = 0; i < BIG_MAX; i++)
+		if (!big[i].p && sysMemoryAllocate(bytes, SYS_MEMORY_PAGE_SIZE_1M, &addr) == 0) {
+			big[i].p = (void *)(uintptr_t)addr;
+			big[i].bytes = bytes;
+			return big[i].p;
+		}
+	salsads_log("memoria: sin páginas de 1 MB del sistema para %u MB: va en el heap", (unsigned)(bytes >> 20));
+	return memalign(128, len);
+}
+
+static void big_free(void *p)
+{
+	if (!p)
+		return;
+	for (int i = 0; i < BIG_MAX; i++)
+		if (big[i].p == p) {
+			sysMemoryFree((sys_mem_addr_t)(uintptr_t)p);
+			big[i].p = NULL;
+			big[i].bytes = 0;
+			return;
+		}
+	free(p);
+}
+
+static size_t big_bytes(void)
+{
+	size_t t = 0;
+
+	for (int i = 0; i < BIG_MAX; i++)
+		t += big[i].bytes;
+	return t;
+}
+
 /* ---- ROM ------------------------------------------------------------------------------------------- */
 
-static int load_rom(void)
+/* Abre la ROM `path` (NULL = la ROM de carga embebida). 0 = bien; si falla no deja nada reservado. */
+static int rom_open(const char *path)
 {
-	FILE *f = fopen(ROM_PATH, "rb");
+	FILE *f;
 
-	if (f) {
-		long n;
-
-		fseek(f, 0, SEEK_END);
-		n = ftell(f);
-		fseek(f, 0, SEEK_SET);
-		struct stat pst;
-		const int forced = stat(ROM_PAGED_FLAG, &pst) == 0;
-
-		if (n >= 0x200 && n <= 0x20000000L && (forced || n > (long)ROM_WHOLE_MAX_MB * 1024L * 1024L)) {
-			rom_buf = memalign(128, 4096);
-			memset(rom_buf, 0xFF, 4096);
-			if (rom_buf && fread(rom_buf, 1, n < 4096 ? (size_t)n : 4096u, f) >= 0x200) {
-				rom_file = f; /* queda abierto */
-				rom_len = (size_t)n;
-				rom_name = ROM_PATH;
-				salsads_log("ROM de %s: %u bytes, por fragmentos (páginas de %u KB, caché de %u MB)%s", ROM_PATH,
-					    (unsigned)rom_len, ROM_PAGE_KB, ROM_CACHE_MB, forced ? " [forzado por " ROM_PAGED_FLAG "]" : "");
-				return 0;
-			}
-			free(rom_buf);
-			rom_buf = NULL;
-			salsads_log("no pude leer %s: uso la ROM de carga", ROM_PATH);
-		} else if (n >= 0x200 && n <= 0x20000000L) {
-			rom_buf = memalign(128, (size_t)n);
-			if (rom_buf && fread(rom_buf, 1, (size_t)n, f) == (size_t)n) {
-				rom_len = (size_t)n;
-				rom_name = ROM_PATH;
-				fclose(f);
-				salsads_log("ROM de %s: %u bytes", ROM_PATH, (unsigned)rom_len);
-				return 0;
-			}
-			free(rom_buf);
-			rom_buf = NULL;
-			salsads_log("no pude leer %s (%ld bytes): uso la ROM de carga", ROM_PATH, n);
-		} else {
-			salsads_log("%s no parece una ROM de la DS (%ld bytes): uso la ROM de carga", ROM_PATH, n);
-		}
-		fclose(f);
+	rom_buf = NULL;
+	rom_buf_pages = rom_buf_owned = 0;
+	rom_len = 0;
+	if (!path) {
+		rom_buf = (uint8_t *)carga_bin;
+		rom_len = carga_bin_size;
+		snprintf(rom_name, sizeof rom_name, "carga embebida");
+		salsads_log("ROM de carga propia embebida: %u bytes", (unsigned)rom_len);
+		return 0;
 	}
-	rom_buf = (uint8_t *)carga_bin;
-	rom_len = carga_bin_size;
-	rom_name = "carga embebida";
-	salsads_log("ROM de carga propia embebida: %u bytes", (unsigned)rom_len);
-	return 0;
+	f = fopen(path, "rb");
+	if (!f) {
+		salsads_log("no pude abrir %s", path);
+		return -1;
+	}
+	long n;
+
+	fseek(f, 0, SEEK_END);
+	n = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	struct stat pst;
+	const int forced = stat(ROM_PAGED_FLAG, &pst) == 0;
+
+	if (n >= 0x200 && n <= 0x20000000L && (forced || n > (long)ROM_WHOLE_MAX_MB * 1024L * 1024L)) {
+		rom_buf = memalign(128, 4096);
+		if (rom_buf) {
+			memset(rom_buf, 0xFF, 4096);
+			if (fread(rom_buf, 1, n < 4096 ? (size_t)n : 4096u, f) >= 0x200) {
+				rom_file = f; /* queda abierto hasta rom_close */
+				rom_len = (size_t)n;
+				rom_buf_owned = 1;
+				snprintf(rom_name, sizeof rom_name, "%s", path);
+				salsads_log("ROM de %s: %u bytes, por fragmentos (páginas de %u KB, caché de %u MB)%s", path, (unsigned)rom_len,
+					    ROM_PAGE_KB, ROM_CACHE_MB, forced ? " [forzado por " ROM_PAGED_FLAG "]" : "");
+				return 0;
+			}
+			free(rom_buf);
+			rom_buf = NULL;
+		}
+		salsads_log("no pude leer %s", path);
+	} else if (n >= 0x200 && n <= 0x20000000L) {
+		rom_buf = big_alloc((size_t)n);
+		if (rom_buf && fread(rom_buf, 1, (size_t)n, f) == (size_t)n) {
+			rom_len = (size_t)n;
+			rom_buf_owned = rom_buf_pages = 1;
+			snprintf(rom_name, sizeof rom_name, "%s", path);
+			fclose(f);
+			salsads_log("ROM de %s: %u bytes", path, (unsigned)rom_len);
+			return 0;
+		}
+		big_free(rom_buf);
+		rom_buf = NULL;
+		salsads_log("no pude leer %s (%ld bytes)", path, n);
+	} else {
+		salsads_log("%s no parece una ROM de la DS (%ld bytes)", path, n);
+	}
+	fclose(f);
+	return -1;
+}
+
+/* Suelta lo que dependía de la ROM (el archivo, la ROM entera o su cabecera). */
+static void rom_close(void)
+{
+	if (rom_file) {
+		fclose(rom_file);
+		rom_file = NULL;
+	}
+	if (rom_buf_owned) {
+		if (rom_buf_pages)
+			big_free(rom_buf);
+		else
+			free(rom_buf);
+	}
+	rom_buf = NULL;
+	rom_buf_owned = rom_buf_pages = 0;
+	rom_len = 0;
 }
 
 /* ---- pantallas ----------------------------------------------------------------------------------------- */
@@ -362,6 +458,14 @@ static void draw_pointer(const struct sds_rect *touch, float k)
 	}
 }
 
+/* Salir del juego al selector: SELECT + START del DS3 mantenidos EXIT_HOLD_US (1 s). La DS reinicia con L+R+START+SELECT, y las
+ * dos solas se usan poco juntas; el medidor aparece pasados los primeros 250 ms para no tapar la pantalla en los golpes sueltos. */
+#define EXIT_HOLD_US 1000000u
+#define EXIT_SHOW_US 250000u
+static uint64_t exit_t0;       /* instante en que se apretó la combinación (0 = suelta) */
+static int exit_game;          /* la combinación se mantuvo el tiempo: volver al selector */
+static float exit_progress;    /* 0 a 1, solo para dibujar */
+
 struct stats {
 	uint32_t emu_us, frame_us;
 	double mips9, mips7;
@@ -382,6 +486,14 @@ static void draw_ui(const struct sds_rect r[2], const struct stats *st)
 			 st->emu_us / 1000, st->emu_us % 1000 / 10, st->frame_us / 1000, st->frame_us % 1000 / 10,
 			 (unsigned)st->mips9, (unsigned)(st->mips9 * 10) % 10, (unsigned)st->mips7, (unsigned)(st->mips7 * 10) % 10);
 		rsxkit_ui_text(12, 32, line, 1.2f, 0xC0FFC0FF, 0);
+	}
+	if (exit_progress > 0.0f) {
+		const float p = exit_progress > 1.0f ? 1.0f : exit_progress;
+
+		rsxkit_ui_rect(UI_W / 2 - 160, UI_H - 70, 320, 44, 0x000000C0);
+		rsxkit_ui_text(UI_W / 2 - 150, UI_H - 66, "Saliendo al selector...", 1.4f, 0xFFFFFFFF, 0);
+		rsxkit_ui_rect(UI_W / 2 - 150, UI_H - 40, 300, 8, 0x404040FF);
+		rsxkit_ui_rect(UI_W / 2 - 150, UI_H - 40, 300 * p, 8, 0xFFC040FF);
 	}
 	rsxkit_ui_end();
 }
@@ -440,14 +552,13 @@ static void load_config(void)
 
 static uint32_t combo_prev;
 
-/* Lee el DS3 y devuelve los botones de la DS y el toque para el núcleo. */
-static uint32_t poll_input(float dt, unsigned *tx, unsigned *ty)
+
+/* Lee el DS3 (el selector y el juego) y lo deja en `ds3`. */
+static void pad_read(void)
 {
 	static struct sds_ds3 last;
 	padInfo info;
 	padData data;
-	int x, y, down;
-	uint32_t k;
 
 	if (ioPadGetInfo(&info) == 0 && info.status[0]) {
 		if (!pad_present)
@@ -460,6 +571,15 @@ static uint32_t poll_input(float dt, unsigned *tx, unsigned *ty)
 		pad_present = 0;
 		ds3 = neutral_pad();
 	}
+}
+
+/* Lee el DS3 y devuelve los botones de la DS y el toque para el núcleo. */
+static uint32_t poll_input(float dt, unsigned *tx, unsigned *ty)
+{
+	int x, y, down;
+	uint32_t k;
+
+	pad_read();
 	if (autotest) {
 		/* RPCS3 sin mando: cruceta y A a ratos, y toque en el centro de la pantalla táctil durante los cuadros 40-110 */
 		const uint32_t f = frame_no;
@@ -467,6 +587,22 @@ static uint32_t poll_input(float dt, unsigned *tx, unsigned *ty)
 		ds3.buttons = ((f / 20u) & 1u ? (1u << SDS_DS3_RIGHT) : (1u << SDS_DS3_DOWN)) | ((f / 13u) & 1u ? (1u << SDS_DS3_CIRCLE) : 0u) |
 			      (f >= 40 && f < 110 ? (1u << SDS_DS3_R2) : 0u);
 		ds3.rx = ds3.ry = 128;
+	}
+	{
+		const uint32_t both = (1u << SDS_DS3_SELECT) | (1u << SDS_DS3_START);
+
+		if (!autotest && (ds3.buttons & both) == both) {
+			const uint64_t t = now_us();
+
+			if (!exit_t0)
+				exit_t0 = t;
+			exit_progress = t - exit_t0 > EXIT_SHOW_US ? (float)(t - exit_t0) / (float)EXIT_HOLD_US : 0.0f;
+			if (t - exit_t0 >= EXIT_HOLD_US)
+				exit_game = 1;
+		} else {
+			exit_t0 = 0;
+			exit_progress = 0.0f;
+		}
 	}
 	sds_pad_map(&cfg, &input, &ds3, &keys);
 	sds_pointer_update(&cfg, &input, &ds3, dt, &keys);
@@ -964,10 +1100,14 @@ static uint32_t pct(int m, unsigned p)
 
 #define MS(v) (unsigned)((v) / 1000), (unsigned)((v) % 1000 / 10)
 
+static uint64_t prev_i9, prev_i7, prev_silent;
+#ifdef NUCLEO_JIT
+static struct arec_stats prev_js;
+#endif
+
 static void log_stats(void)
 {
 	uint32_t over20 = 0;
-	static uint64_t prev_i9, prev_i7;
 	const uint64_t i9 = nds->a9.icount, i7 = nds->a7.icount;
 	const uint32_t n = stat_n;
 	uint32_t sched;
@@ -1052,7 +1192,6 @@ static void log_stats(void)
 	}
 	{
 		struct audio_out_stats as;
-		static uint64_t prev_silent;
 
 		audio_out_stats(&as, 1);
 		if (snd_on && snd_acc.jobs)
@@ -1128,7 +1267,6 @@ static void log_stats(void)
 	}
 #ifdef NUCLEO_JIT
 	if (jit_on && nds->jit9) {
-		static struct arec_stats prev_js;
 		const struct arec_stats *js = arec_stats(nds->jit9), *p = &prev_js;
 		uint32_t live;
 		size_t used, cap;
@@ -1244,6 +1382,8 @@ static void geom_wait(void *ctx, gx_t *g, uint32_t seq)
 	}
 	geom_collect((int)seq);
 }
+
+static const gx_exec_ops geom_ops = { NULL, geom_post, geom_wait };
 
 /* Autoprueba al arrancar: registros de órdenes pseudoaleatorios ejecutados en el PPE (cuadro entero) y en el SPE (dos trabajos,
  * ventanas pequeñas por DMA): vértices, polígonos, resultados y matrices tienen que ser idénticos. Devuelve 0 si coinciden. */
@@ -1720,9 +1860,455 @@ static void autotest_check(void)
 		    (unsigned)i9, (unsigned)b9, (unsigned)i7, (unsigned)b7);
 }
 
+/* ---- estadísticas por juego ------------------------------------------------------------------------------------------- */
+
+/* Todo lo que se acumula por juego vuelve a cero al abrir uno (el núcleo también: nds_init). `prev_silent` es del audio, que
+ * sigue abierto entre juegos, y no se toca. */
+static void stats_reset(void)
+{
+	memset(buf, 0, sizeof buf);
+	memset(nbuf, 0, sizeof nbuf);
+	stat_n = 0;
+	last_begin_us = 0;
+	memset(&cur_stats, 0, sizeof cur_stats);
+	acc_gx_ticks = acc_gx_cycles = acc_gx_polys = acc_gx_verts = acc_gx_swaps = acc_frames = 0;
+	acc_slices = acc_jumps = acc_events = acc_i9 = acc_i7 = acc_emu_ticks = acc_a9_ticks = acc_a7_ticks = acc_prof_n = 0;
+	acc_i9p = acc_i7p = 0;
+	memset(acc_evn, 0, sizeof acc_evn);
+	memset(acc_evt, 0, sizeof acc_evt);
+	memset(acc_evn_all, 0, sizeof acc_evn_all);
+	memset(&acc_r3d, 0, sizeof acc_r3d);
+	acc_r3d_frames = acc_r3d_early = 0;
+	r3d_post_us = acc_r3d_pre_us = acc_r3d_lat_us[0] = acc_r3d_lat_us[1] = 0;
+	r3d_fail = 0;
+	memset(&geom_acc, 0, sizeof geom_acc);
+	memset(&snd_acc, 0, sizeof snd_acc);
+	memset(prof_buf, 0, sizeof prof_buf);
+	prof_n = 0;
+	prev_i9 = prev_i7 = 0;
+#ifdef NUCLEO_JIT
+	memset(&prev_js, 0, sizeof prev_js);
+#endif
+}
+
+/* ---- memoria: informe al cerrar cada juego ------------------------------------------------------------------------------ */
+
+/* Qué hay reservado por subsistema (KB) y cuánto cambió frente al cierre anterior y frente al segundo cierre (el primero
+ * todavía reserva lo que el juego pide «para siempre» a mitad de la partida). Lo que cambia de un cierre al siguiente es una
+ * fuga o fragmentación: el heap de newlib en uso, la memoria de usuario del sistema que queda libre y el tope del heap. */
+struct mem_close_in {
+	size_t rom_pages; /* bytes de páginas del sistema que el juego tenía (ROM entera o caché de fragmentos), antes de soltarlos */
+	size_t rom_len;
+};
+
+struct mem_snap {
+	int used, free_, blocks, arena;
+	long top;
+	uint32_t user_free, user_total;
+};
+
+#define MEM_TOL_BYTES 4096
+static unsigned mem_closes;
+static struct mem_snap mem_prev, mem_base;
+
+static void mem_take(struct mem_snap *m)
+{
+	static struct {
+		u32 total;
+		u32 available;
+	} um __attribute__((aligned(16)));
+	const struct mallinfo mi = mallinfo();
+
+	lv2syscall1(352, (u64)(uintptr_t)&um);
+	m->used = mi.uordblks;
+	m->free_ = mi.fordblks;
+	m->blocks = mi.ordblks;
+	m->arena = mi.arena;
+	m->top = (long)(uintptr_t)sbrk(0);
+	if ((s32)p1 == 0) {
+		m->user_free = um.available;
+		m->user_total = um.total;
+	} else {
+		m->user_free = m->user_total = 0;
+	}
+}
+
+static void mem_report(const char *when)
+{
+	struct mem_snap m;
+
+	mem_take(&m);
+	salsads_log("memoria %s: heap %d KB (%d en uso, %d libres en %d bloques, tope %p), usuario %u de %u KB libres, páginas del "
+		    "sistema en uso por la aplicación %u KB", when, m.arena >> 10, m.used >> 10, m.free_ >> 10, m.blocks, (void *)m.top,
+		    m.user_free >> 10, m.user_total >> 10, (unsigned)(big_bytes() >> 10));
+}
+
+static void mem_close_report(const struct mem_close_in *in)
+{
+	struct mem_snap m;
+	const int spes = (wk[0] ? 2 : 0) + (wk_snd ? 1 : 0) + (wk3d[0] ? 1 : 0) + (wk3d[1] ? 1 : 0) + (wk_geom ? 1 : 0);
+#ifdef NUCLEO_JIT
+	const unsigned jit_kb = jit_on ? REC_CACHE_BYTES >> 10 : 0u;
+#else
+	const unsigned jit_kb = 0;
+#endif
+
+	mem_take(&m);
+	mem_closes++;
+	salsads_log("memoria, reservado por subsistema (KB): estructura de la máquina (fija) %u, texturas del RSX (fija) 1024, "
+		    "interfaz del RSX (fija) 2048, SPE (%d, persistentes), caché de código del recompilador (en el texto, fija) %u, "
+		    "ROM del juego cerrado %u (páginas del sistema que tenía, soltadas al cerrar: %u), páginas del sistema que siguen "
+		    "en uso %u",
+		    (unsigned)(sizeof *nds >> 10), spes, jit_kb, (unsigned)(in->rom_len >> 10), (unsigned)(in->rom_pages >> 10),
+		    (unsigned)(big_bytes() >> 10));
+	if (mem_closes > 1)
+		salsads_log("memoria, cambio frente al cierre anterior (juego %u): heap en uso %+d KB, libres %+d KB en %+d bloques, "
+			    "arena %+d KB, tope %+ld KB, usuario libre %+d KB",
+			    mem_closes, (m.used - mem_prev.used) >> 10, (m.free_ - mem_prev.free_) >> 10, m.blocks - mem_prev.blocks,
+			    (m.arena - mem_prev.arena) >> 10, (m.top - mem_prev.top) >> 10,
+			    ((int)m.user_free - (int)mem_prev.user_free) >> 10);
+	if (mem_closes == 2)
+		mem_base = m;
+	if (mem_closes > 2) {
+		const int d_used = m.used - mem_base.used, d_user = (int)m.user_free - (int)mem_base.user_free;
+		const int leak = d_used > MEM_TOL_BYTES || d_user < -MEM_TOL_BYTES;
+
+		salsads_log("memoria, acumulado desde el segundo cierre (%u juegos): heap en uso %+d bytes, tope %+ld KB, usuario libre "
+			    "%+d bytes: %s (tolerancia %d bytes)", mem_closes - 2, d_used, (m.top - mem_base.top) >> 10, d_user,
+			    leak ? "FUGA" : "sin fuga", MEM_TOL_BYTES);
+		if (leak && autotest)
+			fail("la memoria crece entre aperturas y cierres de juegos");
+	}
+	mem_prev = m;
+}
+
+/* ---- abrir y cerrar un juego ------------------------------------------------------------------------------------------- */
+
+/* Prepara la máquina para `path` (NULL = ROM de carga). Todo lo grande de tamaño fijo se reserva una vez al arrancar la
+ * aplicación (la estructura `nds`, las texturas del RSX, los SPE, la caché del recompilador); aquí solo se reinicia, y lo que
+ * depende de la ROM se pide y se suelta con el juego. 0 = bien. */
+static int game_open(const char *path)
+{
+	stats_reset();
+	memset(&sub, 0, sizeof sub);
+	memset(&prev, 0, sizeof prev);
+	sub_count = 0;
+	frame_no = 0;
+	save_last_frame = 0;
+	combo_prev = 0;
+	exit_t0 = 0;
+	exit_game = 0;
+	exit_progress = 0.0f;
+	last_dset = -1;
+	memset(set_used, 0, sizeof set_used);
+	if (rom_open(path) != 0)
+		return -1;
+	nds_init(nds); /* deja la máquina en blanco; los ganchos (SPE, sonido) y el recompilador se conservan */
+	if (geom_on)
+		gx_set_executor(&nds->gx, &geom_ops);
+	snd_load_cfg();
+	sds_input_init(&input);
+	memset(&keys, 0, sizeof keys);
+	if ((rom_file ? nds_load_rom_paged(nds, rom_file_rd, rom_file, rom_len, rom_page_shift(), (size_t)ROM_CACHE_MB << 20)
+		      : nds_load_rom(nds, rom_buf, rom_len)) != 0 || nds_boot_direct(nds) != 0) {
+		salsads_log("FALLO la ROM no es válida (cabecera o binarios)");
+		nds_rom_free(nds);
+		nds->cart.rom = NULL;
+		rom_close();
+		return -1;
+	}
+	save_load();
+	salsads_log("ROM: %s; entrada ARM9 0x%08x, ARM7 0x%08x; cuántos bytes ocupa el núcleo: %u", rom_name,
+		    (unsigned)rd32le(rom_buf + 0x24), (unsigned)rd32le(rom_buf + 0x34), (unsigned)sizeof *nds);
+#ifdef NUCLEO_JIT
+	if (jit_on && nds->jit9) {
+		((struct arec_pub *)(void *)nds->jit9)->clock_ns = jit_clock_ns;
+		salsads_rec_marker(JIT_MARKER, NUCLEO_VERSION, 1);
+	}
+#endif
+	return 0;
+}
+
+/* Cierra el juego: espera lo que los SPE y el RSX tengan en vuelo, escribe el guardado y suelta lo que dependía de la ROM. Los
+ * SPE quedan en espera de trabajos, listos para el juego siguiente. */
+static void game_close(void)
+{
+	struct mem_close_in in = { big_bytes(), rom_len };
+
+	save_flush(1);
+	if (snd_on && nds->snd.prev >= 0)
+		snd_wait(NULL, nds->snd.prev);
+	if (geom_on) {
+		gx_sync(&nds->gx, 0);
+		geom_collect((int)geom_last_seq);
+	}
+	if (r3d_on)
+		r3d_spe_wait(NULL);
+	if (spu_on) {
+		vid_collect(&sub);
+		vid_collect(&prev);
+	}
+	memset(&sub, 0, sizeof sub);
+	memset(&prev, 0, sizeof prev);
+	for (int i = 0; i < 2; i++)
+		if (set_used[i]) {
+			rsxkit_fence_wait(set_fence[i]); /* el RSX ya no lee las texturas */
+			set_used[i] = 0;
+		}
+#ifdef NUCLEO_JIT
+	if (jit_on) {
+		if (nds->jit9)
+			arec_flush(nds->jit9); /* el código traducido era de este juego */
+		salsads_rec_marker(JIT_MARKER, NUCLEO_VERSION, 0);
+	}
+#endif
+	nds_rom_free(nds);
+	nds->cart.rom = NULL;
+	rom_close();
+	mem_close_report(&in);
+}
+
+/* ---- selector de ROM ---------------------------------------------------------------------------------------------------- */
+
+#define LAST_ROM_PATH SALSADS_DATA_DIR "/ultima-rom.txt"
+#define MAX_ROMS 256
+#define NAME_MAX_LEN 120
+
+struct rom_ent {
+	char name[NAME_MAX_LEN];
+	unsigned long size;
+};
+static struct rom_ent rom_list[MAX_ROMS];
+static int rom_count;
+static char sel_msg[160];
+static uint64_t sel_msg_until;
+
+static int ends_nds(const char *n)
+{
+	const size_t l = strlen(n);
+
+	return l > 4 && n[l - 4] == '.' && (n[l - 3] | 0x20) == 'n' && (n[l - 2] | 0x20) == 'd' && (n[l - 1] | 0x20) == 's';
+}
+
+static int name_cmp(const void *a, const void *b)
+{
+	const char *x = ((const struct rom_ent *)a)->name, *y = ((const struct rom_ent *)b)->name;
+
+	for (; *x && *y; x++, y++) {
+		const int cx = (*x >= 'A' && *x <= 'Z') ? *x + 32 : *x, cy = (*y >= 'A' && *y <= 'Z') ? *y + 32 : *y;
+
+		if (cx != cy)
+			return cx - cy;
+	}
+	return (unsigned char)*x - (unsigned char)*y;
+}
+
+/* Lista los *.nds de SALSADS_DATA_DIR ordenados por nombre (newlib: opendir; nada de libsysfs, que cuelga la consola). */
+static void rom_scan(void)
+{
+	DIR *d = opendir(SALSADS_DATA_DIR);
+	struct dirent *de;
+
+	rom_count = 0;
+	if (!d) {
+		salsads_log("selector: no pude abrir " SALSADS_DATA_DIR);
+		return;
+	}
+	while ((de = readdir(d)) != NULL && rom_count < MAX_ROMS) {
+		char full[NAME_MAX_LEN + 40];
+		struct stat st;
+
+		if (de->d_name[0] == '.' || !ends_nds(de->d_name) || strlen(de->d_name) >= NAME_MAX_LEN)
+			continue;
+		snprintf(full, sizeof full, SALSADS_DATA_DIR "/%s", de->d_name);
+		if (stat(full, &st) != 0 || S_ISDIR(st.st_mode))
+			continue;
+		snprintf(rom_list[rom_count].name, NAME_MAX_LEN, "%s", de->d_name);
+		rom_list[rom_count].size = (unsigned long)st.st_size;
+		rom_count++;
+	}
+	closedir(d);
+	qsort(rom_list, (size_t)rom_count, sizeof rom_list[0], name_cmp);
+	salsads_log("selector: %d ROM(s) en " SALSADS_DATA_DIR, rom_count);
+}
+
+static void last_rom_load(char *out, size_t n)
+{
+	FILE *f = fopen(LAST_ROM_PATH, "r");
+
+	out[0] = 0;
+	if (!f)
+		return;
+	if (fgets(out, (int)n, f)) {
+		size_t l = strlen(out);
+
+		while (l && (out[l - 1] == '\n' || out[l - 1] == '\r' || out[l - 1] == ' '))
+			out[--l] = 0;
+	}
+	fclose(f);
+}
+
+static void last_rom_save(const char *name)
+{
+	FILE *f = fopen(LAST_ROM_PATH, "w");
+
+	if (f) {
+		fprintf(f, "%s\n", name);
+		fclose(f);
+	}
+}
+
+#define SEL_ROW_H 30.0f
+#define SEL_TOP 150.0f
+#define SEL_ROWS 12
+
+static void sel_draw(int cur, int top, int n, int embedded)
+{
+	char line[200];
+
+	rsxkit_ui_begin(UI_W, UI_H);
+	rsxkit_ui_text(60, 28, "SalsaDS", 3.0f, 0xFFFFFFFF, 0);
+	snprintf(line, sizeof line, "%s", NUCLEO_VERSION);
+	rsxkit_ui_text(60 + 8 * 3 * 8 + 20, 44, line, 1.4f, 0x909090FF, 0);
+	rsxkit_ui_text(60, 100, embedded ? "No hay archivos .nds en " SALSADS_DATA_DIR "/" : "Elige un juego", 1.6f, 0xC0FFC0FF, 0);
+	for (int r = 0; r < SEL_ROWS && top + r < n; r++) {
+		const int i = top + r;
+		const float y = SEL_TOP + (float)r * SEL_ROW_H;
+		char shown[80];
+
+		if (embedded) {
+			snprintf(shown, sizeof shown, "ROM de prueba integrada");
+			line[0] = 0;
+		} else {
+			const size_t l = strlen(rom_list[i].name);
+
+			if (l > 62)
+				snprintf(shown, sizeof shown, "%.59s...", rom_list[i].name);
+			else
+				snprintf(shown, sizeof shown, "%s", rom_list[i].name);
+			snprintf(line, sizeof line, "%lu.%01lu MB", rom_list[i].size >> 20, (rom_list[i].size & 0xFFFFFul) * 10 >> 20);
+		}
+		if (i == cur)
+			rsxkit_ui_rect(50, y - 4, UI_W - 100, SEL_ROW_H - 2, 0x305080FF);
+		rsxkit_ui_text(64, y, shown, 1.8f, i == cur ? 0xFFFFFFFF : 0xB8B8B8FF, 0);
+		if (line[0])
+			rsxkit_ui_text(UI_W - 64 - 8 * 1.8f * (float)strlen(line), y, line, 1.8f, i == cur ? 0xFFFFFFFF : 0x808080FF, 0);
+	}
+	if (top > 0)
+		rsxkit_ui_text(UI_W - 120, SEL_TOP - 28, "mas arriba", 1.2f, 0x909090FF, 0);
+	if (top + SEL_ROWS < n)
+		rsxkit_ui_text(UI_W - 120, SEL_TOP + SEL_ROWS * SEL_ROW_H, "mas abajo", 1.2f, 0x909090FF, 0);
+	if (sel_msg[0] && now_us() < sel_msg_until)
+		rsxkit_ui_text(60, UI_H - 130, sel_msg, 1.5f, 0xFF8080FF, 0);
+	rsxkit_ui_text(60, UI_H - 90, "Arriba / Abajo: elegir      X: abrir      O: salir de SalsaDS", 1.5f, 0xFFFFFFFF, 0);
+	rsxkit_ui_text(60, UI_H - 62, "Dentro del juego: mantener SELECT + START durante 1 s para volver aqui", 1.3f, 0xC0C0C0FF, 0);
+	snprintf(line, sizeof line, "%d juego(s)", embedded ? 0 : n);
+	rsxkit_ui_text(60, UI_H - 36, line, 1.2f, 0x808080FF, 0);
+	rsxkit_ui_end();
+}
+
+/* Muestra la lista y devuelve 1 con `out` = nombre elegido (cadena vacía = ROM de prueba integrada), o 0 si hay que salir. */
+static int select_rom(char *out, size_t outsz)
+{
+	char last[NAME_MAX_LEN];
+	int cur = 0, top = 0, embedded, rep_dir = 0;
+	uint32_t held_prev, btn;
+	uint64_t next_rep = 0;
+
+	rom_scan();
+	embedded = rom_count == 0;
+	last_rom_load(last, sizeof last);
+	for (int i = 0; i < rom_count; i++)
+		if (!strcmp(rom_list[i].name, last))
+			cur = i;
+	const int n = embedded ? 1 : rom_count;
+
+	pad_read();
+	held_prev = ds3.buttons; /* lo que ya estaba apretado (la salida del juego, la B del juego anterior) no cuenta */
+	if (cur >= SEL_ROWS)
+		top = cur - SEL_ROWS / 2;
+	while (!quit) {
+		const uint64_t t = now_us();
+		int dir = 0, now_dir;
+
+		sysUtilCheckCallback();
+		rsxkit_frame_begin(CLEAR_RGB);
+		pad_read();
+		btn = ds3.buttons;
+		if ((btn & (1u << SDS_DS3_UP)) || ds3.ly < 64)
+			now_dir = -1;
+		else if ((btn & (1u << SDS_DS3_DOWN)) || ds3.ly > 192)
+			now_dir = 1;
+		else if (btn & ((1u << SDS_DS3_L1) | (1u << SDS_DS3_LEFT)))
+			now_dir = -SEL_ROWS;
+		else if (btn & ((1u << SDS_DS3_R1) | (1u << SDS_DS3_RIGHT)))
+			now_dir = SEL_ROWS;
+		else
+			now_dir = 0;
+		if (now_dir != rep_dir) {
+			rep_dir = now_dir;
+			dir = now_dir;
+			next_rep = t + 400000; /* primera repetición a los 0,4 s, luego cada 70 ms */
+		} else if (now_dir && t >= next_rep) {
+			dir = now_dir;
+			next_rep = t + 70000;
+		}
+		if (dir && !embedded) {
+			/* un paso da la vuelta al llegar al borde; un salto de página se detiene en el borde */
+			if (dir == -1 && cur == 0)
+				cur = n - 1;
+			else if (dir == 1 && cur == n - 1)
+				cur = 0;
+			else
+				cur += dir;
+			if (cur < 0)
+				cur = 0;
+			if (cur >= n)
+				cur = n - 1;
+		}
+		if (cur < top)
+			top = cur;
+		if (cur >= top + SEL_ROWS)
+			top = cur - SEL_ROWS + 1;
+		sel_draw(cur, top, n, embedded);
+		rsxkit_frame_end();
+		if ((btn & ~held_prev) & (1u << SDS_DS3_CROSS)) {
+			if (embedded) {
+				out[0] = 0;
+			} else {
+				snprintf(out, outsz, "%s", rom_list[cur].name);
+				last_rom_save(out);
+			}
+			return 1;
+		}
+		if ((btn & ~held_prev) & (1u << SDS_DS3_CIRCLE))
+			return 0;
+		held_prev &= btn; /* un botón soltado y apretado de nuevo vuelve a contar */
+	}
+	return 0;
+}
+
+/* ---- el juego en marcha ----------------------------------------------------------------------------------------------- */
+
+/* Corre cuadros hasta que se pida salir de la aplicación (quit), volver al selector (exit_game) o, con la prueba automática, se
+ * cumplan sus cuadros. */
+static void game_run(void)
+{
+	while (!quit && !exit_game) {
+		render_frame();
+		if (autotest && frame_no >= autotest_frames) {
+			autotest_check();
+			break;
+		}
+	}
+	if (exit_game)
+		salsads_log("juego: SELECT + START mantenidos, vuelta al selector (%u cuadros de la DS)", (unsigned)nds->frames);
+}
+
 int main(void)
 {
 	char banner[160];
+	unsigned auto_cycles = 1;
 	const rsxkit_screen *si;
 
 	snprintf(banner, sizeof banner, "nucleo %s (%s, %s)", NUCLEO_VERSION, NUCLEO_TITLE, NUCLEO_APPID);
@@ -1737,6 +2323,15 @@ int main(void)
 				autotest_frames = nfr;
 			fclose(ff);
 		}
+		/* ciclos.txt: cuántas veces abre y cierra el juego la prueba automática (comprueba que la memoria no crece) */
+		ff = fopen(SALSADS_DATA_DIR "/ciclos.txt", "r");
+		if (ff) {
+			unsigned nc = 0;
+
+			if (fscanf(ff, "%u", &nc) == 1 && nc > 0 && nc < 1000)
+				auto_cycles = nc;
+			fclose(ff);
+		}
 	}
 	sysUtilRegisterCallback(0, sysutil_cb, NULL);
 	load_config();
@@ -1744,10 +2339,12 @@ int main(void)
 	memset(&keys, 0, sizeof keys);
 	ds3 = neutral_pad();
 	ioPadInit(7);
+	nds_rom_set_allocator(big_alloc, big_free);
 
+	/* La máquina: una sola estructura para toda la vida de la aplicación; cada juego la reinicia con nds_init */
 	nds = memalign(128, sizeof *nds);
-	if (!nds || load_rom() != 0) {
-		salsads_log("RESULTADO nucleo: FALLO sin memoria para el núcleo o sin ROM");
+	if (!nds) {
+		salsads_log("RESULTADO nucleo: FALLO sin memoria para el núcleo");
 		salsads_log_shutdown();
 		return 1;
 	}
@@ -1755,15 +2352,7 @@ int main(void)
 	nds->log = core_log;
 	nds_init(nds);
 	tb_hz = (uint64_t)sysGetTimebaseFrequency();
-	if ((rom_file ? nds_load_rom_paged(nds, rom_file_rd, rom_file, rom_len, rom_page_shift(), (size_t)ROM_CACHE_MB << 20)
-		      : nds_load_rom(nds, rom_buf, rom_len)) != 0 || nds_boot_direct(nds) != 0) {
-		salsads_log("RESULTADO nucleo: FALLO la ROM no es válida (cabecera o binarios)");
-		salsads_log_shutdown();
-		return 1;
-	}
-	save_load();
-	salsads_log("ROM: %s; entrada ARM9 0x%08x, ARM7 0x%08x; cuántos bytes ocupa el núcleo: %u", rom_name,
-		    (unsigned)rd32le(rom_buf + 0x24), (unsigned)rd32le(rom_buf + 0x34), (unsigned)sizeof *nds);
+	mem_report("al arrancar");
 #ifdef NUCLEO_JIT
 	{
 		struct stat jst;
@@ -1799,11 +2388,8 @@ int main(void)
 					salsads_log("jit: tramo del planificador de %u ciclos del ARM9 (%s)", q,
 						    q == JIT_QUANTUM ? "el de omisión" : JIT_QUANTUM_FILE);
 					jit_on = 1;
-					arec_stats(nds->jit9); /* (las estadísticas empiezan en cero) */
-					((struct arec_pub *)(void *)nds->jit9)->clock_ns = jit_clock_ns;
-					salsads_rec_marker(JIT_MARKER, NUCLEO_VERSION, 1);
-					salsads_log("jit: el ARM9 con el recompilador (caché de código de %u MB, prueba de %u µs)",
-						    REC_CACHE_BYTES >> 20, (unsigned)us);
+					salsads_log("jit: el ARM9 con el recompilador, creado una vez y reutilizado entre juegos (caché de código de %u MB, "
+						    "prueba de %u µs)", REC_CACHE_BYTES >> 20, (unsigned)us);
 				} else {
 					salsads_log("jit: el recompilador no se pudo crear (sin memoria): el ARM9 con el intérprete");
 				}
@@ -1837,6 +2423,9 @@ int main(void)
 		return 1;
 	}
 	memset(tex_mem, 0, 1u << 20);
+	si = rsxkit_screen_info();
+	cur_w = (int)si->width;
+	cur_h = (int)si->height;
 	/* Los dos SPE del 2D (un trabajador por pantalla); si no arrancan, el PPE dibuja con el compositor del host */
 	/* SPE: 2D A, 2D B, sonido, render 3D × 2 y geometría */
 	if (spukit_init(6) == 0) {
@@ -1896,9 +2485,7 @@ int main(void)
 	else if (spu_on) {
 		wk_geom = spukit_worker_start(spu_geom_bin, "geom", 0);
 		if (wk_geom && geom_selftest() == 0) {
-			static const gx_exec_ops gops = { NULL, geom_post, geom_wait };
-
-			gx_set_executor(&nds->gx, &gops);
+			gx_set_executor(&nds->gx, &geom_ops);
 			geom_on = 1;
 			salsads_log("geometría: órdenes ejecutadas en un SPE (autoprueba contra el PPE: igual)");
 		} else if (wk_geom) {
@@ -1908,7 +2495,6 @@ int main(void)
 			salsads_log("geometría: el SPE no arrancó (spukit %d): ejecuta el PPE", spukit_last_error());
 		}
 	}
-	snd_load_cfg();
 	{
 		const int rc = audio_out_init();
 
@@ -1930,55 +2516,64 @@ int main(void)
 	} else {
 		snd_on = 0;
 	}
-	si = rsxkit_screen_info();
-	cur_w = (int)si->width;
-	cur_h = (int)si->height;
 	salsads_log("salida %dx%d%s", cur_w, cur_h, autotest ? " (prueba automática: RPCS3 no mide)" : "");
 
-	while (!quit) {
-		render_frame();
-		if (autotest && frame_no >= autotest_frames) {
-			autotest_check();
-			break;
+	/* Un juego tras otro: selector, abrir, correr, cerrar. Con la prueba automática no hay selector: rom.nds si existe (o la ROM
+	 * de carga), `ciclos.txt` veces. */
+	{
+		unsigned done = 0;
+
+		while (!quit) {
+			char name[NAME_MAX_LEN], path[NAME_MAX_LEN + 40];
+			struct stat pst;
+			int opened;
+
+			if (autotest) {
+				opened = game_open(stat(ROM_PATH, &pst) == 0 ? ROM_PATH : NULL);
+				if (opened != 0)
+					opened = game_open(NULL); /* rom.nds no sirve: la ROM de carga */
+			} else {
+				if (!select_rom(name, sizeof name))
+					break;
+				if (name[0]) {
+					snprintf(path, sizeof path, SALSADS_DATA_DIR "/%s", name);
+					opened = game_open(path);
+					if (opened != 0) {
+						snprintf(sel_msg, sizeof sel_msg, "No se pudo abrir %s", name);
+						sel_msg_until = now_us() + 4000000;
+					}
+				} else {
+					opened = game_open(NULL);
+				}
+			}
+			if (opened != 0) {
+				if (autotest) {
+					fail("no se pudo abrir ninguna ROM");
+					break;
+				}
+				continue;
+			}
+			game_run();
+			game_close();
+			mem_report("tras cerrar el juego");
+			if (autotest && ++done >= auto_cycles)
+				break;
 		}
 	}
-	save_flush(1);
-	if (snd_on) {
-		nds->snd.ops.submit = NULL;
-		nds->snd.ops.wait = NULL;
-		nds->snd.ops.sink = NULL;
-		if (nds->snd.prev >= 0)
-			snd_wait(NULL, nds->snd.prev); /* un trabajo en vuelo apunta a memoria que sigue viva, pero se espera */
-	}
+	/* Fin de la aplicación: ahora sí se detienen los SPE y el audio */
 	if (wk_snd)
 		spukit_worker_stop(wk_snd);
-	if (geom_on) {
-		gx_sync(&nds->gx, 0);
-		geom_collect((int)geom_last_seq);
-	}
 	if (wk_geom)
 		spukit_worker_stop(wk_geom);
 	audio_out_shutdown();
-	if (r3d_on) {
-		r3d_spe_wait(NULL);
-		nds->vid.ops.submit3d = NULL;
-		nds->vid.ops.wait3d = NULL;
-	}
 	for (int u = 0; u < 2; u++)
 		if (wk3d[u])
 			spukit_worker_stop(wk3d[u]);
-	if (spu_on) {
-		nds->vid.ops.submit = NULL;
-		vid_collect(&sub);
-		vid_collect(&prev);
+	if (spu_on)
 		for (int e = 0; e < 2; e++)
 			if (wk[e])
 				spukit_worker_stop(wk[e]);
-	}
-#ifdef NUCLEO_JIT
-	if (jit_on)
-		salsads_rec_marker(JIT_MARKER, NUCLEO_VERSION, 0);
-#endif
+	mem_report("al salir");
 	salsads_log("RESULTADO nucleo: %s", failures ? "FALLO" : "OK");
 	if (!rsxkit_lost()) {
 		rsxkit_finish();

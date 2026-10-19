@@ -195,6 +195,7 @@ def main() -> int:
     ap.add_argument("--rom", type=pathlib.Path,
                     help="núcleo: ROM que se copia como dev_hdd0/salsads/rom.nds mientras dura la corrida (y se borra al final)")
     ap.add_argument("--frames", type=int, help="núcleo: cuadros del autotest con --rom (frames.txt)")
+    ap.add_argument("--ciclos", type=int, help="núcleo: cuántas veces abre y cierra el juego el autotest (ciclos.txt); el log dice si la memoria crece")
     args = ap.parse_args()
 
     lock = lock_rpcs3()  # noqa: F841 (se mantiene hasta salir)
@@ -208,6 +209,9 @@ def main() -> int:
         if args.frames:
             (data_dir / "frames.txt").write_text(f"{args.frames}\n")
             placed.append(data_dir / "frames.txt")
+        if args.ciclos:
+            (data_dir / "ciclos.txt").write_text(f"{args.ciclos}\n")
+            placed.append(data_dir / "ciclos.txt")
     try:
         return run_all(args, elf)
     finally:
