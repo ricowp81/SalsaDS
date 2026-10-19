@@ -725,10 +725,17 @@ static struct arec *arec_new(struct acore *c, const struct arec_cfg *cfg, int ca
 	j->can_exec = can_exec;
 	j->code = cfg->code;
 	j->code_words = cfg->code_bytes / 4;
-	j->max_blocks = MAX_BLOCKS;
-	j->max_links = MAX_LINKS;
-	j->blocks = calloc(MAX_BLOCKS, sizeof *j->blocks);
-	j->links = calloc(MAX_LINKS, sizeof *j->links);
+	/* Las tablas crecen con la caché (4 MB: 16384 bloques; desde 8 MB, el doble), para que con la caché grande de
+	 * PS3MAPI no se vacíe por bloques antes que por código (NSMB: ~540 bytes de código por bloque). Cada bloque son
+	 * ~250 bytes del heap: 32768 son 8 MB. */
+	{
+		const uint32_t k = cfg->code_bytes >= (8u << 20) ? 2u : 1u;
+
+		j->max_blocks = MAX_BLOCKS * k;
+		j->max_links = MAX_LINKS * k;
+	}
+	j->blocks = calloc(j->max_blocks, sizeof *j->blocks);
+	j->links = calloc(j->max_links, sizeof *j->links);
 	j->jl = calloc(AREC_JL_SIZE, sizeof *j->jl);
 	j->pt = calloc(2u * AREC_PAGES, sizeof *j->pt);
 	j->wr_real = calloc(AREC_PAGES, sizeof *j->wr_real);

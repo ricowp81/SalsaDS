@@ -78,6 +78,10 @@
 /* Con este archivo las bandas del render 3D vuelven al reparto alterno (u, u+2, ...) en lugar del reparto por costo. */
 #define R3D_ALT_FLAG SALSADS_DATA_DIR "/reparto-alterno"
 #define JIT_MARKER SALSADS_DATA_DIR "/nucleo-jit.marker"
+/* Caché del recompilador pedida a PS3MAPI (16 MB fuera del binario, fase52): su propia marca, y con este archivo no se
+ * intenta (se usa la de 4 MB del segmento de texto). */
+#define JIT_MAPI_MARKER SALSADS_DATA_DIR "/nucleo-jit-ps3mapi.marker"
+#define JIT_NOMAPI_FLAG SALSADS_DATA_DIR "/jit-sin-ps3mapi"
 /* Tramo del planificador con el recompilador (ciclos del ARM9 entre los cambios de CPU; el intérprete usa 128). Cada
  * tramo es una entrada al código generado, y lo que cuesta en la PS3 es el cambio de CPU (cachés), no las instrucciones:
  * con tramos más largos hay menos. El número en JIT_QUANTUM_FILE (de 16 a 20000) lo cambia sin compilar otra vez. */
@@ -1773,16 +1777,34 @@ int main(void)
 		} else if (autotest) {
 			salsads_log("jit: prueba automática (RPCS3): su texto es de solo lectura, no se intenta; el ARM9 con el intérprete (el respaldo)");
 		} else {
-			char why[160];
+			char why[160], mwhy[160];
 			uint64_t us = 0;
-			const enum rec_probe_status ps = salsads_rec_probe(JIT_MARKER, NUCLEO_VERSION, 2000, why, sizeof why, &us);
+			void *mapi_code = NULL;
+			enum rec_probe_status ps;
+
+			if (stat(JIT_NOMAPI_FLAG, &jst) == 0) {
+				snprintf(mwhy, sizeof mwhy, "%s existe", JIT_NOMAPI_FLAG);
+			} else {
+				mapi_code = salsads_rec_cache_mapi(REC_MAPI_BYTES, JIT_MAPI_MARKER, NUCLEO_VERSION, 2000, mwhy,
+								   sizeof mwhy, &us);
+				if (mapi_code)
+					atexit(salsads_rec_cache_mapi_free);
+			}
+			if (mapi_code)
+				salsads_log("jit: caché por PS3MAPI: %s", mwhy);
+			else
+				salsads_log("jit: caché por PS3MAPI no (%s): se usa la del segmento de texto", mwhy);
+			ps = mapi_code ? REC_PROBE_OK : salsads_rec_probe(JIT_MARKER, NUCLEO_VERSION, 2000, why, sizeof why, &us);
 
 			if (ps == REC_PROBE_OK) {
 				struct nds_jit_cfg jc;
 
 				memset(&jc, 0, sizeof jc);
-				jc.code = salsads_rec_cache();
-				jc.code_bytes = REC_CACHE_BYTES;
+				jc.code = mapi_code ? mapi_code : salsads_rec_cache();
+				jc.code_bytes = mapi_code ? REC_MAPI_BYTES : REC_CACHE_BYTES;
+				/* la zona de PS3MAPI está lejos del texto (0x70000000): ningún bl llega a C, así que se emite de una
+				 * vez por mtctr/bctrl en lugar de intentar el bl y repetir cada bloque */
+				jc.far_calls = mapi_code != NULL;
 				jc.icache_flush = salsads_rec_flush;
 				if (nds_jit_attach(nds, &jc) == 0) {
 					FILE *qf = fopen(JIT_QUANTUM_FILE, "r");
@@ -1802,8 +1824,9 @@ int main(void)
 					arec_stats(nds->jit9); /* (las estadísticas empiezan en cero) */
 					((struct arec_pub *)(void *)nds->jit9)->clock_ns = jit_clock_ns;
 					salsads_rec_marker(JIT_MARKER, NUCLEO_VERSION, 1);
-					salsads_log("jit: el ARM9 con el recompilador (caché de código de %u MB, prueba de %u µs)",
-						    REC_CACHE_BYTES >> 20, (unsigned)us);
+					salsads_log("jit: el ARM9 con el recompilador (caché de código de %u MB %s, prueba de %u µs)",
+						    (unsigned)(jc.code_bytes >> 20), mapi_code ? "de PS3MAPI" : "en el texto",
+						    (unsigned)us);
 				} else {
 					salsads_log("jit: el recompilador no se pudo crear (sin memoria): el ARM9 con el intérprete");
 				}

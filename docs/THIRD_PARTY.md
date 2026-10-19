@@ -29,6 +29,7 @@ licencia se fija con esa decisión.
 | `src/platform/ps3/{log.c,log.h,paths.h,autotest.h}` | `src/platform/ps3/` | Puerto UDP 18195, carpeta `/dev_hdd0/salsads` |
 | `tools/{build,docker-image,docker-image-ppc64,build-ppc64,qemu-ppc64,deploy-ps3}.sh`, `tools/udplog.py`, `tools/rpcs3-run.py`, `tools/rpcs3/*.yml`, `tools/spu-stack.py`, `docker/ppc64.Dockerfile` | los del mismo nombre | `rpcs3-run.py` conserva el nombre del candado de Salsa64 a propósito (RPCS3 compartido) |
 | `tests/phase0/udplog/` | `tests/phase0/udplog/` | |
+| `tests/phase0/jit-arm/ps3mapi.h` | `tests/phase0/jit-ppe/ps3mapi.h` (rama `jit-ps3mapi`) | Llamadas a PS3MAPI reescritas; los opcodes y el orden de argumentos se tomaron como referencia de github.com/bucanero/ps3mapi-lib (MIT) y github.com/crystalct/ps3mapidynarec (GPLv2) sin copiar su código |
 
 ## Toolchain (no se distribuye con el repositorio)
 
