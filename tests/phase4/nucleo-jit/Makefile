@@ -37,4 +37,8 @@ LDFLAGS := -T $(abspath ../../../mk/rec-cache.ld) -T lv2.ld
 CFLAGS  := -DNUCLEO_VERSION=\"$(or $(SALSADS_VERSION),desconocida)\" -DNUCLEO_JIT '-DNUCLEO_TITLE="$(TITLE)"' \
            '-DNUCLEO_APPID="$(APPID)"' -I$(abspath ../../phase0/jit-arm) -I$(abspath ../../phase1/nucleo)
 
+# Ícono (320×176) y fondo (1920×1080) del XMB
+ICON0 := $(abspath ../../../assets/ps3/ICON0.PNG)
+PIC1  := $(abspath ../../../assets/ps3/PIC1.PNG)
+
 include ../../../mk/ps3.mk
