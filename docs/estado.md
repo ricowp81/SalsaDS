@@ -559,3 +559,5 @@ detalle y fuentes en `docs/fase0.md`, 0.2).
   y tope sin cambio entre cierres. RPCS3 no implementa la syscall 352: allí «usuario libre» sale en 0.
 - Sin probar en la PS3 real: el selector con el mando, el medidor de salida, que `sysMemoryAllocate` de 32 MB/64 MB devuelva todo
   (la memoria de usuario libre debe quedar igual tras cada cierre) y el recompilador recreado en `nds_init` entre juegos.
+- Paquete con el JIT (SLDS00009) del commit `8057fbc`: `build/salsads-nucleo-jit-fase49.pkg`, SHA-256
+  `0fea0e710ff1ef6420f2e0d0b5e855eb89f31cd641d95e61e5b628f10a678e3a`. Sin probar en la PS3.
