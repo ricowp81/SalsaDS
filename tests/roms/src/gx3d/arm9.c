@@ -1221,7 +1221,31 @@ static void s_dirt2(void)
 /* 38 (texturado) y 39 (sin textura, colores alternos): el tallo inclinado de una plataforma de hongo de New Super Mario Bros. (nivel 1-3) tal cual
  * (pantalla y texel de cada vértice) de un cuadro del juego: la pila se inclina tanto que las aristas de arriba y de abajo quedan
  * casi horizontales (pendiente 1/4 a 1/8). En la PS3 los segmentos de arriba, junto a la cabeza, salían con dientes y huecos. */
-static void s_stem_tilt(int tex)
+/* Sonda del tallo inclinado a la derecha: un solo cuadrilátero del tallo espejado (el q-ésimo) con la textura directa de 32×32, cuyo color
+ * dice el texel (s, t) de cada píxel (r = s, g = t): se ve cómo interpola la DS a lo largo de las aristas x-mayores */
+static void s_stem_probe(int q)
+{
+	static const int a[8][2] = { { 34, 123 }, { 35, 129 }, { 36, 134 }, { 37, 140 }, { 38, 146 }, { 39, 152 }, { 39, 158 }, { 39, 165 } };
+	static const int b[8][2] = { { 65, 115 }, { 66, 122 }, { 68, 129 }, { 69, 136 }, { 70, 143 }, { 70, 150 }, { 71, 157 }, { 71, 164 } };
+
+	ident_all();
+	use_tex(texparam(T_DIRECT, 2, 2, 7, 0, 0, 0), 0);
+	cmd(POLY_ATTR, 0x001F0080u);
+	cmd(BEGIN, 1);
+	cmd(COLOR, WHITE);
+	tc(0, 0);
+	sv(120 - b[q][0], b[q][1], 0);
+	tc(30, 0);
+	sv(120 - b[q + 1][0], b[q + 1][1], 0);
+	tc(30, 30);
+	sv(120 - a[q + 1][0], a[q + 1][1], 0);
+	tc(0, 30);
+	sv(120 - a[q][0], a[q][1], 0);
+	cmd(END, 0);
+	cmd(SWAP, 0);
+}
+
+static void s_stem_tilt(int tex, int mir)
 {
 	static const int a[8][2] = { { 34, 123 }, { 35, 129 }, { 36, 134 }, { 37, 140 }, { 38, 146 }, { 39, 152 }, { 39, 158 }, { 39, 165 } };
 	static const int b[8][2] = { { 65, 115 }, { 66, 122 }, { 68, 129 }, { 69, 136 }, { 70, 143 }, { 70, 150 }, { 71, 157 }, { 71, 164 } };
@@ -1231,18 +1255,32 @@ static void s_stem_tilt(int tex)
 		use_tex(texparam(T_256, 2, 2, 4, 1, 0, 0), P_256 >> 4);
 	cmd(POLY_ATTR, 0x001F0080u);
 	for (int q = 0; q < 7; q++) {
+		/* mir: el tallo espejado (inclinado hacia la derecha: las aristas de arriba y de abajo bajan hacia la derecha), en 1 con el orden de
+		 * vértices invertido para que el polígono siga mirando al frente; en 2 desplazado 7 píxeles (otra posición de la cámara) */
+		const int mx = mir ? 120 : 0, mdx = mir == 2 ? 7 : 0;
 		const uint32_t s0 = (uint32_t)(94 + 103 * q) & 0xFFFFu, s1 = (uint32_t)(94 + 103 * (q + 1)) & 0xFFFFu;
 
 		cmd(BEGIN, 1);
 		cmd(COLOR, tex ? WHITE : (q & 1 ? RED : GREEN));
-		cmd(TEXCOORD, s0 | ((uint32_t)(-8) << 16));
-		sv(b[q][0], b[q][1], 0);
-		cmd(TEXCOORD, s0 | (504u << 16));
-		sv(a[q][0], a[q][1], 0);
-		cmd(TEXCOORD, s1 | (504u << 16));
-		sv(a[q + 1][0], a[q + 1][1], 0);
-		cmd(TEXCOORD, s1 | ((uint32_t)(-8) << 16));
-		sv(b[q + 1][0], b[q + 1][1], 0);
+		if (!mir) {
+			cmd(TEXCOORD, s0 | ((uint32_t)(-8) << 16));
+			sv(b[q][0], b[q][1], 0);
+			cmd(TEXCOORD, s0 | (504u << 16));
+			sv(a[q][0], a[q][1], 0);
+			cmd(TEXCOORD, s1 | (504u << 16));
+			sv(a[q + 1][0], a[q + 1][1], 0);
+			cmd(TEXCOORD, s1 | ((uint32_t)(-8) << 16));
+			sv(b[q + 1][0], b[q + 1][1], 0);
+		} else {
+			cmd(TEXCOORD, s0 | ((uint32_t)(-8) << 16));
+			sv(mx - b[q][0] + mdx, b[q][1], 0);
+			cmd(TEXCOORD, s1 | ((uint32_t)(-8) << 16));
+			sv(mx - b[q + 1][0] + mdx, b[q + 1][1], 0);
+			cmd(TEXCOORD, s1 | (504u << 16));
+			sv(mx - a[q + 1][0] + mdx, a[q + 1][1], 0);
+			cmd(TEXCOORD, s0 | (504u << 16));
+			sv(mx - a[q][0] + mdx, a[q][1], 0);
+		}
 		cmd(END, 0);
 	}
 	cmd(SWAP, 0);
@@ -1318,7 +1356,7 @@ static void s_dirt3(void)
 int main(void)
 {
 	scene = *(volatile uint32_t *)0x027FFE0Cu & 0xFFFFu;
-	if (scene > 40)
+	if (scene > 45)
 		scene = 0;
 	sds_init_quiet();
 	REG16(R_POWCNT1) = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 9) | (1 << 15);
@@ -1369,8 +1407,13 @@ int main(void)
 	case 35: s_stem(0); break;
 	case 36: s_stem(1); break;
 	case 37: s_dirt2(); break;
-	case 38: s_stem_tilt(1); break;
-	case 39: s_stem_tilt(0); break;
+	case 38: s_stem_tilt(1, 0); break;
+	case 39: s_stem_tilt(0, 0); break;
+	case 41: s_stem_tilt(1, 1); break;
+	case 42: s_stem_tilt(0, 1); break;
+	case 43: s_stem_tilt(1, 2); break;
+	case 44: s_stem_probe(0); break;
+	case 45: s_stem_probe(3); break;
 	case 40: s_dirt3(); break;
 	case 29: s_wdepth(1, 0); break;
 	}

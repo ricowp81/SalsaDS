@@ -527,3 +527,18 @@ detalle y fuentes en `docs/fase0.md`, 0.2).
   margen) y el SPE1 deja de ir un 25 % por encima del SPE0; medir con `DATO raster3d` / `raster3d-latencia` y con `reparto-alterno` para el A/B.
   Paquete con el JIT (SLDS00009) del commit `1e712e3`: `build/salsads-nucleo-jit-fase47.pkg`, SHA-256
   `fa1e9cab105e444b1d3eaf9c5443adbbd920dd6481024cca490e3dc0dccbbbe6`. Sin probar en la PS3.
+
+## Rama fase50: rendimiento del 2D y tallos inclinados a la derecha (2026-10-18)
+
+- **Regresión 60 -> 30 fps de la fase47 (NSMB)**: la fase47 recogía el 2D entregado en la línea 262 en la misma pasada (`prev = sub` antes de
+  `vid_collect`), así que el PPE esperaba la composición entera (5 ms). Se restauró el orden anterior: se recoge el 2D de la pasada
+  anterior (los SPE lo componen mientras se emula el cuadro siguiente) y `prev = sub` va al final. Se conservan la espera del 3D en la línea
+  262 y el tercer `gx_frame`. Las dos instantáneas `set` bastan: el 2D en vuelo (pasada N) y el de la pasada N+1 usan conjuntos distintos y
+  el de N-1 ya se recogió. **Medir en la PS3**: `DATO spe` «el PPE esperando» ~0 ms e intervalo del RSX 16,7 ms.
+- **Tallos inclinados a la derecha (NSMB)**: medidos contra melonDS ejecutándolo con escenas nuevas 41 a 45 de `gx3d` (tallo espejado texturado, sin
+  textura, desplazado, y dos sondas con textura directa cuyo color dice el texel por píxel). Causa: izquierda x-mayor que va hacia la derecha
+  (ortográfica): la interpolación a lo largo de la línea arranca en la x de esta línea de la arista (redondeada), a la izquierda del primer
+  píxel dibujado, y sus atributos van en la y de la línea (no la siguiente). Nuevo campo `r3d_row.xo` (origen de la interpolación; `k = x - xo`)
+  en `r3d_px.h` y `r3d_vrow.h`. Diferencias con melonDS: 41 y 43: 175 -> 0; 44 y 45: 0; 21: 2144 -> 56; 36: 962 -> 25; 14: 399 -> 123; 0: 127 -> 82;
+  ninguna escena empeora. Queda 1 píxel en la 42 (cobertura de la costura, ya estaba). `gx3d.golden` actualizado (0, 14, 21, 36 y 41 a 45).
+- **Audio**: revertida la unión f966cc3 (control de tasa amplio y limitador); queda el control de tasa anterior a la fase27 y el FIR de la fase26.
