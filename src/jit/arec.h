@@ -86,6 +86,9 @@ struct arec_pub {
 	uint8_t *codemap;         /* por línea física de 64 B: 1 = puede haber código traducido */
 	struct arec_stats st;
 	uint64_t (*clock_ns)(void);
+	/* Último bloque al que entró el despachador (diagnóstico: el hilo vigía los lee desde otro hilo). */
+	volatile uint32_t last_pc;
+	volatile uint64_t last_code;
 };
 
 /* Crea el recompilador para `c` (solo ARMv5: el ARM9). NULL si este host no ejecuta PowerPC64 o falta memoria. */

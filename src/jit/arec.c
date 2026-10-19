@@ -607,6 +607,8 @@ void arec_run(struct arec *j, uint64_t until)
 		c->jit_nzcv = c->cpsr & 0xF0000000u;
 		j->exit_req = 0;
 		j->pub.st.enters++;
+		j->pub.last_pc = pc;
+		j->pub.last_code = (uint64_t)(uintptr_t)(j->code + b->entry);
 		r = enter(j, j->code + b->entry);
 		c->cpsr = (c->cpsr & 0x0FFFFFFFu) | (c->jit_nzcv & 0xF0000000u);
 #ifdef AREC_DEBUG
