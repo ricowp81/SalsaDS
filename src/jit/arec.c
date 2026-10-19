@@ -128,7 +128,11 @@ static uint64_t h_rd(struct acore *c, uint32_t a, uint32_t kind)
 	struct arec *j = c->jit;
 	uint32_t v;
 
+	const unsigned rg = arec_slow_region(a);
+	const uint64_t t0 = j->pub.tick ? j->pub.tick() : 0;
+
 	j->pub.st.slow_rd++;
+	j->pub.st.slow_rd_by[rg]++;
 	if (prof_slow_on)
 		prof_slow_add(a, c->v5 ? 0u : 1u, 0);
 	j->exit_req = 0;
@@ -150,6 +154,8 @@ static uint64_t h_rd(struct acore *c, uint32_t a, uint32_t kind)
 		break;
 	}
 	c->abort = 0;
+	if (j->pub.tick)
+		j->pub.st.t_rd_by[rg] += j->pub.tick() - t0;
 	if (must_exit(c, j)) {
 		j->pub.st.mem_exits++;
 		return (uint64_t)1 << 32 | v;
@@ -161,7 +167,11 @@ static uint32_t h_wr(struct acore *c, uint32_t a, uint32_t v, uint32_t kind)
 {
 	struct arec *j = c->jit;
 
+	const unsigned rg = arec_slow_region(a);
+	const uint64_t t0 = j->pub.tick ? j->pub.tick() : 0;
+
 	j->pub.st.slow_wr++;
+	j->pub.st.slow_wr_by[rg]++;
 	if (prof_slow_on)
 		prof_slow_add(a, c->v5 ? 0u : 1u, 1);
 	j->exit_req = 0;
@@ -177,6 +187,8 @@ static uint32_t h_wr(struct acore *c, uint32_t a, uint32_t v, uint32_t kind)
 		break;
 	}
 	c->abort = 0;
+	if (j->pub.tick)
+		j->pub.st.t_wr_by[rg] += j->pub.tick() - t0;
 	if (must_exit(c, j)) {
 		j->pub.st.mem_exits++;
 		return 1;
@@ -202,10 +214,16 @@ static uint32_t h_call(struct acore *c, uint32_t insn, uint32_t at, uint32_t rem
 	j->exit_req = 0;
 	c->cpsr = (c->cpsr & 0x0FFFFFFFu & ~ACORE_T) | (c->jit_nzcv & 0xF0000000u) | (thumb ? ACORE_T : 0u);
 	c->r[15] = r15;
-	if (thumb)
-		acore_exec_thumb(c, insn);
-	else
-		acore_exec_arm(c, insn);
+	{
+		const uint64_t t0 = j->pub.tick ? j->pub.tick() : 0;
+
+		if (thumb)
+			acore_exec_thumb(c, insn);
+		else
+			acore_exec_arm(c, insn);
+		if (j->pub.tick)
+			j->pub.st.t_call += j->pub.tick() - t0;
+	}
 	c->jit_nzcv = c->cpsr & 0xF0000000u;
 	if (c->r[15] != r15 || (((c->cpsr & ACORE_T) != 0) != thumb))
 		return 1;
@@ -685,6 +703,8 @@ void arec_run(struct arec *j, uint64_t until)
 	void (*const ev)(void *, int, uint64_t) = j->cfg.on_exec;
 
 	int jl_fill = 0;
+	uint64_t (*const tick)(void) = j->pub.tick;
+	const uint64_t run0 = tick ? tick() : 0;
 
 	if (arec_prof_on)
 		prof_put(0xA0000000u | (c->v5 ? 0u : 1u), (uint32_t)c->icount);
@@ -737,7 +757,14 @@ void arec_run(struct arec *j, uint64_t until)
 				prof_drain();
 			c->jit_prof = (uint64_t)(uintptr_t)(prof_buf + prof_pos);
 		}
-		r = enter(j, j->code + b->entry);
+		if (tick) {
+			const uint64_t e0 = tick();
+
+			r = enter(j, j->code + b->entry);
+			j->pub.st.t_code += tick() - e0;
+		} else {
+			r = enter(j, j->code + b->entry);
+		}
 		if (arec_prof_on)
 			prof_pos = (uint32_t)((uint32_t *)(uintptr_t)c->jit_prof - prof_buf);
 		c->cpsr = (c->cpsr & 0x0FFFFFFFu) | (c->jit_nzcv & 0xF0000000u);
@@ -797,6 +824,8 @@ void arec_run(struct arec *j, uint64_t until)
 		if (ev)
 			ev(j->cfg.ctx, AREC_EV_BLOCK, until);
 	}
+	if (tick)
+		j->pub.st.t_run += tick() - run0;
 }
 
 /* ---- mapa de memoria -------------------------------------------------------------------------------------- */

@@ -108,7 +108,21 @@
  * con tramos más largos hay menos. El número en JIT_QUANTUM_FILE (de 16 a 20000) lo cambia sin compilar otra vez. */
 #define JIT_QUANTUM 1024u
 #define JIT_QUANTUM_FILE SALSADS_DATA_DIR "/nucleo-jit-tramo"
+/* Interruptores para medir A/B en la consola las mejoras del recompilador (rama arm9-perf; docs/fase4.md, «Tercera ronda»): cada
+ * archivo vuelve a la forma anterior de una (AREC_OPT_*). JIT_TIMES_FLAG mide dónde se va el tiempo del ARM9 (DATO jit-tiempo). */
+static const struct {
+	const char *file;
+	unsigned opt;
+	const char *what;
+} jit_opt_files[] = {
+	{ SALSADS_DATA_DIR "/jit-banderas-memoria", AREC_OPT_FLAGS_MEM, "banderas entre bloques en memoria" },
+	{ SALSADS_DATA_DIR "/jit-sin-pistas", AREC_OPT_NO_HINTS, "sin pistas estáticas de salto" },
+	{ SALSADS_DATA_DIR "/jit-salidas-copiadas", AREC_OPT_JL_INLINE, "búsqueda de destinos copiada en cada salida" },
+	{ SALSADS_DATA_DIR "/jit-sin-ventanas", AREC_OPT_NO_SPLIT, "código frío junto al caliente" },
+};
+#define JIT_TIMES_FLAG SALSADS_DATA_DIR "/jit-tiempos"
 static int jit_on;
+static int jit_times; /* JIT_TIMES_FLAG: reloj (timebase) en el despachador, los accesos lentos y las llamadas al intérprete */
 #endif
 #include "carga_bin.h"
 #include "../../roms/src/carga/shared.h"
@@ -1076,6 +1090,19 @@ static uint64_t jit_clock_ns(void)
 {
 	return tb_hz ? tb_clock() * 1000000000ull / tb_hz : 0;
 }
+
+/* Los relojes del recompilador de las dos CPUs (al conectar y cada vez que nds_init lo recrea con un juego nuevo). */
+static void jit_clocks(void)
+{
+	if (nds->jit9) {
+		((struct arec_pub *)(void *)nds->jit9)->clock_ns = jit_clock_ns;
+		((struct arec_pub *)(void *)nds->jit9)->tick = jit_times ? tb_clock : NULL;
+	}
+	if (nds->jit7) {
+		((struct arec_pub *)(void *)nds->jit7)->clock_ns = jit_clock_ns;
+		((struct arec_pub *)(void *)nds->jit7)->tick = jit_times ? tb_clock : NULL;
+	}
+}
 #endif
 
 static inline uint32_t tb_us(uint64_t ticks)
@@ -1358,6 +1385,58 @@ static void log_stats(void)
 							      (unsigned long long)((js->call_by[k] - p->call_by[k]) / n));
 			cl[o] = 0;
 			salsads_log("DATO jit-llamadas: por cuadro y clase: %s", o ? cl : "ninguna");
+		}
+		{
+			/* accesos lentos por región, por cuadro: cuántos (y, con JIT_TIMES_FLAG, µs cada uno) */
+			static const struct {
+				unsigned rg;
+				const char *name;
+			} rgs[] = { { 0, "GXFIFO" }, { 4, "E/S" }, { 2, "RAM" }, { 3, "WRAM" }, { 5, "paleta" }, { 6, "VRAM" }, { 7, "OAM" },
+				    { 15, "BIOS" } };
+			char sl[640];
+			size_t o = 0;
+			const double us = tb_hz ? 1e6 / (double)tb_hz : 0.0;
+
+			for (unsigned k = 0; k < sizeof rgs / sizeof rgs[0] && o < sizeof sl - 80; k++) {
+				const unsigned r = rgs[k].rg;
+				const uint64_t nr = js->slow_rd_by[r] - p->slow_rd_by[r], nw = js->slow_wr_by[r] - p->slow_wr_by[r];
+
+				if (!nr && !nw)
+					continue;
+				if (jit_times)
+					o += (size_t)snprintf(sl + o, sizeof sl - o, "%s%s %llu lect. (%.2f µs) / %llu escr. (%.2f µs)", o ? ", " : "",
+							      rgs[k].name, (unsigned long long)(nr / n),
+							      nr ? (double)(js->t_rd_by[r] - p->t_rd_by[r]) * us / (double)nr : 0.0,
+							      (unsigned long long)(nw / n),
+							      nw ? (double)(js->t_wr_by[r] - p->t_wr_by[r]) * us / (double)nw : 0.0);
+				else
+					o += (size_t)snprintf(sl + o, sizeof sl - o, "%s%s %llu / %llu", o ? ", " : "", rgs[k].name,
+							      (unsigned long long)(nr / n), (unsigned long long)(nw / n));
+			}
+			sl[o] = 0;
+			salsads_log("DATO jit-lentos: ARM9, accesos por la ruta lenta por cuadro y región (lecturas / escrituras): %s",
+				    o ? sl : "ninguno");
+			if (jit_times) {
+				uint64_t rd = 0, wr = 0;
+				const double ms = tb_hz ? 1e3 / (double)tb_hz / (double)n : 0.0;
+
+				for (unsigned r = 0; r < 16; r++) {
+					rd += js->t_rd_by[r] - p->t_rd_by[r];
+					wr += js->t_wr_by[r] - p->t_wr_by[r];
+				}
+				{
+					const uint64_t run = js->t_run - p->t_run, code = js->t_code - p->t_code, call = js->t_call - p->t_call;
+					const uint64_t net = code > call + rd + wr ? code - call - rd - wr : 0;
+
+					salsads_log("DATO jit-tiempo: ARM9 por cuadro (promedio de %u, ms): dentro del recompilador %.2f = código generado %.2f "
+						    "+ accesos lentos %.2f (lecturas %.2f, escrituras %.2f) + intérprete desde los bloques %.2f + despachador, "
+						    "interrupciones y traducción %.2f; entradas %llu (%.2f µs de código generado por entrada)",
+						    n, (double)run * ms, (double)net * ms, (double)(rd + wr) * ms, (double)rd * ms, (double)wr * ms,
+						    (double)call * ms, run > code ? (double)(run - code) * ms : 0.0,
+						    (unsigned long long)((js->enters - p->enters) / n),
+						    js->enters > p->enters ? (double)net * ms * 1000.0 * (double)n / (double)(js->enters - p->enters) : 0.0);
+				}
+			}
 		}
 		prev_js = *js;
 	}
@@ -2102,10 +2181,7 @@ static int game_open(const char *path)
 		    (unsigned)rd32le(rom_buf + 0x24), (unsigned)rd32le(rom_buf + 0x34), (unsigned)sizeof *nds);
 #ifdef NUCLEO_JIT
 	if (jit_on && (nds->jit9 || nds->jit7)) {
-		if (nds->jit9)
-			((struct arec_pub *)(void *)nds->jit9)->clock_ns = jit_clock_ns;
-		if (nds->jit7)
-			((struct arec_pub *)(void *)nds->jit7)->clock_ns = jit_clock_ns;
+		jit_clocks();
 		salsads_rec_marker(JIT_MARKER, NUCLEO_VERSION, 1);
 	}
 #endif
@@ -2607,6 +2683,21 @@ int main(void)
 				 * vez por mtctr/bctrl en lugar de intentar el bl y repetir cada bloque */
 				jc.far_calls = mapi_code != NULL;
 				jc.icache_flush = salsads_rec_flush;
+				/* formas anteriores de las mejoras del recompilador (A/B) y medición de tiempos */
+				{
+					char ol[256];
+					size_t o = 0;
+
+					ol[0] = 0;
+					for (unsigned k = 0; k < sizeof jit_opt_files / sizeof jit_opt_files[0]; k++)
+						if (stat(jit_opt_files[k].file, &jst) == 0) {
+							jc.opts |= jit_opt_files[k].opt;
+							o += (size_t)snprintf(ol + o, sizeof ol - o, "%s%s", o ? ", " : "", jit_opt_files[k].what);
+						}
+					jit_times = stat(JIT_TIMES_FLAG, &jst) == 0;
+					salsads_log("jit: opciones del recompilador: %s; tiempos por parte (%s): %s", o ? ol : "todas las mejoras",
+						    JIT_TIMES_FLAG, jit_times ? "sí" : "no");
+				}
 				/* el ARM7 (ARMv4T) con su propio recompilador: la cola de la caché (REC_ARM7_BYTES) y tablas propias */
 				if (stat(ARM7_NOJIT_FLAG, &jst) == 0) {
 					salsads_log("jit: %s existe: el ARM7 con el intérprete", ARM7_NOJIT_FLAG);
@@ -2632,9 +2723,7 @@ int main(void)
 						    q == JIT_QUANTUM ? "el de omisión" : JIT_QUANTUM_FILE);
 					jit_on = 1;
 					arec_stats(nds->jit9); /* (las estadísticas empiezan en cero) */
-					((struct arec_pub *)(void *)nds->jit9)->clock_ns = jit_clock_ns;
-					if (nds->jit7)
-						((struct arec_pub *)(void *)nds->jit7)->clock_ns = jit_clock_ns;
+					jit_clocks();
 					salsads_rec_marker(JIT_MARKER, NUCLEO_VERSION, 1);
 					if (mapi_code) {
 						sys_ppu_thread_t wt;

@@ -91,12 +91,28 @@ struct arec_stats {
 	uint64_t compile_ns;      /* tiempo traduciendo (si hay reloj) */
 	uint64_t bad_blocks;      /* bloques descartados por un error del análisis de banderas (deberían ser 0) */
 	uint64_t call_by[AREC_CALL_KINDS]; /* llamadas al intérprete por clase (arec_call_kind_name) */
+	/* accesos lentos por región (arec_slow_region) y, con `tick`, su tiempo (en las unidades de `tick`) */
+	uint64_t slow_rd_by[16], slow_wr_by[16];
+	uint64_t t_rd_by[16], t_wr_by[16];
+	/* con `tick`: tiempo dentro del código generado (contando lo que llama: accesos lentos e intérprete), en las llamadas al
+	 * intérprete y en arec_run entero (despachador, servicio de interrupciones y traducción incluidos) */
+	uint64_t t_code, t_call, t_run;
 };
+
+/* Región de un acceso lento para las estadísticas: 0 = GXFIFO y puertos de órdenes del motor de geometría
+ * (0x04000400–0x040005FF), si no la región de 16 MB (dirección >> 24, la 0xFF y las de arriba en 15). */
+static inline unsigned arec_slow_region(uint32_t a)
+{
+	if (a - 0x04000400u < 0x200u)
+		return 0;
+	return (a >> 24) < 15u ? (a >> 24) : 15u;
+}
 
 struct arec_pub {
 	uint8_t *codemap;         /* por línea física de 64 B: 1 = puede haber código traducido */
 	struct arec_stats st;
 	uint64_t (*clock_ns)(void);
+	uint64_t (*tick)(void);   /* reloj barato (timebase) para st.t_*: NULL = sin medir (lo normal) */
 	/* Último bloque al que entró el despachador (diagnóstico: el hilo vigía los lee desde otro hilo). */
 	volatile uint32_t last_pc;
 	volatile uint64_t last_code;
