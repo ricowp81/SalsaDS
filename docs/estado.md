@@ -4,6 +4,24 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-19 — La FIFO de geometría en la ruta rápida (rama gx-rapido)
+
+- **Qué dominaba** (log de la PS3 con `jit-tiempos` + perfil del host): no eran los `STR` a GXFIFO sino la **DMA de modo 7**: ~15 000
+  palabras por cuadro en 33 arranques de canal en la carrera de MKDS, cada una por la ruta completa (bus de lectura, bus de escritura,
+  reparto de la E/S, recorrido de los canales de DMA). El «2 µs por escritura a la E/S» del log es el CNT de la DMA, que ejecuta la
+  transferencia; las escrituras de la CPU a GXFIFO eran 1 000–1 800 por cuadro.
+- **Hecho** (detalle en `docs/fase4.md`, «Cuarta ronda»): ráfaga de la DMA de modo 7 dentro de `gx.c` (`gx_dma_burst`), escrituras de
+  la CPU del ARM9 a 0x04000400–0x040005FF por el bus corto (`b9_w32` → `nds_gx_cpu_write`), ruta corta en `h_wr` del recompilador
+  (`arec_cfg.gx_wr`) que ya no cuenta como acceso lento, y la caché `dma9_gxw` que evita recorrer los cuatro canales en cada escritura.
+  Mismo tiempo emulado: ciclos, cola del motor, eventos e IRQ idénticos.
+- **Interruptor**: `/dev_hdd0/salsads/gx-lento` (la forma anterior); el arranque lo dice y `jit: opciones del recompilador` lo lista.
+  `DATO jit-lentos` agrega «ya no van por la ruta lenta». Host: `salsads-cpurun --gx-lento`.
+- **Pruebas**: `salsads-gxparidad` (nuevo; dos máquinas con y sin las rutas cortas, 600 semillas, comparadas paso a paso al bit; en
+  `test-host` LE, SAN y BE), resumen del estado con y sin `--gx-lento` en las ROMs de geometría y DMA, y los tres respaldos del autor.
+- **Sin medir en la PS3.** Qué mirar (mismas escenas, NSMB nivel y MKDS carrera pesada): `DATO desglose` (ARM9 y eventos), `DATO
+  jit-lentos` (promedio de µs por escritura a la E/S, y «ya no van por la ruta lenta»), `DATO jit-tiempo` con `jit-tiempos`; A/B con
+  `gx-lento` en la misma escena.
+
 ## 2026-10-19 — Rendimiento del ARM9 en el recompilador (rama arm9-perf)
 
 - **Perfil del host**: `salsads-cpurun --jit-prof` (traza de bloques en qemu-ppc64) y `tools/jit-perfil.c` (palabras por clase,

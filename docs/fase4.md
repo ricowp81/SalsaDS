@@ -347,6 +347,122 @@ estado que el intérprete en modo estricto (NSMB 109 M comparaciones, SM64DS 62 
 3. A/B de cada interruptor (uno por vez, misma escena, varias ventanas): `jit-banderas-memoria`, `jit-sin-pistas`,
    `jit-salidas-copiadas`, `jit-sin-ventanas`, `jit-sin-esperas`.
 
+## Cuarta ronda (rama gx-rapido): la FIFO de geometría
+
+Medido en la PS3 con `jit-tiempos` (paquete arm9-perf; ventanas de 120 cuadros de Mario Kart DS en carrera, ~750 polígonos por cuadro,
+ARM9 14–15 ms en las ventanas pesadas): los accesos lentos del ARM9 llegan a 4,9–6,5 ms por cuadro y crecen con el 3D. Lo que dice el
+log, por cuadro:
+
+| | ventana A | ventana B |
+|---|---|---|
+| escrituras a GXFIFO y puertos de órdenes por la ruta lenta | 3399 × 0,41 µs = 1,39 ms | 4989 × 0,42 µs = 2,10 ms |
+| escrituras a la E/S por la ruta lenta | 1197 × 2,03 µs = **2,43 ms** | 1590 × 2,18 µs = **3,47 ms** |
+| lecturas de la E/S | 3544 × 0,31 µs = 1,10 ms | 2570 × 0,34 µs = 0,87 ms |
+| intérprete desde los bloques (LDM/STM lento: 158 y 235 llamadas) | 1,52 ms | 2,13 ms |
+| eventos «gx» (1132 por cuadro) | 1,88 ms | — |
+
+### Qué dominaba (host: qemu-ppc64 con `--jit-prof` y conteo en el intérprete de la Mac; mismas escenas, cuadros 2500–3000)
+
+No eran los comandos que la CPU escribe uno a uno, sino **la DMA de modo 7 hacia GXFIFO**. Por cuadro (media de los cuadros 2500–3000
+de la demostración de MKDS): unas **15 000 palabras** pasan por la DMA (33 arranques de canal, ≈ 450 palabras cada uno) contra
+**~1 000–1 800** que escribe la CPU (`STR` por la ruta lenta del recompilador, más los `STM` que ejecuta el intérprete). El «2 µs por
+escritura a la E/S» de la tabla es un promedio engañoso: de ~1 500 escrituras a la E/S por cuadro (IME 210, DIVCNT y operandos 600,
+IE/IF 160, SQRT 280, registros de DMA 150…) solo ≈ 33–49 son el CNT de un canal de DMA, y **ese write ejecuta la transferencia entera**
+(`dma_run` en `sched.c`: hasta que la FIFO llega a la mitad; el resto sigue en los eventos «gx», que por eso suman 1,9 ms). Cada palabra
+de la DMA costaba la ruta completa: `nds_gx_dma_ok` (llamada, `gx_fifo_level` aparte), `nds_bus_read` (búsqueda de región),
+`nds_bus_write` (otra), `nds_io_write` (traza, reparto por dirección), `nds_gx_fifo_write` (`GX_ON`, reloj, parada),
+`gx_fifo_write` y `nds_gx_schedule` (con el evento sin pendiente: recorrer los 4 canales de DMA para saber si alguno espera la FIFO).
+Los puertos de órdenes (0x440–0x5FF) y GXSTAT, juntos, son < 100 accesos por cuadro; las lecturas de GXFIFO/GXSTAT, 0–11. Lo demás de
+la E/S lenta no es de la geometría: IME/IE/IF, DIVCNT/SQRT (sondeo del divisor: 910 lecturas por cuadro) y los registros de DMA.
+
+### Cambios
+
+1. **Ráfaga de la DMA de modo 7** (`dma_run`, `nds_gx_dma_burst`, `gx_dma_burst`): con palabras de 32 bits, destino fijo en
+   GXFIFO (0x04000400–0x0400043F), fuente creciente y memoria con puntero (RAM, WRAM; los espejos y las fronteras de región cortan
+   la ráfaga y siguen en otra), un bucle dentro de `gx.c` hace por palabra lo mismo que la vía de siempre y en el mismo orden:
+   `gx_advance` al reloj del ARM9, parada si la FIFO llegó a la mitad, `gx_fifo_write` (con `fifo_write_i` en línea), parada del
+   ARM9 si la escritura llena la cola, agenda de la mirada de EV_GX (solo si no hay una pendiente: el bucle llama a `sched` en ese
+   caso y no en cada palabra) y 4 ciclos. Los ciclos, la cola, los eventos y las IRQ quedan **idénticos**. Lo que no encaja (16 bits,
+   destino creciente, fuente fija o decreciente, fuente en E/S o VRAM) sigue por la vía por palabra.
+2. **Escrituras de la CPU por el bus corto** (`b9_w32` en `mem.c` → `nds_gx_cpu_write`): una palabra alineada del ARM9 en
+   0x04000400–0x040005FF va directo a `nds_gx_fifo_write` / `nds_gx_port_write` sin pasar por `nds_bus_write` ni `nds_io_write`.
+   Sirve al intérprete, a los LDM/STM que ejecuta el intérprete desde los bloques y a la ruta lenta del recompilador.
+3. **Recompilador**: `h_wr` reconoce la palabra a esa ventana (y que no caiga en la ITCM/DTCM, que `mem_wr32` mira antes que el bus)
+   y llama a `arec_cfg.gx_wr` (`jit_gx_wr` en `core/jit.c`) sin el reparto de regiones; cuenta aparte (`st.gx_wr`, tiempo
+   `t_gx_wr`): **esos accesos ya no cuentan como accesos lentos de la región GXFIFO** en `DATO jit-lentos`. No se generó código
+   en línea para esto: el trabajo propio de la escritura (`gx_advance`, cola, decodificar la palabra empaquetada) es el mismo, y lo
+   que se ahorra de la entrada en C (unas 45 instrucciones de `ent_wr` y el reparto) son ~0,04 µs de ~0,2–0,4 por palabra **[est]**; no compensa
+   la complejidad ni el riesgo de duplicar en ensamblador la semántica de la cola y de la parada por FIFO llena.
+4. **Caché `dma9_gxw`**: «¿hay un canal del ARM9 armado esperando la FIFO?» se consultaba en cada escritura (`nds_gx_schedule`) y en
+   cada mirada recorriendo los cuatro canales; ahora es un byte que se rehace donde cambia `cnt` o `latched` de un canal del ARM9.
+5. `gx_fifo_level` en línea (se llamaba por palabra desde `geom.c`).
+
+No se tocó el modelo de tiempo: no hay cambio de resultado salvo el de rendimiento (el emulado es bit a bit el mismo).
+
+### Interruptor y qué mide el log
+
+- `/dev_hdd0/salsads/gx-lento`: vuelve a la forma anterior (DMA palabra por palabra por el bus, escrituras de la CPU por la ruta
+  lenta del recompilador, recorrido de los canales). El arranque lo dice (`gx: FIFO de geometría por …`) y la línea `jit: opciones del
+  recompilador` lo lista. El host: `salsads-cpurun --gx-lento`.
+- `DATO jit-lentos` trae ahora, además de los accesos lentos por región, «ya no van por la ruta lenta (por cuadro)»: escrituras a
+  GXFIFO por la ruta corta del recompilador (con `jit-tiempos`, su costo), palabras de la CPU por el bus corto (incluye las de los
+  LDM/STM) y palabras de DMA con el número de ráfagas. Con `gx-lento` los tres quedan en cero y la región GXFIFO vuelve a la tabla.
+  `DATO jit-tiempo` sigue sumando las escrituras cortas a GXFIFO dentro de «accesos lentos (escrituras)» para que el A/B sea
+  comparable.
+- El tiempo de la DMA sigue dentro de las escrituras a la E/S que la arrancan («E/S … escr.») y de los eventos «gx»: la mejora se ve
+  ahí (el promedio de µs por escritura a la E/S baja) y en el total de «accesos lentos», no en las filas de GXFIFO.
+
+### Pruebas
+
+- `salsads-gxparidad` (`src/host/gxparidad.c`, en `tools/build.sh test-host`: LE, SAN y BE con qemu): dos máquinas sin ROM con las CPUs
+  paradas, una con las rutas cortas y otra con `gx_lento`; los mismos estímulos al azar (600 semillas × 32 pasos: DMA de todos los
+  modos con fuentes en RAM, espejos y fronteras de región, WRAM, VRAM y E/S, desalineadas, decrecientes o fijas, destinos creciendo
+  hacia los puertos, 16 y 32 bits, repetición, IRQ; palabras de la CPU a GXFIFO, puertos y sin alinear; el motor apagado y encendido;
+  GXSTAT con IRQ por nivel; tramos de tiempo y cuadros con SWAP_BUFFERS) y, después de cada paso, **resumen de los ciclos del ARM9, la
+  cola del motor (con el instante de cada entrada), el decodificador, los contadores, los canales de DMA, los eventos y las IRQ**:
+  idénticos al bit, y la caché `dma9_gxw` igual al recorrido de los canales. Probado con mutaciones (ciclos de más, nivel de la mitad
+  distinto, sin agendar la mirada, sin rehacer la caché, no cortar en el espejo, ignorar el motor apagado, puertos desde 0x450):
+  todas se detectan.
+- `test-host.sh`: el resumen del estado de las ROMs `gx`, `geom`, `dma` y `demo` con y sin `--gx-lento`, y en modo estricto con el
+  recompilador contra el intérprete (también con `--gx-lento`) para `gx`, `geom` y `dma`.
+- Con los respaldos del autor, 1500 cuadros de NSMB, SM64DS y MKDS: ver «Resultados» abajo.
+
+### Resultados (host; no son tiempos de la PS3)
+
+Paridad (respaldos del autor, 1500 cuadros; qemu-ppc64 salvo lo que se dice):
+
+| | NSMB | SM64DS | MKDS |
+|---|---|---|---|
+| `--lockstep` (recompilador estricto contra el intérprete, con las rutas cortas) | sin diferencias, 109 M comparaciones | sin diferencias, 61,8 M | sin diferencias, 74,9 M |
+| resumen del estado, `--jit-strict` con las rutas cortas / con `--gx-lento` / intérprete | los tres iguales | los tres iguales | los tres iguales |
+| `--jit` (modo rápido) con y sin `--gx-lento`: resumen y imagen final | iguales | iguales | iguales |
+| intérprete en la Mac, 1500 y 3000 cuadros, antes y después de los cambios (y con `--gx-lento`) | resumen idéntico | idéntico | idéntico |
+
+Accesos lentos del recompilador en 1500 cuadros (modo rápido; escrituras lentas totales → con las rutas cortas): NSMB 7,34 M → 4,84 M
+(2,49 M a GXFIFO ya no pasan por la ruta lenta general), MKDS 1,03 M → 0,75 M (0,29 M). Las lecturas no cambian.
+
+Costo por palabra en el host (Mac, intérprete, órdenes baratas; `salsads-gxparidad --bench` contra `--bench --lento`): DMA 23 → 15 ns
+por palabra, CPU 21 → 17 ns. Es un orden relativo: el PPE paga más por cada llamada.
+
+Estimación para la PS3 **[est]** (MKDS en carrera pesada, por cuadro): de los ~5 ms que la DMA suma entre las escrituras a la E/S y los
+eventos «gx», 1,5–2,5 ms; de los 1,4–2,1 ms de GXFIFO por la ruta lenta, 0,5–0,9; de los 1,5–2,1 del intérprete en LDM/STM, 0,3–0,6.
+Total **2,5–4 ms**. Lo que queda es el trabajo propio del motor al ejecutar las órdenes (~8 000–12 000 por cuadro) y la parte de la
+ruta lenta que no es de la geometría (IME, DIVCNT, registros de DMA).
+
+### Qué medir en la PS3
+
+Mismas escenas (NSMB en un nivel; MKDS en carrera pesada; una carga de cada uno), el paquete tal cual y luego con
+`/dev_hdd0/salsads/gx-lento` (misma escena, varias ventanas): `DATO desglose` (ARM9 y eventos), `DATO jit-lentos` (µs por escritura a la E/S,
+GXFIFO y «ya no van por la ruta lenta»), con `jit-tiempos` también `DATO jit-tiempo`. Si el ARM9 baja menos de lo estimado, el
+siguiente paso es el costo propio por orden (`gx_advance_run`: anotar en el registro de la geometría diferida) o saltarse eventos «gx».
+
+### Riesgos
+
+- Es el mismo modelo de tiempo, comprobado al bit en el host; lo que no se puede comprobar fuera de la consola es el rendimiento.
+- La ráfaga solo aplica a palabras con destino fijo en GXFIFO y fuente en memoria con puntero; lo demás sigue por la vía anterior.
+- La caché `dma9_gxw` depende de que todo cambio de `cnt`/`latched` de un canal del ARM9 la rehaga (`sched.c`); `gxparidad` la
+  compara con el recorrido de los canales después de cada paso.
+
 ## Paquete «SalsaDS JIT núcleo» (SLDS00009)
 
 `tools/build.sh -C tests/phase4/nucleo-jit pkg` → `build/salsads-nucleo-jit/salsads-nucleo-jit.pkg`. Es «SalsaDS núcleo»
