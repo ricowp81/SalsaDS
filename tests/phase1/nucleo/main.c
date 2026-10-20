@@ -85,6 +85,10 @@
 #define GEOM_PPE_FLAG SALSADS_DATA_DIR "/geometria-ppe"
 /* Con este archivo las bandas del render 3D vuelven al reparto alterno (u, u+2, ...) en lugar del reparto por costo. */
 #define R3D_ALT_FLAG SALSADS_DATA_DIR "/reparto-alterno"
+/* Rutas cortas de la FIFO de geometría (rama gx-rapido; docs/fase4.md, «Cuarta ronda»): ráfagas de la DMA de modo 7 y escrituras de
+ * la CPU a GXFIFO y a los puertos de órdenes sin pasar por el bus (con el recompilador, tampoco por la ruta lenta general). Con este
+ * archivo vuelve a la forma anterior, para comparar en la misma escena. */
+#define GX_LENTO_FLAG SALSADS_DATA_DIR "/gx-lento"
 
 #ifdef NUCLEO_JIT
 /* «SalsaDS JIT núcleo» (Fase 4): el ARM9 con el recompilador (src/jit/arec*); caché de código y prueba con respaldo de la
@@ -1417,13 +1421,40 @@ static void log_stats(void)
 			sl[o] = 0;
 			{
 				static uint32_t prev_idle9, prev_idle7;
+				static uint64_t prev_dma_w, prev_dma_b, prev_cpu_w;
+				char gx[320];
+				const uint64_t ngx = js->gx_wr - p->gx_wr;
+				uint64_t dw, db, cw;
 
+				if (nds->st.gx_dma_words < prev_dma_w || nds->st.gx_cpu_words < prev_cpu_w) /* (juego nuevo: nds_init puso a cero) */
+					prev_dma_w = prev_dma_b = prev_cpu_w = 0;
+				dw = nds->st.gx_dma_words - prev_dma_w;
+				db = nds->st.gx_dma_bursts - prev_dma_b;
+				cw = nds->st.gx_cpu_words - prev_cpu_w;
+
+				/* lo que ya no va por la ruta lenta: escrituras de la CPU a GXFIFO por la ruta corta del recompilador (con su
+				 * costo si hay jit-tiempos), las palabras de la CPU por el bus corto (el intérprete desde los bloques: LDM/STM) y
+				 * la DMA de modo 7 por ráfagas (su tiempo está dentro de las escrituras a la E/S que la arrancan y de los eventos «gx») */
+				if (jit_times)
+					snprintf(gx, sizeof gx, "GXFIFO por la ruta corta %llu escr. (%.2f µs), %llu palabras de la CPU en total, "
+							      "%llu palabras de DMA en %llu ráfagas",
+						 (unsigned long long)(ngx / n), ngx ? (double)(js->t_gx_wr - p->t_gx_wr) * us / (double)ngx : 0.0,
+						 (unsigned long long)(cw / n), (unsigned long long)(dw / n), (unsigned long long)(db / n));
+				else
+					snprintf(gx, sizeof gx, "GXFIFO por la ruta corta %llu escr., %llu palabras de la CPU en total, "
+							      "%llu palabras de DMA en %llu ráfagas",
+						 (unsigned long long)(ngx / n), (unsigned long long)(cw / n), (unsigned long long)(dw / n),
+						 (unsigned long long)(db / n));
 				salsads_log("DATO jit-lentos: ARM9, accesos por la ruta lenta por cuadro y región (lecturas / escrituras): %s; "
+					    "ya no van por la ruta lenta (por cuadro): %s%s; "
 					    "bucles de espera saltados por cuadro: ARM9 %u, ARM7 %u",
-					    o ? sl : "ninguno", (unsigned)((nds->a9.jit_idle - prev_idle9) / n),
-					    (unsigned)((nds->a7.jit_idle - prev_idle7) / n));
+					    o ? sl : "ninguno", gx, nds->gx_lento ? " [gx-lento: nada por las rutas cortas]" : "",
+					    (unsigned)((nds->a9.jit_idle - prev_idle9) / n), (unsigned)((nds->a7.jit_idle - prev_idle7) / n));
 				prev_idle9 = nds->a9.jit_idle;
 				prev_idle7 = nds->a7.jit_idle;
+				prev_dma_w = nds->st.gx_dma_words;
+				prev_dma_b = nds->st.gx_dma_bursts;
+				prev_cpu_w = nds->st.gx_cpu_words;
 			}
 			if (jit_times) {
 				uint64_t rd = 0, wr = 0;
@@ -1433,6 +1464,7 @@ static void log_stats(void)
 					rd += js->t_rd_by[r] - p->t_rd_by[r];
 					wr += js->t_wr_by[r] - p->t_wr_by[r];
 				}
+				wr += js->t_gx_wr - p->t_gx_wr; /* (las escrituras a GXFIFO por la ruta corta siguen contando como accesos lentos aquí: comparables con gx-lento) */
 				{
 					const uint64_t run = js->t_run - p->t_run, code = js->t_code - p->t_code, call = js->t_call - p->t_call;
 					const uint64_t net = code > call + rd + wr ? code - call - rd - wr : 0;
@@ -2537,6 +2569,13 @@ int main(void)
 	}
 	memset(nds, 0, sizeof *nds);
 	nds->log = core_log;
+	{
+		struct stat gst;
+
+		nds->gx_lento = stat(GX_LENTO_FLAG, &gst) == 0; /* (nds_init lo conserva) */
+		salsads_log("gx: FIFO de geometría por %s (%s)", nds->gx_lento ? "la ruta anterior (gx-lento)" : "las rutas cortas",
+			    GX_LENTO_FLAG);
+	}
 	nds_init(nds);
 	tb_hz = (uint64_t)sysGetTimebaseFrequency();
 	mem_report("al arrancar");
@@ -2703,6 +2742,9 @@ int main(void)
 							jc.opts |= jit_opt_files[k].opt;
 							o += (size_t)snprintf(ol + o, sizeof ol - o, "%s%s", o ? ", " : "", jit_opt_files[k].what);
 						}
+					if (nds->gx_lento)
+						o += (size_t)snprintf(ol + o, sizeof ol - o, "%sFIFO de geometría por la ruta lenta anterior (gx-lento)",
+								      o ? ", " : "");
 					jit_times = stat(JIT_TIMES_FLAG, &jst) == 0;
 					salsads_log("jit: opciones del recompilador: %s; tiempos por parte (%s): %s", o ? ol : "todas las mejoras",
 						    JIT_TIMES_FLAG, jit_times ? "sí" : "no");
