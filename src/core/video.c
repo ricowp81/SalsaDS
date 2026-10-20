@@ -124,7 +124,7 @@ void nds_video_init(struct nds *n)
 	struct nds_video *v = &n->vid;
 	struct nds_video_ops ops = v->ops;
 	const int use_ref = v->use_ref, use_ref3d = v->use_ref3d, vs_ref3d = v->vs_ref3d;
-	const uint32_t band = v->r3d_band, units = v->r3d_units, r3d_flags = v->r3d_flags, win0 = v->r3d_win0, win1 = v->r3d_win1, texmode = v->r3d_texmode, defer = v->r3d_defer_line;
+	const uint32_t band = v->r3d_band, units = v->r3d_units, r3d_flags = v->r3d_flags, win0 = v->r3d_win0, win1 = v->r3d_win1, texmode = v->r3d_texmode, defer = v->r3d_defer_line, hist_off = v->r3d_hist_off;
 	uint64_t (*clk)(void) = v->clock;
 
 	memset(v, 0, sizeof *v);
@@ -139,6 +139,7 @@ void nds_video_init(struct nds *n)
 	v->r3d_win1 = win1;
 	v->r3d_texmode = texmode;
 	v->r3d_defer_line = defer;
+	v->r3d_hist_off = hist_off;
 	v->clock = clk;
 	v->cur = 1;
 	v->last = -1;
@@ -196,6 +197,15 @@ static void render3d_host(struct nds *n, struct nds_vset *s)
 	}
 }
 
+/* El trabajo del cuadro `set` terminó: lo que tardó cada banda reparte los cuadros siguientes (r3d_balance). */
+void nds_video_r3d_hist(struct nds *n, int set, const uint32_t *ticks)
+{
+	struct nds_video *v = &n->vid;
+
+	memcpy(v->r3d_hist, ticks, sizeof v->r3d_hist);
+	v->r3d_hist_est = v->r3d_est[set & 1];
+}
+
 /* Caché de texturas automática (3.9): r3d_texpol_feed en gpu3d/r3d.h. */
 void nds_video_r3d_feedback(struct nds *n, const r3d_stats *st)
 {
@@ -228,7 +238,7 @@ static void frame_begin_3d(struct nds *n, struct nds_vset *s)
 	j->nunits = v->r3d_units;
 	j->band = v->r3d_band;
 	if (f && !v->r3d_alt)
-		r3d_balance(f, j->band, j); /* reparto por costo para dos unidades (si hay más o menos, el alterno) */
+		v->r3d_est[v->cur] = r3d_balance(f, j->band, j, v->r3d_hist_off ? NULL : v->r3d_hist, v->r3d_hist_est); /* reparto por costo para dos unidades (si hay más o menos, el alterno) */
 	/* sin cuadro entregado o con el motor de render apagado (POWCNT1 bit 2): transparente */
 	if (!f || !(n->powcnt1 & 4u))
 		j->flags |= R3D_F_BLANK;
@@ -468,6 +478,11 @@ void nds_video_submit_pending(struct nds *n, uint32_t line)
 	if (!v->submit_pending)
 		return;
 	if (dl && v->ops.wait3d) {
+		if (line == NDS_LINES - 1u && v->ops.submit_early && !v->early_done) {
+			v->early_done = 1; /* la pantalla B no usa el 3D: se compone ya, mientras el 3D termina */
+			v->ops.submit_early(v->ops.ctx, v->last, &v->set[v->last].frame);
+			return;
+		}
 		/* en las líneas dl..192 del cuadro siguiente al del pendiente (la primera que lo cumpla si dl cambió entre cuadros): el
 		 * pendiente se marca en la 192, así que las líneas 193..262 del mismo cuadro y las anteriores a dl no lo tocan */
 		if (line < dl || line > 192u)
@@ -480,6 +495,7 @@ void nds_video_submit_pending(struct nds *n, uint32_t line)
 		v->ops.wait3d(v->ops.ctx, v->last);
 	if (v->ops.submit)
 		v->ops.submit(v->ops.ctx, v->last, &v->set[v->last].frame);
+	v->early_done = 0;
 }
 
 const gpu2d_frame *nds_video_last_frame(const struct nds *n, int *set)

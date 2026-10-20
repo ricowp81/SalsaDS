@@ -65,7 +65,11 @@ typedef struct r3d_job {
 	/* Reparto por costo (r3d_balance): si nunits == 2 y alguna máscara es distinta de cero, la unidad `u` dibuja las bandas
 	 * cuyo bit está en bandsel[u] (bit b = banda b). Todo en cero: el reparto alterno de arriba. */
 	uint32_t bandsel[2];
+	/* Tiempo por banda (3.9): si no es cero, cada unidad escribe ahí, en bt_ea + 128·unidad, 32 palabras (alineado a 128): los
+	 * ticks que tardó en dibujar cada banda suya (cero en las que no le tocaron). El PPE los usa para repartir el cuadro siguiente. */
+	uint64_t bt_ea;
 } __attribute__((aligned(16))) r3d_job;
+#define R3D_BT_WORDS 32
 
 /* ¿La unidad del trabajo dibuja la banda `b`? */
 static inline int r3d_job_has_band(const r3d_job *j, uint32_t b)
@@ -156,20 +160,23 @@ void r3d_slots_from_vramcnt(const uint8_t vramcnt[7], const uint32_t bank_off[7]
 uint64_t r3d_hash_image(const uint32_t *img);
 
 /* ---- Reparto de bandas por costo -------------------------------------------------------------------------- */
-/* Estima el costo de cada banda con las extensiones en pantalla de los polígonos del cuadro (por banda y polígono: la
- * preparación; por línea: las aristas; por píxel de la caja, la mitad cubierto: el color, más si lleva textura) y reparte
- * las bandas entre dos unidades de mayor a menor costo, cada una a la unidad menos cargada (LPT). Resultado en
- * `job->bandsel`. Los pesos son estimaciones; el resultado de la imagen no depende del reparto (cada banda es
- * independiente), solo el tiempo. */
-static inline void r3d_balance(const gx_frame *f, uint32_t band, r3d_job *job)
+/* Reparte las bandas entre dos unidades de mayor a menor costo, cada una a la unidad menos cargada (LPT). Resultado en
+ * `job->bandsel`. El costo de cada banda sale de la historia (`hist`: lo que tardó cada banda en un cuadro anterior, medido por
+ * los SPE) si hay y el cuadro se parece al que la produjo (`hist_est` es la estimación total de aquel cuadro; se usa la historia con
+ * entre 0,6 y 1,6 veces la estimación total de este); si no, de una estimación con las extensiones en pantalla de los polígonos
+ * (por banda y polígono: la preparación; por línea: las aristas; por píxel de la caja, la mitad cubierto: el color, más si lleva
+ * textura). Con la historia el reparto queda a 1-2 % del ideal en Mario Kart DS y la estimación a 10 % (docs/fase3.md, 3.9). Devuelve
+ * la estimación total de este cuadro (para guardarla junto con la historia que produzca). El resultado de la imagen no depende del
+ * reparto (cada banda es independiente), solo el tiempo. */
+static inline uint32_t r3d_balance(const gx_frame *f, uint32_t band, r3d_job *job, const uint32_t *hist, uint32_t hist_est)
 {
 	uint32_t cost[R3D_H / 8];
 	uint32_t order[R3D_H / 8];
-	uint32_t load[2] = { 0, 0 }, nb, n;
+	uint32_t load[2] = { 0, 0 }, nb, n, total = 0;
 
 	job->bandsel[0] = job->bandsel[1] = 0;
 	if (!f || band == 0 || band > 64 || (R3D_H % band) != 0)
-		return;
+		return 0;
 	nb = R3D_H / band;
 	for (uint32_t b = 0; b < nb; b++)
 		cost[b] = 0;
@@ -199,6 +206,17 @@ static inline void r3d_balance(const gx_frame *f, uint32_t band, r3d_job *job)
 			cost[b] += 120u + rows * (14u + (w * ppx) / 2u);
 		}
 	}
+	for (uint32_t b = 0; b < nb; b++)
+		total += cost[b];
+	if (hist && hist_est && (uint64_t)total * 10u >= (uint64_t)hist_est * 6u && (uint64_t)total * 10u <= (uint64_t)hist_est * 16u) {
+		uint64_t hsum = 0;
+
+		for (uint32_t b = 0; b < nb; b++)
+			hsum += hist[b];
+		if (hsum)
+			for (uint32_t b = 0; b < nb; b++)
+				cost[b] = hist[b];
+	}
 	for (uint32_t b = 0; b < nb; b++) {
 		uint32_t k = b;
 
@@ -214,6 +232,7 @@ static inline void r3d_balance(const gx_frame *f, uint32_t band, r3d_job *job)
 		load[u] += cost[b] + 1u;
 		job->bandsel[u] |= 1u << b;
 	}
+	return total;
 }
 
 #endif

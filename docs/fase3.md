@@ -293,6 +293,8 @@ DS (que lo rasteriza mientras barre la pantalla):
    (el 3D se rasteriza durante el cuadro siguiente al SWAP_BUFFERS, como se describió arriba; no se cambió la latencia, un cambio de ese tipo
    habría que contrastarlo con GBATEK y no se tocó); lo que cambia es cuándo espera el PPE.
 
+(Desde la 3.9 la espera del 3D y la entrega del 2D pueden aplazarse a una línea del cuadro siguiente, ver «Fase 3.9»; sin el archivo `r3d-sin-aplazar` ese es el comportamiento por omisión en la PS3.)
+
 El 3D tiene así el tiempo de emular 262 líneas (el cuadro entero) en dos SPE; si tarda más, el PPE espera en la línea 262 (línea
 `DATO raster3d`, «espera del PPE»). Las bandas de 16 líneas se reparten por costo estimado (`r3d_balance`, en `gpu3d/r3d.h`: preparación por banda y
 polígono, aristas por línea y píxeles de la caja, más con textura; las más caras primero, cada una a la unidad menos cargada), no
@@ -812,3 +814,147 @@ profundidad por píxel del suelo y del parche) o contrastar con otro emulador de
 
 Ver `docs/estado.md` (rama fase50). Regla: izquierda x-mayor hacia la derecha (ortográfica) -> `row.xo = redondeo(X(y))` si es menor que `xl`,
 `den += xl - xo`, atributos de la izquierda en la y de la línea. Escenas 41 a 45 de `gx3d`.
+
+
+# Fase 3.9 — Texturas, reparto y espera del 3D (Mario Kart DS pesado)
+
+Medido en la PS3 con Mario Kart DS en carrera (~1000 polígonos por cuadro, `build/ps3-gxrapido` y `build/ps3-arm9perf`): la emulación
+de un cuadro costaba 15,4 ms = ARM9 7,5 + ARM7 1,2 + eventos 5,2, y los eventos crecían con el 3D. La meta era dejar el cuadro siempre
+bajo 16,7 ms bajando 2–3 ms la espera del 3D.
+
+## Qué mostró la medición
+
+**1. El tiempo del 3D eran las texturas, no el reparto.** Tres ventanas de 120 cuadros de la carrera (`DATO raster3d`, suma de los dos SPE):
+
+| Ventana | Polígonos | SPE0 / SPE1 (mediana, ms) | Dibujo | de eso texturas | Bloques decodificados | Desalojos | Líneas de VRAM | Espera del PPE (media / p95) |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 997 | 15,2 / 12,3 | 26,5 | **15,0** | 2 460 | 2 332 | 4 890 | 0,0 / 1,0 |
+| 2 | 861 | 16,0 / 13,6 | 29,2 | **17,2** | 2 819 | 2 691 | 5 492 | 0,0 / 3,3 |
+| 3 | 807 | 17,4 / 15,6 | 32,6 | **20,0** | 3 272 | 3 144 | 6 174 | 0,05 / 4,8 |
+
+Entre el 56 y el 61 % del dibujo eran texturas (≈ 6,1 µs por bloque decodificado). Con la traza de los texeles pedidos
+(herramienta de diagnóstico del host, 30 cuadros de la carrera con dos unidades):
+
+- Un cuadro toca **621 bloques de 256 texeles distintos** pero la caché guarda 64: se decodifican ≈ 3 300 (5 veces los distintos) porque
+  cada banda vuelve a recorrer los mismos polígonos. Habría que guardar 1 024 bloques para que casi no se desalojen (3459 → 631
+  decodificados con 1 024; con 128 bloques, 2 450).
+- Los 68 000 texeles pedidos por cuadro son solo 37 000 distintos, el 85 % del formato comprimido 4x4, y caen en 8 600 celdas de 4×4
+  distintas (3 100 de 8×8, 965 de 16×16): un bloque de 256 se pide en ~20 de sus texeles (texturas reducidas, polígonos lejanos). Los
+  955 000 texeles que se decodifican por cuadro son 14 veces los 68 000 que se piden.
+- Las líneas de VRAM de 128 bytes también desbordan (32 líneas; 6 400 por cuadro): los datos de una textura reducida se piden de forma
+  dispersa pero local a escala de kilobytes. Con líneas de 1 KB el mismo cuadro necesita 1 100.
+
+**2. Reparto entre los dos SPE.** Desequilibrio medio en las 346 ventanas pesadas de los logs: 6–9 % (máximo 29–31 %), es decir ≈ 0,3–0,45
+ms de la mediana del SPE más lento. El modelo de costo de `r3d_balance` pesa la preparación de un polígono en una banda a 120 y una
+línea a 14, cuando la PS3 midió 0,71 y 0,70 µs. Con los costos por banda del host (preparación 0,71 µs, línea 0,70, píxel 0,062 y las
+texturas con el costo calibrado) y dos unidades, carga del SPE más cargado por cuadro pesado:
+
+| Reparto | MKDS carrera (µs) | NSMB nivel (µs) | SM64DS (µs) |
+|---|---|---|---|
+| estimación actual (`r3d_balance`) | 10 949 | 6 334 | 5 205 |
+| alterno | 10 599 | 6 552 | 5 205 |
+| **historia** (costos de la banda medidos dos cuadros antes) | **10 041** | **6 218** | 5 205 |
+| oráculo (LPT con los costos verdaderos) | 10 002 | 6 196 | 5 205 |
+| ideal (suma / 2) | 9 891 | 6 100 | 5 166 |
+
+La estimación está 10 % sobre el ideal en MKDS, peor que repartir alterno; la historia queda a 1,5 %. En SM64DS una banda domina y no hay
+reparto que mejore.
+
+**3. Dónde espera el PPE.** `DATO eventos` en esas ventanas: «línea» 1,2–2,6 ms y «gx» 2,2–3,3 ms. «gx» es la espera de la geometría en su SPE
+(8–9 ms de SPE, aparte). «línea» incluye la espera del 3D en la línea 262; `DATO raster3d-latencia` dice que el PPE llega a la 262 a los 18–22 ms de enviar el trabajo
+y los SPE terminan a los 19–22: la espera media es de 0,1 a 2 ms, con picos de 6 ms, y crece cuando el 3D pasa de ~13 ms por SPE.
+
+## Qué se hizo
+
+1. **Caché de texturas por celdas de 4×4** (`r3d_core.c`, `tc_cell`; commit «Render 3D: caché de texturas por celdas…»). 512 celdas de 64
+   bytes (4 vías, 128 conjuntos), etiqueta exacta (textura pequeña del cuadro × fila × columna de celdas, sin colisiones posibles), la celda se
+   decodifica entera al pedirla (el tile del formato 4x4 con `tc_fill5`, un cuarteto de texeles por fila en los demás formatos). Los datos
+   entran por líneas de 1 KB (`cl_line`: 16 de texturas y 4 de paletas, 4 vías; las ranuras de VRAM sin mapear se leen como ceros sin DMA).
+   Las etiquetas de un conjunto son una carga de 16 bytes y la comparación es vectorial. Mismos valores que `r3d_decode`.
+2. **Elección automática entre celdas y bloques** (`r3d_texpol_feed` en `r3d.h`). Las celdas pierden contra los bloques de 256 cuando los
+   polígonos son grandes y usan casi toda su textura: en la escena de SM64DS (47 polígonos, 149 000 píxeles) el modo de bloques decodifica 59
+   bloques por cuadro y el de celdas 893, y NSMB en un nivel pasa de 336 bloques a 4 100 celdas. Se empieza en bloques y se pasa a celdas cuando
+   los texeles pedidos por texel decodificado caen por debajo de 0,3 (MKDS 0,08; NSMB 1,0; SM64DS 3,6); de celdas a bloques con más de 12 pedidos por
+   celda (SM64DS 58, NSMB 20, MKDS 6–7); estadísticas suavizadas y al menos 8 cuadros entre cambios. Sobre las ventanas de arriba: MKDS queda en celdas,
+   SM64DS y NSMB en bloques (como antes de la 3.9).
+3. **Reparto de las bandas con historia** (`r3d_balance`, `r3d_job.bt_ea`). Cada SPE escribe los ticks que tardó en cada banda suya (un DMA de 128
+   bytes al final del trabajo); el PPE reparte con ellos el trabajo que sale dos cuadros después (con el aplazamiento no hay otro terminado antes), si
+   la estimación total del cuadro nuevo está entre 0,6 y 1,6 veces la del que produjo la historia; si no, con la estimación de antes. En el host
+   (síncrono) no hay historia.
+4. **Espera del 3D aplazada** (`nds_video_submit_pending(n, line)`, `ops.wait3d(ctx, set)`, `ops.submit_early`). La espera del 3D y la entrega del 2D
+   pasan de la línea 262 del mismo cuadro a una línea del cuadro siguiente, con dos trabajos en vuelo. La pantalla B no usa el 3D: se entrega en la 262 como
+   antes y solo la A espera. Detalle de la latencia abajo.
+5. **Local store**: la sonda de aritmética 3 (la división de 64 bits con signo, que `r3d_px.h` ya no usa desde la 3.4 y que arrastraba `__divdi3`, 2,5 KB)
+   pasa a una división de 32 bits; los caminos lentos de la textura (carril fuera de la celda o del bloque anterior) son funciones compartidas por las
+   dos variantes de la línea con textura, y la caché de líneas del modo de bloques pasa de 32 a 16 líneas de 128 bytes.
+
+## Qué no se tocó y por qué
+
+- **Preparación por polígono y por banda** (0,71 µs por par, ≈ 2 300 ciclos) y **aristas por línea** (0,70 µs): suman 0,85 y 4 ms de los 27 ms de la suma de los
+  dos SPE en MKDS pesado (3 % y 15 %), y sin la PS3 no hay forma de medir una mejora; la preparación se repite por banda (1 144 pares para 845 polígonos) pero
+  compartirla entre bandas exige guardar el estado de cada polígono en el local store, que no hay.
+- **Tercer SPE para el 3D**: no hay SPE libre. Reparto medido en la PS3 (MKDS pesado, por cuadro): 3D 2 × 12–17 ms (antes), geometría 8–9 ms, pantalla B del
+  2D 11,3 ms, pantalla A 3,6 ms, sonido 1,8 ms. Los ociosos serían la A (79 %) y el sonido (89 %), pero sus programas ocupan 198 KB (A) y 50 KB (sonido) de local
+  store con 38 y 14 KB de código: juntos no caben en un SPE. Con el 3D en ≈ 9 ms por SPE después de esta fase la falta de un tercero deja de ser el problema. Dato
+  aparte: la pantalla B del 2D tarda 11,3 ms en MKDS (la A, 3,6), 68 % de un cuadro; es lo que limita cuánto se puede aplazar la A si la B no saliera antes.
+
+## Latencia que se agrega
+
+Ninguna, y por qué. El 2D de un cuadro N no se dibuja hasta el final de la pasada que termina en la línea 192 del cuadro N+2 (la pasada que lo entrega es la
+que termina en la 192 de N+1 y la composición lleva otra de colchón; `tests/phase1/nucleo/main.c`, «se recoge el de la pasada anterior»). Entregar el 2D en
+la línea L ≤ 192 del cuadro N+1 sigue dentro de esa pasada, así que la imagen se ve en el mismo instante. Lo que sí limita L:
+
+- **Arriba (L ≤ 160)**: el motor de geometría puede reciclar el cuadro que lee el 3D a partir de la 192 (SWAP_BUFFERS), y el trabajo del cuadro N tiene que haber
+  terminado antes. Se comprobó en el host: `--r3d-aplazar L` rasteriza el trabajo en la línea 0 a un búfer propio y otra vez al esperarlo (línea L del cuadro
+  siguiente), con dos trabajos en vuelo; MKDS (1 674 trabajos), SM64DS (2 798) y NSMB en un nivel (3 811) dan 0 imágenes distintas con L = 100, 160 y 190.
+- **Abajo**: la composición de la A (3,6 ms en MKDS, hasta 6,6 en Metroid Prime Hunters) tiene que terminar antes de la línea 0 del cuadro N+2, donde se vuelve a
+  llenar la misma instantánea de la VRAM (`vid_wait`). La PS3 fija L cada pasada: 263 − (1,2 × composición de la A / 55 µs + 4 líneas), con tope 160 y sin aplazar si
+  quedan menos de 48 líneas de margen. Con la A en 3,6 ms: L = 160, es decir el 3D tiene hasta la línea 160 del cuadro siguiente (≈ 1,6 cuadros en lugar de 1).
+- **Captura de pantalla (DISPCAPCNT)**: sigue esperando el 3D en la línea 192 del mismo cuadro (lee la capa 3D); el aplazamiento no ayuda en esos cuadros.
+
+## Metroid Prime Hunters (30 fps con pocos polígonos): no es la espera del 3D
+
+`build/ps3-romgrande/nucleo-metroid.log`: 140 polígonos, eventos 19,7 ms, de ellos 18,9 en los 263 eventos de «línea». La latencia muestra que el PPE llega a la 262
+a los ~2,5 ms y los SPE terminan a los ~7 ms: la espera del 3D, aun contada entera, es ≤ 4,5 ms. El resto (≥ 14 ms) es lo que el evento de la línea 192 ejecuta
+con la captura de pantalla (`nds_video_frame_end` → `capture_frame`): sin la capa 3D sola como fuente (`srcsel != 1` y sin `use3d`), la captura compone el motor A **en el
+PPE** con el compositor de referencia (`gpu2d_compose_engine`, 22,7 ms por pantalla típica en el PPE contra 3,6–6,6 ms en un SPE) y después recorre 49 152 píxeles con
+ramas por píxel. Está fuera de esta fase (el aplazamiento no lo toca: la captura necesita el 3D en la 192); la salida es componer la imagen de la captura en el SPE de la A
+con un trabajo `JOB_COMPOSE` a un búfer propio (mientras el PPE sigue) y hacer el mezclador de la captura vectorial. Sin confirmar con el volcado del registro DISPCAPCNT de
+ese juego (hay que mirar `srcsel` y el bit 24 en un cuadro).
+
+## Paridad
+
+Imágenes idénticas bit a bit a la referencia (`r3d_ref.c`): 40 escenas del motor de geometría × 6 repartos × los dos modos de texturas (ASan/UBSan en LE y BE con qemu),
+bloques y celdas verificados texel a texel contra `r3d_decode` (`R3D_VERIFY_DECODE`, 0 diferencias en las escenas y en los tres juegos), `--vs-ref3d` en MKDS
+(1 674 cuadros), SM64DS (2 798), NSMB (2 695 y 1 000 de un nivel) y la autoprueba de los SPE alterna celdas y bloques entre sus cuatro escenas (RPCS3, `RESULTADO OK`).
+El hash de la semilla 7 no cambió.
+
+## Interruptores (archivos en /dev_hdd0/salsads)
+
+| Archivo | Efecto |
+|---|---|
+| `texturas-bloques` | siempre la caché de bloques de 256 texeles (la de la 3.2–3.8) |
+| `texturas-celdas` | siempre celdas de 4×4 |
+| `r3d-sin-aplazar` | la espera del 3D y la entrega del 2D en la línea 262 del mismo cuadro |
+| `reparto-sin-historia` | reparto por estimación (no por lo que tardó cada banda) |
+| `reparto-alterno` | (ya existía) bandas alternas |
+
+Sin ninguno, es automático. Host: `salsads-cpurun --r3d-bloques`, `--r3d-celdas`, `--r3d-aplazar L`, `--r3d-win A:B` (estadísticas de un tramo).
+
+## Presupuesto del local store (`raster3d`)
+
+Texto 59 968 B (antes 56 032), datos 800, bss 184 480 (contexto 180 736 B: el modo de celdas —512 celdas 32 KB, líneas de 1 KB 20 KB, etiquetas y tablas 8 KB— y el de
+bloques comparten 73 KB con una `union`), pila 16 720 B libres, cadena más honda 7 360 B, holgura 9 360 B (mínimo 8 192).
+
+## Estimación para la PS3 (sin medir)
+
+MKDS pesado, suma de los dos SPE: texturas 15–20 ms → 4–6 ms (el modelo de la traza, calibrado con el 17 ms medido, da 4,4–5,9 ms con tres calibraciones distintas de
+decodificación y DMA, 3,5–5,9 ms con la caché de líneas); cada SPE de 12–17 ms a ≈ 8,5–9 ms, y con el reparto con historia a ≈ 1–2 % del ideal. El 3D termina antes de que el PPE
+llegue a la línea 262, la espera del evento de línea baja a casi nada (la parte de «línea» que era espera del 3D: 0,1–2 ms de media y picos de 6; más holgura con el aplazamiento). En escenas con polígonos grandes (SM64DS, NSMB) no cambia nada
+(modo de bloques). Riesgo: el PPE sigue con el ARM9 (7,5) + ARM7 (1,2) + «gx» (2,2–3,3, la espera de la geometría en su SPE) y estos no se tocaron.
+
+## Qué medir en la PS3
+
+Paquete `salsads-r3dreparto.pkg`: MKDS carrera pesada (`DATO raster3d`: SPE0/SPE1, «texturas», «bloques o celdas decodificados», líneas de VRAM; `DATO raster3d-latencia`: línea
+aplazada, modo de texturas, composición de la A; `DATO desglose` y `DATO eventos`: «línea»), NSMB en un nivel y SM64DS (que no empeoren: modo de bloques); comparar con `texturas-bloques`,
+`r3d-sin-aplazar` y `reparto-sin-historia` en la misma escena. Si en NSMB o SM64DS las celdas ganan, bajar el umbral de 0,3 de `r3d_texpol_feed`.

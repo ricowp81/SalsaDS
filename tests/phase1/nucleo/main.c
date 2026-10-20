@@ -91,6 +91,9 @@
 #define R3D_TEX_CELDAS_FLAG SALSADS_DATA_DIR "/texturas-celdas"
 /* La espera del render 3D y la entrega del 2D pasan de la línea 262 del cuadro a una línea del cuadro siguiente (más tiempo para
  * los SPE sin agregar latencia a la imagen: docs/fase3.md, 3.9). Con este archivo vuelven a la línea 262. */
+/* Con este archivo el reparto de las bandas del render 3D no usa lo que tardó cada banda en el cuadro anterior (la historia que miden
+ * los SPE) sino la estimación por geometría. */
+#define R3D_SIN_HISTORIA_FLAG SALSADS_DATA_DIR "/reparto-sin-historia"
 #define R3D_SIN_APLAZAR_FLAG SALSADS_DATA_DIR "/r3d-sin-aplazar"
 /* Rutas cortas de la FIFO de geometría (rama gx-rapido; docs/fase4.md, «Cuarta ronda»): ráfagas de la DMA de modo 7 y escrituras de
  * la CPU a GXFIFO y a los puertos de órdenes sin pasar por el bus (con el recompilador, tampoco por la ruta lenta general). Con este
@@ -781,27 +784,51 @@ static void save_flush(int force)
 
 /* ---- composición 2D en los SPE ------------------------------------------------------------------------------ */
 
-/* Cierre del cuadro (línea 192): las dos pantallas van a dos SPE y la salida cae directo en las texturas del RSX. */
-static void vid_submit(void *ctx, int vset, gpu2d_frame *f)
+static int sub_early; /* la pantalla B de `sub` ya salió (vid_submit_early): vid_submit entrega solo la A */
+
+static void vid_post_engine(int e, gpu2d_frame *f)
+{
+	job_compose jc;
+
+	f->eng[e].out_ea = (uint64_t)(uintptr_t)tex_px(sub.set, e);
+	jc.frame_ea = (uint64_t)(uintptr_t)f;
+	jc.engine = (uint32_t)e;
+	sub.seq[e] = spukit_post(wk[e], JOB_COMPOSE, &jc, sizeof jc);
+}
+
+static void vid_begin_sub(int vset)
 {
 	const int set = (int)(sub_count & 1u);
 
-	(void)ctx;
 	if (set_used[set])
 		rsxkit_fence_wait(set_fence[set]); /* el RSX ya terminó de leer esta textura */
-	sub.valid = 1;
+	sub.valid = 0;
 	sub.done = 0;
 	sub.set = set;
 	sub.vset = vset;
-	for (int e = 0; e < 2; e++) {
-		job_compose jc;
+}
 
-		f->eng[e].out_ea = (uint64_t)(uintptr_t)tex_px(set, e);
-		jc.frame_ea = (uint64_t)(uintptr_t)f;
-		jc.engine = (uint32_t)e;
-		sub.seq[e] = spukit_post(wk[e], JOB_COMPOSE, &jc, sizeof jc);
-	}
+/* Cierre del cuadro (línea 192; la 262 o más tarde con el 3D): las dos pantallas van a dos SPE y la salida cae directo en las
+ * texturas del RSX. Con el aplazamiento del 3D, la B sale antes (vid_submit_early: no usa el 3D) y aquí solo la A. */
+static void vid_submit(void *ctx, int vset, gpu2d_frame *f)
+{
+	(void)ctx;
+	if (!sub_early)
+		vid_begin_sub(vset);
+	vid_post_engine(0, f);
+	if (!sub_early)
+		vid_post_engine(1, f);
+	sub_early = 0;
+	sub.valid = 1;
 	sub_count++;
+}
+
+static void vid_submit_early(void *ctx, int vset, gpu2d_frame *f)
+{
+	(void)ctx;
+	vid_begin_sub(vset);
+	vid_post_engine(1, f);
+	sub_early = 1;
 }
 
 /* Espera los trabajos de un cuadro (si no se esperaron) y deja sus resultados. 0 = bien. */
@@ -1167,7 +1194,7 @@ static uint32_t acc_r3d_frames;
 static uint64_t acc_r3d_pre_us, acc_r3d_lat_us[2];
 static uint32_t acc_r3d_early;
 static int r3d_defer;        /* 1: aplazar la espera del 3D (nds->vid.r3d_defer_line) */
-static uint32_t comp_us_ema; /* composición 2D más lenta de los dos SPE, suavizada (µs): fija hasta dónde se puede aplazar el 3D */
+static uint32_t compA_us_ema; /* composición 2D de la pantalla A (la del 3D), suavizada (µs): fija hasta dónde se puede aplazar el 3D */
 
 static void sort_u32(uint32_t *a, uint32_t n)
 {
@@ -1355,9 +1382,9 @@ static void log_stats(void)
 			    r->t_setup / n / hz, r->t_rows / n / hz, r->t_pix / n / hz, r->t_post / n / hz, r->t_out / n / hz);
 		salsads_log("DATO raster3d-latencia: por cuadro, desde el envío (línea 0) hasta: llegada del PPE a la línea 262 (la 192 si el cuadro captura) %.2f ms, fin del SPE0 %.2f ms, "
 			    "fin del SPE1 %.2f ms (si el SPE ya había terminado cuenta la llegada); SPE ya terminados al llegar: %.2f de 2; "
-			    "espera del 3D aplazada a la línea %u del cuadro siguiente (0 = en la 262), composición 2D más lenta %u us, caché de texturas: %s",
+			    "espera del 3D aplazada a la línea %u del cuadro siguiente (0 = en la 262), composición 2D de la pantalla A %u us, caché de texturas: %s",
 			    (double)acc_r3d_pre_us / 1000.0 / n, (double)acc_r3d_lat_us[0] / 1000.0 / n, (double)acc_r3d_lat_us[1] / 1000.0 / n,
-			    (double)acc_r3d_early / n, (unsigned)nds->vid.r3d_defer_line, (unsigned)comp_us_ema,
+			    (double)acc_r3d_early / n, (unsigned)nds->vid.r3d_defer_line, (unsigned)compA_us_ema,
 			    nds->vid.r3d_texmode == 1 ? "bloques (forzado)" : nds->vid.r3d_texmode == 2 ? "celdas (forzado)"
 			    : nds->vid.r3d_pol.cells ? "celdas (automático)" : "bloques (automático)");
 		acc_r3d_pre_us = acc_r3d_lat_us[0] = acc_r3d_lat_us[1] = 0;
@@ -1685,6 +1712,7 @@ static int r3d_on;
 /* Trabajos en vuelo: con el aplazamiento (nds->vid.r3d_defer_line) el del cuadro anterior sigue corriendo cuando sale el del actual */
 struct r3d_inflight {
 	int set;
+	uint32_t slot;
 	uint32_t seq[2];
 	uint64_t post_us;
 	r3d_job job;
@@ -1694,6 +1722,7 @@ static struct {
 	unsigned head, count;
 } r3q;
 static uint32_t r3d_fail;
+static uint32_t r3d_bt[2][2][R3D_BT_WORDS] __attribute__((aligned(128))); /* ticks por banda de cada unidad de cada trabajo en vuelo */
 
 static void r3d_wait_one(void);
 
@@ -1706,6 +1735,8 @@ static void r3d_spe_submit(void *ctx, int set, r3d_job *j)
 		r3d_wait_one();
 	e = &r3q.e[(r3q.head + r3q.count) & 1u];
 	r3q.count++;
+	e->slot = (r3q.head + r3q.count - 1u) & 1u;
+	memset(r3d_bt[e->slot], 0, sizeof r3d_bt[e->slot]);
 	e->set = set;
 	e->job = *j;
 	e->post_us = now_us();
@@ -1714,6 +1745,7 @@ static void r3d_spe_submit(void *ctx, int set, r3d_job *j)
 
 		jj.nunits = 2;
 		jj.unit = u;
+		jj.bt_ea = (uint64_t)(uintptr_t)r3d_bt[e->slot];
 		e->seq[u] = spukit_post(wk3d[u], JOB_RASTER3D, &jj, sizeof jj);
 	}
 }
@@ -1775,6 +1807,13 @@ static void r3d_wait_one(void)
 				dst2[k] += src[k];
 			}
 		}
+	}
+	{
+		uint32_t hist[R3D_BT_WORDS];
+
+		for (uint32_t b = 0; b < R3D_BT_WORDS; b++)
+			hist[b] = r3d_bt[e->slot][0][b] + r3d_bt[e->slot][1][b];
+		nds_video_r3d_hist(nds, e->set, hist);
 	}
 	put(M_R3DW, (uint32_t)(now_us() - t0));
 	acc_r3d_frames++;
@@ -1959,13 +1998,14 @@ static void render_frame(void)
 		nds->prof_clock = profiled ? tb_clock : NULL;
 		nds->gx.clock = profiled ? tb_clock : NULL; /* motor de geometría: su tiempo sale en «DATO geometria» */
 		/* Hasta qué línea del cuadro siguiente se puede aplazar la espera del 3D: el 2D de ese cuadro tiene que estar compuesto antes
-		 * de que el cuadro siguiente al siguiente vuelva a llenar la misma instantánea de la VRAM (línea 0), o el PPE espera ahí. Se
-		 * deja 1,5 veces lo que tarda el SPE más lento de composición, a ~60 µs por línea, y como máximo la línea 160: más tarde el
-		 * motor de geometría ya podría estar pisando el cuadro que el 3D lee (se cambian a partir de la 192). */
+		 * de que el cuadro siguiente al siguiente vuelva a llenar la misma instantánea de la VRAM (línea 0), o el PPE espera ahí.
+		 * Máximo la línea 160 (el motor de geometría puede pisar el cuadro que el 3D lee a partir de la 192); si la composición de la
+		 * A deja menos de 48 líneas de margen no se aplaza (0: la espera vuelve a la línea 262). */
 		if (r3d_on && r3d_defer) {
-			const uint32_t c_lines = (comp_us_ema * 3u / 2u) / 60u + 6u;
+			/* solo la pantalla A espera al 3D (la B sale en la línea 262), con 1,2 veces su tiempo a ~55 µs por línea */
+			const uint32_t c_lines = (compA_us_ema * 6u / 5u) / 55u + 4u;
 
-			nds->vid.r3d_defer_line = c_lines >= 263u - 40u ? 40u : (263u - c_lines > 160u ? 160u : 263u - c_lines);
+			nds->vid.r3d_defer_line = c_lines + 48u > 263u ? 0u : (263u - c_lines > 160u ? 160u : 263u - c_lines);
 		} else {
 			nds->vid.r3d_defer_line = 0;
 		}
@@ -2035,7 +2075,8 @@ static void render_frame(void)
 					const uint32_t ca = (uint32_t)((uint64_t)prev.res[0].ticks * 1000000ull / spukit_tick_hz()),
 						       cb = (uint32_t)((uint64_t)prev.res[1].ticks * 1000000ull / spukit_tick_hz());
 
-					comp_us_ema = (comp_us_ema * 3u + (ca > cb ? ca : cb)) / 4u;
+					(void)cb;
+					compA_us_ema = (compA_us_ema * 3u + ca) / 4u;
 				}
 				put(M_WAIT, prev.wait_us);
 				if (autotest_verify && frame_no % 30u == 20u)
@@ -2256,6 +2297,7 @@ static int game_open(const char *path)
 {
 	stats_reset();
 	memset(&sub, 0, sizeof sub);
+	sub_early = 0;
 	memset(&prev, 0, sizeof prev);
 	sub_count = 0;
 	frame_no = 0;
@@ -2317,6 +2359,7 @@ static void game_close(void)
 		vid_collect(&prev);
 	}
 	memset(&sub, 0, sizeof sub);
+	sub_early = 0;
 	memset(&prev, 0, sizeof prev);
 	for (int i = 0; i < 2; i++)
 		if (set_used[i]) {
@@ -2679,6 +2722,7 @@ int main(void)
 	}
 	if (spu_on) {
 		nds->vid.ops.submit = vid_submit;
+		nds->vid.ops.submit_early = vid_submit_early;
 		nds->vid.ops.wait = vid_wait;
 		autotest_verify = autotest;
 		salsads_log("composición 2D: un SPE por pantalla (decrementador %u Hz)", (unsigned)spukit_tick_hz());
@@ -2712,9 +2756,11 @@ int main(void)
 						    nds->vid.r3d_texmode == 1 ? "siempre por bloques de 256 texeles (existe " R3D_TEX_BLOQUES_FLAG ")"
 						    : nds->vid.r3d_texmode == 2 ? "siempre por celdas de 4×4 (existe " R3D_TEX_CELDAS_FLAG ")"
 						    : "automática (bloques de 256 hasta que se desbordan, después celdas de 4×4)");
+					nds->vid.r3d_hist_off = stat(R3D_SIN_HISTORIA_FLAG, &rst) == 0;
+					salsads_log("render 3D: reparto de las bandas %s", nds->vid.r3d_hist_off ? "por estimación de la geometría (existe " R3D_SIN_HISTORIA_FLAG ")" : "con lo que tardó cada banda en un cuadro anterior (estimación si el cuadro cambia mucho)");
 					r3d_defer = stat(R3D_SIN_APLAZAR_FLAG, &rst) != 0;
 					salsads_log("render 3D: la espera del 3D y la entrega del 2D %s",
-						    r3d_defer ? "se aplazan a una línea del cuadro siguiente (según lo que tarda la composición 2D)"
+						    r3d_defer ? "se aplazan a una línea del cuadro siguiente (según lo que tarda la composición 2D de la pantalla A; la B sale en la línea 262)"
 						    : "en la línea 262 del mismo cuadro (existe " R3D_SIN_APLAZAR_FLAG ")");
 				}
 			} else {

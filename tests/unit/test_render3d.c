@@ -37,7 +37,7 @@ static int render_core(const gx_frame *f, const uint32_t *ts, const uint32_t *ps
 	j.nunits = units;
 	j.band = band;
 	if (use_bal && units == 2)
-		r3d_balance(f, band, &j);
+		r3d_balance(f, band, &j, NULL, 0);
 	j.flags = flags | (f ? 0u : R3D_F_BLANK);
 	memset(out, 0xA5, sizeof out);
 	memset(sum, 0, sizeof *sum);

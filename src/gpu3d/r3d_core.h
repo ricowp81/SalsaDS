@@ -81,6 +81,7 @@ struct r3d_ctx {
 	uint64_t cur_base;   /* ídem, de la textura del polígono que se dibuja */
 	uint32_t last_id;    /* bloque (by << 4 | bx) del último usado; ~0 = ninguno */
 	uint32_t clock;
+	uint32_t btick[R3D_BT_WORDS] __attribute__((aligned(16))); /* ticks de cada banda de esta unidad (r3d_job.bt_ea) */
 	uint32_t pal_addr, pal_n; /* de qué paleta es pxtab y cuántas entradas tiene (0 = ninguna) */
 	/* celdas (3.9) */
 	int cellmode;             /* 1 = caché de celdas; 0 = bloques */

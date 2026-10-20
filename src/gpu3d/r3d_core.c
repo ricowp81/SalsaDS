@@ -1013,6 +1013,7 @@ int r3d_core_render(r3d_ctx *c, const r3d_job *j, r3d_stats *st)
 	r3d_rstate_init(&c->rs, hdr, j->flags);
 	c->cellmode = (j->flags & R3D_F_TEXBLOCK) == 0;
 	tc_reset(c);
+	memset(c->btick, 0, sizeof c->btick);
 	{
 		const uint32_t t_ = R3D_T();
 
@@ -1022,11 +1023,12 @@ int r3d_core_render(r3d_ctx *c, const r3d_job *j, r3d_stats *st)
 	for (uint32_t b = 0; b < nbands; b++) {
 		const int32_t y0 = (int32_t)(b * j->band), y1 = y0 + (int32_t)j->band;
 		const int edge = (c->rs.d3 & D3_EDGE) && !(c->rs.flags & R3D_F_NOEDGE);
-		uint32_t t_;
+		uint32_t t_, tb_;
 
 		if (!r3d_job_has_band(j, b))
 			continue;
 		/* el búfer de color `cb` lo usó la salida de hace dos bandas */
+		tb_ = R3D_T();
 		r3d_wait(1u << (R3D_TAG_OUT + cb));
 		draw_band(c, n, y0, y1, cb);
 		t_ = R3D_T();
@@ -1036,8 +1038,14 @@ int r3d_core_render(r3d_ctx *c, const r3d_job *j, r3d_stats *st)
 		r3d_put(c->col[cb][edge ? 1 : 0], j->out_ea + (uint64_t)y0 * R3D_W * 4u, j->band * R3D_W * 4u, R3D_TAG_OUT + cb);
 		st->dma_bytes += j->band * R3D_W * 4u;
 		R3D_ACC(st->t_out, t_);
+		if (b < R3D_BT_WORDS)
+			R3D_ACC(c->btick[b], tb_);
 		st->bands++;
 		cb ^= 1u;
+	}
+	if (j->bt_ea) { /* tiempo por banda para repartir el cuadro siguiente (el PPE lo lee al esperar el trabajo) */
+		r3d_put(c->btick, j->bt_ea + 128u * j->unit, sizeof c->btick, R3D_TAG_HDR);
+		r3d_wait(1u << R3D_TAG_HDR);
 	}
 	r3d_wait((1u << R3D_TAG_OUT) | (1u << (R3D_TAG_OUT + 1)));
 	R3D_ACC(st->t_total, t0);
