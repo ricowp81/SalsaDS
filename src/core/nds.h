@@ -270,9 +270,14 @@ struct nds_video_ops {
 	/* Render 3D (Fase 3.2). Línea 0: el trabajo del cuadro `set` está listo (la capa 3D sale en set->img3d); el
 	 * renderizador lo lanza en segundo plano. Línea 262 (antes de entregar el 2D de ese cuadro) o, si el cuadro captura
 	 * la pantalla (DISPCAPCNT), línea 192: tiene que haber terminado. Con `wait3d` el 2D se entrega (`submit`) en la
-	 * línea 262 en lugar de la 192. NULL = el host rasteriza en la línea 0. */
+	 * línea 262 en lugar de la 192. Con `r3d_defer_line` distinto de cero la espera y la entrega del 2D se hacen en esa línea del
+	 * cuadro siguiente (hay dos trabajos en vuelo a la vez). `wait3d(ctx, set)`: espera el trabajo del cuadro `set` y los
+	 * anteriores (set < 0: todos). NULL = el host rasteriza en la línea 0. */
 	void (*submit3d)(void *ctx, int set, r3d_job *job);
-	void (*wait3d)(void *ctx);
+	void (*wait3d)(void *ctx, int set);
+	/* Con el aplazamiento: la pantalla B (que no usa el 3D) se entrega ya en la línea 262, antes de la espera del 3D, y `submit`
+	 * entrega después solo la A (el motor 3D sale por el A). NULL = `submit` entrega las dos en la línea aplazada. */
+	void (*submit_early)(void *ctx, int set, gpu2d_frame *frame);
 	void *ctx;
 };
 
@@ -283,7 +288,9 @@ struct nds_video {
 	int recording;     /* 1 entre la línea 0 y la 192 */
 	int last;          /* último juego completo (línea 192 pasada), o -1 */
 	int rendered;      /* el host ya dibujó `last` en `img` */
-	int submit_pending; /* el 2D de `last` se entrega en la línea 262, tras esperar el render 3D (solo con ops.wait3d) */
+	int submit_pending; /* el 2D de `last` se entrega en la línea 262 (o en r3d_defer_line del cuadro siguiente), tras esperar el render 3D (solo con ops.wait3d) */
+	int early_done;      /* la pantalla B de `last` ya se entregó (ops.submit_early) */
+	uint32_t r3d_defer_line; /* 0: el 2D y la espera del 3D en la línea 262 del mismo cuadro; si no, en esa línea del cuadro siguiente (la fija quien dibuja) */
 	uint32_t mpos;     /* posición (píxel del cuadro) de la FIFO de memoria principal */
 	uint32_t frames;
 	struct nds_video_ops ops;
@@ -298,6 +305,15 @@ struct nds_video {
 	int vs_ref3d;       /* comparar los dos en cada cuadro (diagnóstico; cuenta las diferencias) */
 	uint32_t r3d_band;  /* líneas por banda (16) y unidades simuladas (1) */
 	uint32_t r3d_units;
+	uint32_t r3d_flags; /* R3D_F_* que se suman a las banderas de cada trabajo (diagnóstico, interruptores) */
+	/* Reparto de bandas con historia (3.9): lo que tardó cada banda en cuadros anteriores (lo mide el SPE; solo con ops.submit3d) */
+	uint32_t r3d_hist[R3D_BT_WORDS];
+	uint32_t r3d_hist_est;       /* estimación total (r3d_balance) del cuadro que produjo r3d_hist; 0 = no hay historia */
+	uint32_t r3d_est[2];         /* estimación total del cuadro que se dibuja en cada instantánea */
+	int r3d_hist_off;            /* no usar la historia (diagnóstico: reparto por estimación) */
+	uint32_t r3d_texmode;        /* caché de texturas del render 3D: 0 automática, 1 siempre bloques de 256, 2 siempre celdas de 4×4 (docs/fase3.md, 3.9) */
+	r3d_texpol r3d_pol;          /* modo automático vigente (cells: 0 bloques, 1 celdas) y sus estadísticas */
+	uint32_t r3d_win0, r3d_win1; /* solo cuenta las estadísticas de los cuadros win0 <= frames < win1 (0:0 = todos) */
 	int r3d_alt;        /* reparto alterno de las bandas (diagnóstico) en lugar del reparto por costo */
 	uint32_t r3d_frames, r3d_diff_frames;
 	uint64_t r3d_ticks; /* tiempo del host rasterizando (con `clock`) */
@@ -515,6 +531,8 @@ void nds_screens(struct nds *n, uint16_t *top, uint16_t *bottom);
 void nds_video_init(struct nds *n);
 /* Línea 0: toma la instantánea del cuadro y empieza a anotar cambios. Línea 192: cierra el cuadro. */
 void nds_video_frame_begin(struct nds *n);
+void nds_video_r3d_hist(struct nds *n, int set, const uint32_t *ticks); /* tiempo por banda del trabajo del cuadro `set`, ya terminado */
+void nds_video_r3d_feedback(struct nds *n, const r3d_stats *st); /* contadores de un cuadro 3D (todas las unidades): decide la caché de texturas */
 void nds_video_frame_end(struct nds *n);
 /* Último cuadro cerrado (o NULL si aún no hay): sus descriptores, sin `out_ea` si se dibuja a demanda. */
 const gpu2d_frame *nds_video_last_frame(const struct nds *n, int *set);

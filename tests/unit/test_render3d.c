@@ -37,7 +37,7 @@ static int render_core(const gx_frame *f, const uint32_t *ts, const uint32_t *ps
 	j.nunits = units;
 	j.band = band;
 	if (use_bal && units == 2)
-		r3d_balance(f, band, &j);
+		r3d_balance(f, band, &j, NULL, 0);
 	j.flags = flags | (f ? 0u : R3D_F_BLANK);
 	memset(out, 0xA5, sizeof out);
 	memset(sum, 0, sizeof *sum);
@@ -74,7 +74,7 @@ void test_render3d(void)
 	static const int bal[] = { 0, 0, 0, 0, 1, 1 };
 	const char *env = getenv("R3D_SEEDS");
 	const uint32_t nseeds = env ? (uint32_t)atoi(env) : 40;
-	uint32_t mism = 0, evict = 0, written = 0;
+	uint32_t mism = 0, evict = 0, written = 0, cell_miss = 0;
 	uint64_t h0 = 0;
 
 	CHECK(sizeof(r3d_job) <= 112);
@@ -88,21 +88,24 @@ void test_render3d(void)
 		r3d_render_ref(f, vram, ts, ps, 0, ref);
 		if (seed == 7)
 			h0 = r3d_hash_image(ref);
-		for (int k = 0; k < 6; k++) {
+		for (int k = 0; k < 12; k++) { /* 6 repartos × (celdas de 4×4, bloques de 256) */
+			const uint32_t mode = (k & 1) ? R3D_F_TEXBLOCK : 0u;
 			r3d_stats st;
 			int d;
 
-			use_bal = bal[k];
-			CHECK_EQ(render_core(f, ts, ps, bands[k], units[k], 0, &st), 0);
+			use_bal = bal[k >> 1];
+			CHECK_EQ(render_core(f, ts, ps, bands[k >> 1], units[k >> 1], mode, &st), 0);
 			d = first_diff();
 			if (d >= 0) {
 				if (mism++ < 6)
-					printf("FALLO render 3D semilla %u, bandas de %u, %u unidades: primer píxel distinto (%d,%d) %08x, ref %08x\n",
-					       seed, bands[k], units[k], d % R3D_W, d / R3D_W, out[d], ref[d]);
+					printf("FALLO render 3D semilla %u, bandas de %u, %u unidades, %s: primer píxel distinto (%d,%d) %08x, ref %08x\n",
+					       seed, bands[k >> 1], units[k >> 1], mode ? "bloques" : "celdas", d % R3D_W, d / R3D_W, out[d], ref[d]);
 			}
 			CHECK(d < 0);
 			evict += st.tex_evict;
 			written += st.written;
+			if (mode == 0)
+				cell_miss += st.tex_misses;
 		}
 		CHECK_EQ(r3d_io_errors, 0);
 	}
@@ -120,9 +123,82 @@ void test_render3d(void)
 #endif
 	CHECK(evict > 0);   /* la caché de texturas se llenó y desalojó (y la imagen no cambió) */
 	CHECK(written > 0);
+	CHECK(cell_miss > 0); /* la caché de celdas decodificó celdas */
 	/* el mismo cuadro da el mismo valor en LE y en BE (r3d_px.h y el motor de geometría, en enteros) */
-	printf("render 3D: %u semillas × 4 repartos, %u desalojos de la caché, hash de la semilla 7 %016llx\n", nseeds, evict,
+	printf("render 3D: %u semillas × 6 repartos × 2 cachés de texturas, %u desalojos de la caché, hash de la semilla 7 %016llx\n", nseeds, evict,
 	       (unsigned long long)h0);
 	if (nseeds > 7)
 		CHECK_EQ(h0, R3D_GOLDEN_SEED7);
+}
+
+/* Caché de texturas automática (nds_video_r3d_feedback): bloques hasta que se desbordan, celdas después; histéresis */
+static r3d_texpol Nfb;
+
+static void feed(uint32_t req, uint32_t dec, int n)
+{
+	r3d_stats st;
+
+	memset(&st, 0, sizeof st);
+	st.tex_px = req;
+	st.tex_misses = dec;
+	for (int i = 0; i < n; i++)
+		r3d_texpol_feed(&Nfb, &st);
+}
+
+void test_r3d_texmode(void);
+void test_r3d_texmode(void)
+{
+	memset(&Nfb, 0, sizeof Nfb);
+	CHECK_EQ(Nfb.cells, 0);   /* se empieza en bloques */
+	feed(83000, 335, 40);              /* NSMB en un nivel: 1,0 texeles pedidos por texel decodificado: bloques */
+	CHECK_EQ(Nfb.cells, 0);
+	feed(65000, 3300, 40);             /* Mario Kart DS: 0,08: los bloques se desbordan */
+	CHECK_EQ(Nfb.cells, 1);
+	feed(65000, 10500, 40);            /* en celdas, 6 pedidos por celda: se queda */
+	CHECK_EQ(Nfb.cells, 1);
+	feed(50000, 850, 40);              /* SM64DS: 58 pedidos por celda: vuelve a bloques */
+	CHECK_EQ(Nfb.cells, 0);
+	feed(50000, 59, 40);               /* y ahí se queda (3,3 texeles pedidos por texel decodificado) */
+	CHECK_EQ(Nfb.cells, 0);
+	feed(0, 0, 10);                    /* sin texturas: no cambia nada */
+	CHECK_EQ(Nfb.cells, 0);
+	printf("render 3D: caché de texturas automática: bloques en NSMB y SM64DS, celdas en MKDS, sin vaivén\n");
+}
+
+/* Reparto con historia: usa los costos medidos si el cuadro se parece al que los produjo, y la estimación si no */
+void test_r3d_balance_hist(void);
+void test_r3d_balance_hist(void)
+{
+	static gx_frame fr;
+	r3d_job j;
+	uint32_t hist[R3D_BT_WORDS], est;
+
+	memset(&fr, 0, sizeof fr);
+	fr.npolys = 12; /* un polígono ancho por banda: la estimación da el mismo costo a las 12 bandas */
+	for (uint32_t i = 0; i < 12; i++) {
+		fr.poly[i].ymin = (int16_t)(i * 16);
+		fr.poly[i].ymax = (int16_t)(i * 16 + 15);
+		fr.poly[i].xmin = 0;
+		fr.poly[i].xmax = 255;
+	}
+	memset(&j, 0, sizeof j);
+	memset(hist, 0, sizeof hist);
+	est = r3d_balance(&fr, 16, &j, NULL, 0);
+	CHECK(est > 0);
+	CHECK_EQ(j.bandsel[0] | j.bandsel[1], 0xFFFu);
+	CHECK_EQ(j.bandsel[0] & j.bandsel[1], 0u);
+	/* historia: la banda 3 cuesta lo mismo que todas las demás juntas: tiene que quedar sola en una unidad */
+	for (uint32_t b = 0; b < 12; b++)
+		hist[b] = b == 3 ? 1100u : 100u;
+	r3d_balance(&fr, 16, &j, hist, est);
+	CHECK_EQ(j.bandsel[0] | j.bandsel[1], 0xFFFu);
+	CHECK(j.bandsel[0] == (1u << 3) || j.bandsel[1] == (1u << 3));
+	/* una historia de un cuadro que no se parece (la estimación total no está entre 0,6 y 1,6 veces): se ignora */
+	r3d_balance(&fr, 16, &j, hist, est * 3u);
+	CHECK(j.bandsel[0] != (1u << 3) && j.bandsel[1] != (1u << 3));
+	/* historia en cero: se ignora */
+	memset(hist, 0, sizeof hist);
+	r3d_balance(&fr, 16, &j, hist, est);
+	CHECK(j.bandsel[0] != (1u << 3) && j.bandsel[1] != (1u << 3));
+	printf("render 3D: reparto con historia: la banda cara queda sola, la historia de otro cuadro o vacía se ignora\n");
 }

@@ -4,6 +4,29 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-19 — Render 3D: texturas por celdas, reparto con historia y espera aplazada (rama r3d-reparto)
+
+- **Qué mostró la medición** (logs de la PS3, MKDS carrera pesada): los dos SPE del 3D tardaban 12–17 ms por cuadro porque el 56–61 % del dibujo eran
+  texturas: la caché de 64 bloques de 256 texeles decodificaba 2 500–3 300 bloques por cuadro (5 veces los 621 distintos que el cuadro toca) y cada uno se pide
+  en ~20 de sus texeles; el reparto entre los SPE estaba a 6–9 % de desequilibrio y la espera del PPE al 3D, que se hacía en la línea 262, de 0,05 a 2 ms con picos de 6.
+  El detalle (traza de texeles, caches simuladas, coeficientes de la PS3) está en `docs/fase3.md`, 3.9.
+- **Hecho** (commits de la rama `r3d-reparto`): caché de **celdas de 4×4** (512 celdas, líneas de VRAM de 1 KB) con elección automática entre celdas y bloques
+  (`r3d_texpol_feed`); reparto de bandas con **historia** (los SPE escriben los ticks por banda); **espera del 3D aplazada** a la línea ≤ 160 del cuadro siguiente con la pantalla
+  B entregada antes (sin agregar latencia a la imagen: se explica en 3.9); caminos lentos de la textura compartidos y sonda 3 de 32 bits para que la pila conserve su holgura.
+- **Interruptores en /dev_hdd0/salsads**: `texturas-bloques`, `texturas-celdas`, `r3d-sin-aplazar`, `reparto-sin-historia` (y el ya existente `reparto-alterno`). El arranque
+  dice qué modo queda; `DATO raster3d-latencia` agrega la línea de espera, la composición de la A y el modo de texturas vigente.
+- **Paridad**: igual a la referencia en las 40 escenas × 6 repartos × los dos modos (LE con ASan/UBSan, BE con qemu), `--vs-ref3d` en los tres respaldos del autor
+  (MKDS, SM64DS y NSMB —también un nivel—), bloques y celdas contra `r3d_decode` texel a texel, `--r3d-aplazar` (el aplazamiento no cambia la imagen), RPCS3 con la autoprueba
+  (celdas y bloques alternados) con la config del intérprete (con la normal el SPE del 3D muere por «Illegal instruction»/«Segfault», también en la versión anterior; con
+  el intérprete, a veces —no es de esta rama: el mismo `r3d_row_at` de antes—, se repite y pasa).
+- **Estimación (sin PS3)**: texturas 15–20 ms → 4–6 ms (suma de los dos SPE), SPE más lento de MKDS pesado 12–17 → ≈ 9 ms; reparto con historia a 1–2 % del ideal; SM64DS y NSMB
+  siguen en bloques (sin cambio). Pendiente medir en la consola: MKDS carrera pesada, NSMB en un nivel y SM64DS, y comparar con los archivos de arriba.
+- **Paquete** «SalsaDS núcleo JIT» (SLDS00009) del commit `df76468` (`build/salsads-r3dreparto.pkg`), SHA-256 `52a1e36aec21633d0e611b8888ea4fa35208470ddbe9745ab749bf0531c3ac15`;
+  holgura de pila del SPE del 3D 9 360 bytes. Sin probar en la PS3.
+- **Hallazgos que no son de esta rama**: (1) Metroid Prime Hunters (30 fps, 140 polígonos): los 19 ms de «línea» no son la espera del 3D (≤ 4,5 ms) sino la captura de pantalla compuesta
+  **en el PPE** (`capture_frame` → `gpu2d_compose_engine`); ver 3.9. (2) La composición 2D de la pantalla B en MKDS carrera tarda 11,3 ms por cuadro (la A, 3,6): 68 % de un cuadro de un
+  SPE. (3) «gx» (2,2–3,3 ms de eventos en MKDS pesado) es el PPE esperando a la geometría en su SPE (8–9 ms de SPE).
+
 ## 2026-10-19 — Chip de guardado por juego (rama guardado)
 
 - **Problema** (PS3 real): todo juego sin `.sav` recibía EEPROM de 64 KB; Pokémon Blanco 2 (`IRD`) dio un error del propio juego sobre la

@@ -124,7 +124,7 @@ void nds_video_init(struct nds *n)
 	struct nds_video *v = &n->vid;
 	struct nds_video_ops ops = v->ops;
 	const int use_ref = v->use_ref, use_ref3d = v->use_ref3d, vs_ref3d = v->vs_ref3d;
-	const uint32_t band = v->r3d_band, units = v->r3d_units;
+	const uint32_t band = v->r3d_band, units = v->r3d_units, r3d_flags = v->r3d_flags, win0 = v->r3d_win0, win1 = v->r3d_win1, texmode = v->r3d_texmode, defer = v->r3d_defer_line, hist_off = v->r3d_hist_off;
 	uint64_t (*clk)(void) = v->clock;
 
 	memset(v, 0, sizeof *v);
@@ -134,6 +134,12 @@ void nds_video_init(struct nds *n)
 	v->vs_ref3d = vs_ref3d;
 	v->r3d_band = band ? band : 16u;
 	v->r3d_units = units ? units : 1u;
+	v->r3d_flags = r3d_flags;
+	v->r3d_win0 = win0;
+	v->r3d_win1 = win1;
+	v->r3d_texmode = texmode;
+	v->r3d_defer_line = defer;
+	v->r3d_hist_off = hist_off;
 	v->clock = clk;
 	v->cur = 1;
 	v->last = -1;
@@ -155,7 +161,9 @@ static void render3d_host(struct nds *n, struct nds_vset *s)
 	const r3d_job *jb = &s->r3d;
 	const gx_frame *f = (jb->flags & R3D_F_BLANK) ? NULL : (const gx_frame *)(uintptr_t)jb->frame_ea;
 	const uint64_t t0 = v->clock ? v->clock() : 0;
+	r3d_stats fb_sum;
 
+	memset(&fb_sum, 0, sizeof fb_sum);
 	if (v->use_ref3d) {
 		r3d_render_ref(f, s->vram, jb->texslot, jb->palslot, jb->flags, s->img3d);
 	} else {
@@ -165,7 +173,9 @@ static void render3d_host(struct nds *n, struct nds_vset *s)
 
 			j.unit = u;
 			r3d_core_render(&v->r3c, &j, &st);
-			{
+			fb_sum.tex_px += st.tex_px;
+			fb_sum.tex_misses += st.tex_misses;
+			if (!v->r3d_win1 || (v->frames >= v->r3d_win0 && v->frames < v->r3d_win1)) {
 				uint32_t *dst = (uint32_t *)(void *)&v->r3d_sum;
 				const uint32_t *src = (const uint32_t *)(const void *)&st;
 
@@ -176,12 +186,31 @@ static void render3d_host(struct nds *n, struct nds_vset *s)
 	}
 	if (v->clock)
 		v->r3d_ticks += v->clock() - t0;
-	v->r3d_frames++;
+	if (!v->use_ref3d)
+		nds_video_r3d_feedback(n, &fb_sum);
+	if (!v->r3d_win1 || (v->frames >= v->r3d_win0 && v->frames < v->r3d_win1))
+		v->r3d_frames++;
 	if (v->vs_ref3d && !v->use_ref3d) {
 		r3d_render_ref(f, s->vram, jb->texslot, jb->palslot, jb->flags, v->r3d_tmp);
 		if (memcmp(v->r3d_tmp, s->img3d, sizeof v->r3d_tmp) != 0)
 			v->r3d_diff_frames++;
 	}
+}
+
+/* El trabajo del cuadro `set` terminó: lo que tardó cada banda reparte los cuadros siguientes (r3d_balance). */
+void nds_video_r3d_hist(struct nds *n, int set, const uint32_t *ticks)
+{
+	struct nds_video *v = &n->vid;
+
+	memcpy(v->r3d_hist, ticks, sizeof v->r3d_hist);
+	v->r3d_hist_est = v->r3d_est[set & 1];
+}
+
+/* Caché de texturas automática (3.9): r3d_texpol_feed en gpu3d/r3d.h. */
+void nds_video_r3d_feedback(struct nds *n, const r3d_stats *st)
+{
+	if (n->vid.r3d_texmode == 0)
+		r3d_texpol_feed(&n->vid.r3d_pol, st);
 }
 
 /* Línea 0: el cuadro que el motor de geometría entregó en el último SWAP_BUFFERS se dibuja durante este (como en la DS,
@@ -209,10 +238,13 @@ static void frame_begin_3d(struct nds *n, struct nds_vset *s)
 	j->nunits = v->r3d_units;
 	j->band = v->r3d_band;
 	if (f && !v->r3d_alt)
-		r3d_balance(f, j->band, j); /* reparto por costo para dos unidades (si hay más o menos, el alterno) */
+		v->r3d_est[v->cur] = r3d_balance(f, j->band, j, v->r3d_hist_off ? NULL : v->r3d_hist, v->r3d_hist_est); /* reparto por costo para dos unidades (si hay más o menos, el alterno) */
 	/* sin cuadro entregado o con el motor de render apagado (POWCNT1 bit 2): transparente */
 	if (!f || !(n->powcnt1 & 4u))
 		j->flags |= R3D_F_BLANK;
+	j->flags |= v->r3d_flags;
+	if (v->r3d_texmode == 1 || (v->r3d_texmode == 0 && !v->r3d_pol.cells))
+		j->flags |= R3D_F_TEXBLOCK;
 	if (v->ops.submit3d)
 		v->ops.submit3d(v->ops.ctx, v->cur, j);
 	else
@@ -420,7 +452,7 @@ void nds_video_frame_end(struct nds *n)
 	v->recording = 0;
 	if (s->frame.eng[0].regs[G2D_R_DISPCAP + 1] & 0x8000u) {
 		if (s->has3d && v->ops.wait3d)
-			v->ops.wait3d(v->ops.ctx); /* la captura lee la capa 3D: aquí sí hay que esperarla */
+			v->ops.wait3d(v->ops.ctx, v->cur); /* la captura lee la capa 3D: aquí sí hay que esperarla */
 		capture_frame(n, s);
 	}
 	s->powcnt1 = n->powcnt1;
@@ -428,24 +460,42 @@ void nds_video_frame_end(struct nds *n)
 	v->rendered = 0;
 	v->frames++;
 	if (v->ops.submit && v->ops.wait3d)
-		v->submit_pending = 1; /* se entrega en la línea 262, cuando el render 3D de este cuadro ya terminó */
+		v->submit_pending = 1; /* se entrega en la línea 262 (o más tarde), cuando el render 3D de este cuadro ya terminó */
 	else if (v->ops.submit)
 		v->ops.submit(v->ops.ctx, v->cur, &s->frame);
 }
 
-/* Línea 262: se espera el render 3D del cuadro que cerró la línea 192 y se entrega su 2D. El render tuvo el cuadro entero
- * en lugar de 192 líneas; la imagen es la misma (el 3D sigue siendo el del SWAP_BUFFERS anterior, como en la DS). */
-void nds_video_submit_pending(struct nds *n)
+/* Línea 262 (o, con r3d_defer_line, esa línea del cuadro siguiente): se espera el render 3D del cuadro que cerró la línea 192 y se
+ * entrega su 2D. El render tuvo el cuadro entero en lugar de 192 líneas (o más, con el aplazamiento); la imagen es la misma (el 3D
+ * sigue siendo el del SWAP_BUFFERS anterior, como en la DS). Aplazar no agrega latencia mientras el 2D (que el SPE compone mientras
+ * se emula el resto del cuadro) esté listo cuando quien dibuja lo pide al terminar la pasada: eso lo cuida quien fija la línea.
+ */
+void nds_video_submit_pending(struct nds *n, uint32_t line)
 {
 	struct nds_video *v = &n->vid;
+	const uint32_t dl = v->r3d_defer_line;
 
 	if (!v->submit_pending)
 		return;
+	if (dl && v->ops.wait3d) {
+		if (line == NDS_LINES - 1u && v->ops.submit_early && !v->early_done) {
+			v->early_done = 1; /* la pantalla B no usa el 3D: se compone ya, mientras el 3D termina */
+			v->ops.submit_early(v->ops.ctx, v->last, &v->set[v->last].frame);
+			return;
+		}
+		/* en las líneas dl..192 del cuadro siguiente al del pendiente (la primera que lo cumpla si dl cambió entre cuadros): el
+		 * pendiente se marca en la 192, así que las líneas 193..262 del mismo cuadro y las anteriores a dl no lo tocan */
+		if (line < dl || line > 192u)
+			return;
+	} else if (line != NDS_LINES - 1u) {
+		return;
+	}
 	v->submit_pending = 0;
 	if (v->ops.wait3d)
-		v->ops.wait3d(v->ops.ctx);
+		v->ops.wait3d(v->ops.ctx, v->last);
 	if (v->ops.submit)
 		v->ops.submit(v->ops.ctx, v->last, &v->set[v->last].frame);
+	v->early_done = 0;
 }
 
 const gpu2d_frame *nds_video_last_frame(const struct nds *n, int *set)

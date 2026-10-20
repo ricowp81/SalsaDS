@@ -99,8 +99,78 @@ static uint64_t clock_ns(void)
 	return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
+/* --r3d-aplazar L: simula el aplazamiento de la espera del 3D (docs/fase3.md, 3.9) con un «renderizador» propio que no hace nada en
+ * segundo plano: al enviar el trabajo (línea 0) lo rasteriza ya a un búfer de referencia, y lo vuelve a rasterizar de verdad al
+ * esperarlo (línea L del cuadro siguiente); si la imagen difiere, el cuadro de geometría o la instantánea de la VRAM que lee el
+ * trabajo cambiaron entre las dos líneas (el aplazamiento no es seguro). */
+static struct {
+	int set;
+	r3d_job job;
+} fk_q[4];
+static unsigned fk_n;
+static uint32_t fk_truth[2][R3D_W * R3D_H] __attribute__((aligned(128)));
+static r3d_ctx fk_ctx;
+static uint32_t fk_checked, fk_bad, fk_maxq;
+
+static void fk_render(const r3d_job *j)
+{
+	for (uint32_t u = 0; u < j->nunits; u++) {
+		r3d_job jj = *j;
+		r3d_stats st;
+
+		jj.unit = u;
+		if (r3d_core_render(&fk_ctx, &jj, &st) != 0)
+			fk_bad += 1000000u;
+	}
+}
+
+static void fk_submit3d(void *ctx, int set, r3d_job *j)
+{
+	r3d_job t = *j;
+
+	(void)ctx;
+	t.out_ea = (uint64_t)(uintptr_t)fk_truth[set];
+	fk_render(&t);
+	if (fk_n == 4)
+		return;
+	fk_q[fk_n].set = set;
+	fk_q[fk_n].job = *j;
+	fk_n++;
+	if (fk_n > fk_maxq)
+		fk_maxq = fk_n;
+}
+
+static void fk_wait3d(void *ctx, int set)
+{
+	int found = set < 0;
+
+	(void)ctx;
+	for (unsigned i = 0; i < fk_n && !found; i++)
+		found = fk_q[i].set == set;
+	while (fk_n && found) {
+		const int s = fk_q[0].set;
+
+		fk_render(&fk_q[0].job);
+		fk_checked++;
+		if (memcmp((const void *)(uintptr_t)fk_q[0].job.out_ea, fk_truth[s], sizeof fk_truth[s]) != 0)
+			fk_bad++;
+		memmove(&fk_q[0], &fk_q[1], (fk_n - 1u) * sizeof fk_q[0]);
+		fk_n--;
+		if (s == set)
+			break;
+	}
+}
+
+static void fk_submit2d(void *ctx, int set, gpu2d_frame *f)
+{
+	(void)ctx;
+	(void)set;
+	(void)f;
+}
+
 /* Motor de geometría (Fase 3.1): resumen por cuadro y, con --gx-dump, el último cuadro entregado en texto. */
 /* Render 3D (Fase 3.2): tiempo y contadores por cuadro rasterizado */
+static int r3d_defer_sim;
 static void print_r3d_stats(void)
 {
 	const struct nds_video *v = &M.vid;
@@ -112,10 +182,13 @@ static void print_r3d_stats(void)
 	       v->clock ? (double)v->r3d_ticks / n / 1e6 : 0.0);
 	if (!v->use_ref3d)
 		printf("render 3D por cuadro: %.0f polígonos, %.0f banda·polígono, %.0f líneas, %.0f píxeles, %.0f escritos; texeles %.0f "
-		       "(aciertos %.2f %%), %.1f bloques decodificados, %.1f desalojos, %.1f líneas de VRAM (%.0f B); DMA %.0f B\n",
+		       "(sin decodificar %.2f %%), %.1f bloques o celdas decodificados, %.1f desalojos, %.1f líneas de VRAM (de paletas %.0f); DMA %.0f B\n",
 		       s->polys / n, s->band_polys / n, s->rows / n, s->pixels / n, s->written / n, s->tex_px / n,
-		       s->tex_px ? 100.0 * (double)s->tex_hits / (double)(s->tex_hits + s->tex_misses) : 100.0, s->tex_misses / n,
-		       s->tex_evict / n, s->line_miss / n, s->tex_bytes / n, s->dma_bytes / n);
+		       s->tex_px ? 100.0 * (1.0 - (double)s->tex_misses / (double)s->tex_px) : 100.0, s->tex_misses / n,
+		       s->tex_evict / n, s->line_miss / n, s->pal_miss / n, s->dma_bytes / n);
+	if (r3d_defer_sim)
+		printf("APLAZAR: línea %u, %u trabajos verificados, %u distintos del cuadro de línea 0, máximo %u en vuelo: %s\n",
+		       v->r3d_defer_line, fk_checked, fk_bad, fk_maxq, fk_bad ? "NO ES SEGURO" : "seguro");
 	if (v->vs_ref3d)
 		printf("REF3D: %s (%u de %u cuadros distintos)\n", v->r3d_diff_frames ? "DISTINTO" : "IGUAL", v->r3d_diff_frames,
 		       v->r3d_frames);
@@ -567,6 +640,18 @@ int main(int argc, char **argv)
 			M.vid.r3d_band = (uint32_t)strtoul(argv[++i], NULL, 0);
 		else if (!strcmp(argv[i], "--r3d-units") && i + 1 < argc)
 			M.vid.r3d_units = (uint32_t)strtoul(argv[++i], NULL, 0);
+		else if (!strcmp(argv[i], "--r3d-bloques"))
+			M.vid.r3d_texmode = 1; /* caché de texturas de la 3.2 a la 3.8 (bloques de 256 texeles) siempre */
+		else if (!strcmp(argv[i], "--r3d-aplazar") && i + 1 < argc) {
+			M.vid.r3d_defer_line = (uint32_t)strtoul(argv[++i], NULL, 0);
+			M.vid.ops.submit3d = fk_submit3d;
+			M.vid.ops.wait3d = fk_wait3d;
+			M.vid.ops.submit = fk_submit2d;
+			r3d_defer_sim = 1;
+		} else if (!strcmp(argv[i], "--r3d-celdas"))
+			M.vid.r3d_texmode = 2; /* celdas de 4×4 siempre (si no, automático: bloques hasta que se desbordan) */
+		else if (!strcmp(argv[i], "--r3d-win") && i + 1 < argc)
+			sscanf(argv[++i], "%u:%u", &M.vid.r3d_win0, &M.vid.r3d_win1); /* estadísticas solo de esos cuadros */
 		else if (!strcmp(argv[i], "--r3d-stats"))
 			r3d_stats_on = 1;
 		else if (!strcmp(argv[i], "--holes"))
