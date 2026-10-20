@@ -18,7 +18,7 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
   y una base externa por CRC); lo que no está se deduce. No se inventaron entradas dudosas (Mystery Dungeon, Ranger, Layton, Dragon Quest, etc.).
   Una EEPROM de 8 KB funciona igual como de 64 KB, así que importa sobre todo para Flash, dirección de un byte y tamaños mayores.
 - **Pruebas**: `tests/unit/test_save.c` en `test-host`; NSMB, MKDS y SM64 DS con los respaldos del autor: mismo `.sav` y mismo chip que `main`.
-- **Paquete** (commit `b926885`): `build/salsads-guardado.pkg`, SHA-256 ``.
+- **Paquete** (commit `b926885`): `build/salsads-guardado.pkg`, SHA-256 `a664cc8f5fbda838970beec9e433479399dbf621e897734ab92d4b02a169ffa3`.
 - **Sin probar en la PS3**: Blanco 2 y HeartGold (sin ROMs aquí). Si algún Flash pide otro ID, `guardado.cfg` o la tabla. Los Flash de 2 MB no caben
   en `NDS_SAVE_MAX` (1 MB).
 
