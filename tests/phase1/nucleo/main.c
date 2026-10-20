@@ -157,6 +157,7 @@ SYS_PROCESS_PARAM(1001, 0x100000);
 #define AUTOTEST_FRAMES 150
 #define STATS_FRAMES 120
 #define SAVE_DIR SALSADS_DATA_DIR "/saves"
+#define SAVE_CFG_PATH SALSADS_DATA_DIR "/guardado.cfg" /* «CODIGO=tipo»: fuerza el chip de guardado de un juego (docs/guardado.md) */
 #define SAVE_FLUSH_FRAMES 120
 
 static volatile int quit;
@@ -729,6 +730,15 @@ static void save_load(void)
 	save_name();
 	mkdir(SALSADS_DATA_DIR, 0777);
 	mkdir(SAVE_DIR, 0777);
+	f = fopen(SAVE_CFG_PATH, "rb");
+	if (f) {
+		static char cfg[4096];
+		const size_t cn = fread(cfg, 1, sizeof cfg, f);
+
+		fclose(f);
+		if (nds_save_cfg(nds, cfg, cn))
+			salsads_log("guardado: %s fuerza el chip de este juego", SAVE_CFG_PATH);
+	}
 	f = fopen(save_path, "rb");
 	if (f) {
 		static uint8_t buf[NDS_SAVE_MAX];

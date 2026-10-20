@@ -189,11 +189,20 @@ struct nds_cart {
 
 /* Chip de guardado del cartucho (AUXSPI): ver save.c. */
 enum { NDS_SAVE_EEPROM512 = 1, NDS_SAVE_EEPROM16, NDS_SAVE_FRAM, NDS_SAVE_EEPROM24, NDS_SAVE_FLASH };
+/* De dónde salió el chip (se escribe en el log): defecto = provisional, se deduce por los comandos SPI. */
+enum { NDS_SAVE_SRC_DEFECTO = 0, NDS_SAVE_SRC_TABLA, NDS_SAVE_SRC_DETECTADO, NDS_SAVE_SRC_CFG, NDS_SAVE_SRC_SAV };
+#define NDS_SAVE_REC_MAX 264u /* bytes de la conversación SPI que se guardan mientras se deduce el chip */
 struct nds_save {
 	uint8_t type;
 	uint8_t state, cmd, a8, wel, wp, srwd, first, wrote, dirty;
 	uint8_t addr_len;
+	uint8_t src;       /* NDS_SAVE_SRC_* */
+	uint8_t autod;     /* 1 = el chip aún es provisional y se deduce por las conversaciones SPI del juego */
+	uint8_t rec_wel;   /* WEL al empezar la conversación guardada */
+	uint16_t nrec;     /* bytes guardados en `rec` (la orden y lo que sigue) */
+	uint32_t nconv;    /* bytes de la conversación en curso después de la orden */
 	uint32_t size, page, addr, nbytes;
+	uint8_t rec[NDS_SAVE_REC_MAX];
 };
 
 struct nds_spi {
@@ -488,6 +497,9 @@ void nds_snd_set_ratio_adj(struct nds *n, float adj);
  * contenido de un archivo y fija el tipo por su tamaño (0 = bien, -1 = tamaño que no es de ningún chip).
  * `nds_save_take_dirty` dice si el juego escribió desde la última vez; `nds_save_data` da el contenido actual. */
 int nds_save_attach(struct nds *n, const uint8_t *data, size_t len);
+/* Archivo opcional por juego (guardado.cfg: líneas «CODIGO=tipo», ver docs/guardado.md). Si alguna línea es de este juego, fuerza ese
+ * chip (gana a la tabla y al tamaño del .sav). Devuelve 1 si aplicó alguna, 0 si no. Llamar tras cargar la ROM y antes de `nds_save_attach`. */
+int nds_save_cfg(struct nds *n, const char *text, size_t len);
 const uint8_t *nds_save_data(const struct nds *n, size_t *len);
 int nds_save_take_dirty(struct nds *n);
 

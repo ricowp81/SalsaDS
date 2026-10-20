@@ -44,7 +44,11 @@ The day-to-day log, with what was measured and what is pending, is
 4. Inside a game, hold SELECT + START for 1 second to return to the list.
    Saves (the cartridge save chip) are kept per game in
    `/dev_hdd0/salsads/saves/<game code>.sav`; the log is
-   `/dev_hdd0/salsads/nucleo.log`.
+   `/dev_hdd0/salsads/nucleo.log`. The save chip type (EEPROM, FRAM or
+   Flash, and its size) is chosen automatically per game (built-in table,
+   then detection from the game's own SPI commands) and logged; to force it,
+   add a line like `IRD=flash512k` to `/dev_hdd0/salsads/guardado.cfg`
+   (see `docs/guardado.md`, in Spanish).
 
 Other options, all plain files in `/dev_hdd0/salsads/`:
 
