@@ -32,6 +32,7 @@ void test_gx_job(void);
 void test_gx_math(void);
 void test_render3d(void);
 void test_r3d_texmode(void);
+void test_r3d_balance_hist(void);
 void test_r3d_vrow(void);
 
 int main(int argc, char **argv)
@@ -49,6 +50,7 @@ int main(int argc, char **argv)
 	if (getenv("UNIT_ONLY") && !strcmp(getenv("UNIT_ONLY"), "r3d")) {
 		test_render3d();
 		test_r3d_texmode();
+		test_r3d_balance_hist();
 		test_r3d_vrow();
 		printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);
 		return check_failed ? 1 : 0;
@@ -72,6 +74,7 @@ int main(int argc, char **argv)
 	test_gx_math();
 	test_render3d();
 	test_r3d_texmode();
+	test_r3d_balance_hist();
 	test_r3d_vrow();
 	printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);
 	return check_failed ? 1 : 0;

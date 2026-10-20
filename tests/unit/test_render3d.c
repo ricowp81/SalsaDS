@@ -164,3 +164,41 @@ void test_r3d_texmode(void)
 	CHECK_EQ(Nfb.cells, 0);
 	printf("render 3D: caché de texturas automática: bloques en NSMB y SM64DS, celdas en MKDS, sin vaivén\n");
 }
+
+/* Reparto con historia: usa los costos medidos si el cuadro se parece al que los produjo, y la estimación si no */
+void test_r3d_balance_hist(void);
+void test_r3d_balance_hist(void)
+{
+	static gx_frame fr;
+	r3d_job j;
+	uint32_t hist[R3D_BT_WORDS], est;
+
+	memset(&fr, 0, sizeof fr);
+	fr.npolys = 12; /* un polígono ancho por banda: la estimación da el mismo costo a las 12 bandas */
+	for (uint32_t i = 0; i < 12; i++) {
+		fr.poly[i].ymin = (int16_t)(i * 16);
+		fr.poly[i].ymax = (int16_t)(i * 16 + 15);
+		fr.poly[i].xmin = 0;
+		fr.poly[i].xmax = 255;
+	}
+	memset(&j, 0, sizeof j);
+	memset(hist, 0, sizeof hist);
+	est = r3d_balance(&fr, 16, &j, NULL, 0);
+	CHECK(est > 0);
+	CHECK_EQ(j.bandsel[0] | j.bandsel[1], 0xFFFu);
+	CHECK_EQ(j.bandsel[0] & j.bandsel[1], 0u);
+	/* historia: la banda 3 cuesta lo mismo que todas las demás juntas: tiene que quedar sola en una unidad */
+	for (uint32_t b = 0; b < 12; b++)
+		hist[b] = b == 3 ? 1100u : 100u;
+	r3d_balance(&fr, 16, &j, hist, est);
+	CHECK_EQ(j.bandsel[0] | j.bandsel[1], 0xFFFu);
+	CHECK(j.bandsel[0] == (1u << 3) || j.bandsel[1] == (1u << 3));
+	/* una historia de un cuadro que no se parece (la estimación total no está entre 0,6 y 1,6 veces): se ignora */
+	r3d_balance(&fr, 16, &j, hist, est * 3u);
+	CHECK(j.bandsel[0] != (1u << 3) && j.bandsel[1] != (1u << 3));
+	/* historia en cero: se ignora */
+	memset(hist, 0, sizeof hist);
+	r3d_balance(&fr, 16, &j, hist, est);
+	CHECK(j.bandsel[0] != (1u << 3) && j.bandsel[1] != (1u << 3));
+	printf("render 3D: reparto con historia: la banda cara queda sola, la historia de otro cuadro o vacía se ignora\n");
+}
