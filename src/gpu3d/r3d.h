@@ -48,6 +48,7 @@
 #define R3D_F_NOEDGE 1u   /* no hacer edge marking aunque DISP3DCNT lo pida (diagnóstico) */
 #define R3D_F_NOFOG 2u    /* ídem, niebla */
 #define R3D_F_BLANK 4u    /* no hay cuadro de geometría: sale transparente */
+#define R3D_F_TEXBLOCK 8u /* texturas: bloques de 256 texeles decodificados enteros (la caché de la 3.2 a la 3.8) en lugar de celdas de 4×4 */
 
 /* Un trabajo: un cuadro, repartido en bandas de `band` líneas entre `nunits` unidades (SPE); esta es la `unit`. Las
  * bandas se reparten alternas: la unidad u dibuja las bandas u, u + nunits, u + 2·nunits... (≤ 112 bytes: va dentro
@@ -82,11 +83,11 @@ typedef struct r3d_stats {
 	uint32_t pixels;      /* píxeles que pasaron la cobertura */
 	uint32_t written;     /* píxeles escritos (color o sombra) */
 	uint32_t tex_px;      /* texeles pedidos */
-	uint32_t tex_hits;    /* de ellos, en el bloque del texel anterior o en la caché */
-	uint32_t tex_misses;  /* bloques decodificados (fallos de la caché) */
-	uint32_t tex_evict;   /* bloques desalojados */
-	uint32_t tex_bytes;   /* bytes de VRAM traídos por DMA para texturas y paletas */
-	uint32_t line_miss;   /* líneas de 128 bytes de VRAM traídas */
+	uint32_t tex_hits;    /* de ellos, en el bloque (celda) del texel anterior o en la caché */
+	uint32_t tex_misses;  /* bloques (celdas) decodificados (fallos de la caché) */
+	uint32_t tex_evict;   /* bloques (celdas) desalojados */
+	uint32_t pal_miss;    /* de line_miss, las de la memoria de paletas */
+	uint32_t line_miss;   /* líneas de VRAM traídas por DMA (128 bytes en el modo de bloques, 1 KB en el de celdas) */
 	uint32_t bands;       /* bandas dibujadas */
 	uint32_t dma_bytes;   /* polígonos, vértices y salida */
 	uint32_t pad;
@@ -95,6 +96,39 @@ typedef struct r3d_stats {
 	/* desglose de t_raster (Fase 3.4): preparar polígonos, calcular aristas de cada línea, dibujar píxeles (incluye texturas) */
 	uint32_t t_setup, t_rows, t_pix;
 } r3d_stats;
+
+/* ---- Caché de texturas automática (3.9) ------------------------------------------------------------------- */
+/* Se empieza con los bloques de 256 texeles (la caché de la 3.2 a la 3.8, que va bien con polígonos grandes que usan la mayor
+ * parte de cada textura: Super Mario 64 DS, New Super Mario Bros.) y se pasa a las celdas de 4×4 cuando los bloques se desbordan:
+ * la relación entre texeles pedidos y texeles decodificados (bloques × 256) cae por debajo de 0,3 (Mario Kart DS: 0,08; NSMB en
+ * un nivel 1,0; SM64DS 3,6). De las celdas se vuelve a los bloques con más de 12 texeles pedidos por celda decodificada (SM64DS
+ * 58; NSMB en un nivel 20; MKDS 6 a 7). Con estadísticas suavizadas (3/4 + 1) y al menos 8 cuadros entre cambios. No cambia la
+ * imagen, solo el tiempo. `st` son los contadores de un cuadro de todas las unidades. */
+typedef struct r3d_texpol {
+	uint32_t cells;     /* 0: bloques; 1: celdas */
+	uint32_t req, dec;  /* texeles pedidos y bloques (celdas) decodificados, suavizados */
+	uint32_t hold;      /* cuadros desde el último cambio (satura en 8) */
+} r3d_texpol;
+
+static inline void r3d_texpol_feed(r3d_texpol *p, const r3d_stats *st)
+{
+	if (st->tex_px == 0)
+		return;
+	p->req = p->req - (p->req >> 2) + st->tex_px;
+	p->dec = p->dec - (p->dec >> 2) + st->tex_misses;
+	if (p->hold < 8u) {
+		p->hold++;
+		return;
+	}
+	if (!p->cells && (uint64_t)p->req * 10u < (uint64_t)p->dec * 256u * 3u && p->dec > 64u * 4u)
+		p->cells = 1;
+	else if (p->cells && p->req > p->dec * 12u)
+		p->cells = 0;
+	else
+		return;
+	p->req = p->dec = 0;
+	p->hold = 0;
+}
 
 /* ---- Referencia (r3d_ref.c) ------------------------------------------------------------------------- */
 /* Rasteriza `f` con la VRAM de la instantánea `vram` (R3D_VRAM_ZERO_OFF bytes + 128 en cero) en `out`. `f` = NULL:

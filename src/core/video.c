@@ -124,7 +124,7 @@ void nds_video_init(struct nds *n)
 	struct nds_video *v = &n->vid;
 	struct nds_video_ops ops = v->ops;
 	const int use_ref = v->use_ref, use_ref3d = v->use_ref3d, vs_ref3d = v->vs_ref3d;
-	const uint32_t band = v->r3d_band, units = v->r3d_units;
+	const uint32_t band = v->r3d_band, units = v->r3d_units, r3d_flags = v->r3d_flags, win0 = v->r3d_win0, win1 = v->r3d_win1, texmode = v->r3d_texmode;
 	uint64_t (*clk)(void) = v->clock;
 
 	memset(v, 0, sizeof *v);
@@ -134,6 +134,10 @@ void nds_video_init(struct nds *n)
 	v->vs_ref3d = vs_ref3d;
 	v->r3d_band = band ? band : 16u;
 	v->r3d_units = units ? units : 1u;
+	v->r3d_flags = r3d_flags;
+	v->r3d_win0 = win0;
+	v->r3d_win1 = win1;
+	v->r3d_texmode = texmode;
 	v->clock = clk;
 	v->cur = 1;
 	v->last = -1;
@@ -155,7 +159,9 @@ static void render3d_host(struct nds *n, struct nds_vset *s)
 	const r3d_job *jb = &s->r3d;
 	const gx_frame *f = (jb->flags & R3D_F_BLANK) ? NULL : (const gx_frame *)(uintptr_t)jb->frame_ea;
 	const uint64_t t0 = v->clock ? v->clock() : 0;
+	r3d_stats fb_sum;
 
+	memset(&fb_sum, 0, sizeof fb_sum);
 	if (v->use_ref3d) {
 		r3d_render_ref(f, s->vram, jb->texslot, jb->palslot, jb->flags, s->img3d);
 	} else {
@@ -165,7 +171,9 @@ static void render3d_host(struct nds *n, struct nds_vset *s)
 
 			j.unit = u;
 			r3d_core_render(&v->r3c, &j, &st);
-			{
+			fb_sum.tex_px += st.tex_px;
+			fb_sum.tex_misses += st.tex_misses;
+			if (!v->r3d_win1 || (v->frames >= v->r3d_win0 && v->frames < v->r3d_win1)) {
 				uint32_t *dst = (uint32_t *)(void *)&v->r3d_sum;
 				const uint32_t *src = (const uint32_t *)(const void *)&st;
 
@@ -176,12 +184,22 @@ static void render3d_host(struct nds *n, struct nds_vset *s)
 	}
 	if (v->clock)
 		v->r3d_ticks += v->clock() - t0;
-	v->r3d_frames++;
+	if (!v->use_ref3d)
+		nds_video_r3d_feedback(n, &fb_sum);
+	if (!v->r3d_win1 || (v->frames >= v->r3d_win0 && v->frames < v->r3d_win1))
+		v->r3d_frames++;
 	if (v->vs_ref3d && !v->use_ref3d) {
 		r3d_render_ref(f, s->vram, jb->texslot, jb->palslot, jb->flags, v->r3d_tmp);
 		if (memcmp(v->r3d_tmp, s->img3d, sizeof v->r3d_tmp) != 0)
 			v->r3d_diff_frames++;
 	}
+}
+
+/* Caché de texturas automática (3.9): r3d_texpol_feed en gpu3d/r3d.h. */
+void nds_video_r3d_feedback(struct nds *n, const r3d_stats *st)
+{
+	if (n->vid.r3d_texmode == 0)
+		r3d_texpol_feed(&n->vid.r3d_pol, st);
 }
 
 /* Línea 0: el cuadro que el motor de geometría entregó en el último SWAP_BUFFERS se dibuja durante este (como en la DS,
@@ -213,6 +231,9 @@ static void frame_begin_3d(struct nds *n, struct nds_vset *s)
 	/* sin cuadro entregado o con el motor de render apagado (POWCNT1 bit 2): transparente */
 	if (!f || !(n->powcnt1 & 4u))
 		j->flags |= R3D_F_BLANK;
+	j->flags |= v->r3d_flags;
+	if (v->r3d_texmode == 1 || (v->r3d_texmode == 0 && !v->r3d_pol.cells))
+		j->flags |= R3D_F_TEXBLOCK;
 	if (v->ops.submit3d)
 		v->ops.submit3d(v->ops.ctx, v->cur, j);
 	else

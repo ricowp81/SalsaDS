@@ -289,6 +289,10 @@ struct nds_video {
 	int vs_ref3d;       /* comparar los dos en cada cuadro (diagnóstico; cuenta las diferencias) */
 	uint32_t r3d_band;  /* líneas por banda (16) y unidades simuladas (1) */
 	uint32_t r3d_units;
+	uint32_t r3d_flags; /* R3D_F_* que se suman a las banderas de cada trabajo (diagnóstico, interruptores) */
+	uint32_t r3d_texmode;        /* caché de texturas del render 3D: 0 automática, 1 siempre bloques de 256, 2 siempre celdas de 4×4 (docs/fase3.md, 3.9) */
+	r3d_texpol r3d_pol;          /* modo automático vigente (cells: 0 bloques, 1 celdas) y sus estadísticas */
+	uint32_t r3d_win0, r3d_win1; /* solo cuenta las estadísticas de los cuadros win0 <= frames < win1 (0:0 = todos) */
 	int r3d_alt;        /* reparto alterno de las bandas (diagnóstico) en lugar del reparto por costo */
 	uint32_t r3d_frames, r3d_diff_frames;
 	uint64_t r3d_ticks; /* tiempo del host rasterizando (con `clock`) */
@@ -503,6 +507,7 @@ void nds_screens(struct nds *n, uint16_t *top, uint16_t *bottom);
 void nds_video_init(struct nds *n);
 /* Línea 0: toma la instantánea del cuadro y empieza a anotar cambios. Línea 192: cierra el cuadro. */
 void nds_video_frame_begin(struct nds *n);
+void nds_video_r3d_feedback(struct nds *n, const r3d_stats *st); /* contadores de un cuadro 3D (todas las unidades): decide la caché de texturas */
 void nds_video_frame_end(struct nds *n);
 /* Último cuadro cerrado (o NULL si aún no hay): sus descriptores, sin `out_ea` si se dibuja a demanda. */
 const gpu2d_frame *nds_video_last_frame(const struct nds *n, int *set);

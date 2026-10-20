@@ -79,7 +79,7 @@ static uint64_t vram_line_ea(const r3d_ctx *c, uint32_t space, uint32_t a)
 
 /* El byte `a` de la memoria de texturas (espacio 0, 512 KB) o de paletas (1, 128 KB) en el local store. El puntero vale
  * hasta la siguiente búsqueda en el mismo espacio. */
-static inline const uint8_t *lc_line(r3d_ctx *c, uint32_t space, uint32_t a)
+static __attribute__((noinline)) const uint8_t *lc_line(r3d_ctx *c, uint32_t space, uint32_t a)
 {
 	/* asociativas de 2 vías (conjunto = línea & n/2 - 1; se reemplaza la que no se usó por última vez), una para
 	 * texturas y otra para paletas: los datos, los índices del 4x4 y la paleta de un mismo texel no se pisan */
@@ -102,7 +102,8 @@ static inline const uint8_t *lc_line(r3d_ctx *c, uint32_t space, uint32_t a)
 	r3d_wait(1u << R3D_TAG_LINE);
 	c->ltag[i] = key;
 	c->st->line_miss++;
-	c->st->tex_bytes += 128;
+	if (space)
+		c->st->pal_miss++;
 	return &c->lines[i][a & 127u];
 }
 
@@ -136,6 +137,86 @@ static __attribute__((unused)) uint32_t lc_rdt(void *ctx, uint32_t a)
 static __attribute__((unused)) uint32_t lc_rdp(void *ctx, uint32_t a)
 {
 	return lc_rd((r3d_ctx *)ctx, 1, a & 0x1FFFFu);
+}
+
+/* ---- líneas de 1 KB (modo de celdas, 3.9) ----------------------------------------------------------- */
+
+/* Dirección de la línea de R3D_CL_BYTES que contiene el byte `a` (ya acotado) de la memoria de texturas (espacio 0, 512 KB)
+ * o de paletas (1, 128 KB) en la instantánea de la VRAM; 0 si el banco no está mapeado (se lee cero). */
+static uint64_t cl_line_ea(const r3d_ctx *c, uint32_t space, uint32_t a)
+{
+	uint32_t off;
+
+	if (space == 0) {
+		off = c->job.texslot[(a >> 17) & 3u];
+		a &= 0x1FFFFu;
+	} else {
+		const uint32_t slot = (a >> 14) & 7u;
+
+		off = slot < R3D_PAL_SLOTS ? c->job.palslot[slot] : R3D_UNMAPPED;
+		a &= 0x3FFFu;
+	}
+	if (off == R3D_UNMAPPED)
+		return 0;
+	return c->job.vram_ea + off + (a & ~(uint32_t)(R3D_CL_BYTES - 1u));
+}
+
+/* Puntero al byte `a` (acotado) de la memoria de texturas (espacio 0) o de paletas (1), en una de las líneas de 1 KB del local
+ * store (asociativas de 4 vías, la que lleva más tiempo sin usarse se reemplaza). Cada memoria recuerda su última línea. El puntero
+ * vale hasta la siguiente búsqueda en el mismo espacio. */
+static const uint8_t *cl_line(r3d_ctx *c, uint32_t space, uint32_t a)
+{
+	const uint32_t key = a >> R3D_CL_SHIFT, off = a & (R3D_CL_BYTES - 1u);
+	uint32_t *tags = space ? c->pltag : c->dltag, *stamps = space ? c->plstamp : c->dlstamp;
+	const uint32_t nsets = space ? R3D_CL_PLINES / R3D_CL_WAYS : R3D_CL_DLINES / R3D_CL_WAYS;
+	const uint32_t base = (key & (nsets - 1u)) * R3D_CL_WAYS;
+	uint32_t victim = base, oldest = 0xFFFFFFFFu;
+	uint8_t *line;
+	uint64_t ea;
+
+	if (space == 0 ? c->dl_key == key : c->pl_key == key)
+		return (space ? c->pl_ptr : c->dl_ptr) + off;
+	c->clock++;
+	for (uint32_t w = 0; w < R3D_CL_WAYS; w++) {
+		const uint32_t i = base + w;
+
+		if (tags[i] == key) {
+			stamps[i] = c->clock;
+			line = space ? c->pline[i] : c->dline[i];
+			goto found;
+		}
+		if (stamps[i] < oldest) {
+			oldest = stamps[i];
+			victim = i;
+		}
+	}
+	line = space ? c->pline[victim] : c->dline[victim];
+	ea = cl_line_ea(c, space, a);
+	if (ea) {
+		r3d_get(line, ea, R3D_CL_BYTES, R3D_TAG_LINE);
+		r3d_wait(1u << R3D_TAG_LINE);
+	} else {
+		memset(line, 0, R3D_CL_BYTES);
+	}
+	tags[victim] = key;
+	stamps[victim] = c->clock;
+	c->st->line_miss++;
+	if (space)
+		c->st->pal_miss++;
+found:
+	if (space) {
+		c->pl_key = key;
+		c->pl_ptr = line;
+	} else {
+		c->dl_key = key;
+		c->dl_ptr = line;
+	}
+	return line + off;
+}
+
+static inline const uint8_t *tx_line(r3d_ctx *c, uint32_t space, uint32_t a)
+{
+	return c->cellmode ? cl_line(c, space, a) : lc_line(c, space, a);
 }
 
 /* ---- caché de bloques decodificados ------------------------------------------------------------------ */
@@ -174,8 +255,8 @@ static R3D_SMALL void tc_fill5(r3d_ctx *c, const r3d_tex *tx, uint32_t *blk, uin
 			uint32_t pi, mode, pa, px[4];
 			const uint8_t *q;
 
-			memcpy(dat, lc_line(c, 0, da & 0x7FFFFu), 4);
-			q = lc_line(c, 0, ia & 0x7FFFFu);
+			memcpy(dat, tx_line(c, 0, da & 0x7FFFFu), 4);
+			q = tx_line(c, 0, ia & 0x7FFFFu);
 			pi = (uint32_t)q[0] | ((uint32_t)q[1] << 8);
 			mode = pi >> 14;
 			pa = tx->pal + (pi & 0x3FFFu) * 4u;
@@ -183,9 +264,9 @@ static R3D_SMALL void tc_fill5(r3d_ctx *c, const r3d_tex *tx, uint32_t *blk, uin
 				uint8_t pb[8];
 				uint32_t c0, c1;
 
-				memcpy(pb, lc_line(c, 1, pa & 0x1FFFFu), 4);
+				memcpy(pb, tx_line(c, 1, pa & 0x1FFFFu), 4);
 				if (mode == 0 || mode == 2)
-					memcpy(pb + 4, lc_line(c, 1, (pa + 4u) & 0x1FFFFu), 4);
+					memcpy(pb + 4, tx_line(c, 1, (pa + 4u) & 0x1FFFFu), 4);
 				c0 = (uint32_t)pb[0] | ((uint32_t)pb[1] << 8);
 				c1 = (uint32_t)pb[2] | ((uint32_t)pb[3] << 8);
 				px[0] = r3d_555(c0, 31);
@@ -354,6 +435,8 @@ static const uint32_t *tc_block(r3d_ctx *c, const r3d_tex *tx, uint64_t tag, uin
 	return blk;
 }
 
+static uint32_t tc_tid(r3d_ctx *c, uint64_t base);
+
 /* La textura de un polígono: su identidad para la caché y, si no es la del último bloque usado, se olvida ese bloque. */
 static inline void tc_bind(r3d_ctx *c, const r3d_tex *tx)
 {
@@ -363,6 +446,10 @@ static inline void tc_bind(r3d_ctx *c, const r3d_tex *tx)
 		c->last_base = c->cur_base;
 		c->last_id = 0xFFFFFFFFu;
 		c->last_tag = ~0ull;
+		if (c->cellmode) {
+			c->tid = tc_tid(c, c->cur_base);
+			c->last_cid = 0xFFFFFFFFu;
+		}
 	}
 }
 
@@ -381,19 +468,174 @@ static uint32_t tc_get(r3d_ctx *c, const r3d_tex *tx, uint32_t id, uint32_t ix)
 	return c->last_blk[ix & 255u];
 }
 
+/* ---- celdas de 4×4 (3.9) ------------------------------------------------------------------------------------- */
+
+/* Los bloques de 256 texeles decodificados enteros (3.2 a 3.8) tienen un problema en Mario Kart DS: un cuadro toca unos 620
+ * bloques distintos pero la caché guarda 64, así que los mismos bloques se decodifican de nuevo en cada banda (3200 decodificados
+ * por cuadro, 5 veces los distintos), y como los polígonos lejanos usan 20 de los 256 texeles de su bloque, la mayor parte del
+ * trabajo es de texeles que nadie pide. Aquí la unidad es la celda de 4×4 texeles (el tile del formato 4x4): 512 celdas de 64
+ * bytes caben en la mitad del espacio, y los datos de VRAM entran por líneas de 1 KB (cl_line), no de 128 bytes: el acceso a los
+ * datos de una textura reducida es disperso pero local a escala de kilobytes (una textura de 64×64 comprimida son 1,5 KB). Mismos
+ * valores que el bloque entero y que r3d_decode. */
+
+#ifdef R3D_VERIFY_DECODE
+static uint32_t vf_rdt(void *ctx, uint32_t a)
+{
+	const r3d_ctx *c = ctx;
+	const uint32_t off = c->job.texslot[(a >> 17) & 3u];
+
+	a &= 0x7FFFFu;
+	return off == R3D_UNMAPPED ? 0u : ((const uint8_t *)(uintptr_t)c->job.vram_ea)[off + (a & 0x1FFFFu)];
+}
+
+static uint32_t vf_rdp(void *ctx, uint32_t a)
+{
+	const r3d_ctx *c = ctx;
+	const uint32_t slot = (a >> 14) & 7u, off = slot < R3D_PAL_SLOTS ? c->job.palslot[slot] : R3D_UNMAPPED;
+
+	return off == R3D_UNMAPPED ? 0u : ((const uint8_t *)(uintptr_t)c->job.vram_ea)[off + (a & 0x3FFFu)];
+}
+#endif
+
+/* El color (16 bits) de la entrada `idx` de la paleta del texel, por las líneas de paletas */
+static inline uint32_t cl_pe(r3d_ctx *c, const r3d_tex *tx, uint32_t idx)
+{
+	const uint8_t *p = cl_line(c, 1, (tx->pal + idx * 2u) & 0x1FFFFu);
+
+	return (uint32_t)p[0] | ((uint32_t)p[1] << 8);
+}
+
+/* Decodifica la celda de 4×4 texeles cuya esquina es (s0, t0) (múltiplos de 4) en `cell` (16 palabras, filas de 4) */
+static R3D_SMALL void tc_cell_fill(r3d_ctx *c, const r3d_tex *tx, uint32_t *cell, uint32_t s0, uint32_t t0)
+{
+	const uint32_t S = 1u << tx->sl, fmt = tx->fmt;
+
+	if (fmt == 5) {
+		tc_fill5(c, tx, cell, s0, t0, 4, 4, 2);
+		return;
+	}
+	for (uint32_t r = 0; r < 4; r++) {
+		const uint32_t i = (t0 + r) * S + s0;
+		uint32_t *o = cell + 4u * r;
+		const uint8_t *p;
+
+		switch (fmt) {
+		case 1: /* A3I5 */
+			p = cl_line(c, 0, (tx->addr + i) & 0x7FFFFu);
+			for (uint32_t j = 0; j < 4; j++) {
+				const uint32_t b = p[j], a3 = b >> 5;
+
+				o[j] = r3d_555(cl_pe(c, tx, b & 31u), (a3 << 2) + (a3 >> 1));
+			}
+			break;
+		case 2: { /* 4 colores */
+			const uint32_t v = *cl_line(c, 0, (tx->addr + (i >> 2)) & 0x7FFFFu);
+
+			for (uint32_t j = 0; j < 4; j++) {
+				const uint32_t idx = (v >> (2u * j)) & 3u;
+
+				o[j] = (idx == 0 && tx->c0t) ? 0u : r3d_555(cl_pe(c, tx, idx), 31);
+			}
+			break;
+		}
+		case 3: /* 16 colores */
+			p = cl_line(c, 0, (tx->addr + (i >> 1)) & 0x7FFFFu);
+			for (uint32_t j = 0; j < 4; j++) {
+				const uint32_t idx = (p[j >> 1] >> ((j & 1u) * 4u)) & 15u;
+
+				o[j] = (idx == 0 && tx->c0t) ? 0u : r3d_555(cl_pe(c, tx, idx), 31);
+			}
+			break;
+		case 4: /* 256 colores */
+			p = cl_line(c, 0, (tx->addr + i) & 0x7FFFFu);
+			for (uint32_t j = 0; j < 4; j++) {
+				const uint32_t idx = p[j];
+
+				o[j] = (idx == 0 && tx->c0t) ? 0u : r3d_555(cl_pe(c, tx, idx), 31);
+			}
+			break;
+		case 6: /* A5I3 */
+			p = cl_line(c, 0, (tx->addr + i) & 0x7FFFFu);
+			for (uint32_t j = 0; j < 4; j++) {
+				const uint32_t b = p[j];
+
+				o[j] = r3d_555(cl_pe(c, tx, b & 7u), b >> 3);
+			}
+			break;
+		default: /* 7: directo */
+			p = cl_line(c, 0, (tx->addr + i * 2u) & 0x7FFFFu);
+			for (uint32_t j = 0; j < 4; j++) {
+				const uint32_t v = (uint32_t)p[2u * j] | ((uint32_t)p[2u * j + 1u] << 8);
+
+				o[j] = r3d_555(v & 0x7FFFu, (v & 0x8000u) ? 31u : 0u);
+			}
+			break;
+		}
+	}
+}
+
+/* Identidad pequeña (0..R3D_TID_MAX-1) de la textura `base` en este cuadro. Con más texturas que eso se vacía la caché de
+ * celdas y se empieza otra vez (no pasa: los cuadros de los tres juegos de prueba usan menos de 150). */
+static uint32_t tc_tid(r3d_ctx *c, uint64_t base)
+{
+	uint32_t h = (uint32_t)((base * 0x9E3779B97F4A7C15ull) >> 55) & 511u;
+
+	for (;;) {
+		const uint32_t e = c->tidhash[h];
+
+		if (e == 0)
+			break;
+		if (c->tidbase[e - 1u] == base)
+			return e - 1u;
+		h = (h + 1u) & 511u;
+	}
+	if (c->ntid == R3D_TID_MAX) {
+		for (uint32_t i = 0; i < R3D_CELLS; i++)
+			c->ctag[i] = 0xFFFFFFFFu;
+		memset(c->tidhash, 0, sizeof c->tidhash);
+		c->ntid = 0;
+		h = (uint32_t)((base * 0x9E3779B97F4A7C15ull) >> 55) & 511u;
+	}
+	c->tidbase[c->ntid] = base;
+	c->tidhash[h] = (uint16_t)(c->ntid + 1u);
+	return c->ntid++;
+}
+
+static const uint32_t *tc_cell(r3d_ctx *c, const r3d_tex *tx, uint32_t cx, uint32_t cy);
+
 static void tc_reset(r3d_ctx *c)
 {
-	for (int i = 0; i < R3D_TC_BLOCKS; i++) {
-		c->ttag[i] = ~0ull;
-		c->tstamp[i] = 0;
+	if (c->cellmode) {
+		for (uint32_t i = 0; i < R3D_CELLS; i++) {
+			c->ctag[i] = 0xFFFFFFFFu;
+			c->cstamp[i] = 0;
+		}
+		for (uint32_t i = 0; i < R3D_CL_DLINES; i++) {
+			c->dltag[i] = 0xFFFFFFFFu;
+			c->dlstamp[i] = 0;
+		}
+		for (uint32_t i = 0; i < R3D_CL_PLINES; i++) {
+			c->pltag[i] = 0xFFFFFFFFu;
+			c->plstamp[i] = 0;
+		}
+		memset(c->tidhash, 0, sizeof c->tidhash);
+		c->ntid = c->tid = 0;
+		c->dl_key = c->pl_key = 0xFFFFFFFFu;
+		c->last_cid = 0xFFFFFFFFu;
+	} else {
+		for (int i = 0; i < R3D_TC_BLOCKS; i++) {
+			c->ttag[i] = ~0ull;
+			c->tstamp[i] = 0;
+		}
+		for (int i = 0; i < R3D_LC_LINES + R3D_LP_LINES; i++)
+			c->ltag[i] = 0xFFFFFFFFu;
+		memset(c->lru, 0, sizeof c->lru);
 	}
-	for (int i = 0; i < R3D_LC_LINES + R3D_LP_LINES; i++)
-		c->ltag[i] = 0xFFFFFFFFu;
-	memset(c->lru, 0, sizeof c->lru);
 	c->last_tag = ~0ull;
 	c->last_base = ~0ull;
 	c->last_id = 0xFFFFFFFFu;
-	c->last_blk = c->tcache[0];
+	c->last_blk = c->cellmode ? c->cell[0] : c->tcache[0];
+	c->last_cell = c->cell[0];
 	c->pal_n = 0;
 	c->clock = 0;
 }
@@ -500,6 +742,78 @@ static void fetch_verts(r3d_ctx *c, uint32_t b, uint32_t m)
 /* ---- la línea de un polígono, en vectores ------------------------------------------------------------------- */
 
 #include "gpu3d/r3d_vrow.h"
+
+/* La celda (cx, cy) de la textura vigente (tc_bind): la busca en la caché (4 vías: las cuatro etiquetas de un conjunto son una sola
+ * carga de 16 bytes; la menos reciente se reemplaza) o la decodifica. */
+static const uint32_t *tc_cell(r3d_ctx *c, const r3d_tex *tx, uint32_t cx, uint32_t cy)
+{
+	const uint32_t tag = (c->tid << 16) | (cy << 8) | cx;
+	/* conjunto: las celdas vecinas de una fila caen en conjuntos vecinos; la textura y la fila los mezclan */
+	const uint32_t set = (cx + (cy << 3) + (cy << 1) + cy + (c->tid << 5) + (c->tid << 2) + c->tid) & (R3D_CELL_SETS - 1u);
+	const uint32_t base = set * R3D_CELL_WAYS;
+	const v4u eq = veq(*(const v4u_ma *)(const void *)&c->ctag[base], vs(tag));
+	uint32_t victim = base, oldest = 0xFFFFFFFFu;
+
+	c->clock++;
+	if (vany(eq)) {
+		const uint32_t i = base + (eq[0] ? 0u : eq[1] ? 1u : eq[2] ? 2u : 3u);
+
+		c->cstamp[i] = c->clock;
+		return c->cell[i];
+	}
+	for (uint32_t w = 0; w < R3D_CELL_WAYS; w++) {
+		if (c->cstamp[base + w] < oldest) {
+			oldest = c->cstamp[base + w];
+			victim = base + w;
+		}
+	}
+	{
+		const uint32_t t_ = R3D_T();
+
+		if (c->ctag[victim] != 0xFFFFFFFFu)
+			c->st->tex_evict++;
+		c->st->tex_misses++;
+		tc_cell_fill(c, tx, c->cell[victim], cx * 4u, cy * 4u);
+#ifdef R3D_VERIFY_DECODE
+		for (uint32_t k = 0; k < 16; k++)
+			if (c->cell[victim][k] != r3d_decode(tx, cx * 4u + (k & 3u), cy * 4u + (k >> 2), vf_rdt, vf_rdp, c))
+				r3d_decode_errors++;
+#endif
+		c->ctag[victim] = tag;
+		c->cstamp[victim] = c->clock;
+		R3D_ACC(c->st->t_tex, t_);
+	}
+	return c->cell[victim];
+}
+
+/* Camino lento de la textura de una cuatro píxeles: algún carril fuera de la celda (bloque) del texel anterior. Compartido por las
+ * variantes de la línea para no repetirlo en cada una (el local store del SPE está justo). */
+static __attribute__((noinline)) v4u vr_tex_cell_slow(r3d_ctx *c, const r3d_tex *tx, v4u sv, v4u tv, v4u M)
+{
+	const v4u cid = ((tv >> 2) << 8) | (sv >> 2), cix = ((tv & vs(3u)) << 2) | (sv & vs(3u));
+	uint32_t t[4] = { 0, 0, 0, 0 };
+
+	for (int k = 0; k < 4; k++) {
+		if (!M[k])
+			continue;
+		if (cid[k] != c->last_cid) {
+			c->last_cell = tc_cell(c, tx, sv[k] >> 2, tv[k] >> 2);
+			c->last_cid = cid[k];
+		}
+		t[k] = c->last_cell[cix[k]];
+	}
+	return (v4u){ t[0], t[1], t[2], t[3] };
+}
+
+static __attribute__((noinline)) v4u vr_tex_block_slow(r3d_ctx *c, const r3d_tex *tx, v4u id, v4u ix, v4u M)
+{
+	uint32_t t[4] = { 0, 0, 0, 0 };
+
+	for (int k = 0; k < 4; k++)
+		if (M[k])
+			t[k] = tc_get(c, tx, id[k], ix[k]);
+	return (v4u){ t[0], t[1], t[2], t[3] };
+}
 
 static __attribute__((noinline)) void vrow_lin_tex(r3d_ctx *c, const r3d_poly *p, const r3d_row *row, uint32_t *col, uint32_t *dep,
 						   uint32_t *att)
@@ -697,6 +1011,7 @@ int r3d_core_render(r3d_ctx *c, const r3d_job *j, r3d_stats *st)
 	n = hdr->npolys > GX_MAX_POLYS ? GX_MAX_POLYS : hdr->npolys;
 	st->polys = n;
 	r3d_rstate_init(&c->rs, hdr, j->flags);
+	c->cellmode = (j->flags & R3D_F_TEXBLOCK) == 0;
 	tc_reset(c);
 	{
 		const uint32_t t_ = R3D_T();
@@ -770,11 +1085,10 @@ R3D_SMALL uint32_t r3d_math_probe(uint32_t seed, uint32_t which)
 			v = (uint64_t)(int64_t)r3d_fx(r3d_xfix(&a, &b, a.y + (int32_t)(prnd() % (uint32_t)(b.y - a.y))));
 			break;
 		}
-		case 3: { /* división de 64 bits con signo (la z lineal) */
-			const int64_t zl = prnd() & 0xFFFFFF, zr = prnd() & 0xFFFFFF;
-			const int64_t L = 1 + (prnd() & 511), k = prnd() % (uint32_t)L;
+		case 3: { /* división de 32 bits sin signo (la z lineal por cociente y resto, r3d_zlerp) */
+			const uint32_t adz = prnd() & 0xFFFFFF, L = 1 + (prnd() & 511);
 
-			v = (uint64_t)(zl + (zr - zl) * k / L);
+			v = (uint64_t)(adz / L) << 32 | (adz % L);
 			break;
 		}
 		case 4: { /* desplazamiento aritmético de 64 bits por una cantidad variable, positivos */

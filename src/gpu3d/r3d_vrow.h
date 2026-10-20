@@ -35,6 +35,12 @@ typedef uint32_t v4u __attribute__((vector_size(16)));
 typedef float v4f __attribute__((vector_size(16)));
 typedef v4u v4u_ma __attribute__((may_alias));
 
+/* Caminos lentos de la textura (r3d_core.c): algún carril fuera de la celda (el bloque) del texel anterior */
+struct r3d_ctx;
+struct r3d_tex;
+static v4u vr_tex_cell_slow(struct r3d_ctx *c, const struct r3d_tex *tx, v4u sv, v4u tv, v4u M);
+static v4u vr_tex_block_slow(struct r3d_ctx *c, const struct r3d_tex *tx, v4u id, v4u ix, v4u M);
+
 R3D_INLINE v4u vs(uint32_t x)
 {
 	return (v4u){ x, x, x, x };
@@ -360,28 +366,31 @@ R3D_INLINE void r3d_vrow(r3d_ctx *c, const r3d_rstate *rs, r3d_stats *st, const 
 				}
 				sv = vr_wrap(sv, tx->sl, tx->rs, tx->fs);
 				tv = vr_wrap(tv, tx->tl, tx->rt, tx->ft);
-				bx = sv >> csh;
-				by = tv >> rsh;
-				id = (by << 4) | bx;
-				ix = ((tv & vs((1u << rsh) - 1u)) << csh) | (sv & vs((1u << csh) - 1u));
 				tacc += M >> 31;
-				if (!vany(M & ~veq(id, vs(c->last_id)))) {
-					const uint32_t *lastblk = c->last_blk;
+				if (c->cellmode) { /* celdas de 4×4 (3.9) */
+					const v4u cid = ((tv >> 2) << 8) | (sv >> 2), cix = ((tv & vs(3u)) << 2) | (sv & vs(3u));
 
-					tex = (v4u){ lastblk[ix[0] & 255u], lastblk[ix[1] & 255u], lastblk[ix[2] & 255u], lastblk[ix[3] & 255u] };
-					hacc += M >> 31;
+					if (!vany(M & ~veq(cid, vs(c->last_cid)))) {
+						const uint32_t *lc = c->last_cell;
+
+						tex = (v4u){ lc[cix[0]], lc[cix[1]], lc[cix[2]], lc[cix[3]] };
+						hacc += M >> 31;
+					} else {
+						tex = vr_tex_cell_slow(c, tx, sv, tv, M);
+					}
 				} else {
-					uint32_t t0 = 0, t1 = 0, t2 = 0, t3 = 0;
+					bx = sv >> csh;
+					by = tv >> rsh;
+					id = (by << 4) | bx;
+					ix = ((tv & vs((1u << rsh) - 1u)) << csh) | (sv & vs((1u << csh) - 1u));
+					if (!vany(M & ~veq(id, vs(c->last_id)))) {
+						const uint32_t *lastblk = c->last_blk;
 
-					if (M[0])
-						t0 = tc_get(c, tx, id[0], ix[0]);
-					if (M[1])
-						t1 = tc_get(c, tx, id[1], ix[1]);
-					if (M[2])
-						t2 = tc_get(c, tx, id[2], ix[2]);
-					if (M[3])
-						t3 = tc_get(c, tx, id[3], ix[3]);
-					tex = (v4u){ t0, t1, t2, t3 };
+						tex = (v4u){ lastblk[ix[0] & 255u], lastblk[ix[1] & 255u], lastblk[ix[2] & 255u], lastblk[ix[3] & 255u] };
+						hacc += M >> 31;
+					} else {
+						tex = vr_tex_block_slow(c, tx, id, ix, M);
+					}
 				}
 			}
 			/* modo del polígono */
