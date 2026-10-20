@@ -4,6 +4,24 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-19 — Chip de guardado por juego (rama guardado)
+
+- **Problema** (PS3 real): todo juego sin `.sav` recibía EEPROM de 64 KB; Pokémon Blanco 2 (`IRD`) dio un error del propio juego sobre la
+  memoria de guardado y HeartGold (`IPK`) arrancó con el chip equivocado: usan Flash de 512 KB.
+- **Hecho** (detalle en `docs/guardado.md`): (1) tabla por código en `src/core/save.c` (Pokémon DS de 4.ª y 5.ª generación = Flash
+  512 KB, más los de dirección de un byte de la lista blanca de DeSmuME; fuente en `docs/THIRD_PARTY.md`); (2) detección como
+  respaldo por las conversaciones SPI del juego (RDID/borrados = Flash, órdenes con A8 = EEPROM 512 B, páginas de 130/131–259/>259 bytes
+  = EEPROM 64 KB/128 KB/FRAM), con repetición de la conversación sobre el chip nuevo; (3) `guardado.cfg` (`CODIGO=flash512k`); (4) el log
+  dice `guardado: chip <tipo> de <N> bytes (tabla|detectado|cfg|.sav|defecto)`. Un `.sav` de 64 KB de un juego que la tabla da como
+  Flash se migra al chip correcto. `salsads-cpurun --save-cfg`.
+- **Cobertura honesta**: la tabla es corta a propósito (~20 códigos). DeSmuME no trae una tabla de tamaños por juego (solo esa lista blanca
+  y una base externa por CRC); lo que no está se deduce. No se inventaron entradas dudosas (Mystery Dungeon, Ranger, Layton, Dragon Quest, etc.).
+  Una EEPROM de 8 KB funciona igual como de 64 KB, así que importa sobre todo para Flash, dirección de un byte y tamaños mayores.
+- **Pruebas**: `tests/unit/test_save.c` en `test-host`; NSMB, MKDS y SM64 DS con los respaldos del autor: mismo `.sav` y mismo chip que `main`.
+- **Paquete** (commit `b926885`): `build/salsads-guardado.pkg`, SHA-256 `a664cc8f5fbda838970beec9e433479399dbf621e897734ab92d4b02a169ffa3`.
+- **Sin probar en la PS3**: Blanco 2 y HeartGold (sin ROMs aquí). Si algún Flash pide otro ID, `guardado.cfg` o la tabla. Los Flash de 2 MB no caben
+  en `NDS_SAVE_MAX` (1 MB).
+
 ## 2026-10-19 — La FIFO de geometría en la ruta rápida (rama gx-rapido)
 
 - **Qué dominaba** (log de la PS3 con `jit-tiempos` + perfil del host): no eran los `STR` a GXFIFO sino la **DMA de modo 7**: ~15 000

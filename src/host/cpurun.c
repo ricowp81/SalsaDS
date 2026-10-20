@@ -513,6 +513,7 @@ int main(int argc, char **argv)
 	int stats = 0, show_arm7 = 0, trace_cpu = 0;
 	uint64_t trace_n = 0, frames = 0, skip_frames = 0, hist_n = 0, ring_n = 0;
 	uint32_t break_pc = 0, dbg = 0, watch_addr = 0, save_size = 0;
+	const char *save_cfg = NULL;
 	const char *save_path = NULL;
 	struct { uint32_t addr, len; const char *file; } dumps[8];
 	uint32_t ndumps = 0;
@@ -647,6 +648,8 @@ int main(int argc, char **argv)
 			dumps[ndumps++].file = c + 1;
 		} else if (!strcmp(argv[i], "--save") && i + 1 < argc)
 			save_path = argv[++i];
+		else if (!strcmp(argv[i], "--save-cfg") && i + 1 < argc)
+			save_cfg = argv[++i];
 		else if (!strcmp(argv[i], "--save-size") && i + 1 < argc)
 			save_size = (uint32_t)strtoul(argv[++i], NULL, 0);
 		else if (!strcmp(argv[i], "--dbg") && i + 1 < argc)
@@ -712,7 +715,7 @@ int main(int argc, char **argv)
 	}
 	if (!rom_path) {
 		fprintf(stderr, "uso: salsads-cpurun [--cycles N] [--frames N] [--quantum N] [--stats] [--arm7] "
-				"[--keys HEX] [--touch X,Y] [--screens FILE.ppm] [--ref] [--vs-ref] [--expect] [--same-ab] [--unmapped] [--peek ADDR] [--save FILE | --save-size N] ROM.nds\n");
+				"[--keys HEX] [--touch X,Y] [--screens FILE.ppm] [--ref] [--vs-ref] [--expect] [--same-ab] [--unmapped] [--peek ADDR] [--save-cfg FILE] [--save FILE | --save-size N] ROM.nds\n");
 		return 2;
 	}
 	romf = fopen(rom_path, "rb");
@@ -779,6 +782,17 @@ int main(int argc, char **argv)
 	if (lockstep && ((romf ? nds_load_rom_paged(&R, file_rd, romf, len, pg_shift, pg_cache) : nds_load_rom(&R, rom, len)) ||
 			 nds_boot_direct(&R)))
 		return 2;
+	if (save_cfg) {
+		size_t cl;
+		uint8_t *cd = slurp(save_cfg, &cl);
+
+		if (cd) {
+			nds_save_cfg(&M, (const char *)cd, cl);
+			if (lockstep)
+				nds_save_cfg(&R, (const char *)cd, cl);
+		}
+		free(cd);
+	}
 	if (save_path) {
 		size_t sl;
 		uint8_t *sd = slurp(save_path, &sl);

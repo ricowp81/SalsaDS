@@ -31,6 +31,13 @@ quedan bajo la licencia de SalsaDS (GPL-2.0-or-later).
 | `tests/phase0/udplog/` | `tests/phase0/udplog/` | |
 | `tests/phase0/jit-arm/ps3mapi.h` | `tests/phase0/jit-ppe/ps3mapi.h` (rama `jit-ps3mapi`) | Llamadas a PS3MAPI reescritas; los opcodes y el orden de argumentos se tomaron como referencia de github.com/bucanero/ps3mapi-lib (MIT) y github.com/crystalct/ps3mapidynarec (GPLv2) sin copiar su código |
 
+## Datos de compatibilidad de guardado
+
+| Archivo | Origen | Licencia | Notas |
+|---|---|---|---|
+| `src/core/save.c` (tabla `known[]`) | DeSmuME, `desmume/src/mc.cpp` (lista blanca por código de juego: `ASMK`, `AL3`, `AH5`, `AVH`, `AQ3` con dirección de un byte; `BDE`, `BPV` con dos; consultada el 2026-10-19) | GPL-2.0-o-posterior | Solo se tomaron los códigos y el dato (ancho de dirección), no código. La idea de deducir por el número de bytes de dirección es de su autodetección; la implementación es propia |
+| `src/core/save.c` (Pokémon, Mario Kart DS, NSMB, SM64 DS) | Hechos de compatibilidad (tamaño del chip de cada juego), GBATEK y los archivos de guardado que se ven en uso | datos, no obra | DeSmuME no trae tabla de tamaños por juego (usa una base externa por CRC); no se tomó nada de melonDS ni de NooDS (GPL-3.0) |
+
 ## Toolchain (no se distribuye con el repositorio)
 
 | Herramienta | Uso | Licencia | Notas |
