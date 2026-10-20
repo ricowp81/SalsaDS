@@ -60,6 +60,9 @@ struct arec_cfg {
 	uint32_t max_blocks; /* tope de bloques vivos (0: según el tamaño de la caché) */
 	/* Para --lockstep: lo llama el despachador después de cada cosa que ejecuta (AREC_EV_*). */
 	void (*on_exec)(void *ctx, int ev, uint64_t until);
+	/* Ruta corta de las escrituras de palabra a 0x04000400-0x040005FF (la FIFO de geometría del ARM9): escribe `v` en la palabra
+	 * alineada `a` con las reglas del bus sin pasar por mem_wr32 ni por el reparto de la E/S. NULL: todas por la ruta lenta. */
+	void (*gx_wr)(void *ctx, uint32_t a, uint32_t v);
 };
 
 enum { AREC_EV_SERVICE = 0, AREC_EV_BLOCK = 1, AREC_EV_STEP = 2 };
@@ -96,6 +99,8 @@ struct arec_stats {
 	/* accesos lentos por región (arec_slow_region) y, con `tick`, su tiempo (en las unidades de `tick`) */
 	uint64_t slow_rd_by[16], slow_wr_by[16];
 	uint64_t t_rd_by[16], t_wr_by[16];
+	/* escrituras a la FIFO de geometría por la ruta corta (cfg.gx_wr): ya no cuentan como accesos lentos de la región 0 */
+	uint64_t gx_wr, t_gx_wr;
 	/* con `tick`: tiempo dentro del código generado (contando lo que llama: accesos lentos e intérprete), en las llamadas al
 	 * intérprete y en arec_run entero (despachador, servicio de interrupciones y traducción incluidos) */
 	uint64_t t_code, t_call, t_run;

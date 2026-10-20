@@ -296,6 +296,49 @@ static uint32_t dma_count_of(int cpu, int ch, uint32_t cnt)
 	return c ? c : (ch == 3 ? 0x10000u : 0x4000u);
 }
 
+/* Caché de n->dma9_gxw: ¿hay un canal del ARM9 armado (habilitado y enganchado) con el aviso de la FIFO de geometría? Es lo que
+ * responde nds_dma_waits(n, NDS_CPU9, NDS_DMA_GXFIFO) —lo consulta cada escritura a GXFIFO— sin recorrer los canales. Se rehace en
+ * todos los sitios que cambian `cnt` o `latched` de un canal del ARM9. */
+static void dma9_refresh(struct nds *n)
+{
+	uint8_t w = 0;
+
+	for (int ch = 0; ch < 4; ch++) {
+		const struct nds_dma *d = &n->io[NDS_CPU9].dma[ch];
+
+		if ((d->cnt & 0x80000000u) && d->latched && ((d->cnt >> 27) & 7u) == NDS_DMA_GXFIFO)
+			w = 1;
+	}
+	n->dma9_gxw = w;
+}
+
+/* Ráfaga de la DMA de modo 7 (dma_run): palabras de 4 bytes, de memoria con puntero (RAM, WRAM) a GXFIFO con el destino fijo y la
+ * fuente creciente. Devuelve cuántas palabras pasaron (0 si no aplica) y deja d->src al día; nds_gx_dma_burst hace lo mismo que la
+ * vía por palabra (src/core/geom.c). */
+static uint32_t dma_gx_burst(struct nds *n, struct nds_dma *d, uint32_t count)
+{
+	uint32_t done = 0;
+
+	while (done < count) {
+		const uint32_t a = d->src & ~3u;
+		const struct nds_rgn *r = &n->rgn_rd[NDS_CPU9][a >> 23];
+		uint32_t off, k, got;
+
+		if (!r->p)
+			break;
+		off = a & r->mask;
+		k = (r->mask + 1u - off) >> 2; /* palabras hasta donde la región da la vuelta (los espejos siguen en otra ráfaga) */
+		if (k > count - done)
+			k = count - done;
+		got = nds_gx_dma_burst(n, r->p + off, k);
+		d->src += 4u * got;
+		done += got;
+		if (got < k)
+			break; /* la FIFO llegó a la mitad */
+	}
+	return done;
+}
+
 static void dma_run(struct nds *n, int cpu, int ch, int one_unit)
 {
 	struct nds_dma *d = &n->io[cpu].dma[ch];
@@ -310,7 +353,11 @@ static void dma_run(struct nds *n, int cpu, int ch, int one_unit)
 	const int gxmode = cpu == NDS_CPU9 && dma_mode(cpu, ctl) == NDS_DMA_GXFIFO;
 	uint32_t done = 0;
 
-	for (uint32_t i = 0; i < count; i++) {
+	/* Ráfaga: palabras, destino fijo en GXFIFO (0x04000400-0x0400043F) y fuente creciente */
+	if (gxmode && !n->gx_lento && unit == 4 && dctl == 2 && (d->dst & ~3u) - 0x04000400u < 0x40u && (sctl == 0 || sctl == 3))
+		done = dma_gx_burst(n, d, count);
+
+	for (uint32_t i = done; i < count; i++) {
 		uint32_t v;
 
 		/* FIFO de geometría: la DMA sólo avanza mientras tenga menos de la mitad; cada palabra cuesta 4 ciclos del
@@ -344,6 +391,8 @@ static void dma_run(struct nds *n, int cpu, int ch, int one_unit)
 	} else {
 		d->cnt &= ~(1u << 31);
 		d->latched = 0;
+		if (cpu == NDS_CPU9)
+			dma9_refresh(n);
 	}
 	if (ctl & 0x4000u)
 		nds_irq_raise(n, cpu, NDS_IRQ_DMA(ch));
@@ -374,13 +423,17 @@ void nds_dma_write(struct nds *n, int cpu, unsigned reg, uint32_t v, uint32_t ma
 			d->dst = d->dad;
 			d->left = dma_count_of(cpu, ch, nw);
 			d->latched = 1;
+			if (cpu == NDS_CPU9)
+				dma9_refresh(n); /* (armado mientras corre: la FIFO de geometría lo consulta en cada palabra) */
 			if (dma_mode(cpu, nw >> 16) == 0 || (cpu == NDS_CPU9 && dma_mode(cpu, nw >> 16) == NDS_DMA_GXFIFO))
 				dma_run(n, cpu, ch, 0); /* la FIFO de geometría siempre tiene sitio: arranca al armarse */
 		} else if (!(nw & 0x80000000u)) {
 			d->latched = 0;
 		}
-		if (cpu == NDS_CPU9)
+		if (cpu == NDS_CPU9) {
+			dma9_refresh(n);
 			nds_hblank_refresh(n);
+		}
 		return;
 	}
 	}

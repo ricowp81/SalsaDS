@@ -11,6 +11,8 @@
 
 #include <string.h>
 
+#include "util/endian.h"
+
 /* ---- inicio y ejecutor ------------------------------------------------------------------------------------------ */
 
 static void exec_point_at_frame(gx_t *g)
@@ -83,11 +85,6 @@ void gx_sync(gx_t *g, int mats)
 }
 
 /* ---- cola, tiempo y registros ------------------------------------------------------------------------------- */
-
-uint32_t gx_fifo_level(const gx_t *g)
-{
-	return g->qcount > GX_PIPE_ENTRIES ? g->qcount - GX_PIPE_ENTRIES : 0u;
-}
 
 int gx_irq_level(const gx_t *g)
 {
@@ -280,7 +277,7 @@ static uint64_t pk_advance(gx_t *g, uint64_t now, uint64_t stall)
 	return stall;
 }
 
-uint64_t gx_fifo_write(gx_t *g, uint64_t now, uint32_t w)
+static inline __attribute__((always_inline)) uint64_t fifo_write_i(gx_t *g, uint64_t now, uint32_t w)
 {
 	uint64_t stall = now;
 
@@ -300,6 +297,35 @@ uint64_t gx_fifo_write(gx_t *g, uint64_t now, uint32_t w)
 		stall = pk_advance(g, now, stall);
 	}
 	return stall;
+}
+
+uint64_t gx_fifo_write(gx_t *g, uint64_t now, uint32_t w)
+{
+	return fifo_write_i(g, now, w);
+}
+
+uint32_t gx_dma_burst(gx_t *g, uint64_t *cycles, const uint8_t *src, uint32_t count, int on, const uint64_t *ev_gx,
+		      void (*sched)(void *ctx, uint64_t t), void *ctx)
+{
+	uint64_t t = *cycles;
+	uint32_t i;
+
+	for (i = 0; i < count; i++) {
+		gx_advance(g, t);
+		if (gx_fifo_level(g) >= GX_FIFO_ENTRIES / 2)
+			break;
+		if (on) {
+			const uint64_t st = fifo_write_i(g, t, rd32le(src + 4u * i));
+
+			if (st > t)
+				t = st;
+			if (*ev_gx == GX_NEVER)
+				sched(ctx, t);
+		}
+		t += 4u;
+	}
+	*cycles = t;
+	return i;
 }
 
 uint64_t gx_port_write(gx_t *g, uint64_t now, uint32_t off, uint32_t w)

@@ -138,6 +138,13 @@ const gx_stats *gx_stats_get(gx_t *g);
 /* Escritura de una palabra de 32 bits a GXFIFO (0x04000400-0x0400043F); empaquetada. Devuelve el instante hasta el que
  * hay que frenar a la CPU (>= now): una FIFO llena la detiene hasta que el motor libere sitio. */
 uint64_t gx_fifo_write(gx_t *g, uint64_t now, uint32_t w);
+/* Ráfaga de la DMA de modo 7 hacia GXFIFO: palabras little-endian de `src` (hasta `count`), una por 4 ciclos del ARM9 desde
+ * `*cycles`, mientras la FIFO tenga menos de la mitad; es gx_advance + comprobación del nivel + gx_fifo_write por palabra (la vía
+ * de siempre), sin las llamadas intermedias. Con `on` = 0 las palabras se consumen sin escribirse (motor apagado). Después de cada
+ * palabra escrita, si `*ev_gx` es GX_NEVER (no hay mirada de EV_GX pendiente) llama a `sched(ctx, t)` con el instante de esa
+ * palabra (antes de sumar sus 4 ciclos), que puede agendar una. Deja en `*cycles` el reloj final y devuelve cuántas palabras pasaron. */
+uint32_t gx_dma_burst(gx_t *g, uint64_t *cycles, const uint8_t *src, uint32_t count, int on, const uint64_t *ev_gx,
+		      void (*sched)(void *ctx, uint64_t t), void *ctx);
 /* Escritura a un puerto de orden (0x04000440-0x040005CC, `off` = dirección - 0x04000000). Idem. */
 uint64_t gx_port_write(gx_t *g, uint64_t now, uint32_t off, uint32_t w);
 
@@ -159,7 +166,10 @@ uint32_t gx_gxstat(gx_t *g, uint64_t now);
 /* Escritura a GXSTAT: `mask` dice qué bytes (bit 15 borra el error; bits 30-31 son el modo de la IRQ). */
 void gx_gxstat_write(gx_t *g, uint32_t v, uint32_t mask);
 /* Entradas en la FIFO (sin la tubería) y condición de la IRQ 21 según el modo de GXSTAT. */
-uint32_t gx_fifo_level(const gx_t *g);
+static inline uint32_t gx_fifo_level(const gx_t *g)
+{
+	return g->qcount > GX_PIPE_ENTRIES ? g->qcount - GX_PIPE_ENTRIES : 0u;
+}
 int gx_irq_level(const gx_t *g);
 /* RAM_COUNT (0x04000604) */
 uint32_t gx_ram_count(gx_t *g);

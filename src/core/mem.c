@@ -401,7 +401,7 @@ void nds_bus_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v)
 
 /* ---- callbacks del bus de cada CPU --------------------------------------------------------------- */
 
-#define BUS_FNS(NAME, CPU)                                                                                    \
+#define BUS_FNS(NAME, CPU, GXFAST)                                                                                    \
 	static uint32_t NAME##_r8(struct acore *c, uint32_t a)                                                \
 	{                                                                                                     \
 		struct nds *n = c->user;                                                                      \
@@ -449,13 +449,15 @@ void nds_bus_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v)
 		if (NDS_LIKELY(r->p)) {                                                                       \
 			wr32le(r->p + (a & r->mask), v);                                                      \
 			NDS_CODE_WRITE(n, r->p + (a & r->mask), 4);                                                              \
+		} else if (GXFAST && a - 0x04000400u < 0x200u && !(a & 3u) && !n->gx_lento && !n->dbg) {       \
+			nds_gx_cpu_write(n, a, v); /* GXFIFO y puertos de órdenes del ARM9 por la ruta corta */ \
 		} else {                                                                                      \
 			nds_bus_write(n, CPU, a, 4, v);                                                       \
 		}                                                                                             \
 	}
 
-BUS_FNS(b9, NDS_CPU9)
-BUS_FNS(b7, NDS_CPU7)
+BUS_FNS(b9, NDS_CPU9, 1)
+BUS_FNS(b7, NDS_CPU7, 0)
 
 const struct acore_bus nds_bus9 = { b9_r8, b9_r16, b9_r32, b9_w8, b9_w16, b9_w32, b9_r16, b9_r32 };
 const struct acore_bus nds_bus7 = { b7_r8, b7_r16, b7_r32, b7_w8, b7_w16, b7_w32, b7_r16, b7_r32 };

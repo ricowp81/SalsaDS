@@ -256,6 +256,18 @@ void nds_code_write_slow(struct nds *n, const uint8_t *p, unsigned size)
 		arec_code_write(n->jit7, ph, size);
 }
 
+/* Ruta corta de las escrituras del ARM9 a GXFIFO y a los puertos de órdenes (arec_cfg.gx_wr): la palabra va directo al motor de
+ * geometría. Con las trazas de la E/S activas (n->dbg) sigue por el bus para que queden en el registro. */
+static void jit_gx_wr(void *ctx, uint32_t a, uint32_t v)
+{
+	struct nds *n = ctx;
+
+	if (n->dbg)
+		nds_bus_write(n, NDS_CPU9, a, 4, v);
+	else
+		nds_gx_cpu_write(n, a, v);
+}
+
 /* Cuántas páginas de 16 KB mapea el ARM7: de 0 al final de la WRAM propia (0x04000000). */
 #define JIT7_MAP_PAGES (0x04000000u >> AREC_PAGE_SHIFT)
 #define JIT7_MAX_BLOCKS 4096u
@@ -283,6 +295,7 @@ int nds_jit_attach(struct nds *n, const struct nds_jit_cfg *jc)
 	cfg.ctx = n;
 	cfg.phys_size = phys_size9(n);
 	cfg.on_exec = jc->on_exec;
+	cfg.gx_wr = n->gx_lento ? NULL : jit_gx_wr;
 	n->jit_phys9 = phys_size9(n);
 	n->jit_phys = n->jit_phys9;
 	if (!jc->no_arm9) {

@@ -48,6 +48,7 @@ void nds_init(struct nds *n)
 	uint64_t (*vclock)(void) = n->vid.clock;
 	const uint32_t quantum = n->quantum;
 	const uint32_t dbg = n->dbg;
+	const uint8_t gx_lento = n->gx_lento;
 	const struct nds_snd_ops sops = n->snd.ops;
 	const uint32_t smode = n->snd.mode;
 	struct arec *const jit9 = n->jit9, *const jit7 = n->jit7;
@@ -59,6 +60,7 @@ void nds_init(struct nds *n)
 	n->log_ctx = log_ctx;
 	n->quantum = quantum;
 	n->dbg = dbg;
+	n->gx_lento = gx_lento;
 	n->vid.ops = vops;
 	n->vid.use_ref = use_ref;
 	n->vid.use_ref3d = use_ref3d;

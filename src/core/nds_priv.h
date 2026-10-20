@@ -100,6 +100,12 @@ void nds_dma_trigger(struct nds *n, int cpu, unsigned mode);
 /* geom.c */
 void nds_gx_init(struct nds *n);
 void nds_gx_fifo_write(struct nds *n, uint32_t w);
+/* Ruta corta de la CPU (ARM9) a una palabra alineada de 0x04000400-0x040005FF: las mismas reglas que nds_io_write sin pasar por el bus. */
+void nds_gx_cpu_write(struct nds *n, uint32_t a, uint32_t v);
+/* Ráfaga de la DMA de modo 7: pasa a la FIFO hasta `count` palabras de `src` (little-endian, sin pasar por el bus) con las mismas
+ * reglas, ciclos y paradas que una palabra a la vez; para cuando la FIFO llega a la mitad. Devuelve cuántas pasaron. */
+uint32_t nds_gx_dma_burst(struct nds *n, const uint8_t *src, uint32_t count);
+
 void nds_gx_port_write(struct nds *n, uint32_t off, uint32_t w); /* off = dirección - 0x04000000, 0x440-0x5CC */
 uint32_t nds_gx_read32(struct nds *n, uint32_t off);              /* off = dirección - 0x04000000, 0x600-0x6A7 */
 void nds_gx_gxstat_write(struct nds *n, uint32_t v, uint32_t mask);

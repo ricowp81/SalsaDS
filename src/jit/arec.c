@@ -170,6 +170,27 @@ static uint32_t h_wr(struct acore *c, uint32_t a, uint32_t v, uint32_t kind)
 	const unsigned rg = arec_slow_region(a);
 	const uint64_t t0 = j->pub.tick ? j->pub.tick() : 0;
 
+	/* GXFIFO y puertos de órdenes del ARM9: palabra alineada (el almacenamiento ignora los 2 bits bajos) y fuera de las TCM, que
+	 * mem_wr32 miraría antes que el bus */
+	if (kind == MK_W && j->cfg.gx_wr && rg == 0) {
+		const uint32_t aw = a & ~3u;
+
+		if (!IN_RANGE(aw, 0u, c->itcm_wr_len) && !IN_RANGE(aw, c->dtcm_base, c->dtcm_wr_len)) {
+			j->pub.st.gx_wr++;
+			if (prof_slow_on)
+				prof_slow_add(a, c->v5 ? 0u : 1u, 1);
+			j->exit_req = 0;
+			j->cfg.gx_wr(j->cfg.ctx, aw, v);
+			c->abort = 0;
+			if (j->pub.tick)
+				j->pub.st.t_gx_wr += j->pub.tick() - t0;
+			if (must_exit(c, j)) {
+				j->pub.st.mem_exits++;
+				return 1;
+			}
+			return 0;
+		}
+	}
 	j->pub.st.slow_wr++;
 	j->pub.st.slow_wr_by[rg]++;
 	if (prof_slow_on)

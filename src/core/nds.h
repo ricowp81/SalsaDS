@@ -382,6 +382,9 @@ struct nds {
 	uint64_t gx_anchor; /* origen de la rejilla de miradas de EV_GX (la última mirada, o la primera tras dormir) */
 	uint64_t hb_t;      /* inicio de la última línea atendida (para armar el evento de HBlank a demanda) */
 	uint64_t gx_irq_t;  /* instante de la última petición de la IRQ 21 (se repite cada NDS_GX_PERIOD mientras dure el nivel) */
+	uint8_t gx_lento;   /* 1: sin las rutas cortas de la FIFO de geometría (ráfagas de la DMA y escrituras de la CPU): la forma anterior,
+			     * para medir A/B en la PS3 (/dev_hdd0/salsads/gx-lento). Lo conserva nds_init */
+	uint8_t dma9_gxw;   /* caché (sched.c): hay un canal de DMA del ARM9 armado esperando el aviso de la FIFO de geometría */
 	uint32_t ipcsync_out[2]; /* bits 8-11 de cada CPU */
 	uint8_t ipcsync_irqen[2];
 	struct nds_fifo fifo[2]; /* cola que envía cada CPU */
@@ -424,6 +427,8 @@ struct nds {
 		uint64_t prof_a9, prof_a7, prof_ev; /* ticks dentro del ARM9, del ARM7 y de los eventos */
 		uint64_t ev_n[EV_COUNT];            /* eventos atendidos por tipo (índice de EV_*) */
 		uint64_t ev_t[EV_COUNT];            /* ticks dentro de los eventos de cada tipo (solo con `prof_clock`) */
+		uint64_t gx_dma_words, gx_dma_bursts; /* palabras que la DMA de modo 7 pasó a la FIFO de geometría por la ráfaga, y ráfagas */
+		uint64_t gx_cpu_words;                /* palabras de la CPU a 0x04000400-0x040005FF por la ruta corta (bus y recompilador) */
 	} st;
 	uint64_t (*prof_clock)(void);
 	struct nds_video vid;

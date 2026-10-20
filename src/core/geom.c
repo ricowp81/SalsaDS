@@ -24,12 +24,19 @@ static void stall_cpu9(struct nds *n, uint64_t until)
 		c->cycles = until;
 }
 
+/* Con una mirada de EV_GX ya pendiente, nds_gx_schedule no hace nada: se evita la llamada. */
+static inline void gx_sched_after_write(struct nds *n)
+{
+	if (n->ev[EV_GX] == NDS_NEVER)
+		nds_gx_schedule(n, NDS_GX_POLL);
+}
+
 void nds_gx_fifo_write(struct nds *n, uint32_t w)
 {
 	if (!GX_ON(n))
 		return;
 	stall_cpu9(n, gx_fifo_write(&n->gx, nds_cpu_now(n, NDS_CPU9), w));
-	nds_gx_schedule(n, NDS_GX_POLL);
+	gx_sched_after_write(n);
 }
 
 void nds_gx_port_write(struct nds *n, uint32_t off, uint32_t w)
@@ -37,7 +44,45 @@ void nds_gx_port_write(struct nds *n, uint32_t off, uint32_t w)
 	if (!GX_ON(n))
 		return;
 	stall_cpu9(n, gx_port_write(&n->gx, nds_cpu_now(n, NDS_CPU9), off, w));
+	gx_sched_after_write(n);
+}
+
+/* Ruta corta de la CPU: lo que hace nds_io_write con una palabra alineada del ARM9 en 0x04000400-0x040005FF (GXFIFO entre 0x400 y
+ * 0x43F, puertos de órdenes desde 0x440) sin pasar por nds_bus_write ni nds_io_write. El llamador comprueba la dirección y que no
+ * haya trazas (n->dbg). */
+void nds_gx_cpu_write(struct nds *n, uint32_t a, uint32_t v)
+{
+	const uint32_t o = a & 0xFFFFFFu;
+
+	n->st.gx_cpu_words++;
+	if (o < 0x440u)
+		nds_gx_fifo_write(n, v);
+	else
+		nds_gx_port_write(n, o, v);
+}
+
+/* Ráfaga de la DMA de modo 7 (sched.c, dma_run): por cada palabra, lo mismo que la vía lenta —nds_gx_dma_ok con el reloj del ARM9,
+ * lectura de la fuente, escritura a GXFIFO (nds_gx_fifo_write: si el motor está apagado se pierde, si no puede frenar al ARM9 y
+ * agenda la mirada de EV_GX) y 4 ciclos del ARM9— sin el bus ni el reparto de la E/S por palabra, con el bucle dentro de gx.c
+ * (gx_dma_burst). El motor encendido o apagado no cambia dentro de la ráfaga (POWCNT1 es del ARM9 y la ráfaga no devuelve el
+ * control). */
+static void burst_sched(void *ctx, uint64_t t)
+{
+	struct nds *n = ctx;
+
+	n->a9.cycles = t; /* (nds_gx_schedule mira el reloj del ARM9: el de esta palabra, sin sus 4 ciclos) */
 	nds_gx_schedule(n, NDS_GX_POLL);
+}
+
+uint32_t nds_gx_dma_burst(struct nds *n, const uint8_t *src, uint32_t count)
+{
+	uint64_t t = n->a9.cycles;
+	const uint32_t done = gx_dma_burst(&n->gx, &t, src, count, GX_ON(n) != 0, &n->ev[EV_GX], burst_sched, n);
+
+	n->a9.cycles = t;
+	n->st.gx_dma_words += done;
+	n->st.gx_dma_bursts++;
+	return done;
 }
 
 uint32_t nds_gx_read32(struct nds *n, uint32_t off)
@@ -70,9 +115,15 @@ int nds_gx_dma_ok(struct nds *n, uint64_t t)
  * empieza una orden, o cuando se cumple el periodo de la IRQ si el nivel ya está; el evento va al primer punto de la rejilla
  * de NDS_GX_POLL ciclos (anclada en la última mirada, como antes) que llega a ese instante. El resultado es el mismo que
  * mirando en todos los puntos. */
+static inline int gx_dma_waits(const struct nds *n)
+{
+	/* n->dma9_gxw es la caché exacta de nds_dma_waits para el ARM9 y la FIFO de geometría (gx-lento vuelve a mirar los canales) */
+	return n->gx_lento ? nds_dma_waits(n, NDS_CPU9, NDS_DMA_GXFIFO) : n->dma9_gxw;
+}
+
 static int gx_needs_poll(const struct nds *n)
 {
-	return n->gx.irqmode != 0 || nds_dma_waits(n, NDS_CPU9, NDS_DMA_GXFIFO);
+	return n->gx.irqmode != 0 || gx_dma_waits(n);
 }
 
 /* Primer instante en que una mirada podría hacer algo, o NDS_NEVER. `now` es el instante de la CPU o del evento. */
@@ -88,7 +139,7 @@ static uint64_t gx_poll_need(const struct nds *n, uint64_t now)
 		else if (ns < need)
 			need = ns;
 	}
-	if (nds_dma_waits(n, NDS_CPU9, NDS_DMA_GXFIFO)) {
+	if (gx_dma_waits(n)) {
 		if (gx_fifo_level(g) < GX_FIFO_ENTRIES / 2)
 			need = now < need ? now : need;
 		else if (ns < need)
