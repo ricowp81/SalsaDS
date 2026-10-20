@@ -124,7 +124,7 @@ void nds_video_init(struct nds *n)
 	struct nds_video *v = &n->vid;
 	struct nds_video_ops ops = v->ops;
 	const int use_ref = v->use_ref, use_ref3d = v->use_ref3d, vs_ref3d = v->vs_ref3d;
-	const uint32_t band = v->r3d_band, units = v->r3d_units, r3d_flags = v->r3d_flags, win0 = v->r3d_win0, win1 = v->r3d_win1, texmode = v->r3d_texmode;
+	const uint32_t band = v->r3d_band, units = v->r3d_units, r3d_flags = v->r3d_flags, win0 = v->r3d_win0, win1 = v->r3d_win1, texmode = v->r3d_texmode, defer = v->r3d_defer_line;
 	uint64_t (*clk)(void) = v->clock;
 
 	memset(v, 0, sizeof *v);
@@ -138,6 +138,7 @@ void nds_video_init(struct nds *n)
 	v->r3d_win0 = win0;
 	v->r3d_win1 = win1;
 	v->r3d_texmode = texmode;
+	v->r3d_defer_line = defer;
 	v->clock = clk;
 	v->cur = 1;
 	v->last = -1;
@@ -441,7 +442,7 @@ void nds_video_frame_end(struct nds *n)
 	v->recording = 0;
 	if (s->frame.eng[0].regs[G2D_R_DISPCAP + 1] & 0x8000u) {
 		if (s->has3d && v->ops.wait3d)
-			v->ops.wait3d(v->ops.ctx); /* la captura lee la capa 3D: aquí sí hay que esperarla */
+			v->ops.wait3d(v->ops.ctx, v->cur); /* la captura lee la capa 3D: aquí sí hay que esperarla */
 		capture_frame(n, s);
 	}
 	s->powcnt1 = n->powcnt1;
@@ -449,22 +450,34 @@ void nds_video_frame_end(struct nds *n)
 	v->rendered = 0;
 	v->frames++;
 	if (v->ops.submit && v->ops.wait3d)
-		v->submit_pending = 1; /* se entrega en la línea 262, cuando el render 3D de este cuadro ya terminó */
+		v->submit_pending = 1; /* se entrega en la línea 262 (o más tarde), cuando el render 3D de este cuadro ya terminó */
 	else if (v->ops.submit)
 		v->ops.submit(v->ops.ctx, v->cur, &s->frame);
 }
 
-/* Línea 262: se espera el render 3D del cuadro que cerró la línea 192 y se entrega su 2D. El render tuvo el cuadro entero
- * en lugar de 192 líneas; la imagen es la misma (el 3D sigue siendo el del SWAP_BUFFERS anterior, como en la DS). */
-void nds_video_submit_pending(struct nds *n)
+/* Línea 262 (o, con r3d_defer_line, esa línea del cuadro siguiente): se espera el render 3D del cuadro que cerró la línea 192 y se
+ * entrega su 2D. El render tuvo el cuadro entero en lugar de 192 líneas (o más, con el aplazamiento); la imagen es la misma (el 3D
+ * sigue siendo el del SWAP_BUFFERS anterior, como en la DS). Aplazar no agrega latencia mientras el 2D (que el SPE compone mientras
+ * se emula el resto del cuadro) esté listo cuando quien dibuja lo pide al terminar la pasada: eso lo cuida quien fija la línea.
+ */
+void nds_video_submit_pending(struct nds *n, uint32_t line)
 {
 	struct nds_video *v = &n->vid;
+	const uint32_t dl = v->r3d_defer_line;
 
 	if (!v->submit_pending)
 		return;
+	if (dl && v->ops.wait3d) {
+		/* en las líneas dl..192 del cuadro siguiente al del pendiente (la primera que lo cumpla si dl cambió entre cuadros): el
+		 * pendiente se marca en la 192, así que las líneas 193..262 del mismo cuadro y las anteriores a dl no lo tocan */
+		if (line < dl || line > 192u)
+			return;
+	} else if (line != NDS_LINES - 1u) {
+		return;
+	}
 	v->submit_pending = 0;
 	if (v->ops.wait3d)
-		v->ops.wait3d(v->ops.ctx);
+		v->ops.wait3d(v->ops.ctx, v->last);
 	if (v->ops.submit)
 		v->ops.submit(v->ops.ctx, v->last, &v->set[v->last].frame);
 }

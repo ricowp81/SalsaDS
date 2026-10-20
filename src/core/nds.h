@@ -261,9 +261,11 @@ struct nds_video_ops {
 	/* Render 3D (Fase 3.2). Línea 0: el trabajo del cuadro `set` está listo (la capa 3D sale en set->img3d); el
 	 * renderizador lo lanza en segundo plano. Línea 262 (antes de entregar el 2D de ese cuadro) o, si el cuadro captura
 	 * la pantalla (DISPCAPCNT), línea 192: tiene que haber terminado. Con `wait3d` el 2D se entrega (`submit`) en la
-	 * línea 262 en lugar de la 192. NULL = el host rasteriza en la línea 0. */
+	 * línea 262 en lugar de la 192. Con `r3d_defer_line` distinto de cero la espera y la entrega del 2D se hacen en esa línea del
+	 * cuadro siguiente (hay dos trabajos en vuelo a la vez). `wait3d(ctx, set)`: espera el trabajo del cuadro `set` y los
+	 * anteriores (set < 0: todos). NULL = el host rasteriza en la línea 0. */
 	void (*submit3d)(void *ctx, int set, r3d_job *job);
-	void (*wait3d)(void *ctx);
+	void (*wait3d)(void *ctx, int set);
 	void *ctx;
 };
 
@@ -274,7 +276,8 @@ struct nds_video {
 	int recording;     /* 1 entre la línea 0 y la 192 */
 	int last;          /* último juego completo (línea 192 pasada), o -1 */
 	int rendered;      /* el host ya dibujó `last` en `img` */
-	int submit_pending; /* el 2D de `last` se entrega en la línea 262, tras esperar el render 3D (solo con ops.wait3d) */
+	int submit_pending; /* el 2D de `last` se entrega en la línea 262 (o en r3d_defer_line del cuadro siguiente), tras esperar el render 3D (solo con ops.wait3d) */
+	uint32_t r3d_defer_line; /* 0: el 2D y la espera del 3D en la línea 262 del mismo cuadro; si no, en esa línea del cuadro siguiente (la fija quien dibuja) */
 	uint32_t mpos;     /* posición (píxel del cuadro) de la FIFO de memoria principal */
 	uint32_t frames;
 	struct nds_video_ops ops;

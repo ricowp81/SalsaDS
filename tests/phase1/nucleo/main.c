@@ -85,6 +85,13 @@
 #define GEOM_PPE_FLAG SALSADS_DATA_DIR "/geometria-ppe"
 /* Con este archivo las bandas del render 3D vuelven al reparto alterno (u, u+2, ...) en lugar del reparto por costo. */
 #define R3D_ALT_FLAG SALSADS_DATA_DIR "/reparto-alterno"
+/* Caché de texturas del render 3D (docs/fase3.md, 3.9): por omisión automática (bloques de 256 texeles mientras no se desborden,
+ * celdas de 4×4 después). Con texturas-bloques siempre bloques (la caché de la 3.2 a la 3.8); con texturas-celdas siempre celdas. */
+#define R3D_TEX_BLOQUES_FLAG SALSADS_DATA_DIR "/texturas-bloques"
+#define R3D_TEX_CELDAS_FLAG SALSADS_DATA_DIR "/texturas-celdas"
+/* La espera del render 3D y la entrega del 2D pasan de la línea 262 del cuadro a una línea del cuadro siguiente (más tiempo para
+ * los SPE sin agregar latencia a la imagen: docs/fase3.md, 3.9). Con este archivo vuelven a la línea 262. */
+#define R3D_SIN_APLAZAR_FLAG SALSADS_DATA_DIR "/r3d-sin-aplazar"
 /* Rutas cortas de la FIFO de geometría (rama gx-rapido; docs/fase4.md, «Cuarta ronda»): ráfagas de la DMA de modo 7 y escrituras de
  * la CPU a GXFIFO y a los puertos de órdenes sin pasar por el bus (con el recompilador, tampoco por la ruta lenta general). Con este
  * archivo vuelve a la forma anterior, para comparar en la misma escena. */
@@ -1157,8 +1164,10 @@ static uint64_t acc_evn_all[EV_COUNT];                /* ídem, cuántos, en tod
 static r3d_stats acc_r3d;           /* render 3D: suma de los contadores de los dos SPE */
 static uint32_t acc_r3d_frames;
 /* latencia del render 3D: envío (línea 0) -> fin de cada SPE, visto desde el PPE que espera en el VBlank */
-static uint64_t r3d_post_us, acc_r3d_pre_us, acc_r3d_lat_us[2];
+static uint64_t acc_r3d_pre_us, acc_r3d_lat_us[2];
 static uint32_t acc_r3d_early;
+static int r3d_defer;        /* 1: aplazar la espera del 3D (nds->vid.r3d_defer_line) */
+static uint32_t comp_us_ema; /* composición 2D más lenta de los dos SPE, suavizada (µs): fija hasta dónde se puede aplazar el 3D */
 
 static void sort_u32(uint32_t *a, uint32_t n)
 {
@@ -1336,18 +1345,21 @@ static void log_stats(void)
 
 		salsads_log("DATO raster3d: %u cuadros con 3D; por cuadro y SPE (decrementador), mediana / p95 / máx en ms: SPE0 %u.%02u / %u.%02u / %u.%02u, "
 			    "SPE1 %u.%02u / %u.%02u / %u.%02u; espera del PPE en el VBlank %u.%02u / %u.%02u; por cuadro: %.0f polígonos, %.0f banda·polígono, "
-			    "%.0f líneas, %.0f píxeles, %.0f escritos; texeles %.0f, aciertos de la caché %.2f %%, %.1f bloques decodificados, %.1f desalojos, %.1f líneas de VRAM; "
+			    "%.0f líneas, %.0f píxeles, %.0f escritos; texeles %.0f, sin decodificar %.2f %%, %.1f bloques o celdas decodificados, %.1f desalojos, %.1f líneas de VRAM (de paletas %.1f); "
 			    "ms por cuadro (suma de los dos SPE): orden %.2f, listas %.2f, DMA %.2f, dibujo %.2f (de eso texturas %.2f; polígonos %.2f, aristas %.2f, píxeles %.2f), posproceso %.2f, salida %.2f",
 			    (unsigned)acc_r3d_frames, MS(pct(M_R3D0, 50)), MS(pct(M_R3D0, 95)), MS(pct(M_R3D0, 100)), MS(pct(M_R3D1, 50)),
 			    MS(pct(M_R3D1, 95)), MS(pct(M_R3D1, 100)), MS(pct(M_R3DW, 50)), MS(pct(M_R3DW, 95)), r->polys / n / 2.0,
 			    r->band_polys / n, r->rows / n, r->pixels / n, r->written / n, r->tex_px / n,
-			    r->tex_px ? 100.0 * (double)r->tex_hits / (double)(r->tex_hits + r->tex_misses) : 100.0, r->tex_misses / n, r->tex_evict / n,
-			    r->line_miss / n, r->t_sort / n / hz, r->t_list / n / hz, r->t_fetch / n / hz, r->t_raster / n / hz, r->t_tex / n / hz,
+			    r->tex_px ? 100.0 * (1.0 - (double)r->tex_misses / (double)r->tex_px) : 100.0, r->tex_misses / n, r->tex_evict / n,
+			    r->line_miss / n, r->pal_miss / n, r->t_sort / n / hz, r->t_list / n / hz, r->t_fetch / n / hz, r->t_raster / n / hz, r->t_tex / n / hz,
 			    r->t_setup / n / hz, r->t_rows / n / hz, r->t_pix / n / hz, r->t_post / n / hz, r->t_out / n / hz);
 		salsads_log("DATO raster3d-latencia: por cuadro, desde el envío (línea 0) hasta: llegada del PPE a la línea 262 (la 192 si el cuadro captura) %.2f ms, fin del SPE0 %.2f ms, "
-			    "fin del SPE1 %.2f ms (si el SPE ya había terminado cuenta la llegada); SPE ya terminados al llegar: %.2f de 2",
+			    "fin del SPE1 %.2f ms (si el SPE ya había terminado cuenta la llegada); SPE ya terminados al llegar: %.2f de 2; "
+			    "espera del 3D aplazada a la línea %u del cuadro siguiente (0 = en la 262), composición 2D más lenta %u us, caché de texturas: %s",
 			    (double)acc_r3d_pre_us / 1000.0 / n, (double)acc_r3d_lat_us[0] / 1000.0 / n, (double)acc_r3d_lat_us[1] / 1000.0 / n,
-			    (double)acc_r3d_early / n);
+			    (double)acc_r3d_early / n, (unsigned)nds->vid.r3d_defer_line, (unsigned)comp_us_ema,
+			    nds->vid.r3d_texmode == 1 ? "bloques (forzado)" : nds->vid.r3d_texmode == 2 ? "celdas (forzado)"
+			    : nds->vid.r3d_pol.cells ? "celdas (automático)" : "bloques (automático)");
 		acc_r3d_pre_us = acc_r3d_lat_us[0] = acc_r3d_lat_us[1] = 0;
 		acc_r3d_early = 0;
 		memset(&acc_r3d, 0, sizeof acc_r3d);
@@ -1670,35 +1682,48 @@ static int geom_selftest(void)
  * el cuadro captura la pantalla): hay que esperarlo. docs/fase3.md, 3.2. */
 static spukit_worker *wk3d[2];
 static int r3d_on;
-static struct {
-	int valid, set;
+/* Trabajos en vuelo: con el aplazamiento (nds->vid.r3d_defer_line) el del cuadro anterior sigue corriendo cuando sale el del actual */
+struct r3d_inflight {
+	int set;
 	uint32_t seq[2];
+	uint64_t post_us;
 	r3d_job job;
+};
+static struct {
+	struct r3d_inflight e[2];
+	unsigned head, count;
 } r3q;
 static uint32_t r3d_fail;
 
+static void r3d_wait_one(void);
+
 static void r3d_spe_submit(void *ctx, int set, r3d_job *j)
 {
+	struct r3d_inflight *e;
+
 	(void)ctx;
-	r3q.valid = 1;
-	r3q.set = set;
-	r3q.job = *j;
-	r3d_post_us = now_us();
+	if (r3q.count == 2)
+		r3d_wait_one();
+	e = &r3q.e[(r3q.head + r3q.count) & 1u];
+	r3q.count++;
+	e->set = set;
+	e->job = *j;
+	e->post_us = now_us();
 	for (uint32_t u = 0; u < 2; u++) {
 		r3d_job jj = *j;
 
 		jj.nunits = 2;
 		jj.unit = u;
-		r3q.seq[u] = spukit_post(wk3d[u], JOB_RASTER3D, &jj, sizeof jj);
+		e->seq[u] = spukit_post(wk3d[u], JOB_RASTER3D, &jj, sizeof jj);
 	}
 }
 
 /* Autoprueba durante la prueba automática: la capa 3D de los SPE contra la referencia del PPE sobre el mismo cuadro */
-static void r3d_spe_verify(int set)
+static void r3d_spe_verify(const struct r3d_inflight *e)
 {
 	static uint32_t ref[R3D_W * R3D_H] __attribute__((aligned(128)));
-	const struct nds_vset *s = &nds->vid.set[set];
-	const r3d_job *j = &r3q.job;
+	const struct nds_vset *s = &nds->vid.set[e->set];
+	const r3d_job *j = &e->job;
 	int diffs = 0, first = -1;
 
 	r3d_render_ref((j->flags & R3D_F_BLANK) ? NULL : (const gx_frame *)(uintptr_t)j->frame_ea, s->vram, j->texslot, j->palslot,
@@ -1716,21 +1741,22 @@ static void r3d_spe_verify(int set)
 	}
 }
 
-static void r3d_spe_wait(void *ctx)
+/* Espera el trabajo en vuelo más antiguo y suma sus contadores */
+static void r3d_wait_one(void)
 {
 	const uint64_t t0 = now_us();
+	struct r3d_inflight *e = &r3q.e[r3q.head];
+	r3d_stats fs;
 
-	(void)ctx;
-	if (!r3q.valid)
-		return;
+	memset(&fs, 0, sizeof fs);
 	for (uint32_t u = 0; u < 2; u++) {
-		const int was_done = spukit_done(wk3d[u], r3q.seq[u]);
-		const spukit_result *r = spukit_wait(wk3d[u], r3q.seq[u]);
+		const int was_done = spukit_done(wk3d[u], e->seq[u]);
+		const spukit_result *r = spukit_wait(wk3d[u], e->seq[u]);
 		job_r3d_result res;
 
 		if (u == 0)
-			acc_r3d_pre_us += t0 - r3d_post_us;
-		acc_r3d_lat_us[u] += now_us() - r3d_post_us;
+			acc_r3d_pre_us += t0 - e->post_us;
+		acc_r3d_lat_us[u] += now_us() - e->post_us;
 		acc_r3d_early += (uint32_t)was_done;
 
 		memcpy(&res, r->data, sizeof res);
@@ -1741,18 +1767,39 @@ static void r3d_spe_wait(void *ctx)
 		}
 		put(u ? M_R3D1 : M_R3D0, (uint32_t)((uint64_t)r->ticks * 1000000ull / spukit_tick_hz()));
 		{
-			uint32_t *dst = (uint32_t *)(void *)&acc_r3d;
+			uint32_t *dst = (uint32_t *)(void *)&acc_r3d, *dst2 = (uint32_t *)(void *)&fs;
 			const uint32_t *src = (const uint32_t *)(const void *)&res.st;
 
-			for (size_t k = 0; k < sizeof(r3d_stats) / 4; k++)
+			for (size_t k = 0; k < sizeof(r3d_stats) / 4; k++) {
 				dst[k] += src[k];
+				dst2[k] += src[k];
+			}
 		}
 	}
 	put(M_R3DW, (uint32_t)(now_us() - t0));
 	acc_r3d_frames++;
-	r3q.valid = 0;
+	nds_video_r3d_feedback(nds, &fs); /* caché de texturas automática */
 	if (autotest_verify && frame_no % 30u == 12u)
-		r3d_spe_verify(r3q.set);
+		r3d_spe_verify(e);
+	r3q.head = (r3q.head + 1u) & 1u;
+	r3q.count--;
+}
+
+/* Espera el trabajo del cuadro `set` y los anteriores (set < 0: todos) */
+static void r3d_spe_wait(void *ctx, int set)
+{
+	int found = set < 0;
+
+	(void)ctx;
+	for (unsigned i = 0; i < r3q.count && !found; i++)
+		found = r3q.e[(r3q.head + i) & 1u].set == set;
+	while (r3q.count && found) {
+		const int last = set >= 0 && r3q.e[r3q.head].set == set;
+
+		r3d_wait_one();
+		if (last)
+			break;
+	}
 }
 
 /* Imagen de la autoprueba para comparar en la Mac (solo cuando falla) */
@@ -1824,11 +1871,11 @@ static int r3d_spe_selftest(void)
 		j.vram_ea = (uint64_t)(uintptr_t)vram;
 		j.out_ea = (uint64_t)(uintptr_t)out;
 		j.band = 16;
-		j.flags = f ? 0u : R3D_F_BLANK;
+		j.flags = (f ? 0u : R3D_F_BLANK) | ((k & 1u) ? R3D_F_TEXBLOCK : 0u); /* las escenas pares con celdas, las impares con bloques */
 		memset(out, 0xA5, sizeof out);
 		r3d_spe_submit(NULL, 0, &j);
 		for (uint32_t u = 0; u < 2; u++) {
-			const spukit_result *r = spukit_wait(wk3d[u], r3q.seq[u]);
+			const spukit_result *r = spukit_wait(wk3d[u], r3q.e[(r3q.head + r3q.count - 1u) & 1u].seq[u]);
 			job_r3d_result res;
 
 			memcpy(&res, r->data, sizeof res);
@@ -1840,7 +1887,8 @@ static int r3d_spe_selftest(void)
 			if (k == 0 && u == 0)
 				salsads_log("render 3D: contexto del SPE %u bytes", res.ctx_bytes);
 		}
-		r3q.valid = 0;
+		r3q.head = 0;
+		r3q.count = 0;
 		for (int i = 0; i < R3D_W * R3D_H; i++)
 			diffs += out[i] != ref[i];
 		salsads_log("autoprueba 3D: escena %u (%u polígonos): %u píxeles distintos; SPE0 %u us, SPE1 %u us, referencia del PPE %u us",
@@ -1910,6 +1958,17 @@ static void render_frame(void)
 
 		nds->prof_clock = profiled ? tb_clock : NULL;
 		nds->gx.clock = profiled ? tb_clock : NULL; /* motor de geometría: su tiempo sale en «DATO geometria» */
+		/* Hasta qué línea del cuadro siguiente se puede aplazar la espera del 3D: el 2D de ese cuadro tiene que estar compuesto antes
+		 * de que el cuadro siguiente al siguiente vuelva a llenar la misma instantánea de la VRAM (línea 0), o el PPE espera ahí. Se
+		 * deja 1,5 veces lo que tarda el SPE más lento de composición, a ~60 µs por línea, y como máximo la línea 160: más tarde el
+		 * motor de geometría ya podría estar pisando el cuadro que el 3D lee (se cambian a partir de la 192). */
+		if (r3d_on && r3d_defer) {
+			const uint32_t c_lines = (comp_us_ema * 3u / 2u) / 60u + 6u;
+
+			nds->vid.r3d_defer_line = c_lines >= 263u - 40u ? 40u : (263u - c_lines > 160u ? 160u : 263u - c_lines);
+		} else {
+			nds->vid.r3d_defer_line = 0;
+		}
 		tb2 = tb_clock();
 		nds_run_frame(nds);
 		tb3 = tb_clock();
@@ -1972,6 +2031,12 @@ static void render_frame(void)
 					prof_n++;
 				put(M_SPEA, (uint32_t)((uint64_t)prev.res[0].ticks * 1000000ull / spukit_tick_hz()));
 				put(M_SPEB, (uint32_t)((uint64_t)prev.res[1].ticks * 1000000ull / spukit_tick_hz()));
+				{
+					const uint32_t ca = (uint32_t)((uint64_t)prev.res[0].ticks * 1000000ull / spukit_tick_hz()),
+						       cb = (uint32_t)((uint64_t)prev.res[1].ticks * 1000000ull / spukit_tick_hz());
+
+					comp_us_ema = (comp_us_ema * 3u + (ca > cb ? ca : cb)) / 4u;
+				}
 				put(M_WAIT, prev.wait_us);
 				if (autotest_verify && frame_no % 30u == 20u)
 					vid_verify(&prev);
@@ -2079,7 +2144,7 @@ static void stats_reset(void)
 	memset(acc_evn_all, 0, sizeof acc_evn_all);
 	memset(&acc_r3d, 0, sizeof acc_r3d);
 	acc_r3d_frames = acc_r3d_early = 0;
-	r3d_post_us = acc_r3d_pre_us = acc_r3d_lat_us[0] = acc_r3d_lat_us[1] = 0;
+	acc_r3d_pre_us = acc_r3d_lat_us[0] = acc_r3d_lat_us[1] = 0;
 	r3d_fail = 0;
 	memset(&geom_acc, 0, sizeof geom_acc);
 	memset(&snd_acc, 0, sizeof snd_acc);
@@ -2245,7 +2310,7 @@ static void game_close(void)
 		geom_collect((int)geom_last_seq);
 	}
 	if (r3d_on)
-		r3d_spe_wait(NULL);
+		r3d_spe_wait(NULL, -1);
 	salsads_log("cierre: esperando la composición 2D y el RSX");
 	if (spu_on) {
 		vid_collect(&sub);
@@ -2642,6 +2707,15 @@ int main(void)
 					nds->vid.r3d_alt = stat(R3D_ALT_FLAG, &rst) == 0;
 					salsads_log("render 3D: dos SPE, bandas de 16 líneas con reparto %s (autoprueba contra el PPE: igual)",
 						    nds->vid.r3d_alt ? "alterno (existe " R3D_ALT_FLAG ")" : "por costo");
+					nds->vid.r3d_texmode = stat(R3D_TEX_BLOQUES_FLAG, &rst) == 0 ? 1u : stat(R3D_TEX_CELDAS_FLAG, &rst) == 0 ? 2u : 0u;
+					salsads_log("render 3D: caché de texturas %s",
+						    nds->vid.r3d_texmode == 1 ? "siempre por bloques de 256 texeles (existe " R3D_TEX_BLOQUES_FLAG ")"
+						    : nds->vid.r3d_texmode == 2 ? "siempre por celdas de 4×4 (existe " R3D_TEX_CELDAS_FLAG ")"
+						    : "automática (bloques de 256 hasta que se desbordan, después celdas de 4×4)");
+					r3d_defer = stat(R3D_SIN_APLAZAR_FLAG, &rst) != 0;
+					salsads_log("render 3D: la espera del 3D y la entrega del 2D %s",
+						    r3d_defer ? "se aplazan a una línea del cuadro siguiente (según lo que tarda la composición 2D)"
+						    : "en la línea 262 del mismo cuadro (existe " R3D_SIN_APLAZAR_FLAG ")");
 				}
 			} else {
 				failures++;

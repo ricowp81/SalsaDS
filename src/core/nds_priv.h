@@ -114,7 +114,7 @@ void nds_gx_schedule(struct nds *n, uint32_t delay);
 int nds_dma_waits(const struct nds *n, int cpu, unsigned mode);
 void nds_gx_event(struct nds *n, uint64_t bt);
 void nds_gx_vblank(struct nds *n, uint64_t t);
-void nds_video_submit_pending(struct nds *n); /* video.c: línea 262 */
+void nds_video_submit_pending(struct nds *n, uint32_t line); /* video.c: cada línea; entrega el 2D pendiente en la 262 (o en r3d_defer_line del cuadro siguiente) */
 
 /* ipc.c */
 void nds_ipc_init(struct nds *n);
