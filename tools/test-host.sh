@@ -83,6 +83,15 @@ check_ciclos() { # orden log
 	fi
 }
 SND_ARGS="--frames 2500 --peek 0x02390834"
+check_gxparidad() { # orden log
+	if grep -q "^gxparidad: .* 0 fallos$" "$2"; then
+		printf '%-4s OK     %s\n' "$1" "$(grep '^gxparidad:' "$2")"
+	else
+		printf '%-4s FALLO  gxparidad (ver %s)\n' "$1" "$2"
+		tail -n 6 "$2"
+		fail=1
+	fi
+}
 check_demo() { # orden log
 	frames=$(sed -n 's/^peek 0x023a0004 = //p' "$2")
 	if grep -q "^peek 0x023a0000 = 0x4f4d4544" "$2" && [ -n "$frames" ] && [ $((frames)) -ge 100 ]; then
@@ -227,6 +236,21 @@ if tools/build.sh -C src/host >build/logs/build-host-run.log 2>&1; then
 	done
 	tools/build.sh --sh "build/host-run/salsads-cpurun --frames 120 --peek 0x023A0000 --peek 0x023A0004 tests/roms/homebrew/demo.nds" >build/logs/rom-demo-le.log 2>&1
 	check_demo LE build/logs/rom-demo-le.log
+	# las rutas cortas de la FIFO de geometría (rama gx-rapido): dos máquinas, con y sin ellas, con los mismos estímulos
+	tools/build.sh --sh "build/host-run/salsads-gxparidad --semillas 600" >build/logs/gxparidad-le.log 2>&1
+	check_gxparidad LE build/logs/gxparidad-le.log
+	for rom in gx geom dma demo; do
+		tools/build.sh --sh "build/host-run/salsads-cpurun --frames 150 --state-hash tests/roms/homebrew/$rom.nds" >"build/logs/hash-$rom-le-corto.log" 2>&1
+		tools/build.sh --sh "build/host-run/salsads-cpurun --frames 150 --state-hash --gx-lento tests/roms/homebrew/$rom.nds" >"build/logs/hash-$rom-le-lento.log" 2>&1
+		a=$(grep '^state-hash:' "build/logs/hash-$rom-le-corto.log")
+		b=$(grep '^state-hash:' "build/logs/hash-$rom-le-lento.log")
+		if [ -n "$a" ] && [ "$a" = "$b" ]; then
+			printf '%-4s OK     estado %s: igual con las rutas cortas de la FIFO de geometría y sin ellas\n' LE "$rom"
+		else
+			printf '%-4s FALLO  estado %s con y sin gx-lento: %s contra %s\n' LE "$rom" "$a" "$b"
+			fail=1
+		fi
+	done
 	for sz in $SAVE_SIZES; do
 		tools/build.sh --sh "build/host-run/salsads-cpurun --save-size ${sz%%:*} --peek 0x02380034 --peek 0x02380038 tests/roms/homebrew/save.nds" >"build/logs/rom-save-${sz%%:*}-le.log" 2>&1
 		check_save LE "${sz%%:*}" "${sz##*:}" "build/logs/rom-save-${sz%%:*}-le.log"
@@ -253,6 +277,15 @@ if tools/build.sh -C src/host >build/logs/build-host-run.log 2>&1; then
 		done
 		tools/build.sh --sh "build/host-run/cpurun-san $CARGA_ARGS tests/roms/homebrew/carga.nds" >build/logs/rom-carga-san.log 2>&1
 		check_carga SAN build/logs/rom-carga-san.log
+		# (sin la comprobación de desbordes con signo: los estímulos al azar meten números cualquiera en la aritmética de matrices del
+		# motor, que no es lo que se prueba; ASan y el resto de UBSan sí)
+		if tools/build.sh --sh "gcc -std=gnu11 -O1 -g -fsanitize=address,undefined -fno-sanitize=signed-integer-overflow -fno-sanitize-recover=undefined -Wall -Wextra -Isrc src/host/gxparidad.c src/core/*.c src/bios/*.c src/cpu/*.c src/jit/arec.c src/jit/arec_dec.c src/jit/arec_emit.c src/gpu2d/*.c src/gpu3d/*.c src/audio/*.c -o build/host-run/gxparidad-san -lm" >build/logs/build-gxparidad-san.log 2>&1; then
+			tools/build.sh --sh "build/host-run/gxparidad-san --semillas 200" >build/logs/gxparidad-san.log 2>&1
+			check_gxparidad SAN build/logs/gxparidad-san.log
+		else
+			echo "SAN  FALLO  la compilación de gxparidad con sanitizadores (build/logs/build-gxparidad-san.log)"
+			fail=1
+		fi
 		tools/build.sh --sh "build/host-run/cpurun-san --frames 200 --touch 100,50 --keys 0x0510 --peek 0x023A0000 --peek 0x023A0004 tests/roms/homebrew/demo.nds" >build/logs/rom-demo-san.log 2>&1
 		check_demo SAN build/logs/rom-demo-san.log
 		rm -f build/logs/snd-san.bin
@@ -278,6 +311,8 @@ if tools/build-ppc64.sh host >build/logs/build-ppc64-run.log 2>&1; then
 	done
 	tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --frames 120 --peek 0x023A0000 --peek 0x023A0004 tests/roms/homebrew/demo.nds >build/logs/rom-demo-be.log 2>&1
 	check_demo BE build/logs/rom-demo-be.log
+	tools/qemu-ppc64.sh build/ppc64-run/salsads-gxparidad --semillas 300 >build/logs/gxparidad-be.log 2>&1
+	check_gxparidad BE build/logs/gxparidad-be.log
 	for sz in $SAVE_SIZES; do
 		tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --save-size "${sz%%:*}" --peek 0x02380034 --peek 0x02380038 tests/roms/homebrew/save.nds >"build/logs/rom-save-${sz%%:*}-be.log" 2>&1
 		check_save BE "${sz%%:*}" "${sz##*:}" "build/logs/rom-save-${sz%%:*}-be.log"
@@ -343,9 +378,9 @@ if tools/build-ppc64.sh host >build/logs/build-ppc64-run.log 2>&1; then
 		tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --jit --jit-no7 tests/roms/homebrew/$rom.nds >"build/logs/rom-$rom-jit9.log" 2>&1
 		check_rom "JIT9" "$rom" "build/logs/rom-$rom-jit9.log"
 	done
-	for rom in cpuarm irq periph demo carga; do
+	for rom in cpuarm irq periph demo carga gx geom dma; do
 		tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --frames 150 --state-hash tests/roms/homebrew/$rom.nds >"build/logs/hash-$rom-interp.log" 2>&1
-		for mode in "--jit-strict" "--jit-strict --jit-no9" "--jit-strict --jit-no7"; do
+		for mode in "--jit-strict" "--jit-strict --jit-no9" "--jit-strict --jit-no7" "--jit-strict --gx-lento"; do
 			tag=$(echo "$mode" | tr -d ' -')
 			tools/qemu-ppc64.sh build/ppc64-run/salsads-cpurun --frames 150 --state-hash $mode tests/roms/homebrew/$rom.nds >"build/logs/hash-$rom-$tag.log" 2>&1
 			a=$(grep '^state-hash:' "build/logs/hash-$rom-interp.log")

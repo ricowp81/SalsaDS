@@ -521,7 +521,7 @@ int main(int argc, char **argv)
 	const char *wav_path = NULL;
 	int snd_original = 0, g2d_stats = 0;
 	const char *gxdump_path = NULL;
-	int gx_clock = 0, r3d_stats_on = 0, holes_on = 0, gx_defer = 0;
+	int gx_clock = 0, r3d_stats_on = 0, holes_on = 0, gx_defer = 0, gx_lento = 0;
 	const char *holes_dump = NULL, *fdump_prefix = NULL;
 	uint64_t fdump_frame = 0;
 	const char *img3d_path = NULL;
@@ -550,6 +550,8 @@ int main(int argc, char **argv)
 			wav_path = argv[++i];
 		else if (!strcmp(argv[i], "--g2d-stats"))
 			g2d_stats = 1;
+		else if (!strcmp(argv[i], "--gx-lento"))
+			gx_lento = 1; /* sin las rutas cortas de la FIFO de geometría (ráfagas de la DMA y escrituras de la CPU): la forma anterior */
 		else if (!strcmp(argv[i], "--gx-defer"))
 			gx_defer = 1; /* motor de geometría en modo diferido con el ejecutor de prueba (mismos bits que el directo) */
 		else if (!strcmp(argv[i], "--gx-hash"))
@@ -733,6 +735,7 @@ int main(int argc, char **argv)
 	M.log = log_to_stderr;
 	M.quantum = quantum;
 	M.dbg = dbg;
+	M.gx_lento = (uint8_t)gx_lento;
 	M.vid.use_ref = use_ref;
 	nds_init(&M);
 	if (gx_defer) {
@@ -753,6 +756,7 @@ int main(int argc, char **argv)
 	if (lockstep) {
 		R.quantum = quantum;
 		R.vid.use_ref = use_ref;
+		R.gx_lento = (uint8_t)gx_lento;
 		nds_init(&R);
 		if (snd_original)
 			nds_snd_set_mode(&R, SND_MODE_ORIGINAL);
@@ -998,6 +1002,10 @@ int main(int argc, char **argv)
 			printf("planificador: %.1f tramos, %.1f saltos ociosos y %.1f eventos por cuadro; %.1f us por cuadro\n",
 			       (double)M.st.slices / (double)frames, (double)M.st.jumps / (double)frames,
 			       (double)M.st.events / (double)frames, (t1 - t0) * 1e6 / (double)frames);
+		if (stats)
+			printf("FIFO de geometría%s: por cuadro %.1f palabras de DMA en %.1f ráfagas y %.1f palabras de la CPU por las rutas cortas\n",
+			       M.gx_lento ? " (gx-lento)" : "", (double)M.st.gx_dma_words / (double)frames,
+			       (double)M.st.gx_dma_bursts / (double)frames, (double)M.st.gx_cpu_words / (double)frames);
 		if (stats && M.prof_clock)
 			printf("tiempo por cuadro (con --gx-clock; los relojes cuestan): ARM9 %.1f us, ARM7 %.1f us, eventos %.1f us; ARM7 %.0f instr. por cuadro\n",
 			       (double)M.st.prof_a9 / 1e3 / (double)frames, (double)M.st.prof_a7 / 1e3 / (double)frames,

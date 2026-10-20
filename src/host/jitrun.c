@@ -277,7 +277,7 @@ static void print_stats_one(struct arec *j, const char *who)
 	arec_usage(j, &blocks, &used, &cap);
 	printf("recompilador %s: %llu bloques traducidos (%llu instr., %.1f palabras PPC por instr., %.1f calientes), %u vivos, código %zu de %zu KB; "
 	       "%llu entradas, %llu enlaces; salidas: %llu pc, %llu enlace, %llu estado, %llu presupuesto, %llu tras almacenamiento; "
-	       "%llu llamadas al intérprete, %llu pasos interpretados (%llu sin código); lentos %llu lect. %llu escr.; "
+	       "%llu llamadas al intérprete, %llu pasos interpretados (%llu sin código); lentos %llu lect. %llu escr. (y %llu a GXFIFO por la ruta corta); "
 	       "%llu escrituras a código, %llu bloques invalidados, %llu vaciados; %llu banderas en frío\n",
 	       who, (unsigned long long)s->blocks_made, (unsigned long long)s->guest_made,
 	       s->guest_made ? (double)s->host_words / (double)s->guest_made : 0.0,
@@ -286,7 +286,7 @@ static void print_stats_one(struct arec *j, const char *who)
 	       (unsigned long long)s->exits_link, (unsigned long long)s->exits_state, (unsigned long long)s->exits_budget,
 	       (unsigned long long)s->mem_exits, (unsigned long long)s->callouts, (unsigned long long)s->interp_steps,
 	       (unsigned long long)s->no_code, (unsigned long long)s->slow_rd, (unsigned long long)s->slow_wr,
-	       (unsigned long long)s->code_wr, (unsigned long long)s->inval_blocks, (unsigned long long)s->flushes,
+	       (unsigned long long)s->gx_wr, (unsigned long long)s->code_wr, (unsigned long long)s->inval_blocks, (unsigned long long)s->flushes,
 	       (unsigned long long)s->cold_flags);
 	printf("recompilador %s, llamadas al intérprete por clase:", who);
 	for (int k = 0; k < AREC_CALL_KINDS; k++)

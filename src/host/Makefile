@@ -2,6 +2,7 @@
 # SalsaDS — herramientas del host que usan la máquina de src/core y los intérpretes de src/cpu:
 #   salsads-cpurun   corre ROMs (tests/roms) y lee su veredicto; vuelca la imagen de las pantallas
 #   armbench         mide los MIPS de los intérpretes
+#   salsads-gxparidad  prueba dirigida de las rutas cortas de la FIFO de geometría (dos máquinas, con y sin ellas)
 # Desde la raíz: tools/build.sh -C src/host (en el contenedor, con gcc) o
 # tools/cpurun.sh (nativo en la Mac, con cc).
 ROOT := $(abspath ../..)
@@ -14,7 +15,7 @@ CORE_SRCS := $(wildcard $(ROOT)/src/core/*.c) $(wildcard $(ROOT)/src/bios/*.c) $
 HDRS      := $(wildcard $(ROOT)/src/core/*.h $(ROOT)/src/cpu/*.h $(ROOT)/src/jit/*.h $(ROOT)/src/host/*.h $(ROOT)/src/util/*.h $(ROOT)/src/gpu2d/*.h $(ROOT)/src/gpu3d/*.h $(ROOT)/src/audio/*.h)
 
 .PHONY: all clean
-all: $(OUT)/salsads-cpurun $(OUT)/armbench $(OUT)/salsads-ciclos
+all: $(OUT)/salsads-cpurun $(OUT)/armbench $(OUT)/salsads-ciclos $(OUT)/salsads-gxparidad
 
 $(OUT)/salsads-cpurun: cpurun.c jitrun.c $(CORE_SRCS) $(CPU_SRCS) $(HDRS)
 	@mkdir -p $(OUT)
@@ -25,6 +26,11 @@ $(OUT)/salsads-ciclos: ciclos.c jitrun.c $(CORE_SRCS) $(CPU_SRCS) $(HDRS)
 	@mkdir -p $(OUT)
 	@echo "  CC      salsads-ciclos"
 	@$(CC) $(CFLAGS) ciclos.c jitrun.c $(CORE_SRCS) $(CPU_SRCS) -o $@ -lm
+
+$(OUT)/salsads-gxparidad: gxparidad.c $(CORE_SRCS) $(CPU_SRCS) $(HDRS)
+	@mkdir -p $(OUT)
+	@echo "  CC      salsads-gxparidad"
+	@$(CC) $(CFLAGS) gxparidad.c $(CORE_SRCS) $(CPU_SRCS) -o $@ -lm
 
 $(OUT)/armbench: armbench.c $(CPU_SRCS) $(ROOT)/src/jit/loops.c
 	@mkdir -p $(OUT)
