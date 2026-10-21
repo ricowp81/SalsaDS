@@ -21,10 +21,13 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
   y se alcanza la vista de primera persona con HUD a los 8500 cuadros. Se conservan las entradas y capturas como evidencia local, no se incorpora material del respaldo.
   Esto demuestra acceso inicial y persistencia del archivo A, no guardado de progreso avanzado, campaña completa ni rendimiento de la PS3.
 - Prueba adicional `tests/guardado-archivos`: ejecuta la sección real de guardado de la aplicación con archivos sintéticos; original intacto, alternativa nueva,
-  reapertura correcta y bloqueo ante archivo alternativo inválido. Pasa nativa con sanitizadores. La aplicación pasa comprobación de sintaxis con el compilador PPE;
+  reapertura correcta y bloqueo ante archivo alternativo inválido. Pasa nativa y Docker LE con sanitizadores, y en qemu big-endian con código compilado para Cell.
+  La prueba rechaza archivos preexistentes antes de crear su fixture. La aplicación pasa comprobación de sintaxis con el compilador PPE;
   se usan encabezados generados existentes solo para resolver sus declaraciones, sin enlazar ni empaquetar programas ajenos.
-- Se repite `test-host` con ambas correcciones; la corrida intermedia se detuvo para no atribuir al código definitivo sus resultados anteriores.
-  La batería definitiva y las pruebas de archivos cruzadas siguen pendientes de cierre. Sin PKG nuevo, FTP, cambios de banderas ni guardados físicos.
+- `test-host` con ambas correcciones termina con salida 0: 609 veredictos OK, ninguno FALLO, unitarias LE/SAN 8076266 y BE 8079911 comprobaciones sin fallos,
+  32 comparaciones de estado iguales al intérprete y lockstep aprobado. La corrida intermedia se detuvo para no atribuir al código definitivo sus resultados anteriores.
+  Fuente del arreglo en `349f164`, evidencia y capturas locales en `build/guardado-metroid-evidencia/`; revisión de privacidad sin hallazgos y respaldo original intacto.
+  Sin PKG nuevo, FTP, cambios de banderas ni guardados físicos. Falta integrar sobre la candidata de captura segura y validar el paquete exacto en RPCS3 antes de otra prueba física.
 
 ## 2026-10-19 — Render 3D: texturas por celdas, reparto con historia y espera aplazada (rama r3d-reparto)
 

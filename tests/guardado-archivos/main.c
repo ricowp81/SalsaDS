@@ -46,6 +46,10 @@ int main(int argc, char **argv)
 	snprintf(original, sizeof original, "%s/AMHP.sav", save_dir);
 	snprintf(alternate, sizeof alternate, "%s/AMHP.flash256k.sav", save_dir);
 	snprintf(cfg_path, sizeof cfg_path, "%s/guardado.cfg", save_dir);
+	/* Rechazar un directorio usado evita sobrescribir archivos ajenos si se invoca a mano. */
+	REQUIRE(lstat(original, &st) == -1 && errno == ENOENT);
+	REQUIRE(lstat(alternate, &st) == -1 && errno == ENOENT);
+	REQUIRE(lstat(cfg_path, &st) == -1 && errno == ENOENT);
 	memset(bytes, 0xAA, sizeof bytes);
 	f = fopen(original, "wb"); REQUIRE(f);
 	REQUIRE(fwrite(bytes, 1, 512, f) == 512); REQUIRE(fclose(f) == 0);
