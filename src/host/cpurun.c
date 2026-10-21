@@ -884,7 +884,13 @@ int main(int argc, char **argv)
 
 		if (sd && lockstep)
 			nds_save_attach(&R, sd, sl);
-		if (sd && nds_save_attach(&M, sd, sl) == 0)
+		const int attached = sd ? nds_save_attach(&M, sd, sl) : 0;
+		if (attached == NDS_SAVE_INCOMPATIBLE) {
+			fprintf(stderr, "núcleo: guardado incompatible; conserva %s y elige un archivo nuevo con --save\n", save_path);
+			free(sd);
+			return 2; /* Nunca llegar a save_out con el archivo original incompatible. */
+		}
+		if (sd && attached == 0)
 			fprintf(stderr, "núcleo: guardado de %s: %zu bytes\n", save_path, sl);
 		else if (sd)
 			fprintf(stderr, "núcleo: %s no tiene el tamaño de ningún chip (%zu bytes): se ignora\n", save_path, sl);

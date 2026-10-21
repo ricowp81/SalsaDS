@@ -15,7 +15,8 @@
  *      haya dejado claro qué chip espera, se deduce por sus primeras conversaciones SPI (`detect_*`): «detectado».
  *
  * Fuente: GBATEK, «DS Cartridge Backup» (tipos, tamaños, juegos de órdenes, bits del registro de estado,
- * detección por RDSR/RDID y por el número de bytes de dirección). Las excepciones por código de juego con
+ * detección por RDSR/RDID y por el número de bytes de dirección); M45PE20, PAGE WRITE (bytes no dirigidos conservados).
+ * Las excepciones por código de juego con
  * dirección de un byte vienen de la lista blanca de DeSmuME (src/mc.cpp, GPL-2.0-o-posterior); la idea de deducir por
  * el número de bytes de dirección, de su autodetección. Código propio. Simplificaciones: las escrituras y borrados
  * terminan al instante (WIP siempre 0), la protección de bloques (BP) se guarda y se lee pero no se aplica, y los
@@ -48,6 +49,7 @@ static const struct {
 	{ "ASM", NDS_SAVE_EEPROM16, 8192 },
 	{ "A2D", NDS_SAVE_EEPROM16, 8192 },
 	{ "AMC", NDS_SAVE_FLASH, 262144 },
+	{ "AMH", NDS_SAVE_FLASH, 262144 }, /* Metroid Prime Hunters */
 	{ "AL3", NDS_SAVE_EEPROM512, 512 },
 	{ "AH5", NDS_SAVE_EEPROM512, 512 },
 	{ "AVH", NDS_SAVE_EEPROM512, 512 },
@@ -223,6 +225,13 @@ int nds_save_attach(struct nds *n, const uint8_t *data, size_t len)
 
 	if (len > sizeof n->savemem)
 		return -1;
+	/* Versiones anteriores confundían 0Ah de Flash con A8 de EEPROM y creaban 512 B.
+	 * No cargar ni rellenar ese contenido como si fuera una partida válida. El dueño del
+	 * archivo debe conservarlo y usar un archivo nuevo para la Flash correcta. */
+	if (s->src == NDS_SAVE_SRC_TABLA && code_match(n->cart.rom, "AMH") && len == 512) {
+		nds_logf(n, "guardado: archivo de 512 B incompatible con Metroid Hunters; conservar original y usar otro archivo");
+		return NDS_SAVE_INCOMPATIBLE;
+	}
 	if (s->src == NDS_SAVE_SRC_CFG) { /* el usuario fijó el chip: el archivo se ajusta a él (sobra se corta, falta se rellena) */
 		memset(n->savemem, 0xFF, sizeof n->savemem);
 		memcpy(n->savemem, data, len < s->size ? len : s->size);
@@ -387,8 +396,8 @@ static uint8_t xfer_core(struct nds *n, uint8_t in)
 		const uint32_t page = s->page ? s->page : s->size;
 		const uint32_t base = s->addr - s->addr % page;
 
-		if (s->first && s->type == NDS_SAVE_FLASH && s->cmd == 0x0A)
-			erase(s, n, s->addr, 256); /* escribir página = borrar y programar */
+		/* PAGE WRITE (0Ah) altera solo los bytes enviados; su borrado interno
+		 * conserva el resto de la página (M45PE20). PAGE PROGRAM (02h) solo baja bits. */
 		s->first = 0;
 		put(s, n, s->addr, in, s->type == NDS_SAVE_FLASH && s->cmd == 0x02);
 		s->addr = base + ((s->addr + 1) % page);
@@ -434,7 +443,7 @@ static void deselect_core(struct nds *n)
  * lectura); lo ambiguo sigue con el provisional, que sirve a cualquier EEPROM de hasta 64 KB:
  *   - RDID (9Fh), borrar página (DBh), borrar sector (D8h) o borrar todo (C7h): Flash, que se supone de 512 KB (la tabla o guardado.cfg
  *     dicen otro tamaño; el .sav también);
- *   - lectura/escritura con A8 (0Bh, 0Ah): EEPROM de 512 B;
+ *   - 0Bh/0Ah por sí solos son ambiguos: también existen en Flash; no deciden el chip;
  *   - lectura (03h) de solo 2 bytes tras la orden (un byte de dirección y uno de datos): EEPROM de 512 B (un chip de 2 bytes de
  *     dirección no puede leer con menos de 3);
  *   - escritura (02h) de 131 a 259 bytes tras la orden: dirección de 3 bytes y página de 256 (EEPROM de 128 KB; ningún chip
@@ -474,7 +483,6 @@ static void detect_by_command(struct nds *n, uint8_t cmd)
 	switch (cmd) {
 	case 0x9F: retype(n, NDS_SAVE_FLASH, 524288, 0, "RDID (9Fh): Flash"); break;
 	case 0xD8: case 0xDB: case 0xC7: retype(n, NDS_SAVE_FLASH, 524288, 0, "borrado de Flash (D8h/DBh/C7h)"); break;
-	case 0x0A: case 0x0B: retype(n, NDS_SAVE_EEPROM512, 512, 0, "orden con A8 (0Ah/0Bh): EEPROM de 512 B"); break;
 	default: break;
 	}
 }
@@ -487,7 +495,7 @@ static void detect_by_conversation(struct nds *n)
 
 	if (!s->nrec)
 		return;
-	if (s->rec[0] == 0x03 && c == 2)
+	if ((s->rec[0] == 0x03 || s->rec[0] == 0x0B) && c == 2)
 		retype(n, NDS_SAVE_EEPROM512, 512, 0, "lectura con un byte de dirección: EEPROM de 512 B");
 	else if (s->rec[0] == 0x02 && c == 130)
 		retype(n, NDS_SAVE_EEPROM16, 65536, 1, "escritura de página de 128 con 2 de dirección: EEPROM de 64 KB");

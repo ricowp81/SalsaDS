@@ -510,8 +510,10 @@ void nds_snd_set_mode(struct nds *n, uint32_t mode);
 void nds_snd_set_ratio_adj(struct nds *n, float adj);
 
 /* Guardado del cartucho. El tipo por omisión sale del código de juego (nds_load_rom); `nds_save_attach` carga el
- * contenido de un archivo y fija el tipo por su tamaño (0 = bien, -1 = tamaño que no es de ningún chip).
+ * contenido de un archivo y fija el tipo por su tamaño (0 = bien, -1 = tamaño que no es de ningún chip,
+ * NDS_SAVE_INCOMPATIBLE = archivo antiguo incompatible; no modifica el chip ni su contenido).
  * `nds_save_take_dirty` dice si el juego escribió desde la última vez; `nds_save_data` da el contenido actual. */
+enum { NDS_SAVE_INCOMPATIBLE = -2 };
 int nds_save_attach(struct nds *n, const uint8_t *data, size_t len);
 /* Archivo opcional por juego (guardado.cfg: líneas «CODIGO=tipo», ver docs/guardado.md). Si alguna línea es de este juego, fuerza ese
  * chip (gana a la tabla y al tamaño del .sav). Devuelve 1 si aplicó alguna, 0 si no. Llamar tras cargar la ROM y antes de `nds_save_attach`. */

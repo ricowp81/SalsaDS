@@ -4,6 +4,28 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-21 — Metroid Hunters: chip Flash y conservación de escrituras parciales
+
+- Se reproduce el error físico de lectura al seleccionar archivo. AMHP estaba cargando una EEPROM de 512 B creada por una falsa detección del opcode 0Ah;
+  las conversaciones reales usan direcciones de tres bytes hasta 03DF00h. `AMH` pasa a la tabla como Flash de 256 KiB, con fuentes en `THIRD_PARTY.md`.
+  0Ah/0Bh compartidos por Flash y EEPROM dejan de decidir el tipo por sí solos; se conserva la detección de EEPROM por lectura corta y por tabla/configuración.
+- Añadir solo el chip correcto permitía crear A, pero no conservarlo al reiniciar: PAGE WRITE 0Ah borraba toda la página antes de modificar unos bytes.
+  El datasheet M45PE20 exige conservar los no dirigidos; se retira ese borrado externo. PAGE PROGRAM 02h sigue bajando bits y los borrados DBh/D8h no cambian.
+  Una mutación temporal que reintroduce el borrado falla en seis comprobaciones nuevas de vecinos; la versión corregida pasa las 193 comprobaciones dirigidas
+  con ASan/UBSan. No se considera suficiente verificar solo que una escritura se lee inmediatamente.
+- Los archivos AMH de 512 B seleccionados por tabla se rechazan sin modificar el chip ni importar contenido (`NDS_SAVE_INCOMPATIBLE`).
+  La aplicación conserva el original y usa `<código>.flash256k.sav` por separado; bloquea escrituras si la alternativa existente es ilegible o tiene tamaño incorrecto.
+  El corredor del host sale con 2 antes de escribir un archivo incompatible. No se afirma recuperar partidas perdidas ni se sobrepone la tabla a una configuración explícita.
+- Host nativo: se crea el archivo A y se escribe una Flash de 262144 bytes; se reinicia el proceso, se vuelve a cargar A y el archivo conserva su SHA-256
+  `3294fc6c55eab5bbad2eaf3b5ee1e4c41457e8bf5658809f5a909c6e7ad3ce57`. Desde esa partida se entra al briefing, se confirma aterrizaje en Celestial Archives
+  y se alcanza la vista de primera persona con HUD a los 8500 cuadros. Se conservan las entradas y capturas como evidencia local, no se incorpora material del respaldo.
+  Esto demuestra acceso inicial y persistencia del archivo A, no guardado de progreso avanzado, campaña completa ni rendimiento de la PS3.
+- Prueba adicional `tests/guardado-archivos`: ejecuta la sección real de guardado de la aplicación con archivos sintéticos; original intacto, alternativa nueva,
+  reapertura correcta y bloqueo ante archivo alternativo inválido. Pasa nativa con sanitizadores. La aplicación pasa comprobación de sintaxis con el compilador PPE;
+  se usan encabezados generados existentes solo para resolver sus declaraciones, sin enlazar ni empaquetar programas ajenos.
+- Se repite `test-host` con ambas correcciones; la corrida intermedia se detuvo para no atribuir al código definitivo sus resultados anteriores.
+  La batería definitiva y las pruebas de archivos cruzadas siguen pendientes de cierre. Sin PKG nuevo, FTP, cambios de banderas ni guardados físicos.
+
 ## 2026-10-19 — Render 3D: texturas por celdas, reparto con historia y espera aplazada (rama r3d-reparto)
 
 - **Qué mostró la medición** (logs de la PS3, MKDS carrera pesada): los dos SPE del 3D tardaban 12–17 ms por cuadro porque el 56–61 % del dibujo eran

@@ -123,6 +123,31 @@ void test_save(void)
 	game("AMCE");
 	CHECK_EQ(M.save.type, NDS_SAVE_FLASH);
 	CHECK_EQ(M.save.size, 262144);
+	{
+		static const char *mph[] = { "AMHP", "AMHE", "AMHJ" };
+
+		for (size_t i = 0; i < sizeof mph / sizeof mph[0]; i++) {
+			game(mph[i]);
+			CHECK_EQ(M.save.type, NDS_SAVE_FLASH);
+			CHECK_EQ(M.save.size, 262144);
+			CHECK_EQ(M.save.src, NDS_SAVE_SRC_TABLA);
+			CHECK_EQ(M.save.autod, 0);
+			/* Misma conversación que fallaba: dirección de 24 bits, no A8. */
+			write_conv(0x0A, 3, 0x100, 8, 0x10);
+			for (unsigned j = 0; j < 8; j++)
+				CHECK_EQ(read1(3, 0x100 + j), 0x10 + j);
+			write_conv(0x0A, 3, 0x3DF00, 8, 0x40);
+			CHECK_EQ(read1(3, 0x3DF07), 0x47);
+			CHECK_EQ(M.savemem[0x100], 0x10); /* sin espejar sobre los 512 B */
+			write_conv(0x0A, 3, 0x102, 1, 0xFF); /* 0Ah sube bits sin borrar los vecinos. */
+			CHECK_EQ(read1(3, 0x101), 0x11);
+			CHECK_EQ(read1(3, 0x102), 0xFF);
+			CHECK_EQ(read1(3, 0x103), 0x13);
+			write_conv(0x02, 3, 0x102, 1, 0x0F);
+			write_conv(0x02, 3, 0x102, 1, 0xF0);
+			CHECK_EQ(read1(3, 0x102), 0x00); /* 02h sigue siendo AND. */
+		}
+	}
 	game("AL3E");
 	CHECK_EQ(M.save.type, NDS_SAVE_EEPROM512);
 	game("ZZZE");
@@ -163,7 +188,7 @@ void test_save(void)
 	CHECK_EQ(M.save.type, NDS_SAVE_FLASH);
 	CHECK_EQ(M.save.src, NDS_SAVE_SRC_DETECTADO);
 
-	/* ---- EEPROM de 0,5 KB: lectura con un byte de dirección, o la orden con A8 ---- */
+	/* ---- EEPROM de 0,5 KB: lectura corta; el opcode con A8 solo no basta ---- */
 	game("ZZZE");
 	{
 		const uint8_t rd[3] = { 0x03, 0x10, 0 };
@@ -174,11 +199,27 @@ void test_save(void)
 	CHECK_EQ(M.save.size, 512);
 	CHECK_EQ(M.save.src, NDS_SAVE_SRC_DETECTADO);
 	game("ZZZE");
+	{
+		const uint8_t rd[3] = { 0x0B, 0x20, 0 };
+
+		conv(rd, 3, NULL);
+	}
 	write_conv(0x0A, 1, 0x20, 4, 0x70); /* escritura con A8 = 1 */
 	CHECK_EQ(M.save.type, NDS_SAVE_EEPROM512);
 	CHECK_EQ(M.save.autod, 0);
 	CHECK_EQ(M.savemem[0x120], 0x70);
 	CHECK_EQ(M.savemem[0x123], 0x73);
+	game("ZZZE");
+	write_conv(0x0A, 3, 0x100, 8, 0x10);
+	CHECK_EQ(M.save.autod, 1); /* No fijar EEPROM512 por un comando compartido. */
+	CHECK_EQ(M.save.type, NDS_SAVE_EEPROM16);
+	CHECK_EQ(M.save.size, 65536);
+	{
+		const uint8_t fast[] = { 0x0B, 0, 1, 0, 0, 0 };
+
+		conv(fast, sizeof fast, NULL);
+		CHECK_EQ(M.save.autod, 1);
+	}
 
 	/* ---- EEPROM de 64 KB: página de 128 con 2 de dirección (confirma el provisional) ---- */
 	game("ZZZE");
@@ -225,6 +266,24 @@ void test_save(void)
 	{
 		static uint8_t sav[NDS_SAVE_MAX];
 
+		memset(sav, 0xAA, sizeof sav);
+		game("AMHP");
+		CHECK_EQ(nds_save_attach(&M, sav, 512), NDS_SAVE_INCOMPATIBLE);
+		CHECK_EQ(M.save.type, NDS_SAVE_FLASH);
+		CHECK_EQ(M.save.size, 262144);
+		CHECK_EQ(M.save.src, NDS_SAVE_SRC_TABLA);
+		CHECK_EQ(M.save.dirty, 0);
+		CHECK_EQ(M.savemem[0], 0xFF);
+		CHECK_EQ(sav[0], 0xAA); /* El original no se importa ni se modifica. */
+		write_conv(0x0A, 3, 0x3DF00, 8, 0x40);
+		memcpy(sav, M.savemem, 262144);
+		game("AMHP");
+		CHECK_EQ(nds_save_attach(&M, sav, 262144), 0);
+		CHECK_EQ(read1(3, 0x3DF07), 0x47); /* Reabrir una Flash nueva conserva los datos. */
+		CHECK_EQ(M.save.dirty, 0);
+		game("AL3E");
+		CHECK_EQ(nds_save_attach(&M, sav, 512), 0); /* Una EEPROM pequeña real sigue siendo válida. */
+		CHECK_EQ(M.save.type, NDS_SAVE_EEPROM512);
 		memset(sav, 0xAA, sizeof sav);
 		game("ASME");
 		CHECK_EQ(nds_save_attach(&M, sav, 8192), 0);

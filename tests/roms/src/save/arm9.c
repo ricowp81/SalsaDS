@@ -315,8 +315,8 @@ static void group_flash(void)
 	rd(a, r, 16);
 	for (int i = 0; i < 16; i++)
 		sds_diverge_at(r[i], 0xFF, 0x00, 600 + i, __FILE__);
-	/* escribir página (0Ah) borra antes: sobre cualquier cosa queda exactamente lo escrito, y el resto de la
-	 * página queda borrado */
+	/* Escribir página (0Ah) altera los bytes enviados. Los vecinos aquí siguen en FFh
+	 * por el DBh anterior, no porque 0Ah deba borrarlos. */
 	for (int i = 0; i < 16; i++)
 		w[i] = 0x0F;
 	wr(a, w, 16);
