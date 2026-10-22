@@ -497,23 +497,78 @@ static uint32_t vf_rdp(void *ctx, uint32_t a)
 }
 #endif
 
-/* El color (16 bits) de la entrada `idx` de la paleta del texel, por las líneas de paletas */
-static inline uint32_t cl_pe(r3d_ctx *c, const r3d_tex *tx, uint32_t idx)
+/* Igual que en bloques, la paleta indexada se convierte una vez y se reutiliza
+ * entre celdas. Una instantánea no cambia durante el trabajo; tc_reset invalida
+ * pal_n antes del siguiente, incluidos los cambios de bancos de VRAM. */
+static const uint32_t *cl_pal(r3d_ctx *c, const r3d_tex *tx, uint32_t n)
 {
-	const uint8_t *p = cl_line(c, 1, (tx->pal + idx * 2u) & 0x1FFFFu);
+	if (c->pal_n < n || c->pal_addr != tx->pal) {
+		for (uint32_t i = 0; i < n;) {
+			const uint32_t a = (tx->pal + i * 2u) & 0x1FFFFu;
+			const uint8_t *p = cl_line(c, 1, a);
+			uint32_t count = (R3D_CL_BYTES - (a & (R3D_CL_BYTES - 1u))) >> 1;
 
-	return (uint32_t)p[0] | ((uint32_t)p[1] << 8);
+			if (count > n - i)
+				count = n - i;
+			for (uint32_t k = 0; k < count; k++)
+				c->cell_pxtab[i + k] = r3d_555((uint32_t)p[k * 2u] | ((uint32_t)p[k * 2u + 1u] << 8), 0);
+			i += count;
+		}
+		c->pal_addr = tx->pal;
+		c->pal_n = n;
+	}
+	return c->cell_pxtab;
 }
+
+typedef uint32_t tc_v4u __attribute__((vector_size(16), may_alias));
+typedef uint64_t tc_v2u __attribute__((vector_size(16), may_alias));
+typedef uint64_t tc_u64 __attribute__((may_alias));
 
 /* Decodifica la celda de 4×4 texeles cuya esquina es (s0, t0) (múltiplos de 4) en `cell` (16 palabras, filas de 4) */
 static R3D_SMALL void tc_cell_fill(r3d_ctx *c, const r3d_tex *tx, uint32_t *cell, uint32_t s0, uint32_t t0)
 {
 	const uint32_t S = 1u << tx->sl, fmt = tx->fmt;
+	static const uint16_t npal[8] = { 0, 32, 4, 16, 256, 0, 8, 0 };
+	const uint32_t *pt;
 
 	if (fmt == 5) {
 		tc_fill5(c, tx, cell, s0, t0, 4, 4, 2);
 		return;
 	}
+	/* Una tabla por byte evita dieciséis conversiones de índice/alfa por celda.
+	 * Es independiente de cell_pxtab: otro formato puede reutilizar esa paleta.
+	 * La clave incluye la transparencia del cero y se invalida en cada trabajo. */
+	if (fmt == 3 && !(c->job.flags & R3D_F_CELLSCALAR)) {
+		const uint32_t key = tx->pal | (tx->c0t << 17);
+		const uint32_t a = (tx->addr + ((t0 * S + s0) >> 1)) & 0x7FFFFu;
+		const uint32_t stride = S >> 1;
+		const uint8_t *first = cl_line(c, 0, a);
+		const int same_line = (a & (R3D_CL_BYTES - 1u)) + 3u * stride + 2u <= R3D_CL_BYTES;
+
+		if (c->pair_key != key) {
+			pt = cl_pal(c, tx, 16);
+			for (uint32_t hi = 0; hi < 16; hi++) {
+				const uint32_t ph = hi == 0 && tx->c0t ? 0 : pt[hi] | (31u << 24);
+				for (uint32_t lo = 0; lo < 16; lo += 2) {
+					const uint32_t p0 = lo == 0 && tx->c0t ? 0 : pt[lo] | (31u << 24);
+					const uint32_t p1 = pt[lo + 1] | (31u << 24);
+					*(tc_v4u *)(void *)c->cell_pairs[lo | (hi << 4)] = (tc_v4u){ p0, ph, p1, ph };
+				}
+			}
+			c->pair_key = key;
+		}
+		for (uint32_t r = 0; r < 4; r++) {
+			const uint8_t *p = same_line ? first + r * stride : cl_line(c, 0, (a + r * stride) & 0x7FFFFu);
+			/* Copias de dos palabras contiguas, sin aritmética de 64 bits:
+			 * conservan su orden tanto en LE como en BE. Las filas de cell
+			 * están alineadas a 16; las parejas, a 8. */
+			const uint64_t lo = *(const tc_u64 *)(const void *)c->cell_pairs[p[0]];
+			const uint64_t hi = *(const tc_u64 *)(const void *)c->cell_pairs[p[1]];
+			*(tc_v2u *)(void *)(cell + 4u * r) = (tc_v2u){ lo, hi };
+		}
+		return;
+	}
+	pt = npal[fmt] ? cl_pal(c, tx, npal[fmt]) : NULL;
 	for (uint32_t r = 0; r < 4; r++) {
 		const uint32_t i = (t0 + r) * S + s0;
 		uint32_t *o = cell + 4u * r;
@@ -525,7 +580,7 @@ static R3D_SMALL void tc_cell_fill(r3d_ctx *c, const r3d_tex *tx, uint32_t *cell
 			for (uint32_t j = 0; j < 4; j++) {
 				const uint32_t b = p[j], a3 = b >> 5;
 
-				o[j] = r3d_555(cl_pe(c, tx, b & 31u), (a3 << 2) + (a3 >> 1));
+				o[j] = pt[b & 31u] | (((a3 << 2) + (a3 >> 1)) << 24);
 			}
 			break;
 		case 2: { /* 4 colores */
@@ -534,7 +589,7 @@ static R3D_SMALL void tc_cell_fill(r3d_ctx *c, const r3d_tex *tx, uint32_t *cell
 			for (uint32_t j = 0; j < 4; j++) {
 				const uint32_t idx = (v >> (2u * j)) & 3u;
 
-				o[j] = (idx == 0 && tx->c0t) ? 0u : r3d_555(cl_pe(c, tx, idx), 31);
+				o[j] = (idx == 0 && tx->c0t) ? 0u : (pt[idx] | (31u << 24));
 			}
 			break;
 		}
@@ -543,7 +598,7 @@ static R3D_SMALL void tc_cell_fill(r3d_ctx *c, const r3d_tex *tx, uint32_t *cell
 			for (uint32_t j = 0; j < 4; j++) {
 				const uint32_t idx = (p[j >> 1] >> ((j & 1u) * 4u)) & 15u;
 
-				o[j] = (idx == 0 && tx->c0t) ? 0u : r3d_555(cl_pe(c, tx, idx), 31);
+				o[j] = (idx == 0 && tx->c0t) ? 0u : (pt[idx] | (31u << 24));
 			}
 			break;
 		case 4: /* 256 colores */
@@ -551,7 +606,7 @@ static R3D_SMALL void tc_cell_fill(r3d_ctx *c, const r3d_tex *tx, uint32_t *cell
 			for (uint32_t j = 0; j < 4; j++) {
 				const uint32_t idx = p[j];
 
-				o[j] = (idx == 0 && tx->c0t) ? 0u : r3d_555(cl_pe(c, tx, idx), 31);
+				o[j] = (idx == 0 && tx->c0t) ? 0u : (pt[idx] | (31u << 24));
 			}
 			break;
 		case 6: /* A5I3 */
@@ -559,7 +614,7 @@ static R3D_SMALL void tc_cell_fill(r3d_ctx *c, const r3d_tex *tx, uint32_t *cell
 			for (uint32_t j = 0; j < 4; j++) {
 				const uint32_t b = p[j];
 
-				o[j] = r3d_555(cl_pe(c, tx, b & 7u), b >> 3);
+				o[j] = pt[b & 7u] | ((b >> 3) << 24);
 			}
 			break;
 		default: /* 7: directo */
@@ -620,6 +675,7 @@ static void tc_reset(r3d_ctx *c)
 		}
 		memset(c->tidhash, 0, sizeof c->tidhash);
 		c->ntid = c->tid = 0;
+		c->pair_key = 0xFFFFFFFFu;
 		c->dl_key = c->pl_key = 0xFFFFFFFFu;
 		c->last_cid = 0xFFFFFFFFu;
 	} else {

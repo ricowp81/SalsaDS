@@ -49,6 +49,7 @@
 #define R3D_F_NOFOG 2u    /* ídem, niebla */
 #define R3D_F_BLANK 4u    /* no hay cuadro de geometría: sale transparente */
 #define R3D_F_TEXBLOCK 8u /* texturas: bloques de 256 texeles decodificados enteros (la caché de la 3.2 a la 3.8) en lugar de celdas de 4×4 */
+#define R3D_F_CELLSCALAR 16u /* diagnóstico: decodificar las celdas de 16 colores texel a texel */
 
 /* Un trabajo: un cuadro, repartido en bandas de `band` líneas entre `nunits` unidades (SPE); esta es la `unit`. Las
  * bandas se reparten alternas: la unidad u dibuja las bandas u, u + nunits, u + 2·nunits... (≤ 112 bytes: va dentro

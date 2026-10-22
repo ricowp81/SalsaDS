@@ -698,3 +698,10 @@ detalle y fuentes en `docs/fase0.md`, 0.2).
   (la memoria de usuario libre debe quedar igual tras cada cierre) y el recompilador recreado en `nds_init` entre juegos.
 - Paquete con el JIT (SLDS00009) del commit `8057fbc`: `build/salsads-nucleo-jit-fase49.pkg`, SHA-256
   `0fea0e710ff1ef6420f2e0d0b5e855eb89f31cd641d95e61e5b628f10a678e3a`. Sin probar en la PS3.
+
+## Candidata v0.0.4 (2026-10-22)
+- Une las ramas de Codex ya integradas en `texturas-metroid`, sin su andamiaje de medición, y descarta `r3d-aristas` (el enlace del SPE queda sin holgura de pila: 7312 B < 8192 B).
+- **Captura de pantalla (DISPCAPCNT) en el PPE sin pasar por la ruta general:** compone solo el motor A y solo las capas que la captura usa (`gpu2d_compose_engine_ppe`, capa 3D única fusionada). Medido en la PS3: Metroid, composición ~20,7 → ~1,7 ms y captura total ~21,3 → ~2,3 ms. La captura por SPE queda en el código pero sin ser usada por el frontend.
+- **Texturas 3D por celdas:** paletas indexadas reutilizadas y celdas de 16 colores decodificadas por parejas. Host: −25 % del raster en Metroid; PS3 (sin A/B estricto): texturas sumadas ~17 → ~8,6 ms.
+- **Guardado de Metroid:** `AMH` = Flash de 256 KB; 0Ah/0Bh ya no deciden por sí solos un chip; PAGE WRITE (0Ah) no borra el resto de la página (a contrastar con la hoja del M45PE20); un `.sav` antiguo de 512 B no se toca y la recuperación va a `<juego>.flash256k.sav`.
+- Pendiente en la PS3: A/B de MKDS (`texturas-bloques` + `r3d-sin-aplazar`), Metroid (fps y guardado), y holgura de pila de los SPE con `tools/spu-stack.py`.

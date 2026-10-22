@@ -192,13 +192,20 @@ static inline void gfx_capture(void)
 	ER32(0, E_DISPCAP) = 0x80000000u | (3u << 20);
 }
 
+#ifndef CAPTURE_REPEAT
+#define CAPTURE_REPEAT 1u
+#endif
+
 /* Deja pasar unos cuadros, captura, deja pasar otros y termina con OK. */
 static inline void gfx_finish(void) __attribute__((noreturn));
 static inline void gfx_finish(void)
 {
 	gfx_frames(2);
-	gfx_capture();
-	gfx_frames(4);
+	for (unsigned i = 0; i < CAPTURE_REPEAT; i++) {
+		gfx_capture();
+		gfx_frames(1);
+	}
+	gfx_frames(3);
 	sds_finish_quiet(1);
 }
 

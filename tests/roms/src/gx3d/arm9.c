@@ -1421,8 +1421,15 @@ int main(void)
 	if (scene < 26 && scene != 4 && scene != 5 && scene != 6)
 		cmd(SWAP, 0);
 	gfx_frames(3);
-	gfx_capture();
-	gfx_frames(3);
+	for (unsigned c = 0; c < CAPTURE_REPEAT; c++) {
+		/* Alternar los cuadros que capturan fuerza también la presentación
+		 * aplazada del cuadro anterior antes de reutilizar su instantánea. */
+		if (c & 1u)
+			gfx_frames(1);
+		gfx_capture();
+		gfx_frames(1);
+	}
+	gfx_frames(2);
 	/* si hubo captura (bit 31 en 0), los píxeles de prueba contra lo capturado */
 	if (!(ER32(0, E_DISPCAP) & 0x80000000u))
 		for (int i = 0; i < nprobe; i++)

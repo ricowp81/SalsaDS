@@ -43,6 +43,7 @@ void nds_init(struct nds *n)
 	void *log_ctx = n->log_ctx;
 	const struct nds_video_ops vops = n->vid.ops;
 	const int use_ref = n->vid.use_ref, use_ref3d = n->vid.use_ref3d, vs_ref3d = n->vid.vs_ref3d;
+	const int capture_classic = n->vid.capture_classic;
 	const uint32_t r3d_band = n->vid.r3d_band, r3d_units = n->vid.r3d_units;
 	const int r3d_alt = n->vid.r3d_alt;
 	const uint32_t r3d_flags = n->vid.r3d_flags, r3d_win0 = n->vid.r3d_win0, r3d_win1 = n->vid.r3d_win1, r3d_texmode = n->vid.r3d_texmode, r3d_defer = n->vid.r3d_defer_line, r3d_hist_off = n->vid.r3d_hist_off;
@@ -64,6 +65,7 @@ void nds_init(struct nds *n)
 	n->gx_lento = gx_lento;
 	n->vid.ops = vops;
 	n->vid.use_ref = use_ref;
+	n->vid.capture_classic = capture_classic;
 	n->vid.use_ref3d = use_ref3d;
 	n->vid.vs_ref3d = vs_ref3d;
 	n->vid.r3d_band = r3d_band;

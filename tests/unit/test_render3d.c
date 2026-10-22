@@ -67,6 +67,69 @@ static int first_diff(void)
 extern uint32_t r3d_decode_errors; /* r3d_core.c compilado con -DR3D_VERIFY_DECODE: bloques contra r3d_decode */
 #endif
 
+/* Reutilizar el contexto no conserva colores de otro trabajo: cambian los bytes,
+ * los mapas y el modo de textura, también al volver desde la caché de bloques. */
+static void test_palette_jobs(void)
+{
+	uint32_t ts[R3D_TEX_SLOTS], ps[R3D_PAL_SLOTS];
+	const gx_frame *f = r3d_scene_build(&G, 3, 120, vram, ts, ps);
+	gx_frame *fr = (gx_frame *)(uintptr_t)f;
+	r3d_stats st;
+	uint64_t previous = 0;
+	unsigned changed = 0;
+
+	for (uint32_t i = 0; i < fr->npolys; i++) {
+		fr->poly[i].texparam = (fr->poly[i].texparam & ~(7u << 26)) | ((1u + i % 7u) << 26);
+		fr->poly[i].pltt = (i & 1u) ? 0x1FFFu : 0x3Fu;
+	}
+	use_bal = 0;
+	for (uint32_t round = 0; round < 12; round++) {
+		/* Colores y palabras de modo cambian; las paletas cruzan líneas de
+		 * 1 KB y envuelven al final del espacio lógico. */
+		for (uint32_t i = 0; i < R3D_VRAM_ZERO_OFF; i++)
+			vram[i] ^= (uint8_t)(round * 37u + (i >> 3));
+		ps[round % R3D_PAL_SLOTS] = (round & 1u) ? R3D_UNMAPPED : 0x80000u;
+		r3d_render_ref(f, vram, ts, ps, 0, ref);
+		const uint64_t hash = r3d_hash_image(ref);
+		changed += round && hash != previous;
+		previous = hash;
+		CHECK_EQ(render_core(f, ts, ps, 16, 2, 0, &st), 0);
+		CHECK_EQ(first_diff(), -1);
+		CHECK_EQ(render_core(f, ts, ps, 16, 2, R3D_F_TEXBLOCK, &st), 0);
+		CHECK_EQ(first_diff(), -1);
+		CHECK_EQ(render_core(f, ts, ps, 16, 2, 0, &st), 0);
+		CHECK_EQ(first_diff(), -1);
+	}
+	CHECK(changed > 0);
+}
+
+/* Todos los bytes de dos índices, anchos de 8 a 1024, filas que comparten una
+ * línea o la cruzan, dirección envolvente y cero transparente entre polígonos. */
+static void test_palette_pairs(void)
+{
+	uint32_t ts[R3D_TEX_SLOTS], ps[R3D_PAL_SLOTS];
+	const gx_frame *f = r3d_scene_build(&G, 3, 120, vram, ts, ps);
+	gx_frame *fr = (gx_frame *)(uintptr_t)f;
+	r3d_stats st;
+
+	for (uint32_t width = 0; width < 8; width++) {
+		for (uint32_t i = 0; i < R3D_VRAM_ZERO_OFF; i++)
+			vram[i] = (uint8_t)(i + width * 37u);
+		for (uint32_t i = 0; i < fr->npolys; i++) {
+			gx_poly *p = &fr->poly[i];
+
+			p->texparam = (3u << 26) | ((i & 1u) << 29) | (width << 20) | (width << 23) |
+				      ((i & 2u) ? 0xFFFFu : 0x7Fu) | (3u << 16);
+			p->pltt = (i & 4u) ? 0x1FFFu : 0x3Fu;
+		}
+		r3d_render_ref(f, vram, ts, ps, 0, ref);
+		for (uint32_t scalar = 0; scalar < 2; scalar++) {
+			CHECK_EQ(render_core(f, ts, ps, 16, 2, scalar ? R3D_F_CELLSCALAR : 0, &st), 0);
+			CHECK_EQ(first_diff(), -1);
+		}
+	}
+}
+
 void test_render3d(void);
 void test_render3d(void)
 {
@@ -129,6 +192,11 @@ void test_render3d(void)
 	       (unsigned long long)h0);
 	if (nseeds > 7)
 		CHECK_EQ(h0, R3D_GOLDEN_SEED7);
+	test_palette_jobs();
+	test_palette_pairs();
+#ifdef R3D_VERIFY_DECODE
+	CHECK_EQ(r3d_decode_errors, 0);
+#endif
 }
 
 /* Caché de texturas automática (nds_video_r3d_feedback): bloques hasta que se desbordan, celdas después; histéresis */

@@ -447,8 +447,20 @@ enum { G2D_C_GET, G2D_C_GET_BYTES, G2D_C_LIST, G2D_C_LIST_EL, G2D_C_LIST_BYTES, 
 extern uint64_t g2d_dma_cnt[G2D_ST_COUNT][G2D_C_COUNT];
 extern int g2d_stage;
 #define G2D_STAGE(x) (g2d_stage = (x))
+#ifdef G2D_PROF_HOST
+#include <time.h>
+static inline uint32_t g2d_host_ticks(void)
+{
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return (uint32_t)((uint64_t)t.tv_sec * 1000000000u + (uint32_t)t.tv_nsec);
+}
+#define G2D_T() g2d_host_ticks()
+#define G2D_ACC(c, field, t0) ((c)->prof.field += G2D_T() - (t0))
+#else
 #define G2D_T() 0u
 #define G2D_ACC(c, field, t0) ((void)(t0))
+#endif
 
 G2D_INLINE void g2d_get(void *ls, uint64_t ea, uint32_t size, uint32_t tag)
 {

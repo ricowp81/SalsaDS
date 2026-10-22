@@ -19,10 +19,11 @@ LDLIBS  := -lm
 # de ensamblador solo existen en PowerPC64 (qemu); el resto corre en todo host.
 # El rasterizador de tests/phase0/spe-raster3d, con la E/S de memcpy.
 R3D       := $(ROOT)/tests/phase0/spe-raster3d
+CORE_SRCS := $(wildcard $(ROOT)/src/core/*.c) $(wildcard $(ROOT)/src/bios/*.c)
 TEST_SRCS := $(wildcard $(CURDIR)/*.c) $(ROOT)/tests/phase0/ppe-bench/kernels.c \
              $(ROOT)/tests/phase0/ppe-bench/interp.c \
              $(wildcard $(ROOT)/src/gpu2d/*.c) $(wildcard $(ROOT)/src/gpu3d/*.c) $(wildcard $(ROOT)/src/audio/*.c) $(wildcard $(ROOT)/src/frontend/*.c) $(wildcard $(ROOT)/src/jit/*.c) \
-             $(wildcard $(ROOT)/src/cpu/*.c) $(ROOT)/src/core/save.c \
+             $(wildcard $(ROOT)/src/cpu/*.c) $(CORE_SRCS) \
              $(R3D)/r3d_core.c $(R3D)/r3d_ref.c $(R3D)/r3d_scene.c $(R3D)/r3d_io_mem.c \
              $(R3D)/r3d_selftest.c
 OBJS      := $(patsubst $(ROOT)/%.c,$(OUT)/obj/%.o,$(TEST_SRCS))

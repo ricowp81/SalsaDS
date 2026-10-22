@@ -19,7 +19,7 @@ ARM7_FLAGS := -marm -mcpu=arm7tdmi -O2 -Wall -Wextra -ffunction-sections -fdata-
               -D__NDS__ -D__BLOCKSDS__ -DARM7 -isystem $(BLOCKSDS)/libs/libnds/include -specs=$(BLOCKSDS)/sys/crts/ds_arm7.specs
 ARM7_LIBS  := -L$(BLOCKSDS)/libs/libnds/lib -Wl,--start-group -lnds7 -lc -Wl,--end-group
 
-ROMS := tablas gx geom gx3d snd hola cpu9 cpuarm mem irq dma ipc bios bios13 periph demo ocio carga save gfxprobe gfxrand gfxfx gfxfx1 gfxmos0 gfxmos1 gfxmos2 gfxmos3 gfxmos4 gfxmos5 gfxmos6 gfxmos7 gfxmos8 gfxmos9 gfxmos10 gfxmos11 gfxobjmap gfxobjmap1 gfxomap00 gfxomap01 gfxomap02 gfxomap03 gfxomap10 gfxomap11 gfxomap12 gfxomap13 gfxextpal gfxextpal1 gfxextpal2 gfxtext gfxaffine gfxaffine1 gfxext16 gfxbmp8 gfxbmpd gfxobj gfxobjaff gfxobjx gfxraster gfxwin gfxwinx gfxblend0 gfxblend1 gfxblend2 gfxblend3 gfxblend4 gfxblend5 gfxmode0 gfxmode2 gfxmode3
+ROMS := tablas gx geom gx3d snd hola cpu9 cpuarm mem irq dma ipc bios bios13 periph demo ocio carga save gfxprobe gfxrand gfxfx gfxfx1 gfxmos0 gfxmos1 gfxmos2 gfxmos3 gfxmos4 gfxmos5 gfxmos6 gfxmos7 gfxmos8 gfxmos9 gfxmos10 gfxmos11 gfxobjmap gfxobjmap1 gfxomap00 gfxomap01 gfxomap02 gfxomap03 gfxomap10 gfxomap11 gfxomap12 gfxomap13 gfxextpal gfxextpal1 gfxextpal2 gfxtext gfxaffine gfxaffine1 gfxext16 gfxbmp8 gfxbmpd gfxobj gfxobjaff gfxobjx gfxraster gfxwin gfxwinx gfxblend0 gfxblend1 gfxblend2 gfxblend3 gfxblend4 gfxblend5 gfxcaploop gfxmode0 gfxmode2 gfxmode3
 SRCS_hola := src/common/sds.c src/hola/main.c
 SRCS_cpu9 := src/common/sds.c $(wildcard src/cpu9/*.c) $(wildcard src/cpu9/*.S)
 SRCS_cpuarm := src/common/sds.c src/cpuarm/arm9.c src/cpuarm/helpers.S src/cpu9/thumb.S
@@ -47,6 +47,10 @@ SRCS7_tablas := src/tablas/arm7.c
 SRCS_gx := src/common/sds.c src/gx/arm9.c
 SRCS_geom := src/common/sds.c src/geom/arm9.c
 SRCS_gx3d := src/common/sds.c src/gx3d/arm9.c
+ROMS += gxcaploop
+SRCS_gxcaploop := src/common/sds.c src/gx3d/arm9.c
+FLAGS_gxcaploop := -DCAPTURE_REPEAT=600
+TITLE_gxcaploop := SalsaDS gxcaploop;captura con 3D repetida;SalsaDS
 SRCS_snd := src/common/sds.c src/snd/arm9.c
 SRCS7_snd := src/snd/arm7.c
 SRCS_demo := src/common/sds.c src/demo/arm9.c
@@ -145,6 +149,9 @@ TITLE_gfxblend4 := SalsaDS gfxblend4;escena grafica 9;SalsaDS
 SRCS_gfxblend5 := src/common/sds.c src/gfx/hand.c
 FLAGS_gfxblend5 := -DSCENE=9 -DBLEND=5
 TITLE_gfxblend5 := SalsaDS gfxblend5;escena grafica 9;SalsaDS
+SRCS_gfxcaploop := src/common/sds.c src/gfx/hand.c
+FLAGS_gfxcaploop := -DSCENE=9 -DBLEND=5 -DCAPTURE_REPEAT=600
+TITLE_gfxcaploop := SalsaDS gfxcaploop;captura repetida;SalsaDS
 SRCS_gfxobjx := src/common/sds.c src/gfx/hand.c
 FLAGS_gfxobjx := -DSCENE=7 
 TITLE_gfxobjx := SalsaDS gfxobjx;escena grafica 7;SalsaDS

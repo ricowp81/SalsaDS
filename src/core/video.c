@@ -124,12 +124,14 @@ void nds_video_init(struct nds *n)
 	struct nds_video *v = &n->vid;
 	struct nds_video_ops ops = v->ops;
 	const int use_ref = v->use_ref, use_ref3d = v->use_ref3d, vs_ref3d = v->vs_ref3d;
+	const int capture_classic = v->capture_classic;
 	const uint32_t band = v->r3d_band, units = v->r3d_units, r3d_flags = v->r3d_flags, win0 = v->r3d_win0, win1 = v->r3d_win1, texmode = v->r3d_texmode, defer = v->r3d_defer_line, hist_off = v->r3d_hist_off;
 	uint64_t (*clk)(void) = v->clock;
 
 	memset(v, 0, sizeof *v);
 	v->ops = ops;
 	v->use_ref = use_ref;
+	v->capture_classic = capture_classic;
 	v->use_ref3d = use_ref3d;
 	v->vs_ref3d = vs_ref3d;
 	v->r3d_band = band ? band : 16u;
@@ -341,6 +343,14 @@ static uint16_t cap_rd16(const uint8_t *p)
 	return (uint16_t)(p[0] | (p[1] << 8));
 }
 
+static void capture_compose(struct nds_video *v, const gpu2d_engine *e)
+{
+	if (v->capture_classic)
+		gpu2d_compose_engine(&v->comp, e);
+	else
+		gpu2d_compose_engine_ppe(&v->comp, e);
+}
+
 /* Si el cuadro empezó con la captura pedida (bit 31), la hace al terminar las líneas visibles: la imagen del motor A
  * (o solo la capa 3D) se mezcla con un banco de VRAM o con la FIFO y se escribe en la VRAM emulada; el bit 31 se apaga.
  * La imagen A se compone aquí, aparte, con el mismo código que la pantalla (referencia o compositor por líneas). */
@@ -360,7 +370,19 @@ static void capture_frame(struct nds *n, struct nds_vset *s)
 	const uint32_t woff = ((cap >> 18) & 3u) * 0x8000u, roff = ((cap >> 26) & 3u) * 0x8000u;
 	const uint32_t *i3 = (const uint32_t *)(uintptr_t)ge->img3d_ea;
 	const uint16_t *aimg = NULL;
-	gpu2d_engine e = *ge;
+	/* El descriptor que recibe el SPE via DMA conserva el contrato de 128 bytes
+	 * de gpu2d_frame, aunque aquí solo se componga el motor A. */
+	gpu2d_engine e __attribute__((aligned(128))) = *ge;
+	const int timed = v->clock != NULL;
+	const uint64_t t0 = timed ? v->clock() : 0;
+	uint64_t tmix;
+
+	v->cap.frames++;
+	v->cap.srcsel[srcsel]++;
+	v->cap.fifo += usefifo != 0;
+	v->cap.pixels += (uint64_t)width * height;
+	if (timed)
+		v->cap.timed++;
 
 	/* se apaga el bit 31 si nadie lo volvió a escribir durante el cuadro */
 	if (cur[1] == ge->regs[G2D_R_DISPCAP + 1])
@@ -371,12 +393,36 @@ static void capture_frame(struct nds *n, struct nds_vset *s)
 		e.regs[G2D_R_DISPCNT + 1] = (uint16_t)((e.regs[G2D_R_DISPCNT + 1] & ~3u) | 1u);
 		e.regs[G2D_R_MASTER_BRIGHT] = 0;
 		e.out_ea = (uint64_t)(uintptr_t)v->capimg;
-		if (v->use_ref)
-			gpu2d_ref_engine(&e, v->capimg);
-		else
-			gpu2d_compose_engine(&v->comp, &e);
+		if (!v->use_ref && v->ops.capture) {
+			const int rc = v->ops.capture(v->ops.ctx, &e);
+
+			if (timed)
+				v->cap.t_offload += v->clock() - t0;
+			if (rc == 0) {
+				v->cap.offload++;
+			} else {
+				const uint64_t tc = timed ? v->clock() : 0;
+
+				v->cap.offload_fail++;
+				capture_compose(v, &e);
+				v->cap.compose++;
+				if (timed)
+					v->cap.t_compose += v->clock() - tc;
+			}
+		} else {
+			if (v->use_ref)
+				gpu2d_ref_engine(&e, v->capimg);
+			else
+				capture_compose(v, &e);
+			v->cap.compose++;
+			if (timed)
+				v->cap.t_compose += v->clock() - t0;
+		}
 		aimg = v->capimg;
+	} else if (use3d && i3) {
+		v->cap.use3d++;
 	}
+	tmix = timed ? v->clock() : 0;
 	for (unsigned y = 0; y < height; y++) {
 		for (unsigned x = 0; x < width; x++) {
 			unsigned ar = 0, ag = 0, ab = 0, aa = 0, br = 0, bg = 0, bb = 0, ba = 0;
@@ -440,6 +486,12 @@ static void capture_frame(struct nds *n, struct nds_vset *s)
 	}
 	for (uint32_t pg = 0; pg < 8; pg++)
 		nds_video_vram_dirty(n, nds_vram_bank_offset((cap >> 16) & 3u) + pg * 0x4000u);
+	if (timed) {
+		const uint64_t t1 = v->clock();
+
+		v->cap.t_mix += t1 - tmix;
+		v->cap.t_total += t1 - t0;
+	}
 }
 
 void nds_video_frame_end(struct nds *n)
@@ -451,8 +503,17 @@ void nds_video_frame_end(struct nds *n)
 		return;
 	v->recording = 0;
 	if (s->frame.eng[0].regs[G2D_R_DISPCAP + 1] & 0x8000u) {
-		if (s->has3d && v->ops.wait3d)
+		if (s->has3d && v->ops.wait3d) {
+			const int timed = v->clock != NULL;
+			const uint64_t t0 = timed ? v->clock() : 0;
+
+			v->cap.wait3d++;
 			v->ops.wait3d(v->ops.ctx, v->cur); /* la captura lee la capa 3D: aquí sí hay que esperarla */
+			if (timed) {
+				v->cap.wait3d_timed++;
+				v->cap.t_wait3d += v->clock() - t0;
+			}
+		}
 		capture_frame(n, s);
 	}
 	s->powcnt1 = n->powcnt1;

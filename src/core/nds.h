@@ -278,7 +278,32 @@ struct nds_video_ops {
 	/* Con el aplazamiento: la pantalla B (que no usa el 3D) se entrega ya en la línea 262, antes de la espera del 3D, y `submit`
 	 * entrega después solo la A (el motor 3D sale por el A). NULL = `submit` entrega las dos en la línea aplazada. */
 	void (*submit_early)(void *ctx, int set, gpu2d_frame *frame);
+	/* Captura de pantalla: compone el descriptor ya preparado del motor A en `out_ea` y termina antes de volver. La línea 192
+	 * no puede aplazar esta escritura: la CPU y las DMA pueden leer la VRAM capturada durante el VBlank. NULL = PPE. */
+	int (*capture)(void *ctx, const gpu2d_engine *engine);
 	void *ctx;
+};
+
+/* Captura de pantalla (DISPCAPCNT): contadores del núcleo y ticks opcionales de `clock`.
+ * Los tiempos se acumulan únicamente cuando el frontend instala un reloj; los demás
+ * campos identifican el modo de captura que usa el juego. */
+struct nds_capture_stats {
+	uint64_t frames;              /* capturas ejecutadas */
+	uint64_t srcsel[4];           /* selección de fuentes (bits 29-30) */
+	uint64_t compose;             /* fuente A compuesta por el PPE */
+	uint64_t offload;             /* fuente A compuesta por el renderizador externo */
+	uint64_t offload_fail;        /* fallo del renderizador externo: respaldo PPE */
+	uint64_t use3d;               /* fuente A tomada de la capa 3D */
+	uint64_t fifo;                /* fuente B desde la FIFO de memoria principal */
+	uint64_t pixels;              /* píxeles escritos en la VRAM */
+	uint64_t wait3d;              /* veces que la línea 192 esperó al 3D */
+	uint64_t timed;               /* capturas con reloj */
+	uint64_t wait3d_timed;        /* esperas al 3D con reloj */
+	uint64_t t_wait3d;            /* ticks esperando al 3D */
+	uint64_t t_compose;           /* ticks componiendo A en el PPE */
+	uint64_t t_offload;           /* ticks esperando la composición externa de A */
+	uint64_t t_mix;               /* ticks mezclando y escribiendo la captura */
+	uint64_t t_total;             /* ticks de capture_frame completo */
 };
 
 struct nds_video {
@@ -294,12 +319,14 @@ struct nds_video {
 	uint32_t mpos;     /* posición (píxel del cuadro) de la FIFO de memoria principal */
 	uint32_t frames;
 	struct nds_video_ops ops;
-	uint16_t capimg[GPU2D_W * GPU2D_H]; /* imagen del motor A para la captura de pantalla (DISPCAPCNT) */
+	uint16_t capimg[GPU2D_W * GPU2D_H] __attribute__((aligned(128))); /* imagen del motor A para la captura de pantalla (DISPCAPCNT) */
 	uint16_t img[2][GPU2D_W * GPU2D_H]; /* host: RGBA5551 de los motores A y B del cuadro `last` */
 	int use_ref;        /* host: dibujar con la referencia píxel por píxel (1) o con el compositor por líneas (0) */
+	int capture_classic; /* comparación de captura PPE: usar el color final anterior */
 	gpu2d_ctx comp;     /* espacio de trabajo del compositor del host */
 	gpu2d_stats stat_sum[2]; /* host: suma de los contadores del compositor por motor (diagnóstico) */
 	uint32_t stat_frames;
+	struct nds_capture_stats cap; /* diagnóstico de DISPCAPCNT */
 	/* render 3D en el host (Fase 3.2) */
 	int use_ref3d;      /* rasterizar con la referencia (r3d_ref.c) en lugar del código del SPE (r3d_core.c) */
 	int vs_ref3d;       /* comparar los dos en cada cuadro (diagnóstico; cuenta las diferencias) */
@@ -510,8 +537,10 @@ void nds_snd_set_mode(struct nds *n, uint32_t mode);
 void nds_snd_set_ratio_adj(struct nds *n, float adj);
 
 /* Guardado del cartucho. El tipo por omisión sale del código de juego (nds_load_rom); `nds_save_attach` carga el
- * contenido de un archivo y fija el tipo por su tamaño (0 = bien, -1 = tamaño que no es de ningún chip).
+ * contenido de un archivo y fija el tipo por su tamaño (0 = bien, -1 = tamaño que no es de ningún chip,
+ * NDS_SAVE_INCOMPATIBLE = archivo antiguo incompatible; no modifica el chip ni su contenido).
  * `nds_save_take_dirty` dice si el juego escribió desde la última vez; `nds_save_data` da el contenido actual. */
+enum { NDS_SAVE_INCOMPATIBLE = -2 };
 int nds_save_attach(struct nds *n, const uint8_t *data, size_t len);
 /* Archivo opcional por juego (guardado.cfg: líneas «CODIGO=tipo», ver docs/guardado.md). Si alguna línea es de este juego, fuerza ese
  * chip (gana a la tabla y al tamaño del .sav). Devuelve 1 si aplicó alguna, 0 si no. Llamar tras cargar la ROM y antes de `nds_save_attach`. */

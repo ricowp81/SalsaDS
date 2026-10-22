@@ -39,6 +39,7 @@
  * procesadores corrieron y que la imagen de la demostración es la esperada, y sale.
  */
 #include <dirent.h>
+#include <errno.h>
 #include <io/pad.h>
 #include <malloc.h>
 #include <math.h>
@@ -718,6 +719,7 @@ static uint32_t poll_input(float dt, unsigned *tx, unsigned *ty)
 
 static char save_path[96];
 static uint32_t save_last_frame;
+static int save_blocked;
 
 static void save_name(void)
 {
@@ -738,6 +740,7 @@ static void save_load(void)
 	FILE *f;
 
 	save_name();
+	save_blocked = 0;
 	mkdir(SALSADS_DATA_DIR, 0777);
 	mkdir(SAVE_DIR, 0777);
 	f = fopen(SAVE_CFG_PATH, "rb");
@@ -755,7 +758,42 @@ static void save_load(void)
 		const size_t n = fread(buf, 1, sizeof buf, f);
 
 		fclose(f);
-		if (nds_save_attach(nds, buf, n) == 0)
+		int attached = nds_save_attach(nds, buf, n);
+
+		if (attached == NDS_SAVE_INCOMPATIBLE) {
+			/* El original queda intacto; la recuperación usa un archivo aparte. */
+			char original[sizeof save_path];
+
+			memcpy(original, save_path, sizeof original);
+			if (snprintf(save_path, sizeof save_path, "%.*s.flash256k.sav", (int)strlen(original) - 4, original) >= (int)sizeof save_path) {
+				save_blocked = 1;
+				salsads_log("guardado: nombre de recuperación demasiado largo; escritura bloqueada");
+				return;
+			}
+			salsads_log("guardado: se conserva %s; recuperación en %s", original, save_path);
+			f = fopen(save_path, "rb");
+			if (!f) {
+				if (errno != ENOENT) {
+					save_blocked = 1;
+					salsads_log("guardado: no se puede leer la recuperación; escritura bloqueada");
+					return;
+				}
+				salsads_log("guardado: Flash nueva de 256 KB; el archivo antiguo no se importa");
+				return;
+			}
+			const size_t recovered = fread(buf, 1, sizeof buf, f);
+			const int read_failed = ferror(f);
+
+			fclose(f);
+			if (read_failed || recovered != 262144 || nds_save_attach(nds, buf, recovered) != 0) {
+				save_blocked = 1;
+				salsads_log("guardado: recuperación ilegible o de tamaño incorrecto; escritura bloqueada");
+				return;
+			}
+			salsads_log("guardado: recuperación cargada, %u bytes", (unsigned)recovered);
+			return;
+		}
+		if (attached == 0)
 			salsads_log("guardado: %s, %u bytes (chip tipo %u)", save_path, (unsigned)n, (unsigned)nds->save.type);
 		else
 			salsads_log("guardado: %s tiene %u bytes, que no es el tamaño de ningún chip: se ignora", save_path, (unsigned)n);
@@ -773,7 +811,7 @@ static void save_flush(int force)
 	char tmp[100];
 	FILE *f;
 
-	if (!nds->save.dirty || (!force && frame_no - save_last_frame < SAVE_FLUSH_FRAMES))
+	if (save_blocked || !nds->save.dirty || (!force && frame_no - save_last_frame < SAVE_FLUSH_FRAMES))
 		return;
 	save_last_frame = frame_no;
 	d = nds_save_data(nds, &len);

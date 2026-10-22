@@ -1437,6 +1437,155 @@ static inline g2d_v8 v8_nz(g2d_v8 a)
 	return g2d_v8_andc(g2d_v8_splat(0xFFFF), g2d_v8_eq(a, g2d_v8_splat(0)));
 }
 
+#ifndef __SPU__
+static uint16_t ppe_color(const gpu2d_ctx *c, unsigned idx)
+{
+	return (idx & 0x8000u) ? (uint16_t)(idx & 0x7FFFu) : c->pal[idx];
+}
+
+/* Conserva el orden de pintado y los metadatos del camino SIMD, pero no
+ * construye máscaras de ocho carriles para seleccionar un solo píxel. */
+static void ppe_final(gpu2d_ctx *c, const g2d_job *j, unsigned p, uint16_t *out,
+                      const int *ent, int nent, int use_win, int need_fx)
+{
+	const unsigned bld = j->regs[G2D_R_BLDCNT];
+	const unsigned t1 = bld & 63u, t2 = (bld >> 8) & 63u, mode = (bld >> 6) & 3u;
+	const unsigned balpha = j->regs[G2D_R_BLDALPHA];
+	const int eva = g2d_ev(balpha & 31u), evb = g2d_ev((balpha >> 8) & 31u);
+	const int evy = g2d_ev(j->regs[G2D_R_BLDY] & 31u);
+	struct {
+		const g2d_v8 *pixels, *allow;
+		unsigned lid, priority;
+	} layers[16];
+	uint8_t target2[8], blendable[8], bright[8];
+
+	/* Estado por línea, no por píxel: objetivos y caminos sin mezcla.
+	 * Véase la consulta de DeSmuME registrada en THIRD_PARTY.md. */
+	for (unsigned lid = 0; lid < 8; lid++) {
+		const unsigned bit = lid == 7 ? 0u : lid == 6 ? 4u : lid;
+		const unsigned first = (t1 >> bit) & 1u;
+
+		target2[lid] = (uint8_t)((t2 >> bit) & 1u);
+		blendable[lid] = (uint8_t)(t2 && (lid >= 6 || (mode == 1 && first)));
+		bright[lid] = (uint8_t)(first && evy && mode >= 2 ? mode : 0);
+	}
+	for (int k = 0; k < nent; k++) {
+		const unsigned e = (unsigned)ent[k];
+
+		layers[k].pixels = e < 4 ? c->bg[e] + 8 : c->oidx[p] + 8;
+		layers[k].allow = c->allow[e < 4 ? e : 4];
+		layers[k].lid = e < 4 ? (e == 0 && j->bg_type[0] == BG_3D ? 7u : e) : 4u;
+		layers[k].priority = e - 4u;
+	}
+
+	for (unsigned x = 0; x < GPU2D_W; x++) {
+		const unsigned v = x / 8, lane = x % 8;
+		unsigned top = 0, topl = 5, sec = 0, secl = 5, meta = 0;
+		const int fxok = !use_win || c->allow[5][v].l[lane];
+		int found = 0;
+		uint16_t col;
+
+		for (int k = nent - 1; k >= 0; k--) {
+			const unsigned s = layers[k].pixels[v].l[lane];
+			unsigned lid = layers[k].lid, m = 0;
+
+			if (s == G2D_TRANSP || (use_win && !layers[k].allow[v].l[lane]))
+				continue;
+			if (lid == 4) {
+				m = c->omet[p][8 + v].l[lane];
+				if ((m & 7u) != layers[k].priority)
+					continue;
+				lid = (m & 0x18u) ? 6u : 4u;
+			} else if (lid == 7)
+				m = c->a3d[v].l[lane];
+			if (found) {
+				sec = s;
+				secl = lid;
+				break;
+			}
+			top = s;
+			topl = lid;
+			meta = m;
+			if (!need_fx || !blendable[lid] || (!fxok && lid < 6))
+				break;
+			/* Alfa 31: el segundo color tiene peso cero. Solo hace falta
+			 * averiguar su objetivo si podría impedir el brillo del 3D. */
+			if (lid == 7 && (m & 31u) == 31u && (!fxok || !bright[7]))
+				break;
+			found = 1;
+		}
+		col = ppe_color(c, top);
+		if (need_fx) {
+			const int second = target2[secl];
+
+			if (topl == 7) {
+				if (second) {
+					if ((meta & 31u) != 31u)
+						col = g2d_blend3d(col, ppe_color(c, sec), meta & 31u, meta >> 5);
+				} else if (fxok && bright[7])
+					col = mode == 2 ? g2d_bright_up(col, evy) : g2d_bright_down(col, evy);
+			} else if (topl == 6) {
+				if (second) {
+					const int a = (meta & 16u) ? (int)((meta >> 5) & 15u) + 1 : eva;
+					const int b = (meta & 16u) ? 16 - a : evb;
+
+					col = g2d_blend(col, ppe_color(c, sec), a, b);
+				} else if (fxok && bright[6])
+					col = mode == 2 ? g2d_bright_up(col, evy) : g2d_bright_down(col, evy);
+			} else if (fxok) {
+				if (blendable[topl] && second)
+					col = g2d_blend(col, ppe_color(c, sec), eva, evb);
+				else if (bright[topl])
+					col = mode == 2 ? g2d_bright_up(col, evy) : g2d_bright_down(col, evy);
+			}
+		}
+		out[x] = gpu2d_to_5551(g2d_master_bright(col, j->regs[G2D_R_MASTER_BRIGHT]));
+	}
+}
+
+/* Con BG0 3D como única capa, el segundo color siempre es el fondo.
+ * Consumir la línea cruda evita expandir índices/alfa y volver a recorrerlos
+ * para resolver prioridades que ya se conocen. La planificación no cambia. */
+static void ppe_3d_only(const gpu2d_ctx *c, const g2d_job *j, unsigned p, uint16_t *out)
+{
+	const unsigned bld = j->regs[G2D_R_BLDCNT], mode = (bld >> 6) & 3u;
+	const int blend = (bld & 0x2000u) != 0;
+	const int bright = !blend && (bld & 1u) && mode >= 2;
+	const int evy = g2d_ev(j->regs[G2D_R_BLDY] & 31u);
+	const uint16_t mb = j->regs[G2D_R_MASTER_BRIGHT];
+	const unsigned hofs = j->regs[G2D_R_BGHOFS] & 511u;
+	const uint16_t backdrop = c->pal[0];
+	uint16_t empty = backdrop;
+
+	if (bld & 32u) {
+		if (mode == 1 && blend) {
+			const unsigned a = j->regs[G2D_R_BLDALPHA];
+			empty = g2d_blend(empty, backdrop, g2d_ev(a & 31u), g2d_ev((a >> 8) & 31u));
+		} else if (mode >= 2)
+			empty = mode == 2 ? g2d_bright_up(empty, evy) : g2d_bright_down(empty, evy);
+	}
+	empty = gpu2d_to_5551(g2d_master_bright(empty, mb));
+	for (unsigned x = 0; x < GPU2D_W; x++) {
+		const unsigned xs = (x + hofs) & 511u;
+		const uint32_t px = xs < GPU2D_W ? c->l3d[p][xs] : 0;
+		const unsigned alpha = (px >> 24) & 31u;
+		uint16_t col;
+
+		if (!alpha) {
+			out[x] = empty;
+			continue;
+		}
+		col = g2d_3d_555(px);
+		if (blend) {
+			if (alpha != 31u)
+				col = g2d_blend3d(col, backdrop, (int)alpha, g2d_3d_lsb(px));
+		} else if (bright)
+			col = mode == 2 ? g2d_bright_up(col, evy) : g2d_bright_down(col, evy);
+		out[x] = gpu2d_to_5551(g2d_master_bright(col, mb));
+	}
+}
+#endif
+
 static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out)
 {
 	const uint32_t dc = j->dc;
@@ -1452,6 +1601,15 @@ static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out
 	const uint32_t tl_ = G2D_T();
 	uint32_t tf_;
 
+#ifndef __SPU__
+	if (c->ppe_final && !use_win && !(dc & G2D_DC_OBJ) && j->bg_type[0] == BG_3D &&
+	    j->bg_type[1] == BG_OFF && j->bg_type[2] == BG_OFF && j->bg_type[3] == BG_OFF) {
+		ppe_3d_only(c, j, p, out);
+		c->stats.fx_lines++;
+		G2D_ACC(c, cl_final, tl_);
+		return;
+	}
+#endif
 	/* capas */
 	for (int b = 0; b < GPU2D_NBG; b++) {
 		const int t = j->bg_type[b];
@@ -1502,6 +1660,13 @@ static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out
 				ent[nent++] = 4 + pr;
 		}
 		{
+#ifndef __SPU__
+			if (c->ppe_final) {
+				ppe_final(c, j, p, out, ent, nent, use_win, need_fx);
+				G2D_ACC(c, cl_final, tf_);
+				return;
+			}
+#endif
 			const g2d_v8 eva_v = g2d_v8_splat((uint16_t)eva), evb_v = g2d_v8_splat((uint16_t)evb), evy_v = g2d_v8_splat((uint16_t)evy);
 			const g2d_v8 mbf = g2d_v8_splat((uint16_t)g2d_ev(mb & 31));
 			const int mbmode = (mb >> 14) & 3;
@@ -1665,7 +1830,11 @@ static void compose_line(gpu2d_ctx *c, const gpu2d_engine *e, int y)
 	}
 }
 
+#ifdef __SPU__
 int gpu2d_compose_engine(gpu2d_ctx *c, const gpu2d_engine *e)
+#else
+static int compose_engine(gpu2d_ctx *c, const gpu2d_engine *e)
+#endif
 {
 	if (!pow2(e->bgpages) || !pow2(e->objpages) || e->bgpages > G2D_BG_PAGES_A || e->objpages > G2D_OBJ_PAGES_A)
 		return -1;
@@ -1745,3 +1914,17 @@ int gpu2d_compose_engine(gpu2d_ctx *c, const gpu2d_engine *e)
 	}
 	return 0;
 }
+
+#ifndef __SPU__
+int gpu2d_compose_engine(gpu2d_ctx *c, const gpu2d_engine *e)
+{
+	c->ppe_final = 0;
+	return compose_engine(c, e);
+}
+
+int gpu2d_compose_engine_ppe(gpu2d_ctx *c, const gpu2d_engine *e)
+{
+	c->ppe_final = 1;
+	return compose_engine(c, e);
+}
+#endif

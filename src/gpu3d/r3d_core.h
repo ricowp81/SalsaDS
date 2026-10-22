@@ -73,6 +73,9 @@ struct r3d_ctx {
 			uint32_t pltag[R3D_CL_PLINES], plstamp[R3D_CL_PLINES];
 			uint64_t tidbase[R3D_TID_MAX];   /* identidad (cur_base) de cada textura del cuadro */
 			uint16_t tidhash[512];           /* tabla de dispersión: índice en tidbase + 1; 0 = libre */
+			uint32_t cell_pxtab[256];        /* paleta convertida de los formatos indexados */
+			uint32_t cell_pairs[256][2] __attribute__((aligned(16))); /* dos índices de cuatro bits por byte */
+			uint32_t pair_key;
 		};
 	} __attribute__((aligned(128)));
 	uint64_t last_tag;

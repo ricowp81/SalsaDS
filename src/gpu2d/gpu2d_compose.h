@@ -127,8 +127,9 @@ typedef struct gpu2d_stats {
 	uint32_t fx_lines;      /* líneas con efectos de color por píxel */
 } gpu2d_stats;
 
-/* Tiempos por etapa en ticks del decrementador del SPE (79,8 MHz), solo con -DG2D_PROF en el SPE (ceros si no): cada
- * campo es lo que gastó el SPE en esa etapa durante toda la pantalla. `plan_*` y `cl_*` están dentro de `plan` y `compose`. */
+/* Tiempos por etapa: ticks del decrementador del SPE (79,8 MHz) con -DG2D_PROF,
+ * o nanosegundos monotónicos del host con -DG2D_PROF_HOST (ceros sin perfil).
+ * `plan_*` y `cl_*` están dentro de `plan` y `compose`; no se suman otra vez. */
 typedef struct gpu2d_prof {
 	uint32_t init;       /* antes de la línea 0: paleta, OAM, cambios, ventanas verticales */
 	uint32_t plan;       /* etapa 1 de todas las líneas (suma de plan_line) */
@@ -139,7 +140,7 @@ typedef struct gpu2d_prof {
 	uint32_t compose;    /* etapa 2 de todas las líneas (suma de compose_line) */
 	uint32_t cl_wait;    /* de eso: la espera de lo que pidió la etapa 1 y del búfer de salida */
 	uint32_t cl_layers;  /* de eso: dibujar las capas (fondos y OBJ, ventanas) */
-	uint32_t cl_final;   /* de eso: prioridades, efectos de color y conversión (el bucle de los 32 vectores) */
+	uint32_t cl_final;   /* de eso: prioridades, efectos y conversión; incluye la ruta PPE fusionada */
 	uint32_t cl_put;     /* de eso: pedir el DMA de salida */
 	uint32_t end_wait;   /* la espera final de las salidas */
 	uint32_t pad[2];
@@ -195,10 +196,17 @@ typedef struct gpu2d_ctx {
 	uint32_t oa_used;
 	gpu2d_stats stats;
 	gpu2d_prof prof;
+#ifndef __SPU__
+	int ppe_final; /* selección escalar de capas; no forma parte del contexto del SPE */
+#endif
 } gpu2d_ctx;
 
 /* Compone una pantalla en e->out_ea (192 líneas de 512 bytes). Devuelve 0 o un código negativo: -1 descriptor
  * inválido (tamaños que no son potencia de 2, páginas fuera de la VRAM). */
 int gpu2d_compose_engine(gpu2d_ctx *c, const gpu2d_engine *e);
+#ifndef __SPU__
+/* Misma planificación y capas, con color final escalar para el PPE. */
+int gpu2d_compose_engine_ppe(gpu2d_ctx *c, const gpu2d_engine *e);
+#endif
 
 #endif

@@ -141,6 +141,9 @@ Ninguna ROM escribe en 0x08000000-0x0AFFFFFF (ROM y SRAM de la ranura de GBA): `
 
 ## ROMs de gráficos 2D (`gfx*`, `src/gfx`)
 
+`gxcaploop` reutiliza las escenas de `gx3d` y activa 600 capturas de pantalla con 3D; alterna cuadros con captura y cuadros sin ella para ejercitar la presentación
+aplazada. Se construye con `tools/build-roms.sh gxcaploop`; la escena se elige con `tools/rom-seed.py`, igual que en `gx3d`.
+
 Montan escenas en los motores 2D (Fase 2.1) y dejan en RAM (`0x02380800`) una lista de píxeles con color conocido
 (`sds_expect_pixel`). `salsads-cpurun --expect --same-ab --vs-ref` comprueba la lista, que A y B den lo mismo y que el
 compositor coincida con el renderizador de referencia; `tools/gfx-compare.py` compara el motor A con melonDS (la ROM dispara
