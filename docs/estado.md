@@ -4,6 +4,15 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+
+## 2026-10-23 — MKDS: límite de la caché de celdas (cand-v004)
+- Host, demostración del título sin entrada, cuadros 2200–2499, dos unidades y celdas forzadas: 11 101,8 decodificados, 10 077,8 desalojos y 82,90 % de aciertos por cuadro; mediana de tres corridas: 1,589 ms.
+- Dispersión multiplicativa: 11 108,0 / 10 084,0, 82,89 %, 1,595 ms (+0,4 %); ocho vías: 11 096,3 / 10 072,3, 82,91 %, 1,638 ms (+3,1 %). Ambas descartadas: dos ideas sin ganancia clara; búsqueda detenida.
+- Traza de los 300 cuadros: 8 724 celdas distintas de media (5 173–10 363), suma de ambos SPE, frente a 1 024 plazas. El 78,6 % de los decodificados son primeras visitas; ampliar la caché vaciada por cuadro no alcanza para reducirlos a la mitad en esta escena.
+- Único cambio conservado: el reloj de `--r3d-win` acumula solo la ventana seleccionada, igual que sus contadores; antes dividía el tiempo de toda la corrida entre los cuadros de la ventana.
+- Sin cambios en el rasterizador, DMA, presupuesto del SPE ni interruptores; sin medir en la PS3 y sin acreditar la meta de 58 campos/s. La pantalla B no se aborda por la condición de parada.
+- Cifras, traza, capturas y logs locales en `build/rc2/`; validaciones y paquete en el informe de entrega.
+
 ## 2026-10-19 — Render 3D: texturas por celdas, reparto con historia y espera aplazada (rama r3d-reparto)
 
 - **Qué mostró la medición** (logs de la PS3, MKDS carrera pesada): los dos SPE del 3D tardaban 12–17 ms por cuadro porque el 56–61 % del dibujo eran

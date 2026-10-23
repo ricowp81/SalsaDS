@@ -186,7 +186,7 @@ static void render3d_host(struct nds *n, struct nds_vset *s)
 			}
 		}
 	}
-	if (v->clock)
+	if (v->clock && (!v->r3d_win1 || (v->frames >= v->r3d_win0 && v->frames < v->r3d_win1)))
 		v->r3d_ticks += v->clock() - t0;
 	if (!v->use_ref3d)
 		nds_video_r3d_feedback(n, &fb_sum);
