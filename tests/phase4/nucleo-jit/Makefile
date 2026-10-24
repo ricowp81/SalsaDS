@@ -14,11 +14,14 @@ SPUKIT  := 1
 
 SPU_EXTRA_CFLAGS := -DG2D_PROF -DGX_PROF -DGX_VEC
 
-SPU_PROGS    := gpu2d snd raster3d geom
+SPU_PROGS    := gpu2d snd raster3d raster3d_xdr geom
 gpu2d_SRCS   := ../../../src/spu/gpu2d/gpu2d.c ../../../src/gpu2d/gpu2d_compose.c
 gpu2d_STACK_MIN := 4096
 gpu2d_STACK_ARGS := --ignore __call_exitprocs --ignore __do_global_ctors_aux --ignore exit --ignore register_tm_clones
 raster3d_SRCS := ../../../src/spu/raster3d/raster3d.c ../../../src/gpu3d/r3d_core.c
+raster3d_xdr_SRCS := ../../../src/spu/raster3d/raster3d_xdr.c ../../../src/spu/raster3d/core_xdr.c
+raster3d_xdr_STACK_MIN := 8192
+raster3d_xdr_STACK_ARGS = $(raster3d_STACK_ARGS)
 raster3d_STACK_MIN := 8192
 raster3d_STACK_ARGS := --ignore __call_exitprocs --ignore __do_global_ctors_aux --ignore exit --ignore register_tm_clones
 # Motor de geometría (Fase 3.5): un SPE (src/spu/geom + src/gpu3d/gx_exec.c)

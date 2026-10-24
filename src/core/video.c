@@ -249,7 +249,7 @@ static void frame_begin_3d(struct nds *n, struct nds_vset *s)
 	j->flags |= v->r3d_flags;
 	if ((j->flags & R3D_F_XDR) && j->nunits <= 2)
 		j->xdr_ea = (uint64_t)(uintptr_t)r3d_xdr;
-	if (v->r3d_texmode == 1 || (v->r3d_texmode == 0 && !v->r3d_pol.cells))
+	if (!j->xdr_ea && (v->r3d_texmode == 1 || (v->r3d_texmode == 0 && !v->r3d_pol.cells)))
 		j->flags |= R3D_F_TEXBLOCK;
 	if (v->ops.submit3d)
 		v->ops.submit3d(v->ops.ctx, v->cur, j);

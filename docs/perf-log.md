@@ -5,6 +5,16 @@ host no reproducen los tiempos del Cell). Una fila por medición, la más
 reciente arriba. Formato: fecha, commit, prueba, entorno, antes, después,
 notas.
 
+## 2026-10-23 — Reserva local reducida con respaldo XDR (host)
+- MKDS, demostración sin entrada, dos unidades, cuadros 2200–2499; cifras por cuadro, suma de ambos SPE. DMA de 128 B; total = lecturas + escrituras.
+| Celdas | Decodificadas | Lecturas XDR | DMA total XDR | Aciertos locales | Holgura SPE (B) |
+|---|---:|---:|---:|---:|---:|
+| 448 | 840,5 | 11 193,3 | 12 033,7 | 53 719,5 (82,76 %) | 17 856 |
+| 384 | 841,7 | 11 287,0 | 12 128,7 | 53 625,8 (82,61 %) | 22 464 |
+| 256 | 843,4 | 11 485,0 | 12 328,5 | 53 427,7 (82,31 %) | 31 808 |
+- Elegidas 448: menor tráfico entre las tres, referencia idéntica en los 300 cuadros de cada tamaño; mínimo 8 192 B intacto. Sin XDR: 512 celdas y bloques intactos, programa separado, holgura 8 432 B.
+- Las líneas de VRAM/paletas conservan su tamaño; solo se reducen celdas y etiquetas. No son tiempos de PS3: falta confirmar coste de DMA y regresiones con XDR en los otros juegos.
+
 ## 2026-10-23 — Caché XDR: prototipo, enlace del SPE bloqueado
 - Host nativo, MKDS demostración sin entrada, dos unidades, celdas forzadas, ventana 2200–2499: base 11 101,8 decodificaciones/cuadro; XDR 839,2 (−92,4 %), 10 262,7 aciertos y 11 941,0 DMA de 128 B (≈1,46 MiB/cuadro).
 - `--vs-ref3d`: 0 diferencias en los 300 cuadros contabilizados. Base previa: mediana 1,589 ms; prototipo actual: una corrida 1,789 ms; solo orden relativo, no tiempo de PS3.

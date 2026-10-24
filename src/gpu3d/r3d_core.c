@@ -632,6 +632,7 @@ static R3D_SMALL void tc_cell_fill(r3d_ctx *c, const r3d_tex *tx, uint32_t *cell
 /* Clave exacta, sin direcciones: datos crudos y colores usados, antes de convertir
  * RGB555 o interpolar. El hash solo elige ranura; memcmp resuelve colisiones.
  * Se lee exclusivamente la instantánea del trabajo, también tras remapear VRAM. */
+#if !defined(__SPU__) || defined(R3D_XDR_ONLY)
 static R3D_SMALL uint32_t xc_key(r3d_ctx *c, const r3d_tex *tx, uint32_t cx, uint32_t cy, uint8_t key[64])
 {
 	const uint32_t fmt = tx->fmt, S = 1u << tx->sl;
@@ -707,6 +708,8 @@ static R3D_SMALL void xc_cell(r3d_ctx *c, const r3d_tex *tx, uint32_t *pixels, u
 	}
 }
 
+#endif
+
 /* Identidad pequeña (0..R3D_TID_MAX-1) de la textura `base` en este cuadro. Con más texturas que eso se vacía la caché de
  * celdas y se empieza otra vez (no pasa: los cuadros de los tres juegos de prueba usan menos de 150). */
 static uint32_t tc_tid(r3d_ctx *c, uint64_t base)
@@ -723,7 +726,7 @@ static uint32_t tc_tid(r3d_ctx *c, uint64_t base)
 		h = (h + 1u) & 511u;
 	}
 	if (c->ntid == R3D_TID_MAX) {
-		for (uint32_t i = 0; i < R3D_CELLS; i++)
+		for (uint32_t i = 0; i < c->cell_sets * R3D_CELL_WAYS; i++)
 			c->ctag[i] = 0xFFFFFFFFu;
 		memset(c->tidhash, 0, sizeof c->tidhash);
 		c->ntid = 0;
@@ -741,7 +744,7 @@ static void tc_reset(r3d_ctx *c)
 	c->xnext = 0;
 	c->xpending[0] = c->xpending[1] = 0;
 	if (c->cellmode) {
-		for (uint32_t i = 0; i < R3D_CELLS; i++) {
+		for (uint32_t i = 0; i < c->cell_sets * R3D_CELL_WAYS; i++) {
 			c->ctag[i] = 0xFFFFFFFFu;
 			c->cstamp[i] = 0;
 		}
@@ -885,7 +888,12 @@ static R3D_SMALL __attribute__((noinline)) const uint32_t *tc_cell(r3d_ctx *c, c
 {
 	const uint32_t tag = (c->tid << 16) | (cy << 8) | cx;
 	/* conjunto: las celdas vecinas de una fila caen en conjuntos vecinos; la textura y la fila los mezclan */
-	const uint32_t set = (cx + (cy << 3) + (cy << 1) + cy + (c->tid << 5) + (c->tid << 2) + c->tid) & (R3D_CELL_SETS - 1u);
+	const uint32_t hash = cx + (cy << 3) + (cy << 1) + cy + (c->tid << 5) + (c->tid << 2) + c->tid;
+#if defined(__SPU__) && !defined(R3D_XDR_ONLY)
+	const uint32_t set = hash & 127u;
+#else
+	const uint32_t set = c->cell_sets == R3D_XDR_CELL_SETS ? hash % R3D_XDR_CELL_SETS : hash & 127u;
+#endif
 	const uint32_t base = set * R3D_CELL_WAYS;
 	const v4u eq = veq(*(const v4u_ma *)(const void *)&c->ctag[base], vs(tag));
 	uint32_t victim = base, oldest = 0xFFFFFFFFu;
@@ -909,9 +917,11 @@ static R3D_SMALL __attribute__((noinline)) const uint32_t *tc_cell(r3d_ctx *c, c
 		if (c->ctag[victim] != 0xFFFFFFFFu)
 			c->st->tex_evict++;
 		c->st->tex_misses++;
+#if !defined(__SPU__) || defined(R3D_XDR_ONLY)
 		if (c->job.xdr_ea)
 			xc_cell(c, tx, c->cell[victim], cx, cy);
 		else
+#endif
 			tc_cell_fill(c, tx, c->cell[victim], cx * 4u, cy * 4u);
 #ifdef R3D_VERIFY_DECODE
 		for (uint32_t k = 0; k < 16; k++)
@@ -1150,7 +1160,16 @@ int r3d_core_render(r3d_ctx *c, const r3d_job *j, r3d_stats *st)
 	n = hdr->npolys > GX_MAX_POLYS ? GX_MAX_POLYS : hdr->npolys;
 	st->polys = n;
 	r3d_rstate_init(&c->rs, hdr, j->flags);
+#ifdef R3D_XDR_ONLY
+	c->cellmode = 1;
+	c->cell_sets = R3D_XDR_CELL_SETS;
+#elif defined(__SPU__)
 	c->cellmode = (j->flags & R3D_F_TEXBLOCK) == 0;
+	c->cell_sets = 128u;
+#else
+	c->cellmode = j->xdr_ea || (j->flags & R3D_F_TEXBLOCK) == 0;
+	c->cell_sets = j->xdr_ea ? R3D_XDR_CELL_SETS : 128u;
+#endif
 	tc_reset(c);
 	memset(c->btick, 0, sizeof c->btick);
 	{

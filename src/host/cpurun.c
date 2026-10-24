@@ -187,6 +187,9 @@ static void print_r3d_stats(void)
 		       s->tex_px ? 100.0 * (1.0 - (double)(s->tex_misses - s->xdr_hits) / (double)s->tex_px) : 100.0, (s->tex_misses - s->xdr_hits) / n,
 		       s->tex_evict / n, s->line_miss / n, s->pal_miss / n, s->dma_bytes / n);
 	printf("XDR por cuadro: aciertos %.1f, DMA %.1f, decodificadas %.1f\n", s->xdr_hits / n, s->xdr_dma / n, (s->tex_misses - s->xdr_hits) / n);
+	printf("Local por cuadro: aciertos %.1f (%.2f %%), lecturas XDR %.1f\n",
+	       (s->tex_px - s->tex_misses) / n, s->tex_px ? 100.0 * (1.0 - (double)s->tex_misses / s->tex_px) : 100.0,
+	       s->xdr_dma ? s->tex_misses / n : 0.0);
 	if (r3d_defer_sim)
 		printf("APLAZAR: línea %u, %u trabajos verificados, %u distintos del cuadro de línea 0, máximo %u en vuelo: %s\n",
 		       v->r3d_defer_line, fk_checked, fk_bad, fk_maxq, fk_bad ? "NO ES SEGURO" : "seguro");

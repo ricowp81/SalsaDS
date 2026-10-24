@@ -71,6 +71,7 @@
 #include "spu_gpu2d_bin.h"
 #include "spu_snd_bin.h"
 #include "spu_raster3d_bin.h"
+#include "spu_raster3d_xdr_bin.h"
 #include "spu_geom_bin.h"
 #include "frontend/layout.h"
 #include "platform/ps3/audio_out.h"
@@ -1429,8 +1430,8 @@ static void log_stats(void)
 			    r->tex_px ? 100.0 * (1.0 - (double)(r->tex_misses - r->xdr_hits) / (double)r->tex_px) : 100.0, (r->tex_misses - r->xdr_hits) / n, r->tex_evict / n,
 			    r->line_miss / n, r->pal_miss / n, r->t_sort / n / hz, r->t_list / n / hz, r->t_fetch / n / hz, r->t_raster / n / hz, r->t_tex / n / hz,
 			    r->t_setup / n / hz, r->t_rows / n / hz, r->t_pix / n / hz, r->t_post / n / hz, r->t_out / n / hz);
-		salsads_log("DATO raster3d-xdr: por cuadro, aciertos %.1f, DMA %.1f (128 B), decodificadas %.1f",
-			    r->xdr_hits / n, r->xdr_dma / n, (r->tex_misses - r->xdr_hits) / n);
+		salsads_log("DATO raster3d-xdr: por cuadro, aciertos %.1f, DMA %.1f (128 B), decodificadas %.1f, aciertos locales %.1f",
+			    r->xdr_hits / n, r->xdr_dma / n, (r->tex_misses - r->xdr_hits) / n, (r->tex_px - r->tex_misses) / n);
 		salsads_log("DATO raster3d-latencia: por cuadro, desde el envío (línea 0) hasta: llegada del PPE a la línea 262 (la 192 si el cuadro captura) %.2f ms, fin del SPE0 %.2f ms, "
 			    "fin del SPE1 %.2f ms (si el SPE ya había terminado cuenta la llegada); SPE ya terminados al llegar: %.2f de 2; "
 			    "espera del 3D aplazada a la línea %u del cuadro siguiente (0 = en la 262), composición 2D de la pantalla A %u us, caché de texturas: %s",
@@ -2788,8 +2789,10 @@ int main(void)
 	nds->vid.r3d_band = 16;
 	nds->vid.r3d_units = 1;
 	if (spu_on) {
+		struct stat xst;
+		const int use_xdr = stat(R3D_XDR_FLAG, &xst) == 0;
 		for (int u = 0; u < 2; u++)
-			wk3d[u] = spukit_worker_start(spu_raster3d_bin, u ? "r3d-1" : "r3d-0", 0);
+			wk3d[u] = spukit_worker_start(use_xdr ? spu_raster3d_xdr_bin : spu_raster3d_bin, u ? "r3d-1" : "r3d-0", 0);
 		if (wk3d[0] && wk3d[1]) {
 			if (r3d_spe_selftest() == 0) {
 				r3d_on = 1;
@@ -2799,15 +2802,15 @@ int main(void)
 				{
 					struct stat rst;
 
-					if (stat(R3D_XDR_FLAG, &rst) == 0)
+					if (use_xdr)
 						nds->vid.r3d_flags |= R3D_F_XDR;
 					salsads_log("render 3D: caché XDR %s (8 MiB, dos particiones)", (nds->vid.r3d_flags & R3D_F_XDR) ? "activa" : "inactiva");
 					nds->vid.r3d_alt = stat(R3D_ALT_FLAG, &rst) == 0;
 					salsads_log("render 3D: dos SPE, bandas de 16 líneas con reparto %s (autoprueba contra el PPE: igual)",
 						    nds->vid.r3d_alt ? "alterno (existe " R3D_ALT_FLAG ")" : "por costo");
-					nds->vid.r3d_texmode = stat(R3D_TEX_BLOQUES_FLAG, &rst) == 0 ? 1u : stat(R3D_TEX_CELDAS_FLAG, &rst) == 0 ? 2u : 0u;
+					nds->vid.r3d_texmode = use_xdr ? 2u : stat(R3D_TEX_BLOQUES_FLAG, &rst) == 0 ? 1u : stat(R3D_TEX_CELDAS_FLAG, &rst) == 0 ? 2u : 0u;
 					salsads_log("render 3D: caché de texturas %s",
-						    nds->vid.r3d_texmode == 1 ? "siempre por bloques de 256 texeles (existe " R3D_TEX_BLOQUES_FLAG ")"
+						    use_xdr ? "celdas con respaldo XDR" : nds->vid.r3d_texmode == 1 ? "siempre por bloques de 256 texeles (existe " R3D_TEX_BLOQUES_FLAG ")"
 						    : nds->vid.r3d_texmode == 2 ? "siempre por celdas de 4×4 (existe " R3D_TEX_CELDAS_FLAG ")"
 						    : "automática (bloques de 256 hasta que se desbordan, después celdas de 4×4)");
 					nds->vid.r3d_hist_off = stat(R3D_SIN_HISTORIA_FLAG, &rst) == 0;

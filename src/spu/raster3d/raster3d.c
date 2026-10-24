@@ -6,12 +6,12 @@
  * al arrancar. Dos SPE comparten un cuadro (docs/fase3.md, 3.2: reparto de SPE).
  *
  * Presupuesto del local store (256 KB; lo mide el enlace: `spu-size` y tools/spu-stack.py):
- *   contexto r3d_ctx ≈ 178 KB (182 656 B): color 2 × 18 KB (doble búfer de salida; el segundo, mientras se ordena, guarda los
- *   trozos de polígonos y el auxiliar del radix), profundidad 18 KB, atributos 18 KB, caché de texturas 64 bloques
- *   decodificados de 1 KB, líneas de VRAM 40 × 128 B, paleta convertida 1 KB, orden y extensiones de 2048 polígonos 16 KB,
- *   lista de la banda 4 KB, lotes de polígonos y vértices 2 × 11 KB;
- *   código ≈ 55 KB (la línea vectorial son cuatro variantes de ≈ 5-6 KB); la pila, lo que queda (mínimo 8 KB,
- *   raster3d_STACK_MIN).
+ *   habitual: texto 60 808 B, datos 800 B, bss 184 480 B; pila máxima 7 392 B, holgura 8 432 B.
+ *   XDR: texto 62 888 B, datos 800 B, bss 172 960 B; pila máxima 7 440 B, holgura 17 856 B.
+ *   La variante XDR usa 448 celdas (28 KiB), cuatro vías, y conserva las líneas de VRAM y paletas.
+ *   El programa habitual conserva 512 celdas y 64 bloques de 1 KiB, en memoria compartida entre modos.
+ *   Dos programas elegidos al arrancar permiten reducir la reserva XDR sin encoger el modo apagado;
+ *   reducir solo cell[] dentro de la unión no libera memoria, pues dominan los bloques. Mínimo: 8 192 B.
  */
 #include <spukit/spu.h>
 #include <sys/spu_thread.h>

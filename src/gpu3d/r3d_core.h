@@ -17,15 +17,28 @@
 #define R3D_PBATCH 16
 #define R3D_SORT_CHUNK 64
 #define R3D_TC_WAYS 4
+#ifdef R3D_XDR_ONLY
+#define R3D_TC_SETS 1 /* modo de bloques inaccesible en este programa */
+#else
 #define R3D_TC_SETS 16
+#endif
 #define R3D_TC_BLOCKS (R3D_TC_WAYS * R3D_TC_SETS)
 #define R3D_LC_LINES 16  /* líneas de 128 bytes de la memoria de texturas */
 #define R3D_LP_LINES 8   /* ídem, de la de paletas */
 /* Caché de celdas (3.9): celdas de 4×4 texeles ya decodificados, y líneas grandes de la memoria de texturas y de paletas. */
 #define R3D_CELL_WAYS 4
+/* Cuatro vías; el tamaño XDR se fija al compilar para comparar el tráfico en el host. */
+#ifndef R3D_XDR_CELL_SETS
+#define R3D_XDR_CELL_SETS 112
+#endif
+_Static_assert(R3D_XDR_CELL_SETS > 0 && R3D_XDR_CELL_SETS <= 128, "conjuntos XDR fuera de la reserva local");
+#ifdef R3D_XDR_ONLY
+#define R3D_CELL_SETS R3D_XDR_CELL_SETS
+#else
 #define R3D_CELL_SETS_LOG2 7
 #define R3D_CELL_SETS (1 << R3D_CELL_SETS_LOG2)
-#define R3D_CELLS (R3D_CELL_WAYS * R3D_CELL_SETS) /* 512 celdas de 64 B = 32 KB */
+#endif
+#define R3D_CELLS (R3D_CELL_WAYS * R3D_CELL_SETS) /* 64 B por celda; 512 habituales o la variante XDR */
 #define R3D_CL_SHIFT 10                           /* líneas de 1 KB */
 #define R3D_CL_BYTES (1 << R3D_CL_SHIFT)
 #define R3D_CL_DLINES 16                          /* de la memoria de texturas: 4 conjuntos de 4 vías */
@@ -96,6 +109,7 @@ struct r3d_ctx {
 	uint32_t pal_addr, pal_n; /* de qué paleta es pxtab y cuántas entradas tiene (0 = ninguna) */
 	/* celdas (3.9) */
 	int cellmode;             /* 1 = caché de celdas; 0 = bloques */
+	uint32_t cell_sets;      /* 128 sin XDR; reducido con respaldo en memoria principal */
 	uint32_t ntid, tid;       /* texturas vistas en el cuadro y la del polígono que se dibuja */
 	uint32_t last_cid;        /* celda (fila << 8 | columna) del último texel pedido; ~0 = ninguna */
 	const uint32_t *last_cell;
