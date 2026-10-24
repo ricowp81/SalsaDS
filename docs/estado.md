@@ -5,6 +5,16 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-23 — Caché XDR con reserva local reducida (cand-v004)
+- Cambio `77afc33`: 448 celdas, cuatro vías; programa SPE elegido al arrancar con `texturas-xdr`. Apagado conserva bloques y 512 celdas; encendido fuerza celdas. La unión de cachés impedía liberar memoria reduciendo solo el array.
+- Host MKDS, cuadros 2200–2499: 840,5 decodificadas, 11 193,3 lecturas XDR y 53 719,5 aciertos locales/cuadro; menor tráfico que 384 y 256 celdas. Tabla en `perf-log.md`; sin extrapolar tiempos a PS3.
+- Holguras: 3D XDR 17 856 B, habitual 8 432 B (mínimo 8 192 intacto); 2D 9 056 B, sonido 178 384 B, geometría 146 256 B. Presupuesto actualizado en la cabecera del SPE.
+- Referencia idéntica con XDR activa/inactiva en MKDS (1 174 cuadros), NSMB (2 195) y SM64DS (2 298); MKDS apagado conserva los contadores del ejecutable anterior.
+- Metroid: tres instantáneas (menú, campaña, nivel) idénticas en bloques/celdas/XDR; falta el respaldo para completar `--vs-ref3d`. Clang UBSan avisa de la resta de punteros de la cabecera, ya presente antes de este cambio.
+- `tools/build.sh test-host` terminó en 0 (LE, BE, SAN, hashes y lockstep); variante reducida con ASan/UBSan también en 0. Compilación completa y paquete limpios; verificadores de publicación y SPDX en 0.
+- Paquete `build/salsads-v0.0.4-rc3.pkg`, SHA-256 `66145fe496a34e924464fb22385432ad4a82fae7202f6b45e1ae4dfcad3191a3`; evidencia local en `build/rc3-local/`.
+- Pendiente PS3: MKDS carrera pesada con/sin `texturas-xdr`; NSMB, SM64DS y Metroid con XDR para detectar regresiones por DMA. Sin envío ni publicación.
+
 ## 2026-10-23 — Prototipo XDR detenido por holgura del SPE (cand-v004)
 - Segunda caché de celdas: 8 MiB estáticos, dos particiones exclusivas por SPE; clave de contenido comparada completa, sin falsos aciertos por colisiones.
 - MKDS, host, cuadros 2200–2499: 11 101,8 → 839,2 decodificadas/cuadro (−92,4 %), 10 262,7 aciertos XDR; referencia idéntica. Detalle en `perf-log.md`.
