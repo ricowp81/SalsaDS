@@ -5,6 +5,15 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-23 — Armado con proyección compartida (cand-v004, rc4)
+- `d2608d7`: evita copias sin recorte y reutiliza la proyección de las tiras con VIEWPORT como clave; reglas de recorte, salida y DMA intactas.
+- MKDS host, armado: medias de tres parejas 0,167412 → 0,155151 ms/cuadro (−7,3 %; detalle y variación en `perf-log.md`). No acredita ≤ 3 ms ni espera ≈ 0 en la PS3.
+- A/B: `geometria-sin-reuso` en el directorio de datos; host `--geometria-sin-reuso` (también diferido). La ruta apagada conserva la estructura ampliada; comparar además con rc3.
+- Referencia idéntica y hashes iguales con/sin reutilización: MKDS 1174, NSMB 2195 y SM64DS 2298 cuadros rasterizados por modo. Pruebas dirigidas: viewport a mitad de tira, recorte, descarte y ventanas de salida.
+- Holguras SPE: geometría 144 272 B, 3D 8432 B, 3D XDR 17 856 B, 2D 9056 B y sonido 178 384 B; enlace con mínimo 8192 en todos. Compilación completa y paquete limpios; LE/SAN y unitarias BE verdes. `test-host` incompleto: GCC ppc64 cayó dos veces con `cc1: Segmentation fault` al compilar `salsads-gxparidad`; parada reglamentaria, tercer intento automático detenido.
+- Paquete `build/salsads-v0.0.4-rc4.pkg`, SHA-256 `b8145eb12420c14df162739e1530dc1d29c781e198102e1541f2f24788676d02`; evidencia local en `build/rc4/`. Verificadores de publicación y SPDX en 0; validación BE de ROMs/JIT pendiente antes de instalar.
+- NSMB: «línea» 45,81 ms a los 232,607 s, espera del raster 3D con mucho DMA XDR; causa probable, sin arreglo. Propuesta no bloqueante del SWAP y guion A/B de MKDS en `perf-log.md`; sin envío a consola.
+
 ## 2026-10-23 — Caché XDR con reserva local reducida (cand-v004)
 - Cambio `77afc33`: 448 celdas, cuatro vías; programa SPE elegido al arrancar con `texturas-xdr`. Apagado conserva bloques y 512 celdas; encendido fuerza celdas. La unión de cachés impedía liberar memoria reduciendo solo el array.
 - Host MKDS, cuadros 2200–2499: 840,5 decodificadas, 11 193,3 lecturas XDR y 53 719,5 aciertos locales/cuadro; menor tráfico que 384 y 256 celdas. Tabla en `perf-log.md`; sin extrapolar tiempos a PS3.
