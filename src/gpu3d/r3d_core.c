@@ -629,6 +629,84 @@ static R3D_SMALL void tc_cell_fill(r3d_ctx *c, const r3d_tex *tx, uint32_t *cell
 	}
 }
 
+/* Clave exacta, sin direcciones: datos crudos y colores usados, antes de convertir
+ * RGB555 o interpolar. El hash solo elige ranura; memcmp resuelve colisiones.
+ * Se lee exclusivamente la instantánea del trabajo, también tras remapear VRAM. */
+static R3D_SMALL uint32_t xc_key(r3d_ctx *c, const r3d_tex *tx, uint32_t cx, uint32_t cy, uint8_t key[64])
+{
+	const uint32_t fmt = tx->fmt, S = 1u << tx->sl;
+	uint32_t h = 2166136261u;
+	memset(key, 0, 64);
+	key[0] = (uint8_t)fmt;
+	key[1] = (uint8_t)tx->c0t;
+	if (fmt == 5) {
+		const uint32_t da = tx->addr + (cy * (S >> 2) + cx) * 4u;
+		const uint32_t ia = 0x20000u + ((da & 0x1FFFFu) >> 1) + (((da >> 18) & 1u) ? 0x10000u : 0u);
+		const uint8_t *q = cl_line(c, 0, ia & 0x7FFFFu);
+		const uint32_t pi = q[0] | ((uint32_t)q[1] << 8), mode = pi >> 14;
+		const uint32_t pa = tx->pal + (pi & 0x3FFFu) * 4u;
+		key[2] = (uint8_t)mode;
+		memcpy(key + 16, cl_line(c, 0, da & 0x7FFFFu), 4);
+		memcpy(key + 32, cl_line(c, 1, pa & 0x1FFFFu), 4);
+		if (mode == 0 || mode == 2)
+			memcpy(key + 36, cl_line(c, 1, (pa + 4u) & 0x1FFFFu), 4);
+	} else {
+		const uint32_t bpp = fmt == 2 ? 2u : fmt == 3 ? 4u : fmt == 7 ? 16u : 8u;
+		for (uint32_t r = 0; r < 4; r++) {
+			const uint32_t a = tx->addr + ((cy * 4u + r) * S + cx * 4u) * bpp / 8u;
+			uint8_t *d = key + 16 + r * bpp / 2u;
+			memcpy(d, cl_line(c, 0, a & 0x7FFFFu), bpp / 2u);
+			if (fmt != 7) {
+				for (uint32_t x = 0; x < 4; x++) {
+					uint32_t idx = (d[x * bpp / 8u] >> ((x * bpp) & 7u)) & ((1u << bpp) - 1u);
+					if (fmt == 1) idx &= 31u;
+					if (fmt == 6) idx &= 7u;
+					memcpy(key + 32 + (r * 4u + x) * 2u,
+					       cl_line(c, 1, (tx->pal + idx * 2u) & 0x1FFFFu), 2);
+				}
+			}
+		}
+	}
+	for (uint32_t k = 0; k < 64; k += 4) {
+		uint32_t word;
+		memcpy(&word, key + k, sizeof word);
+		h = (h ^ word) * 16777619u;
+	}
+	h ^= h >> 16;
+	return h & (R3D_XDR_ENTRIES - 1u);
+}
+
+/* Cada unidad es la única lectora/escritora de su partición. Los trabajos de
+ * esa unidad son secuenciales. Dos búferes permiten terminar el put mientras
+ * sigue el rasterizado; antes de reutilizarlos o leer su destino se espera.
+ * Se drenan ambos al acabar el trabajo. Todas las DMA son 128 B alineados. */
+static R3D_SMALL void xc_cell(r3d_ctx *c, const r3d_tex *tx, uint32_t *pixels, uint32_t cx, uint32_t cy)
+{
+	uint8_t key[64] __attribute__((aligned(16)));
+	const uint32_t slot = xc_key(c, tx, cx, cy, key);
+	const uint64_t ea = c->job.xdr_ea + ((uint64_t)c->job.unit * R3D_XDR_ENTRIES + slot) * 128u;
+	const uint32_t b = c->xnext++ & 1u, tag = 10u + b;
+	r3d_xentry *e = &c->xbuf[b];
+	r3d_wait(1u << tag);
+	if (c->xpending[b ^ 1u] == ea)
+		r3d_wait(1u << (10u + (b ^ 1u)));
+	c->xpending[b] = 0;
+	r3d_get(e, ea, sizeof *e, tag);
+	c->st->xdr_dma++;
+	r3d_wait(1u << tag);
+	if (!memcmp(e->key, key, sizeof key)) {
+		memcpy(pixels, e->pixels, 64);
+		c->st->xdr_hits++;
+	} else {
+		tc_cell_fill(c, tx, pixels, cx * 4u, cy * 4u);
+		memcpy(e->key, key, sizeof key);
+		memcpy(e->pixels, pixels, 64);
+		r3d_put(e, ea, sizeof *e, tag);
+		c->xpending[b] = ea;
+		c->st->xdr_dma++;
+	}
+}
+
 /* Identidad pequeña (0..R3D_TID_MAX-1) de la textura `base` en este cuadro. Con más texturas que eso se vacía la caché de
  * celdas y se empieza otra vez (no pasa: los cuadros de los tres juegos de prueba usan menos de 150). */
 static uint32_t tc_tid(r3d_ctx *c, uint64_t base)
@@ -656,10 +734,12 @@ static uint32_t tc_tid(r3d_ctx *c, uint64_t base)
 	return c->ntid++;
 }
 
-static const uint32_t *tc_cell(r3d_ctx *c, const r3d_tex *tx, uint32_t cx, uint32_t cy);
+static R3D_SMALL __attribute__((noinline)) const uint32_t *tc_cell(r3d_ctx *c, const r3d_tex *tx, uint32_t cx, uint32_t cy);
 
 static void tc_reset(r3d_ctx *c)
 {
+	c->xnext = 0;
+	c->xpending[0] = c->xpending[1] = 0;
 	if (c->cellmode) {
 		for (uint32_t i = 0; i < R3D_CELLS; i++) {
 			c->ctag[i] = 0xFFFFFFFFu;
@@ -801,7 +881,7 @@ static void fetch_verts(r3d_ctx *c, uint32_t b, uint32_t m)
 
 /* La celda (cx, cy) de la textura vigente (tc_bind): la busca en la caché (4 vías: las cuatro etiquetas de un conjunto son una sola
  * carga de 16 bytes; la menos reciente se reemplaza) o la decodifica. */
-static const uint32_t *tc_cell(r3d_ctx *c, const r3d_tex *tx, uint32_t cx, uint32_t cy)
+static R3D_SMALL __attribute__((noinline)) const uint32_t *tc_cell(r3d_ctx *c, const r3d_tex *tx, uint32_t cx, uint32_t cy)
 {
 	const uint32_t tag = (c->tid << 16) | (cy << 8) | cx;
 	/* conjunto: las celdas vecinas de una fila caen en conjuntos vecinos; la textura y la fila los mezclan */
@@ -829,7 +909,10 @@ static const uint32_t *tc_cell(r3d_ctx *c, const r3d_tex *tx, uint32_t cx, uint3
 		if (c->ctag[victim] != 0xFFFFFFFFu)
 			c->st->tex_evict++;
 		c->st->tex_misses++;
-		tc_cell_fill(c, tx, c->cell[victim], cx * 4u, cy * 4u);
+		if (c->job.xdr_ea)
+			xc_cell(c, tx, c->cell[victim], cx, cy);
+		else
+			tc_cell_fill(c, tx, c->cell[victim], cx * 4u, cy * 4u);
 #ifdef R3D_VERIFY_DECODE
 		for (uint32_t k = 0; k < 16; k++)
 			if (c->cell[victim][k] != r3d_decode(tx, cx * 4u + (k & 3u), cy * 4u + (k >> 2), vf_rdt, vf_rdp, c))
@@ -1044,7 +1127,7 @@ int r3d_core_render(r3d_ctx *c, const r3d_job *j, r3d_stats *st)
 	c->st = st;
 	c->job = *j;
 	if (j->band == 0 || j->band > R3D_BAND_MAX || (R3D_H % j->band) != 0 || j->nunits == 0 || j->unit >= j->nunits ||
-	    (j->out_ea & 127u) || (j->frame_ea & 127u) || (j->vram_ea & 15u))
+	    (j->xdr_ea && ((j->xdr_ea & 127u) || j->nunits > 2)) || (j->out_ea & 127u) || (j->frame_ea & 127u) || (j->vram_ea & 15u))
 		return -1;
 	nbands = R3D_H / j->band;
 	if (j->flags & R3D_F_BLANK) {
@@ -1103,7 +1186,7 @@ int r3d_core_render(r3d_ctx *c, const r3d_job *j, r3d_stats *st)
 		r3d_put(c->btick, j->bt_ea + 128u * j->unit, sizeof c->btick, R3D_TAG_HDR);
 		r3d_wait(1u << R3D_TAG_HDR);
 	}
-	r3d_wait((1u << R3D_TAG_OUT) | (1u << (R3D_TAG_OUT + 1)));
+	r3d_wait((1u << R3D_TAG_OUT) | (1u << (R3D_TAG_OUT + 1)) | (3u << 10));
 	R3D_ACC(st->t_total, t0);
 	return 0;
 }

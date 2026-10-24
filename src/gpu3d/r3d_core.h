@@ -39,6 +39,11 @@ enum { R3D_TAG_HDR = 0, R3D_TAG_SORT = 1, R3D_TAG_POLY = 3, R3D_TAG_VTX = 5, R3D
 #define R3D_TAIL_OFF offsetof(gx_frame, npolys)
 #define R3D_TAIL_SIZE ((sizeof(gx_frame) - R3D_TAIL_OFF + 15u) & ~(size_t)15u)
 
+typedef struct r3d_xentry {
+	uint8_t key[64];
+	uint32_t pixels[16];
+} __attribute__((aligned(128))) r3d_xentry;
+
 struct r3d_ctx {
 	uint32_t col[2][R3D_ROWS][R3D_W] __attribute__((aligned(128)));
 	uint32_t dep[R3D_ROWS][R3D_W] __attribute__((aligned(128)));
@@ -76,6 +81,9 @@ struct r3d_ctx {
 			uint32_t cell_pxtab[256];        /* paleta convertida de los formatos indexados */
 			uint32_t cell_pairs[256][2] __attribute__((aligned(16))); /* dos índices de cuatro bits por byte */
 			uint32_t pair_key;
+			r3d_xentry xbuf[2];
+			uint64_t xpending[2];
+			uint32_t xnext;
 		};
 	} __attribute__((aligned(128)));
 	uint64_t last_tag;

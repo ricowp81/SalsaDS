@@ -184,8 +184,9 @@ static void print_r3d_stats(void)
 		printf("render 3D por cuadro: %.0f polígonos, %.0f banda·polígono, %.0f líneas, %.0f píxeles, %.0f escritos; texeles %.0f "
 		       "(sin decodificar %.2f %%), %.1f bloques o celdas decodificados, %.1f desalojos, %.1f líneas de VRAM (de paletas %.0f); DMA %.0f B\n",
 		       s->polys / n, s->band_polys / n, s->rows / n, s->pixels / n, s->written / n, s->tex_px / n,
-		       s->tex_px ? 100.0 * (1.0 - (double)s->tex_misses / (double)s->tex_px) : 100.0, s->tex_misses / n,
+		       s->tex_px ? 100.0 * (1.0 - (double)(s->tex_misses - s->xdr_hits) / (double)s->tex_px) : 100.0, (s->tex_misses - s->xdr_hits) / n,
 		       s->tex_evict / n, s->line_miss / n, s->pal_miss / n, s->dma_bytes / n);
+	printf("XDR por cuadro: aciertos %.1f, DMA %.1f, decodificadas %.1f\n", s->xdr_hits / n, s->xdr_dma / n, (s->tex_misses - s->xdr_hits) / n);
 	if (r3d_defer_sim)
 		printf("APLAZAR: línea %u, %u trabajos verificados, %u distintos del cuadro de línea 0, máximo %u en vuelo: %s\n",
 		       v->r3d_defer_line, fk_checked, fk_bad, fk_maxq, fk_bad ? "NO ES SEGURO" : "seguro");
@@ -650,6 +651,8 @@ int main(int argc, char **argv)
 			r3d_defer_sim = 1;
 		} else if (!strcmp(argv[i], "--r3d-celdas"))
 			M.vid.r3d_texmode = 2; /* celdas de 4×4 siempre (si no, automático: bloques hasta que se desbordan) */
+		else if (!strcmp(argv[i], "--texturas-xdr"))
+			M.vid.r3d_flags |= R3D_F_XDR;
 		else if (!strcmp(argv[i], "--r3d-win") && i + 1 < argc)
 			sscanf(argv[++i], "%u:%u", &M.vid.r3d_win0, &M.vid.r3d_win1); /* estadísticas solo de esos cuadros */
 		else if (!strcmp(argv[i], "--r3d-stats"))

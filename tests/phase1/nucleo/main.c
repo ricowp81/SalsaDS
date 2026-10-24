@@ -89,6 +89,7 @@
 /* Caché de texturas del render 3D (docs/fase3.md, 3.9): por omisión automática (bloques de 256 texeles mientras no se desborden,
  * celdas de 4×4 después). Con texturas-bloques siempre bloques (la caché de la 3.2 a la 3.8); con texturas-celdas siempre celdas. */
 #define R3D_TEX_BLOQUES_FLAG SALSADS_DATA_DIR "/texturas-bloques"
+#define R3D_XDR_FLAG SALSADS_DATA_DIR "/texturas-xdr"
 #define R3D_TEX_CELDAS_FLAG SALSADS_DATA_DIR "/texturas-celdas"
 /* La espera del render 3D y la entrega del 2D pasan de la línea 262 del cuadro a una línea del cuadro siguiente (más tiempo para
  * los SPE sin agregar latencia a la imagen: docs/fase3.md, 3.9). Con este archivo vuelven a la línea 262. */
@@ -1425,9 +1426,11 @@ static void log_stats(void)
 			    (unsigned)acc_r3d_frames, MS(pct(M_R3D0, 50)), MS(pct(M_R3D0, 95)), MS(pct(M_R3D0, 100)), MS(pct(M_R3D1, 50)),
 			    MS(pct(M_R3D1, 95)), MS(pct(M_R3D1, 100)), MS(pct(M_R3DW, 50)), MS(pct(M_R3DW, 95)), r->polys / n / 2.0,
 			    r->band_polys / n, r->rows / n, r->pixels / n, r->written / n, r->tex_px / n,
-			    r->tex_px ? 100.0 * (1.0 - (double)r->tex_misses / (double)r->tex_px) : 100.0, r->tex_misses / n, r->tex_evict / n,
+			    r->tex_px ? 100.0 * (1.0 - (double)(r->tex_misses - r->xdr_hits) / (double)r->tex_px) : 100.0, (r->tex_misses - r->xdr_hits) / n, r->tex_evict / n,
 			    r->line_miss / n, r->pal_miss / n, r->t_sort / n / hz, r->t_list / n / hz, r->t_fetch / n / hz, r->t_raster / n / hz, r->t_tex / n / hz,
 			    r->t_setup / n / hz, r->t_rows / n / hz, r->t_pix / n / hz, r->t_post / n / hz, r->t_out / n / hz);
+		salsads_log("DATO raster3d-xdr: por cuadro, aciertos %.1f, DMA %.1f (128 B), decodificadas %.1f",
+			    r->xdr_hits / n, r->xdr_dma / n, (r->tex_misses - r->xdr_hits) / n);
 		salsads_log("DATO raster3d-latencia: por cuadro, desde el envío (línea 0) hasta: llegada del PPE a la línea 262 (la 192 si el cuadro captura) %.2f ms, fin del SPE0 %.2f ms, "
 			    "fin del SPE1 %.2f ms (si el SPE ya había terminado cuenta la llegada); SPE ya terminados al llegar: %.2f de 2; "
 			    "espera del 3D aplazada a la línea %u del cuadro siguiente (0 = en la 262), composición 2D de la pantalla A %u us, caché de texturas: %s",
@@ -2796,6 +2799,9 @@ int main(void)
 				{
 					struct stat rst;
 
+					if (stat(R3D_XDR_FLAG, &rst) == 0)
+						nds->vid.r3d_flags |= R3D_F_XDR;
+					salsads_log("render 3D: caché XDR %s (8 MiB, dos particiones)", (nds->vid.r3d_flags & R3D_F_XDR) ? "activa" : "inactiva");
 					nds->vid.r3d_alt = stat(R3D_ALT_FLAG, &rst) == 0;
 					salsads_log("render 3D: dos SPE, bandas de 16 líneas con reparto %s (autoprueba contra el PPE: igual)",
 						    nds->vid.r3d_alt ? "alterno (existe " R3D_ALT_FLAG ")" : "por costo");

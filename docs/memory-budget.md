@@ -8,6 +8,14 @@ una caché de código) se descuentan de ahí (medido en Salsa64 con HEN:
 Cifras en MB. **Previsto** = estimación de diseño (todavía no hay núcleo);
 **Medido** se llena en la PS3 real. Se actualiza en cada fase.
 
+## Prototipo XDR de celdas (2026-10-23; no empaquetado)
+- Reserva estática al arrancar de 8 388 608 B, alineada a 128 B, fuera de `struct nds`: 2 × 32 768 entradas de 128 B (clave 64 B + 16 píxeles de 32 bits); sin asignaciones durante el juego.
+- Cada SPE solo accede a su mitad, incluso con dos cuadros en vuelo: trabajos secuenciales por unidad. No hay reutilización cruzada entre SPE; puede duplicarse contenido.
+- Dos búferes DMA dentro del espacio del modo de celdas: escritura asíncrona; espera antes de reutilizar búfer, leer destino pendiente o terminar trabajo. Lectura a demanda de 128 B, alineada; su latencia no queda oculta.
+- Clave exacta: formato/transparencia, bytes crudos de la celda y colores usados; comprimidas incluyen modo y colores base. Hash para elegir ranura, comparación completa antes de aceptar. Sin riesgo de textura vieja por colisión.
+- Se vuelve a leer la instantánea de VRAM y su mapa en cada trabajo; cambios de textura, paleta o banco cambian la clave. Se conserva el instante de captura del rasterizador actual (línea 0), igual que la referencia; no se añade precisión de escrituras intracuadro.
+- SPE actual: texto 63 232 B, datos 800 B, BSS 184 480 B; libres 13 392 B, cadena de pila 7 440 B, holgura 5 952 B. Enlace rechazado: faltan 2 240 B para el mínimo; no desplegable.
+
 ## Memoria principal (XDR)
 
 | Uso | Previsto | Medido | Notas |

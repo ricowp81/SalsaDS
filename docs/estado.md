@@ -5,6 +5,14 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-23 — Prototipo XDR detenido por holgura del SPE (cand-v004)
+- Segunda caché de celdas: 8 MiB estáticos, dos particiones exclusivas por SPE; clave de contenido comparada completa, sin falsos aciertos por colisiones.
+- MKDS, host, cuadros 2200–2499: 11 101,8 → 839,2 decodificadas/cuadro (−92,4 %), 10 262,7 aciertos XDR; referencia idéntica. Detalle en `perf-log.md`.
+- Activación optativa: `texturas-xdr` en el directorio de datos; host `--texturas-xdr`; log de aciertos, DMA y decodificadas.
+- Dos enlaces rechazados por pila: holgura 5 248 y 5 952 B, mínimo 8 192 B. Parada reglamentaria; no se rebajó el mínimo ni se produjo rc3.
+- Prototipo pendiente de reducir código/pila y completar validación del árbol final; no instalar ni medir todavía en la consola.
+- Evidencia local en `build/rc3/`; no se acredita la meta de 58 campos/s ni ausencia de regresión en otros juegos.
+
 ## 2026-10-23 — MKDS: límite de la caché de celdas (cand-v004)
 - Host, demostración del título sin entrada, cuadros 2200–2499, dos unidades y celdas forzadas: 11 101,8 decodificados, 10 077,8 desalojos y 82,90 % de aciertos por cuadro; mediana de tres corridas: 1,589 ms.
 - Dispersión multiplicativa: 11 108,0 / 10 084,0, 82,89 %, 1,595 ms (+0,4 %); ocho vías: 11 096,3 / 10 072,3, 82,91 %, 1,638 ms (+3,1 %). Ambas descartadas: dos ideas sin ganancia clara; búsqueda detenida.

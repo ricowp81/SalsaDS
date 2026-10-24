@@ -49,6 +49,10 @@
 #define R3D_F_NOFOG 2u    /* ídem, niebla */
 #define R3D_F_BLANK 4u    /* no hay cuadro de geometría: sale transparente */
 #define R3D_F_TEXBLOCK 8u /* texturas: bloques de 256 texeles decodificados enteros (la caché de la 3.2 a la 3.8) en lugar de celdas de 4×4 */
+#define R3D_F_XDR 32u /* segunda caché de celdas por contenido */
+#define R3D_XDR_ENTRIES 32768u
+#define R3D_XDR_BYTES (2u * R3D_XDR_ENTRIES * 128u)
+
 #define R3D_F_CELLSCALAR 16u /* diagnóstico: decodificar las celdas de 16 colores texel a texel */
 
 /* Un trabajo: un cuadro, repartido en bandas de `band` líneas entre `nunits` unidades (SPE); esta es la `unit`. Las
@@ -69,6 +73,7 @@ typedef struct r3d_job {
 	/* Tiempo por banda (3.9): si no es cero, cada unidad escribe ahí, en bt_ea + 128·unidad, 32 palabras (alineado a 128): los
 	 * ticks que tardó en dibujar cada banda suya (cero en las que no le tocaron). El PPE los usa para repartir el cuadro siguiente. */
 	uint64_t bt_ea;
+	uint64_t xdr_ea; /* región de R3D_XDR_BYTES, cero al arrancar, particionada por unidad */
 } __attribute__((aligned(16))) r3d_job;
 #define R3D_BT_WORDS 32
 
@@ -89,13 +94,14 @@ typedef struct r3d_stats {
 	uint32_t written;     /* píxeles escritos (color o sombra) */
 	uint32_t tex_px;      /* texeles pedidos */
 	uint32_t tex_hits;    /* de ellos, en el bloque (celda) del texel anterior o en la caché */
-	uint32_t tex_misses;  /* bloques (celdas) decodificados (fallos de la caché) */
+	uint32_t tex_misses;  /* fallos del local store; decodificadas = tex_misses - xdr_hits */
 	uint32_t tex_evict;   /* bloques (celdas) desalojados */
 	uint32_t pal_miss;    /* de line_miss, las de la memoria de paletas */
 	uint32_t line_miss;   /* líneas de VRAM traídas por DMA (128 bytes en el modo de bloques, 1 KB en el de celdas) */
 	uint32_t bands;       /* bandas dibujadas */
 	uint32_t dma_bytes;   /* polígonos, vértices y salida */
-	uint32_t pad;
+	uint32_t xdr_hits;
+	uint32_t xdr_dma; /* transferencias de 128 bytes, lecturas y escrituras */
 	/* tiempos (ticks del decrementador del SPE, 79,8 MHz; en el host, ceros) */
 	uint32_t t_sort, t_list, t_fetch, t_raster, t_tex, t_post, t_out, t_total;
 	/* desglose de t_raster (Fase 3.4): preparar polígonos, calcular aristas de cada línea, dibujar píxeles (incluye texturas) */

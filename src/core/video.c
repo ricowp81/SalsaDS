@@ -217,6 +217,8 @@ void nds_video_r3d_feedback(struct nds *n, const r3d_stats *st)
 
 /* Línea 0: el cuadro que el motor de geometría entregó en el último SWAP_BUFFERS se dibuja durante este (como en la DS,
  * que lo rasteriza mientras barre la pantalla), con la VRAM de texturas de la instantánea que se acaba de tomar. */
+static uint8_t r3d_xdr[R3D_XDR_BYTES] __attribute__((aligned(128)));
+
 static void frame_begin_3d(struct nds *n, struct nds_vset *s)
 {
 	struct nds_video *v = &n->vid;
@@ -245,6 +247,8 @@ static void frame_begin_3d(struct nds *n, struct nds_vset *s)
 	if (!f || !(n->powcnt1 & 4u))
 		j->flags |= R3D_F_BLANK;
 	j->flags |= v->r3d_flags;
+	if ((j->flags & R3D_F_XDR) && j->nunits <= 2)
+		j->xdr_ea = (uint64_t)(uintptr_t)r3d_xdr;
 	if (v->r3d_texmode == 1 || (v->r3d_texmode == 0 && !v->r3d_pol.cells))
 		j->flags |= R3D_F_TEXBLOCK;
 	if (v->ops.submit3d)

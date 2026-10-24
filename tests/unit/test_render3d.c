@@ -21,6 +21,7 @@ static uint8_t vram[R3D_VRAM_ZERO_OFF + 128] __attribute__((aligned(128)));
 static uint32_t ref[R3D_W * R3D_H] __attribute__((aligned(128)));
 static uint32_t out[R3D_W * R3D_H] __attribute__((aligned(128)));
 static r3d_ctx ctx;
+static uint8_t xdr[R3D_XDR_BYTES] __attribute__((aligned(128)));
 static int use_bal; /* reparto por costo de las bandas (r3d_balance) en lugar del alterno */
 
 static int render_core(const gx_frame *f, const uint32_t *ts, const uint32_t *ps, uint32_t band, uint32_t units, uint32_t flags,
@@ -36,6 +37,8 @@ static int render_core(const gx_frame *f, const uint32_t *ts, const uint32_t *ps
 	memcpy(j.palslot, ps, sizeof j.palslot);
 	j.nunits = units;
 	j.band = band;
+	if ((flags & R3D_F_XDR) && units <= 2)
+		j.xdr_ea = (uint64_t)(uintptr_t)xdr;
 	if (use_bal && units == 2)
 		r3d_balance(f, band, &j, NULL, 0);
 	j.flags = flags | (f ? 0u : R3D_F_BLANK);
@@ -48,6 +51,7 @@ static int render_core(const gx_frame *f, const uint32_t *ts, const uint32_t *ps
 		if (r3d_core_render(&ctx, &j, &st) != 0)
 			return -1;
 		sum->tex_misses += st.tex_misses;
+		sum->xdr_hits += st.xdr_hits;
 		sum->tex_evict += st.tex_evict;
 		sum->tex_px += st.tex_px;
 		sum->written += st.written;
@@ -94,6 +98,11 @@ static void test_palette_jobs(void)
 		changed += round && hash != previous;
 		previous = hash;
 		CHECK_EQ(render_core(f, ts, ps, 16, 2, 0, &st), 0);
+		CHECK_EQ(first_diff(), -1);
+		CHECK_EQ(render_core(f, ts, ps, 16, 2, R3D_F_XDR, &st), 0);
+		CHECK_EQ(first_diff(), -1);
+		CHECK_EQ(render_core(f, ts, ps, 16, 2, R3D_F_XDR, &st), 0);
+		CHECK(st.xdr_hits > 0);
 		CHECK_EQ(first_diff(), -1);
 		CHECK_EQ(render_core(f, ts, ps, 16, 2, R3D_F_TEXBLOCK, &st), 0);
 		CHECK_EQ(first_diff(), -1);
@@ -151,18 +160,18 @@ void test_render3d(void)
 		r3d_render_ref(f, vram, ts, ps, 0, ref);
 		if (seed == 7)
 			h0 = r3d_hash_image(ref);
-		for (int k = 0; k < 12; k++) { /* 6 repartos × (celdas de 4×4, bloques de 256) */
-			const uint32_t mode = (k & 1) ? R3D_F_TEXBLOCK : 0u;
+		for (int k = 0; k < 14; k++) { /* 6 repartos × (celdas de 4×4, bloques de 256) */
+			const uint32_t mode = k >= 12 ? R3D_F_XDR : (k & 1) ? R3D_F_TEXBLOCK : 0u;
 			r3d_stats st;
 			int d;
 
-			use_bal = bal[k >> 1];
-			CHECK_EQ(render_core(f, ts, ps, bands[k >> 1], units[k >> 1], mode, &st), 0);
+			use_bal = bal[(k % 12) >> 1];
+			CHECK_EQ(render_core(f, ts, ps, bands[(k % 12) >> 1], units[(k % 12) >> 1], mode, &st), 0);
 			d = first_diff();
 			if (d >= 0) {
 				if (mism++ < 6)
 					printf("FALLO render 3D semilla %u, bandas de %u, %u unidades, %s: primer píxel distinto (%d,%d) %08x, ref %08x\n",
-					       seed, bands[k >> 1], units[k >> 1], mode ? "bloques" : "celdas", d % R3D_W, d / R3D_W, out[d], ref[d]);
+					       seed, bands[(k % 12) >> 1], units[(k % 12) >> 1], mode ? "bloques" : "celdas", d % R3D_W, d / R3D_W, out[d], ref[d]);
 			}
 			CHECK(d < 0);
 			evict += st.tex_evict;
