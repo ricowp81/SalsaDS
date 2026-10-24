@@ -5,6 +5,14 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-24 — Protección y código de VRAM del ARM7 (cand-v004)
+- Captura: faltaba exigir LCDC al destino; la prueba reproduce `80008000` pisando bancos del ARM7. Ahora los rechaza (GBATEK, «DS Video Capture»; DeSmuME `WillDisplayCapture`, solo consulta).
+- C/D, MST=2, OFS 0/1, espejos de 256 KiB, VRAMSTAT, solapamiento y DMA LCDC→ARM7: pruebas correctas; el mapeo no necesitó cambios.
+- MKDS host: D=`82`, VRAMSTAT=`02`, código ARM válido desde `0600068c`; trazas con `--dbg 64` y 120 cuadros lockstep sin diferencias (9 643 659 comparaciones). Tercera carrera no reproducida; captura como causa de ese episodio aún por confirmar.
+- JIT de páginas C/D sin solapamiento, invalidación CPU/DMA y vaciado al reasignar; `arm7-vram-nojit` permite comparar. Se conserva `jit-sin-codigo`.
+- LE/SAN completos y dirigida BE: 661 comprobaciones, 0 fallos; unitarias BE: solo 34 fallos conocidos del anillo (`test_arec.c:149/152`, exige destinos de un bucle en otros episodios); ROMs, hashes y lockstep correctos; `test-host` sale en 1 únicamente por el anillo.
+- `--vs-ref3d` host: MKDS 1174, NSMB 2195, SM64DS 2298 cuadros iguales; build y paquete limpio correctos. `build/salsads-vram7.pkg`, SHA-256 `ce6ee3a73098dd8196fd7d53b914bc98e95a1f5583e5ee52d8e1e5580dd36abc`; falta otro Grand Prix completo en consola.
+
 ## 2026-10-23 — Perfil optativo del armado en el SPE (cand-v004)
 - Solo instrumentación: archivo `geometria-perfil`, línea `DATO geometria-armado` por ventana; etapas, conteos y guion en `perf-log.md`. Sin cambios al algoritmo ni envío a consola.
 - Compilación completa y paquete limpio en 0; holguras: geometría 141 232 B, 3D 8432 B, 3D XDR 17 856 B, 2D 9056 B y sonido 178 384 B; mínimo 8192 exigido en el paquete.
