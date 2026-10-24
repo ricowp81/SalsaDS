@@ -14,6 +14,17 @@
 #include <spu_intrinsics.h>
 #endif
 
+/* Sin reloj ni conteos detallados cuando el perfil está apagado. */
+#ifdef GX_PROF
+#define AP_NOW(g) ((g)->armado_on ? spu_readch(SPU_RdDec) : 0u)
+#define AP_ADD(g, k, n) do { if ((g)->armado_on) (g)->armado[k] += (n); } while (0)
+#define AP_END(g, k, t) AP_ADD(g, k, (t) - spu_readch(SPU_RdDec))
+#else
+#define AP_NOW(g) 0u
+#define AP_ADD(g, k, n) ((void)0)
+#define AP_END(g, k, t) do { (void)(k); (void)(t); } while (0)
+#endif
+
 #if defined(__SIZEOF_INT128__)
 typedef __int128 gx_wide;
 #else
@@ -593,6 +604,8 @@ static void emit_poly(gx_exec *g, gx_cvtx *const *src, int n)
 
 static void emit_poly_inner(gx_exec *g, gx_cvtx *const *src, int n)
 {
+	uint32_t ap = AP_NOW(g);
+	unsigned stage = GX_AP_READ;
 	gx_cvtx pv[CLIP_BUF];
 	const gx_cvtx *v[CLIP_BUF];
 	const uint32_t attr = g->polyattr_cur;
@@ -606,6 +619,7 @@ static void emit_poly_inner(gx_exec *g, gx_cvtx *const *src, int n)
 	gx_cvtx in[4];
 	int64_t s0x[CLIP_BUF], s0y[CLIP_BUF], s8x[CLIP_BUF], s8y[CLIP_BUF];
 
+	AP_ADD(g, GX_AP_INPUT, 1);
 	for (int i = 0; i < n; i++) {
 		unsigned c;
 
@@ -619,25 +633,30 @@ static void emit_poly_inner(gx_exec *g, gx_cvtx *const *src, int n)
 		oc_and &= c;
 		oc_or |= c;
 	}
+	AP_END(g, stage, ap);
+	stage = GX_AP_CLIP; ap = AP_NOW(g);
 	if (oc_and) { /* entero fuera de algún plano */
 		g->out.st.rejected++;
 		g->out.st.rej_outside++;
-		return;
+		goto ap_done;
 	}
 	/* El plano lejano: si el polígono lo cruza y POLYGON_ATTR bit 12 es 0, no se dibuja; con 1 se recorta. [sin contrastar] */
 	if ((oc_or & 2u) && !(attr & 0x1000u)) {
 		g->out.st.rejected++;
 		g->out.st.rej_far++;
-		return;
+		goto ap_done;
 	}
 	if (oc_or) {
 		for (int i = 0; i < n; i++)
 			in[i] = *src[i];
+		AP_ADD(g, GX_AP_CLIPPED, 1);
 		m = clip_polygon(in, n, pv, 0x3Fu);
+		AP_ADD(g, GX_AP_GENERATED, m >= 3);
+		AP_ADD(g, GX_AP_CLIP_VERTS, m);
 		if (m < 3) {
 			g->out.st.rejected++;
 			g->out.st.rej_empty++;
-			return;
+			goto ap_done;
 		}
 		clipped = 1;
 		for (int i = 0; i < m; i++)
@@ -647,6 +666,8 @@ static void emit_poly_inner(gx_exec *g, gx_cvtx *const *src, int n)
 		for (int i = 0; i < n; i++)
 			v[i] = &pv[i];
 	}
+	AP_END(g, stage, ap);
+	stage = GX_AP_ATTR; ap = AP_NOW(g);
 	/* Cara: signo del área en pantalla (con 8 bits fraccionarios extra). Frontal = antihorario a la vista = área < 0
 	 * con y hacia abajo. Área 0 cuenta como frontal. [sin contrastar] */
 	for (int i = 0; i < m; i++) {
@@ -674,12 +695,12 @@ static void emit_poly_inner(gx_exec *g, gx_cvtx *const *src, int n)
 	front = area2 <= 0;
 	if (front ? !(attr & 0x80u) : !(attr & 0x40u)) {
 		g->out.st.culled++;
-		return;
+		goto ap_done;
 	}
 	if (g->out.npolys >= GX_MAX_POLYS) {
 		g->out.dropped_polys++;
 		g->out.st.dropped_poly++;
-		return;
+		goto ap_done;
 	}
 	{
 		uint32_t nnew = 0;
@@ -689,11 +710,16 @@ static void emit_poly_inner(gx_exec *g, gx_cvtx *const *src, int n)
 		if (g->out.nverts + nnew > GX_MAX_VERTS) {
 			g->out.dropped_verts += nnew;
 			g->out.st.dropped_vert += nnew;
-			return;
+			goto ap_done;
 		}
+		AP_END(g, stage, ap);
+		stage = GX_AP_OUT; ap = AP_NOW(g);
 		/* sitio en las ventanas de salida: si no cabe lo que viene (un polígono y hasta 10 vértices) se vacían */
-		if (g->flush && (g->out.nverts + nnew - g->vbase > g->vcap || g->out.npolys + 1u - g->pbase > g->pcap))
+		if (g->flush && (g->out.nverts + nnew - g->vbase > g->vcap || g->out.npolys + 1u - g->pbase > g->pcap)) {
+			AP_END(g, stage, ap);
 			g->flush(g, g->flush_ctx);
+			ap = AP_NOW(g);
+		}
 	}
 	p = &g->poly[g->out.npolys++ - g->pbase];
 	memset(p, 0, sizeof *p);
@@ -717,13 +743,16 @@ static void emit_poly_inner(gx_exec *g, gx_cvtx *const *src, int n)
 
 		/* un polígono sin recortar reutiliza los vértices que ya guardó una tira; el recortado trae vértices nuevos */
 		if (!clipped && src[i]->ram >= 0) {
+			AP_ADD(g, GX_AP_SHARED, 1);
 			id = (uint32_t)src[i]->ram;
 			sx = src[i]->sx; /* el vértice guardado puede estar ya en memoria principal: se usan los datos que se guardaron */
 			sy = src[i]->sy;
 		} else {
 			id = g->out.nverts++;
 			o = &g->vtx[id - g->vbase];
+			AP_END(g, stage, ap); ap = AP_NOW(g);
 			make_out(v[i], o, s0x[i], s0y[i]);
+			AP_END(g, GX_AP_ATTR, ap); ap = AP_NOW(g);
 			sx = o->sx;
 			sy = o->sy;
 			if (!clipped) {
@@ -744,14 +773,17 @@ static void emit_poly_inner(gx_exec *g, gx_cvtx *const *src, int n)
 	/* w se normaliza a 16 bits desplazando de 4 en 4. [sin contrastar] */
 	while ((wmax >> p->wshift) > 0xFFFFu)
 		p->wshift = (uint8_t)(p->wshift + 4u);
+	AP_ADD(g, GX_AP_OUTPUT, 1);
 	g->out.st.polys++;
 	if (clipped)
 		g->out.st.clipped++;
+ap_done:
+	AP_END(g, stage, ap);
 }
 
 /* `c` es el vértice nuevo (local de quien llama); las tiras guardan una copia en la ventana `asm_v` y la comparten con el
  * siguiente polígono, de modo que el índice de RAM que se le dio al guardarla se hereda. */
-static void asm_push(gx_exec *g, gx_cvtx *c)
+static void asm_push_inner(gx_exec *g, gx_cvtx *c)
 {
 	gx_cvtx *a = g->asm_v;
 	gx_cvtx *t[4];
@@ -801,6 +833,17 @@ static void asm_push(gx_exec *g, gx_cvtx *c)
 		g->asm_n = 2;
 		break;
 	}
+}
+
+static void asm_push(gx_exec *g, gx_cvtx *c)
+{
+	const uint32_t ap = AP_NOW(g);
+#ifdef GX_PROF
+	const uint32_t before = g->prof[4];
+#endif
+	asm_push_inner(g, c);
+	AP_ADD(g, GX_AP_ASM, ap - spu_readch(SPU_RdDec) - (g->prof[4] - before));
+	(void)ap;
 }
 
 /* ---- vértices ---------------------------------------------------------------------------------------------- */
@@ -1443,6 +1486,8 @@ void gx_job_run(gx_exec *ex, uint32_t flags, uint32_t nwords, const gx_job_io *i
 		gx_exec_newframe(ex);
 	}
 	ex->poly_plain = !!(flags & GX_JOB_POLY_PLAIN);
+	ex->armado_on = !!(flags & GX_JOB_PROFILE);
+	memset(ex->armado, 0, sizeof ex->armado);
 	ex->vtx = vstage;
 	ex->poly = pstage;
 	ex->vbase = ex->out.nverts;

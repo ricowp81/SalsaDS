@@ -1,5 +1,14 @@
 # Registro de rendimiento
 
+
+## 2026-10-23 — Perfil del armado de geometría (pendiente PS3)
+- Evidencia PS3 aportada: MKDS pesado, armado 6,93 ms/cuadro a los 60–64 s; host ≈ 0,17 ms no reproduce ese costo. No se optimiza.
+- `geometria-perfil` activa `DATO geometria-armado` por ventana: ms/cuadro de lectura local y outcodes, ensamblado sin emisión, recorte, atributos (proyección/cara/profundidad), salida local (índices/límites y escritura).
+- DMA: entrada del registro de órdenes (incluye vértices, matrices y demás órdenes) y salida de vértices/polígonos, ambos incluyen su espera mostrada aparte. No existe DMA de lectura de vértices individuales dentro del armado; la salida incluye el vaciado final del trabajo, fuera de `emit_poly`.
+- Conteos/cuadro: entrada a emisión, enviados a recorte, supervivientes del recorte antes de descarte por cara/capacidad, salida final, referencias a vértices ya guardados y vértices resultantes del recorte. Un recorte produce cero o un polígono, sin triangularlo.
+- Costo: restas y sumas de ticks de 32 bits por trabajo, acumulación de 64 bits en PPE; sin asignaciones ni DMA adicional. Lecturas del decrementador solo con el perfil activo; las sondas y sus ramas perturban el tiempo, costo real pendiente de A/B en PS3.
+- Guion: MKDS carrera pesada 2 min, mismo tramo y opciones; repetir con `geometria-perfil` renombrado a `.off`, comparar ventanas de carga semejante y `DATO geometria-spe`. Salir con SELECT+START y luego O antes de recoger el log.
+
 Cada optimización lleva medición antes/después **en la PS3 real** (RPCS3 y el
 host no reproducen los tiempos del Cell). Una fila por medición, la más
 reciente arriba. Formato: fecha, commit, prueba, entorno, antes, después,

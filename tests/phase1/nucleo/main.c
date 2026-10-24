@@ -86,6 +86,8 @@
  * Con este archivo vuelve al PPE. */
 #define GEOM_PPE_FLAG SALSADS_DATA_DIR "/geometria-ppe"
 #define GEOM_POLY_PLAIN_FLAG SALSADS_DATA_DIR "/geometria-sin-reuso"
+#define GEOM_PROFILE_FLAG SALSADS_DATA_DIR "/geometria-perfil"
+static int geom_profile;
 static int geom_poly_plain;
 /* Con este archivo las bandas del render 3D vuelven al reparto alterno (u, u+2, ...) en lugar del reparto por costo. */
 #define R3D_ALT_FLAG SALSADS_DATA_DIR "/reparto-alterno"
@@ -1235,7 +1237,7 @@ static spukit_worker *wk_geom;
 static int geom_on;
 static uint32_t geom_collect_seq = 1, geom_last_seq;
 static struct {
-	uint64_t jobs, ticks, cmds, puts, wait_us, waits, posts, prof[5];
+	uint64_t jobs, ticks, cmds, puts, wait_us, waits, posts, prof[5], armado[GX_AP_N];
 	uint32_t ticks_max, errors;
 } geom_acc;
 static uint64_t acc_evn[EV_COUNT], acc_evt[EV_COUNT]; /* eventos del planificador por tipo: cuántos y ticks (cuadros con perfil) */
@@ -1415,6 +1417,17 @@ static void log_stats(void)
 				    (double)geom_acc.prof[0] * 1000.0 / hz / nf, (double)geom_acc.prof[1] * 1000.0 / hz / nf,
 				    (double)geom_acc.prof[4] * 1000.0 / hz / nf, (double)geom_acc.prof[2] * 1000.0 / hz / nf,
 				    (double)geom_acc.prof[3] * 1000.0 / hz / nf);
+			if (geom_profile) {
+#define AM(k) ((double)geom_acc.armado[k] * 1000.0 / hz / nf)
+#define AC(k) ((double)geom_acc.armado[k] / nf)
+				salsads_log("DATO geometria-armado: por cuadro ms: lectura-local %.3f, ensamblado %.3f, recorte %.3f, atributos %.3f, salida-local %.3f; "
+				    "DMA entrada-ordenes %.3f (espera %.3f), salida %.3f (espera %.3f); polígonos entrada %.1f, a-recorte %.1f, generados-recorte %.1f, salida %.1f; vértices compartidos %.1f, tras-recorte %.1f",
+				    AM(GX_AP_READ), AM(GX_AP_ASM), AM(GX_AP_CLIP), AM(GX_AP_ATTR), AM(GX_AP_OUT),
+				    AM(GX_AP_GET), AM(GX_AP_GET_WAIT), AM(GX_AP_PUT), AM(GX_AP_PUT_WAIT),
+				    AC(GX_AP_INPUT), AC(GX_AP_CLIPPED), AC(GX_AP_GENERATED), AC(GX_AP_OUTPUT), AC(GX_AP_SHARED), AC(GX_AP_CLIP_VERTS));
+#undef AM
+#undef AC
+			}
 			memset(&geom_acc, 0, sizeof geom_acc);
 		}
 	}
@@ -1638,6 +1651,8 @@ static void geom_collect(int block_to)
 		geom_acc.puts += jr.puts;
 		for (int k = 0; k < 5; k++)
 			geom_acc.prof[k] += jr.prof[k];
+		for (unsigned k = 0; k < GX_AP_N; k++)
+			geom_acc.armado[k] += jr.armado[k];
 		if (r->ticks > geom_acc.ticks_max)
 			geom_acc.ticks_max = r->ticks;
 		geom_collect_seq++;
@@ -1654,7 +1669,7 @@ static uint32_t geom_post(void *ctx, gx_t *g, uint32_t flags, const uint32_t *lo
 	j.poly_ea = (uint64_t)(uintptr_t)f->poly;
 	j.out_ea = (uint64_t)(uintptr_t)&g->ex.out;
 	j.nwords = nwords;
-	j.flags = flags | (geom_poly_plain ? GX_JOB_POLY_PLAIN : 0u);
+	j.flags = flags | (geom_poly_plain ? GX_JOB_POLY_PLAIN : 0u) | (geom_profile ? GX_JOB_PROFILE : 0u);
 	geom_collect(0);
 	geom_last_seq = spukit_post(wk_geom, JOB_GEOM, &j, sizeof j);
 	geom_acc.posts++;
@@ -1727,11 +1742,11 @@ static int geom_selftest(void)
 		j.poly_ea = (uint64_t)(uintptr_t)gst_fb.poly;
 		j.out_ea = (uint64_t)(uintptr_t)&gst_out;
 		j.nwords = cut;
-		j.flags = GX_JOB_RESET;
+		j.flags = GX_JOB_RESET | (k ? GX_JOB_PROFILE : 0u);
 		spukit_post(wk_geom, JOB_GEOM, &j, sizeof j);
 		j.log_ea = (uint64_t)(uintptr_t)(gst_log + cut);
 		j.nwords = n - cut;
-		j.flags = GX_JOB_MATS;
+		j.flags = GX_JOB_MATS | (k ? GX_JOB_PROFILE : 0u);
 		q = spukit_post(wk_geom, JOB_GEOM, &j, sizeof j);
 		r = spukit_wait(wk_geom, q);
 		tspe = now_us() - t0;
@@ -2834,6 +2849,8 @@ int main(void)
 	/* Motor de geometría en el sexto SPE (salvo con GEOM_PPE_FLAG); si no arranca o la autoprueba falla, el PPE ejecuta
 	 * las órdenes (modo directo) */
 	struct stat gst;
+	geom_profile = stat(GEOM_PROFILE_FLAG, &gst) == 0;
+	salsads_log("geometría: perfil del armado %s", geom_profile ? "activo" : "apagado");
 	geom_poly_plain = stat(GEOM_POLY_PLAIN_FLAG, &gst) == 0;
 	salsads_log("geometría SPE: armado %s", geom_poly_plain ? "sin reutilizar proyecciones" : "con proyecciones compartidas");
 	if (spu_on && stat(GEOM_PPE_FLAG, &gst) == 0)

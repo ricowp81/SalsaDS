@@ -5,6 +5,16 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-23 — Perfil optativo del armado en el SPE (cand-v004)
+- Solo instrumentación: archivo `geometria-perfil`, línea `DATO geometria-armado` por ventana; etapas, conteos y guion en `perf-log.md`. Sin cambios al algoritmo ni envío a consola.
+- Compilación completa y paquete limpio en 0; holguras: geometría 141 232 B, 3D 8432 B, 3D XDR 17 856 B, 2D 9056 B y sonido 178 384 B; mínimo 8192 exigido en el paquete.
+- LE: 8 084 353 comprobaciones, 0 fallos; sondas activas con reloj simulado y ASan/UBSan: 3355 comprobaciones, 0 fallos. Autoprueba de consola alterna perfil apagado/activo contra PPE.
+- `--vs-ref3d` con sondas activas en host: MKDS 1174, NSMB 2195 y SM64DS 2298 cuadros idénticos; hashes de geometría iguales a la entrega anterior. No mide el costo PS3.
+- `test-host` incompleto: GCC ppc64 cayó en `cart.c`; memoria de desarrollo disponible ≈ 6,6 GiB, sin presión aparente. Único reintento con `-j1`: volvió a caer en `math.c`; parada reglamentaria, BE/SAN completo pendientes.
+- Paquete `build/salsads-geometria-perfil.pkg`, SHA-256 `7a6a6604be3c78f52b96f26c79d2b6600c140adfa1386f9a4dca522560e13aaf`; no validado para instalar hasta completar pruebas. Logs locales en `build/geometria-perfil/`.
+- Verificadores de publicación y SPDX en 0. Costo de las sondas pendiente de A/B real; sin promesa de ganancia.
+
+
 ## 2026-10-23 — Armado con proyección compartida (cand-v004, rc4)
 - `d2608d7`: evita copias sin recorte y reutiliza la proyección de las tiras con VIEWPORT como clave; reglas de recorte, salida y DMA intactas.
 - MKDS host, armado: medias de tres parejas 0,167412 → 0,155151 ms/cuadro (−7,3 %; detalle y variación en `perf-log.md`). No acredita ≤ 3 ms ni espera ≈ 0 en la PS3.

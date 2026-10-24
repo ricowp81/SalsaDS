@@ -4,6 +4,7 @@
 #define SALSADS_SPE_GEOM_JOB_H
 
 #include <stdint.h>
+#include "gpu3d/gx_exec.h"
 
 #define JOB_GEOM 1
 #define JOB_GEOM_INFO 2 /* sin trabajo: devuelve el tamaño del contexto (comprobación al arrancar) */
@@ -26,6 +27,7 @@ typedef struct job_geom_result {
 	uint32_t cmds;       /* órdenes ejecutadas en este trabajo */
 	uint32_t puts;       /* subidas DMA de vértices y polígonos */
 	uint32_t prof[5];    /* ticks del decrementador en este trabajo: matrices, vértices (incluye el armado), normales y luces, otras órdenes, armado de polígonos */
+	uint32_t armado[GX_AP_N];
 	int32_t rc;
 } job_geom_result;
 

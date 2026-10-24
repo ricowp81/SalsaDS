@@ -16,7 +16,7 @@ SPU_EXTRA_CFLAGS := -DG2D_PROF -DGX_PROF -DGX_VEC
 
 SPU_PROGS    := gpu2d snd raster3d raster3d_xdr geom
 gpu2d_SRCS   := ../../../src/spu/gpu2d/gpu2d.c ../../../src/gpu2d/gpu2d_compose.c
-gpu2d_STACK_MIN := 4096
+gpu2d_STACK_MIN := 8192
 gpu2d_STACK_ARGS := --ignore __call_exitprocs --ignore __do_global_ctors_aux --ignore exit --ignore register_tm_clones
 raster3d_SRCS := ../../../src/spu/raster3d/raster3d.c ../../../src/gpu3d/r3d_core.c
 raster3d_xdr_SRCS := ../../../src/spu/raster3d/raster3d_xdr.c ../../../src/spu/raster3d/core_xdr.c
@@ -26,10 +26,10 @@ raster3d_STACK_MIN := 8192
 raster3d_STACK_ARGS := --ignore __call_exitprocs --ignore __do_global_ctors_aux --ignore exit --ignore register_tm_clones
 # Motor de geometría (Fase 3.5): un SPE (src/spu/geom + src/gpu3d/gx_exec.c)
 geom_SRCS := ../../../src/spu/geom/geom.c ../../../src/gpu3d/gx_exec.c
-geom_STACK_MIN := 4096
+geom_STACK_MIN := 8192
 geom_STACK_ARGS := --edge emit_poly_inner:job_flush --edge job_flush:put_verts --edge job_flush:put_polys --edge gx_job_run:fetch --ignore __call_exitprocs --ignore __do_global_ctors_aux --ignore exit --ignore register_tm_clones
 snd_SRCS     := ../../../src/spu/snd/snd.c ../../../src/audio/snd_mix.c
-snd_STACK_MIN := 4096
+snd_STACK_MIN := 8192
 snd_STACK_ARGS := --edge snd_run:bus_fetch --edge snd_run:bus_store --ignore __call_exitprocs --ignore __do_global_ctors_aux --ignore exit --ignore register_tm_clones
 
 DATA     := carga

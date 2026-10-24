@@ -144,6 +144,12 @@ typedef struct gx_exec_out {
 	gx_estats st;
 } __attribute__((aligned(16))) gx_exec_out;
 
+/* Ticks exclusivos salvo DMA (total inclusivo con espera aparte); conteos por trabajo. */
+enum { GX_AP_READ, GX_AP_ASM, GX_AP_CLIP, GX_AP_ATTR, GX_AP_OUT,
+       GX_AP_GET, GX_AP_GET_WAIT, GX_AP_PUT, GX_AP_PUT_WAIT,
+       GX_AP_INPUT, GX_AP_CLIPPED, GX_AP_GENERATED, GX_AP_OUTPUT,
+       GX_AP_SHARED, GX_AP_CLIP_VERTS, GX_AP_N };
+
 typedef struct gx_exec {
 	gx_sp sp;
 	gx_mat proj, pos, vec, tex, clip;
@@ -158,6 +164,7 @@ typedef struct gx_exec {
 	int32_t normal[3];          /* última normal, tal como se mandó (1.0.9) */
 	uint32_t polyattr, polyattr_cur; /* pendiente y la del BEGIN_VTXS vigente */
 	uint32_t texparam, pltt;
+	uint32_t armado_on, armado[GX_AP_N];
 	uint32_t poly_plain;        /* A/B: copias y proyección por polígono, sin reutilizar la proyección */
 	uint32_t viewport;          /* x1 | y1 << 8 | x2 << 16 | y2 << 24 */
 	uint32_t prim;              /* tipo de BEGIN_VTXS (0 a 3) */
@@ -209,6 +216,7 @@ typedef struct gx_job_io {
 #define GX_JOB_NEWFRAME 2u
 #define GX_JOB_MATS 4u
 #define GX_JOB_POLY_PLAIN 8u
+#define GX_JOB_PROFILE 16u
 
 void gx_job_run(gx_exec *ex, uint32_t flags, uint32_t nwords, const gx_job_io *io, gx_vertex *vstage, uint32_t vcap,
 		gx_poly *pstage, uint32_t pcap, uint32_t *chunk, uint32_t chunk_words);

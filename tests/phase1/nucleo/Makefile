@@ -16,7 +16,7 @@ SPU_EXTRA_CFLAGS := -DG2D_PROF -DGX_PROF -DGX_VEC
 # Composición 2D: un SPE por pantalla (src/spu/gpu2d)
 SPU_PROGS    := gpu2d snd raster3d raster3d_xdr geom
 gpu2d_SRCS   := ../../../src/spu/gpu2d/gpu2d.c ../../../src/gpu2d/gpu2d_compose.c
-gpu2d_STACK_MIN := 4096
+gpu2d_STACK_MIN := 8192
 gpu2d_STACK_ARGS := --ignore __call_exitprocs --ignore __do_global_ctors_aux --ignore exit --ignore register_tm_clones
 
 # Render 3D (Fase 3.2): dos SPE con bandas alternas (src/spu/raster3d + src/gpu3d/r3d_core.c)
@@ -29,12 +29,12 @@ raster3d_STACK_ARGS := --ignore __call_exitprocs --ignore __do_global_ctors_aux 
 
 # Motor de geometría (Fase 3.5): un SPE (src/spu/geom + src/gpu3d/gx_exec.c)
 geom_SRCS := ../../../src/spu/geom/geom.c ../../../src/gpu3d/gx_exec.c
-geom_STACK_MIN := 4096
+geom_STACK_MIN := 8192
 geom_STACK_ARGS := --edge emit_poly_inner:job_flush --edge job_flush:put_verts --edge job_flush:put_polys --edge gx_job_run:fetch --ignore __call_exitprocs --ignore __do_global_ctors_aux --ignore exit --ignore register_tm_clones
 
 # Mezclador de sonido: un SPE (src/spu/snd + src/audio)
 snd_SRCS     := ../../../src/spu/snd/snd.c ../../../src/audio/snd_mix.c
-snd_STACK_MIN := 4096
+snd_STACK_MIN := 8192
 snd_STACK_ARGS := --edge snd_run:bus_fetch --edge snd_run:bus_store --ignore __call_exitprocs --ignore __do_global_ctors_aux --ignore exit --ignore register_tm_clones
 
 # ROM de carga propia, embebida (símbolos carga_bin, carga_bin_end y carga_bin_size en carga_bin.h): se usa

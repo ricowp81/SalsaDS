@@ -302,10 +302,23 @@ void test_gx_job(void)
 
 		memset(&JJ, 0, sizeof JJ);
 		j.base = 0;
-		gx_job_run(&JJ, GX_JOB_RESET, cut, &io, vst, 40, pst, 5, chunk, 80);
+		gx_job_run(&JJ, GX_JOB_RESET | (seed & 1 ? GX_JOB_PROFILE : 0u), cut, &io, vst, 40, pst, 5, chunk, 80);
+#ifdef GX_PROF
+		const uint32_t emitted = JJ.armado[GX_AP_OUTPUT];
+		if (seed & 1) {
+			CHECK_EQ(emitted, JJ.out.npolys);
+			CHECK(JJ.armado[GX_AP_INPUT] >= emitted);
+			CHECK(JJ.armado[GX_AP_CLIPPED] >= JJ.armado[GX_AP_GENERATED]);
+		} else {
+			for (unsigned k = 0; k < GX_AP_N; k++) CHECK_EQ(JJ.armado[k], 0);
+		}
+#endif
 		j.base = cut;
-		gx_job_run(&JJ, GX_JOB_MATS, n - cut, &io, vst, 40, pst, 5, chunk, 80);
+		gx_job_run(&JJ, GX_JOB_MATS | (seed & 1 ? GX_JOB_PROFILE : 0u), n - cut, &io, vst, 40, pst, 5, chunk, 80);
 
+#ifdef GX_PROF
+		if (seed & 1) CHECK_EQ(JJ.armado[GX_AP_OUTPUT] + emitted, JJ.out.npolys);
+#endif
 		CHECK(n > 3000);
 		CHECK_EQ(JJ.out.npolys, JR.out.npolys);
 		CHECK_EQ(JJ.out.nverts, JR.out.nverts);

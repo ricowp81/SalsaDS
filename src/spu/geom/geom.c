@@ -9,11 +9,12 @@
  *   contexto gx_exec ≈ 6 KB; ventana de vértices 512 × 32 B = 16 KB, polígonos 256 × 48 B = 12 KB,
  *   tramo del registro 4096 palabras = 16 KB y búfer DMA ≈ 16 KB. La caché de proyección vive en los cuatro vértices
  *   del ensamblador (40 bytes extra por vértice más alineación); no amplía las ventanas ni cambia las transferencias.
- *   Enlace: texto 42 344 B, datos 800 B, bss 68 992 B; pila disponible 149 872 B, cadena máxima 5600 B,
- *   holgura 144 272 B (mínimo exigido 8192 B). La ruta de recorte también cuenta en esa cadena.
+ *   Enlace: texto 45 000 B, datos 800 B, bss 69 056 B; pila disponible 147 120 B, cadena máxima 5888 B,
+ *   holgura 141 232 B (mínimo exigido 8192 B). La ruta de recorte también cuenta en esa cadena.
  */
 #include <spukit/spu.h>
 #include <sys/spu_thread.h>
+#include <spu_intrinsics.h>
 
 #include "gpu3d/gx_exec.h"
 #include "spu/geom/job.h"
@@ -41,6 +42,11 @@ typedef struct io_state {
 	uint32_t puts;
 } io_state;
 
+static uint32_t ap_clock(void) { return ex.armado_on ? spu_readch(SPU_RdDec) : 0; }
+static void ap_end(unsigned k, uint32_t t) {
+	if (ex.armado_on) ex.armado[k] += t - spu_readch(SPU_RdDec);
+}
+
 /* trae `n` palabras del registro desde la palabra `pos` (dirección alineada a 4, no a 16) */
 static void fetch(void *ctx, uint32_t pos, uint32_t *dst, uint32_t n)
 {
@@ -49,17 +55,25 @@ static void fetch(void *ctx, uint32_t pos, uint32_t *dst, uint32_t n)
 	const uint64_t a = ea & ~15ull;
 	const uint32_t off = (uint32_t)(ea - a), bytes = (n * 4u + off + 15u) & ~15u;
 
+	const uint32_t ap = ap_clock();
 	spukit_dma_get(dmabuf, a, bytes, TAG_GET);
+	const uint32_t wait = ap_clock();
 	spukit_dma_wait(1u << TAG_GET);
+	ap_end(GX_AP_GET_WAIT, wait);
 	memcpy(dst, (const uint8_t *)dmabuf + off, (size_t)n * 4u);
+	ap_end(GX_AP_GET, ap);
 }
 
 static void put_verts(void *ctx, uint32_t first, const gx_vertex *src, uint32_t n)
 {
 	io_state *io = ctx;
 
+	const uint32_t ap = ap_clock();
 	spukit_dma_put(src, io->vtx_ea + (uint64_t)first * sizeof(gx_vertex), n * (uint32_t)sizeof(gx_vertex), TAG_PUT);
+	const uint32_t wait = ap_clock();
 	spukit_dma_wait(1u << TAG_PUT); /* la ventana se reutiliza */
+	ap_end(GX_AP_PUT_WAIT, wait);
+	ap_end(GX_AP_PUT, ap);
 	io->puts++;
 }
 
@@ -67,8 +81,12 @@ static void put_polys(void *ctx, uint32_t first, const gx_poly *src, uint32_t n)
 {
 	io_state *io = ctx;
 
+	const uint32_t ap = ap_clock();
 	spukit_dma_put(src, io->poly_ea + (uint64_t)first * sizeof(gx_poly), n * (uint32_t)sizeof(gx_poly), TAG_PUT);
+	const uint32_t wait = ap_clock();
 	spukit_dma_wait(1u << TAG_PUT);
+	ap_end(GX_AP_PUT_WAIT, wait);
+	ap_end(GX_AP_PUT, ap);
 	io->puts++;
 }
 
@@ -107,6 +125,7 @@ static int handler(void *user, const spukit_job *job, spukit_result *res)
 		out.cmds = (uint32_t)(after - before);
 		for (unsigned k = 0; k < 5; k++)
 			out.prof[k] = ex.prof[k] - pbefore[k];
+		memcpy(out.armado, ex.armado, sizeof out.armado);
 		out.puts = io.puts;
 		out_ls = ex.out;
 		spukit_dma_put(&out_ls, j.out_ea, (uint32_t)sizeof out_ls, TAG_PUT);
