@@ -100,6 +100,57 @@ static const uint8_t *code_ptr7(void *ctx, uint32_t a, uint32_t *phys, uint32_t 
 	return NULL;
 }
 
+/* Lectura de diagnóstico por captación, sin tocar E/S ni la DTCM (no sirve para fetch). */
+static uint32_t diag_word(struct nds *n, int cpu, uint32_t a)
+{
+	uint32_t value = 0;
+
+	for (unsigned k = 0; k < 4; k++) {
+		uint32_t ph, av;
+		const uint32_t at = a + k;
+		const uint8_t *p = cpu == NDS_CPU7 ? code_ptr7(n, at, &ph, &av) : code_ptr(n, at, &ph, &av);
+		value |= (p ? *p : nds_bus_read(n, cpu, at, 1)) << (8 * k);
+	}
+	return value;
+}
+
+static void jit_nocode(void *ctx, const struct acore *c, const struct arec_nocode *d, uint32_t last, int error)
+{
+	struct nds *n = ctx;
+	const int cpu = c->v5 ? NDS_CPU9 : NDS_CPU7;
+	const uint32_t pc = acore_pc(c), region = pc >> 24;
+	uint32_t ph = 0, av = 0;
+	const uint8_t *p = c->v5 ? code_ptr(n, pc, &ph, &av) : code_ptr7(n, pc, &ph, &av);
+	const char *name = "sin mapa", *why;
+
+	if (c->v5 && (uint64_t)pc < c->itcm_rd_len) name = "ITCM";
+	else if ((!c->v5 && pc < NDS_BIOS7_SIZE) || (c->v5 && (pc & 0xFFFFF000u) == 0xFFFF0000u)) name = "BIOS HLE";
+	else if (region == 2) name = "RAM principal";
+	else if (region == 3) name = !c->v5 && pc >= 0x03800000u ? "WRAM ARM7" : "WRAM compartida/espejo";
+	else if (region == 4) name = pc >= 0x04800000u ? "Wi-Fi/E/S" : "E/S";
+	else if (region == 5) name = "paleta";
+	else if (region == 6) name = "VRAM";
+	else if (region == 7) name = "OAM";
+	else if (region >= 8 && region <= 10) name = "ranura GBA vacia";
+	why = error ? "error del emisor" : !p ? (region == 6 ? "VRAM sin invalidacion de codigo" :
+		"sin puntero de captacion traducible") : av < ((c->cpsr & ACORE_T) ? 2u : 4u) ?
+		"instruccion cruza limite de memoria" : "captacion/decodificacion rechazada";
+	nds_logf(n, "DATO jit-sin-codigo: ARM%u pasos=%u PC=%08x %s CPSR=%08x LR=%08x SP=%08x region=%s motivo=%s error=%d inicio=%08x ultimo-bloque=%08x",
+		c->v5 ? 9u : 7u, d->steps, pc, (c->cpsr & ACORE_T) ? "Thumb" : "ARM", c->cpsr,
+		c->r[14], c->r[13], name, why, error, d->first_pc, last);
+	/* Nunca leer registros: FIFO, cartucho o Wi-Fi pueden tener efectos al leer. */
+	for (unsigned k = 0; k < 8; k++) {
+		const uint32_t a = pc + 4 * k;
+		if ((a >> 24) == 4 || ((a + 3) >> 24) == 4)
+			nds_logf(n, "DATO jit-palabra: %08x=???????? (E/S omitida)", a);
+		else
+			nds_logf(n, "DATO jit-palabra: %08x=%08x", a, diag_word(n, cpu, a));
+	}
+	nds_logf(n, "DATO jit-anillo: %u discontinuidades del episodio, antiguas primero; bit0=Thumb; no incluye saltos traducidos", d->count);
+	for (unsigned k = 0; k < d->count; k++)
+		nds_logf(n, "DATO jit-destino: %u %08x", k, d->targets[(d->next + 16 - d->count + k) & 15u]);
+}
+
 /* Tabla de páginas de la ruta rápida: lo que mapean las regiones de la CPU (RAM y WRAM; páginas de 16 KB con regiones de
  * al menos ese tamaño). `limit` es el espacio físico de ese recompilador. */
 static void remap_bus(struct nds *n, struct arec *j, int cpu, uint32_t limit)
@@ -292,6 +343,7 @@ int nds_jit_attach(struct nds *n, const struct nds_jit_cfg *jc)
 	cfg.opts = jc->opts;
 	cfg.icache_flush = jc->icache_flush;
 	cfg.code_ptr = code_ptr;
+	cfg.on_nocode = jit_nocode;
 	cfg.ctx = n;
 	cfg.phys_size = phys_size9(n);
 	cfg.on_exec = jc->on_exec;
@@ -316,6 +368,7 @@ int nds_jit_attach(struct nds *n, const struct nds_jit_cfg *jc)
 		cfg.opts = jc->opts;
 		cfg.icache_flush = jc->icache_flush;
 		cfg.code_ptr = code_ptr7;
+		cfg.on_nocode = jit_nocode;
 		cfg.ctx = n;
 		cfg.phys_size = phys_size7(n);
 		cfg.map_pages = JIT7_MAP_PAGES;

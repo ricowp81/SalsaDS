@@ -31,6 +31,35 @@
 
 struct arec;
 
+#define AREC_NOCODE_LIMIT 4096u
+/* Historia del episodio interpretado; bit 0 indica Thumb. No instrumenta bloques traducidos. */
+struct arec_nocode {
+	uint32_t steps, first_pc, targets[16];
+	unsigned next, count;
+};
+/* Cuenta saturada: devuelve 1 una sola vez, al superar el umbral. */
+static inline int arec_nocode_tick(struct arec_nocode *d, uint32_t pc)
+{
+	if (!d->steps) {
+		d->first_pc = pc;
+		d->next = d->count = 0;
+	}
+	if (d->steps > AREC_NOCODE_LIMIT)
+		return 0;
+	return ++d->steps == AREC_NOCODE_LIMIT + 1;
+}
+static inline void arec_nocode_target(struct arec_nocode *d, uint32_t before, uint32_t after)
+{
+	/* Solo discontinuidades: no incluye saltos al siguiente opcode ni saltos internos del JIT. */
+	if (after == before + ((before & 1) ? 2u : 4u))
+		return;
+	d->targets[d->next] = after;
+	d->next = (d->next + 1) & 15u;
+	if (d->count < 16)
+		d->count++;
+}
+
+
 /* Clases de instrucciones que ejecuta el intérprete desde un bloque (para las estadísticas). */
 enum {
 	AREC_CK_MRS, AREC_CK_MSR, AREC_CK_SWI, AREC_CK_CP15, AREC_CK_LDRD, AREC_CK_SWP, AREC_CK_QDSP, AREC_CK_BLOCK_S,
@@ -53,6 +82,9 @@ struct arec_cfg {
 	 * su desplazamiento físico para invalidar (AREC_PHYS_NONE si no se escribe nunca) y cuántos bytes siguen en
 	 * la misma memoria. NULL: no se traduce (el intérprete la ejecuta). */
 	const uint8_t *(*code_ptr)(void *ctx, uint32_t a, uint32_t *phys, uint32_t *avail);
+	/* Una vez por episodio sin traducción; error 0 = captación/decodificación, negativo = emisor. */
+	void (*on_nocode)(void *ctx, const struct acore *c, const struct arec_nocode *d,
+			 uint32_t last_pc, int error);
 	void *ctx;
 	uint32_t phys_size;  /* tamaño del espacio físico (múltiplo de 16 KB) */
 	uint32_t map_pages;  /* páginas de 16 KB (desde la dirección 0) que el dueño llega a mapear en arec_map_set (0: todas); las

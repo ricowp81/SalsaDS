@@ -137,6 +137,8 @@ struct arec {
 	struct acore *c;
 	struct arec_cfg cfg;
 	int can_exec;
+	struct arec_nocode nocode;
+	int compile_error;
 
 	uint32_t *code;      /* caché de código */
 	size_t code_words, code_used, code_base_used; /* code_base_used: trampolín y rutinas comunes; code_used: final de la

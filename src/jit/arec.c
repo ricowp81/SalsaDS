@@ -607,6 +607,7 @@ static struct ablock *compile(struct arec *j, uint32_t pc)
 	int r, tries = 0;
 	uint64_t t0 = j->pub.clock_ns ? j->pub.clock_ns() : 0;
 
+	j->compile_error = 0;
 	n = arec_decode(&src, pc, ins, AREC_MAX_INSN, &plo, &phi);
 	if (!n)
 		return NULL;
@@ -627,6 +628,7 @@ again:
 		goto again;
 	}
 	if (r < 0) {
+		j->compile_error = r;
 		if (r == -6) {
 			j->pub.st.bad_blocks++;
 #ifdef AREC_DEBUG
@@ -754,11 +756,18 @@ void arec_run(struct arec *j, uint64_t until)
 		b = lookup(j, pc);
 		if (!b)
 			b = compile(j, pc);
+		if (b)
+			j->nocode.steps = 0; /* recuperado, incluso si el presupuesto obliga a interpretar */
 		if (!b || (j->cfg.strict && c->cycles + b->maxcyc > until)) {
-			if (!b)
+			if (!b) {
 				j->pub.st.no_code++;
+				if (arec_nocode_tick(&j->nocode, pc) && j->cfg.on_nocode)
+					j->cfg.on_nocode(j->cfg.ctx, c, &j->nocode, j->pub.last_pc, j->compile_error);
+			}
 			j->pub.st.interp_steps++;
 			acore_step_insn(c);
+			if (!b && j->nocode.steps <= AREC_NOCODE_LIMIT)
+				arec_nocode_target(&j->nocode, pc, acore_pc(c) | ((c->cpsr & ACORE_T) ? 1u : 0u));
 			if (ev)
 				ev(j->cfg.ctx, AREC_EV_STEP, until);
 			continue;

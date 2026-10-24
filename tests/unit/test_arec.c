@@ -35,6 +35,7 @@
 
 struct am {
 	int v4;            /* perfil del ARM7 */
+	int deny_code, diag_calls;
 	struct acore c;
 	uint8_t itcm[ACORE_ITCM_SIZE], dtcm[ACORE_DTCM_SIZE];
 	uint8_t ram[AM_RAM];
@@ -138,10 +139,25 @@ static void am_w32(struct acore *c, uint32_t a, uint32_t v) { am_wr(c, a, v, 4);
 
 static const struct acore_bus am_bus = { am_r8, am_r16, am_r32, am_w8, am_w16, am_w32, am_r16, am_r32 };
 
+static void am_nocode(void *ctx, const struct acore *c, const struct arec_nocode *d, uint32_t last, int error)
+{
+	struct am *m = ctx;
+	(void)last;
+	m->diag_calls++;
+	CHECK(c == &m->c);
+	CHECK(d->steps == AREC_NOCODE_LIMIT + 1);
+	CHECK(d->count == 16);
+	CHECK(error == 0);
+	for (unsigned k = 0; k < 16; k++)
+		CHECK(d->targets[k] == (AM_CODE | ((c->cpsr & ACORE_T) ? 1u : 0u)));
+}
+
 static const uint8_t *am_code(void *ctx, uint32_t a, uint32_t *phys, uint32_t *avail)
 {
 	struct am *m = ctx;
 
+	if (m->deny_code)
+		return NULL;
 	if (m->v4 ? a < ACORE_ITCM_SIZE : (uint64_t)a < m->c.itcm_rd_len) {
 		const uint32_t o = a & (ACORE_ITCM_SIZE - 1);
 
@@ -221,6 +237,7 @@ static void am_init(struct am *m, int jit, int strict)
 		cfg.no_link = 0;
 		cfg.opts = prof_opts;
 		cfg.code_ptr = am_code;
+		cfg.on_nocode = am_nocode;
 		cfg.ctx = m;
 		cfg.phys_size = PH_SIZE;
 		if (prof_v4) { /* como el ARM7 de la máquina: tablas acotadas */
@@ -1099,6 +1116,7 @@ static void test_translate_any_host(void)
 	cfg.code = buf;
 	cfg.code_bytes = sizeof buf;
 	cfg.code_ptr = am_code;
+		cfg.on_nocode = am_nocode;
 	cfg.ctx = &T;
 	cfg.phys_size = PH_SIZE;
 	CHECK(arec_translate_only(&T.c, &cfg, AM_CODE, out, 8192) > 10);
@@ -1149,8 +1167,56 @@ static void run_profile(int v4)
 	prof_v4 = 0;
 }
 
+static void test_nocode_counter(void)
+{
+	struct arec_nocode d = {0};
+	unsigned reports = 0;
+	for (unsigned k = 0; k < 2 * AREC_NOCODE_LIMIT; k++) {
+		reports += arec_nocode_tick(&d, 0x06000001u);
+		arec_nocode_target(&d, 0x06000001u, 0x06000003u); /* secuencial */
+	}
+	CHECK(reports == 1);
+	CHECK(d.steps == AREC_NOCODE_LIMIT + 1);
+	CHECK(d.count == 0);
+	for (unsigned k = 0; k < 20; k++)
+		arec_nocode_target(&d, 0, 0x06000001u + 2 * k);
+	CHECK(d.count == 16);
+	for (unsigned k = 0; k < 16; k++)
+		CHECK(d.targets[(d.next + k) & 15] == 0x06000001u + 2 * (k + 4));
+	d.steps = 0;
+	CHECK(!arec_nocode_tick(&d, 0x04000000));
+	CHECK(d.first_pc == 0x04000000 && d.count == 0 && d.steps == 1);
+}
+
+/* Episodios que cruzan llamadas del planificador; recuperación y nuevo episodio, ARM/Thumb y ambas CPUs. */
+static __attribute__((unused)) void test_nocode_run(void)
+{
+	for (int v4 = 0; v4 < 2; v4++) for (int thumb = 0; thumb < 2; thumb++) {
+		prof_v4 = v4;
+		am_init(&MJ, 1, 1);
+		CHECK(MJ.j != NULL);
+		if (!MJ.j) continue;
+		wr32le(MJ.ram + (AM_CODE & (AM_RAM - 1)), thumb ? 0xE7FEE7FEu : 0xEAFFFFFEu);
+		acore_bx(&MJ.c, AM_CODE | (unsigned)thumb);
+		for (unsigned episode = 0; episode < 2; episode++) {
+			MJ.deny_code = 1;
+			arec_flush(MJ.j);
+			for (unsigned k = 0; k < AREC_NOCODE_LIMIT + 10; k++)
+				arec_run(MJ.j, MJ.c.cycles + 1);
+			CHECK(MJ.diag_calls == (int)episode + 1);
+			CHECK(acore_pc(&MJ.c) == AM_CODE);
+			MJ.deny_code = 0;
+			arec_run(MJ.j, MJ.c.cycles + 100);
+		}
+		arec_destroy(MJ.j);
+		MJ.j = NULL;
+	}
+	prof_v4 = 0;
+}
+
 void test_arec(void)
 {
+	test_nocode_counter();
 	test_translate_any_host();
 	if (!can_run()) {
 		printf("arec: este host no ejecuta PowerPC64; solo traducción\n");
