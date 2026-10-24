@@ -5,6 +5,28 @@ host no reproducen los tiempos del Cell). Una fila por medición, la más
 reciente arriba. Formato: fecha, commit, prueba, entorno, antes, después,
 notas.
 
+## 2026-10-23 — Armado de polígonos: copias y proyección compartida (cand-v004)
+
+**PS3 real, rc3, MKDS:** a los 62,832 s, `DATO geometria-spe` informa 11,32 ms/cuadro: vértices 8,49 (armado 6,93), luces 1,63; espera del PPE 4,55 ms. A los 66,834 s el armado llega a 9,89 y la espera a 6,44: la carga no es constante. La meta de armado ≤ 3 ms y espera ≈ 0 queda **pendiente de medir en consola**.
+
+**Dos ideas, host nativo, aritmética `GX_VEC` + `GX_SPLIT_MUL`:** MKDS sin entrada, 2501 cuadros; reloj alrededor de `emit_poly_inner` en los cuadros 2199–2498 (índice desde cero), 669 277 llamadas en 300 cuadros. El reloj por polígono está incluido, sin descontar; estas cifras no son tiempos ni predicciones de PS3. Tres corridas por variante, en serie y alternando el orden:
+
+| Variante | Armado, mediana (ms/cuadro) | Cambio |
+|---|---:|---:|
+| Original | 0,159977 | — |
+| Copiar solo si hay recorte | 0,154913 | −3,2 % |
+| Además reutilizar proyecciones en las tiras | 0,147600 | −7,7 % |
+
+La caché incluye el VIEWPORT como clave; conserva las coordenadas enteras y fraccionarias de 64 bits, incluso antes del descarte por cara. Un intento de reducirla a dos coordenadas y reutilizar solo vértices ya guardados perdió la ventaja (0,159743 ms de mediana) y se descartó. No se modificaron las reglas de recorte, divisiones, atributos de salida, ventanas ni sincronización DMA.
+
+**Árbol final con interruptor A/B**, tres parejas adicionales original/final: 0,174820/0,157973; 0,163567/0,157973; 0,163850/0,149507 ms. Medias 0,167412 → 0,155151 ms (−7,3 %); mejora por pareja 3,4–9,6 %. Ganancia modesta: no acredita el objetivo de consola. En todos los experimentos: 1131 cuadros de geometría, hash `ca8447637d3b18da`. Evidencia e instrumentación local en `build/rc4/`; no se incorporan datos de juegos al repositorio.
+
+**A/B en PS3:** archivo `geometria-sin-reuso` en el directorio de datos; el arranque dice «geometría SPE: armado …». Desactiva la caché y vuelve a copiar por polígono, conservando la estructura interna ampliada: no es un ejecutable idéntico a rc3. Host: `--geometria-sin-reuso`, también con `--gx-defer`. Repetir la demostración y la misma carrera pesada de MKDS con/sin archivo, manteniendo iguales los demás interruptores; comparar armado, total SPE, espera del PPE y polígonos/cuadro. Renombrar el archivo a `.off` para desactivarlo. No atribuir una diferencia a la geometría si cambia la carga.
+
+**Si persiste la espera (solo propuesta):** identificar primero qué barreras vienen del SWAP y cuáles de lecturas de resultados. Para las primeras, separar cuadro en construcción, cuadro pendiente y cuadro listo, retener registro y destino DMA hasta su finalización, y lanzar el raster al comprobar la secuencia completada; el PPE podría continuar trabajo independiente antes de esa barrera. Las lecturas de matrices, BOX/POS/VEC y RAM_COUNT deben conservar la sincronización. Hace falta comprobar orden, reutilización de memoria y latencia de presentación; no se implementó ni se promete eliminar toda espera.
+
+**NSMB, diagnóstico sin arreglo:** el archivo rotulado como Metroid muestra a los 232,607 s eventos 46,79 ms, de ellos «línea» 45,81 y «gx» 0,28. Cerca, raster3D: SPE0/1 60,24/60,31 ms, espera del PPE 32,38 ms de mediana (53,90 p95), texturas 82,00 ms sumados y 42 922,1 DMA XDR/cuadro. La espera aplazada sigue ejecutándose dentro del evento de línea (`nds_video_submit_pending`); el ARM9 casi a cero puede reflejar el muestreo de cuadros alternos (`frame_no & 1`), no demuestra que no ejecute instrucciones. Causa probable del atasco: tráfico de celdas XDR (forzadas) en el rasterizador. Confirmar con XDR apagada en la misma escena; no sumar ni igualar medianas con promedios de ventanas diferentes.
+
 ## 2026-10-23 — Reserva local reducida con respaldo XDR (host)
 - MKDS, demostración sin entrada, dos unidades, cuadros 2200–2499; cifras por cuadro, suma de ambos SPE. DMA de 128 B; total = lecturas + escrituras.
 | Celdas | Decodificadas | Lecturas XDR | DMA total XDR | Aciertos locales | Holgura SPE (B) |

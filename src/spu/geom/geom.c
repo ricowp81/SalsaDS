@@ -6,9 +6,11 @@
  * cuadro de salida en memoria principal. El contexto (matrices, pilas, estado de vértices y luces) vive aquí entre trabajos.
  *
  * Presupuesto del local store (256 KB; lo mide el enlace: `spu-size` y tools/spu-stack.py):
- *   contexto gx_exec ≈ 6 KB (matrices y pilas 4,4 KB, ensamblado, luces, contadores de órdenes 1 KB), ventana de vértices
- *   512 × 32 B = 16 KB, de polígonos 256 × 48 B = 12 KB, tramo del registro 4096 palabras = 16 KB y su búfer de DMA 16 KB,
- *   código ≈ 20 KB; la pila, lo que queda (mínimo 4 KB).
+ *   contexto gx_exec ≈ 6 KB; ventana de vértices 512 × 32 B = 16 KB, polígonos 256 × 48 B = 12 KB,
+ *   tramo del registro 4096 palabras = 16 KB y búfer DMA ≈ 16 KB. La caché de proyección vive en los cuatro vértices
+ *   del ensamblador (40 bytes extra por vértice más alineación); no amplía las ventanas ni cambia las transferencias.
+ *   Enlace: texto 42 344 B, datos 800 B, bss 68 992 B; pila disponible 149 872 B, cadena máxima 5600 B,
+ *   holgura 144 272 B (mínimo exigido 8192 B). La ruta de recorte también cuenta en esa cadena.
  */
 #include <spukit/spu.h>
 #include <sys/spu_thread.h>

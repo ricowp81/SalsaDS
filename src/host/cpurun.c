@@ -599,7 +599,7 @@ int main(int argc, char **argv)
 	const char *wav_path = NULL;
 	int snd_original = 0, g2d_stats = 0;
 	const char *gxdump_path = NULL;
-	int gx_clock = 0, r3d_stats_on = 0, holes_on = 0, gx_defer = 0, gx_lento = 0;
+	int gx_clock = 0, r3d_stats_on = 0, holes_on = 0, gx_defer = 0, gx_lento = 0, geom_plain = 0;
 	const char *holes_dump = NULL, *fdump_prefix = NULL;
 	uint64_t fdump_frame = 0;
 	const char *img3d_path = NULL;
@@ -628,6 +628,8 @@ int main(int argc, char **argv)
 			wav_path = argv[++i];
 		else if (!strcmp(argv[i], "--g2d-stats"))
 			g2d_stats = 1;
+		else if (!strcmp(argv[i], "--geometria-sin-reuso"))
+			geom_plain = 1;
 		else if (!strcmp(argv[i], "--gx-lento"))
 			gx_lento = 1; /* sin las rutas cortas de la FIFO de geometría (ráfagas de la DMA y escrituras de la CPU): la forma anterior */
 		else if (!strcmp(argv[i], "--gx-defer"))
@@ -913,6 +915,7 @@ int main(int argc, char **argv)
 			free(blank);
 		}
 	}
+	M.gx.ex.poly_plain = (uint32_t)geom_plain;
 	if (keys)
 		set_input(keys, tx, ty);
 	for (uint64_t f = 0; f < skip_frames; f++) {

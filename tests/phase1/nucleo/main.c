@@ -85,6 +85,8 @@
  * ~2,8 del PPE, pero libera al hilo principal de la geometría; antes de la vectorización el SPE escalar tardaba 35 ms).
  * Con este archivo vuelve al PPE. */
 #define GEOM_PPE_FLAG SALSADS_DATA_DIR "/geometria-ppe"
+#define GEOM_POLY_PLAIN_FLAG SALSADS_DATA_DIR "/geometria-sin-reuso"
+static int geom_poly_plain;
 /* Con este archivo las bandas del render 3D vuelven al reparto alterno (u, u+2, ...) en lugar del reparto por costo. */
 #define R3D_ALT_FLAG SALSADS_DATA_DIR "/reparto-alterno"
 /* Caché de texturas del render 3D (docs/fase3.md, 3.9): por omisión automática (bloques de 256 texeles mientras no se desborden,
@@ -1652,7 +1654,7 @@ static uint32_t geom_post(void *ctx, gx_t *g, uint32_t flags, const uint32_t *lo
 	j.poly_ea = (uint64_t)(uintptr_t)f->poly;
 	j.out_ea = (uint64_t)(uintptr_t)&g->ex.out;
 	j.nwords = nwords;
-	j.flags = flags;
+	j.flags = flags | (geom_poly_plain ? GX_JOB_POLY_PLAIN : 0u);
 	geom_collect(0);
 	geom_last_seq = spukit_post(wk_geom, JOB_GEOM, &j, sizeof j);
 	geom_acc.posts++;
@@ -1710,6 +1712,7 @@ static int geom_selftest(void)
 			cut += 1u + gx_cmd_np(gst_log[cut]);
 		t0 = now_us();
 		gx_exec_init(&gst_ref);
+		gst_ref.poly_plain = 1;
 		gx_exec_newframe(&gst_ref);
 		gst_ref.vtx = gst_fa.vtx;
 		gst_ref.poly = gst_fa.poly;
@@ -2831,6 +2834,8 @@ int main(void)
 	/* Motor de geometría en el sexto SPE (salvo con GEOM_PPE_FLAG); si no arranca o la autoprueba falla, el PPE ejecuta
 	 * las órdenes (modo directo) */
 	struct stat gst;
+	geom_poly_plain = stat(GEOM_POLY_PLAIN_FLAG, &gst) == 0;
+	salsads_log("geometría SPE: armado %s", geom_poly_plain ? "sin reutilizar proyecciones" : "con proyecciones compartidas");
 	if (spu_on && stat(GEOM_PPE_FLAG, &gst) == 0)
 		salsads_log("geometría: en el PPE (existe %s)", GEOM_PPE_FLAG);
 	else if (spu_on) {

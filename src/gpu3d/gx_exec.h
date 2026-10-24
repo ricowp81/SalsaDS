@@ -104,6 +104,8 @@ typedef struct gx_cvtx {
 	int32_t s, t;       /* 1.11.4 */
 	int32_t r, g, b;    /* 0..63 */
 	int32_t ram;        /* índice del vértice en la RAM de vértices si ya se guardó, o -1 (se comparte en las tiras) */
+	int64_t screen[4]; /* proyección sin recorte: x/y enteras y con ocho bits fraccionarios */
+	uint32_t screen_viewport, screen_valid;
 	int16_t sx, sy;     /* pantalla del vértice guardado (solo con ram >= 0): el cuadro de salida puede estar ya en memoria principal */
 } gx_cvtx;
 
@@ -156,6 +158,7 @@ typedef struct gx_exec {
 	int32_t normal[3];          /* última normal, tal como se mandó (1.0.9) */
 	uint32_t polyattr, polyattr_cur; /* pendiente y la del BEGIN_VTXS vigente */
 	uint32_t texparam, pltt;
+	uint32_t poly_plain;        /* A/B: copias y proyección por polígono, sin reutilizar la proyección */
 	uint32_t viewport;          /* x1 | y1 << 8 | x2 << 16 | y2 << 24 */
 	uint32_t prim;              /* tipo de BEGIN_VTXS (0 a 3) */
 	gx_cvtx asm_v[4];           /* ensamblado: vértices ya transformados al espacio de recorte */
@@ -205,6 +208,7 @@ typedef struct gx_job_io {
 #define GX_JOB_RESET 1u
 #define GX_JOB_NEWFRAME 2u
 #define GX_JOB_MATS 4u
+#define GX_JOB_POLY_PLAIN 8u
 
 void gx_job_run(gx_exec *ex, uint32_t flags, uint32_t nwords, const gx_job_io *io, gx_vertex *vstage, uint32_t vcap,
 		gx_poly *pstage, uint32_t pcap, uint32_t *chunk, uint32_t chunk_words);

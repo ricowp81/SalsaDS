@@ -594,6 +594,7 @@ static void emit_poly(gx_exec *g, gx_cvtx *const *src, int n)
 static void emit_poly_inner(gx_exec *g, gx_cvtx *const *src, int n)
 {
 	gx_cvtx pv[CLIP_BUF];
+	const gx_cvtx *v[CLIP_BUF];
 	const uint32_t attr = g->polyattr_cur;
 	unsigned oc_and = 0x3Fu, oc_or = 0;
 	int m = n, clipped = 0, front;
@@ -608,8 +609,13 @@ static void emit_poly_inner(gx_exec *g, gx_cvtx *const *src, int n)
 	for (int i = 0; i < n; i++) {
 		unsigned c;
 
-		in[i] = *src[i];
-		c = outcode(&in[i]);
+		if (g->poly_plain) {
+			in[i] = *src[i];
+			v[i] = &in[i];
+		} else {
+			v[i] = src[i];
+		}
+		c = outcode(v[i]);
 		oc_and &= c;
 		oc_or |= c;
 	}
@@ -625,6 +631,8 @@ static void emit_poly_inner(gx_exec *g, gx_cvtx *const *src, int n)
 		return;
 	}
 	if (oc_or) {
+		for (int i = 0; i < n; i++)
+			in[i] = *src[i];
 		m = clip_polygon(in, n, pv, 0x3Fu);
 		if (m < 3) {
 			g->out.st.rejected++;
@@ -632,13 +640,32 @@ static void emit_poly_inner(gx_exec *g, gx_cvtx *const *src, int n)
 			return;
 		}
 		clipped = 1;
-	} else {
+		for (int i = 0; i < m; i++)
+			v[i] = &pv[i];
+	} else if (g->poly_plain) {
 		memcpy(pv, in, (size_t)n * sizeof in[0]);
+		for (int i = 0; i < n; i++)
+			v[i] = &pv[i];
 	}
 	/* Cara: signo del área en pantalla (con 8 bits fraccionarios extra). Frontal = antihorario a la vista = área < 0
 	 * con y hacia abajo. Área 0 cuenta como frontal. [sin contrastar] */
-	for (int i = 0; i < m; i++)
-		screen_both(g, &pv[i], &s0x[i], &s0y[i], &s8x[i], &s8y[i]);
+	for (int i = 0; i < m; i++) {
+		gx_cvtx *c = clipped || g->poly_plain ? NULL : src[i];
+
+		/* VIEWPORT puede cambiar entre dos polígonos de una misma tira. */
+		if (c && c->screen_valid && c->screen_viewport == g->viewport) {
+			s0x[i] = c->screen[0]; s0y[i] = c->screen[1];
+			s8x[i] = c->screen[2]; s8y[i] = c->screen[3];
+		} else {
+			screen_both(g, v[i], &s0x[i], &s0y[i], &s8x[i], &s8y[i]);
+			if (c) {
+				c->screen[0] = s0x[i]; c->screen[1] = s0y[i];
+				c->screen[2] = s8x[i]; c->screen[3] = s8y[i];
+				c->screen_viewport = g->viewport;
+				c->screen_valid = 1;
+			}
+		}
+	}
 	for (int i = 0; i < m; i++) {
 		const int j = i + 1 == m ? 0 : i + 1;
 
@@ -696,7 +723,7 @@ static void emit_poly_inner(gx_exec *g, gx_cvtx *const *src, int n)
 		} else {
 			id = g->out.nverts++;
 			o = &g->vtx[id - g->vbase];
-			make_out(&pv[i], o, s0x[i], s0y[i]);
+			make_out(v[i], o, s0x[i], s0y[i]);
 			sx = o->sx;
 			sy = o->sy;
 			if (!clipped) {
@@ -710,8 +737,8 @@ static void emit_poly_inner(gx_exec *g, gx_cvtx *const *src, int n)
 		if (sx > xmax) xmax = sx;
 		if (sy < ymin) ymin = sy;
 		if (sy > ymax) ymax = sy;
-		if (pv[i].w > 0 && (uint32_t)pv[i].w > wmax)
-			wmax = (uint32_t)pv[i].w;
+		if (v[i]->w > 0 && (uint32_t)v[i]->w > wmax)
+			wmax = (uint32_t)v[i]->w;
 	}
 	p->xmin = xmin; p->xmax = xmax; p->ymin = ymin; p->ymax = ymax;
 	/* w se normaliza a 16 bits desplazando de 4 en 4. [sin contrastar] */
@@ -843,6 +870,7 @@ static void vertex_submit(gx_exec *g, int32_t x, int32_t y, int32_t z)
 	c.g = (int32_t)expand6(g->color5[1]);
 	c.b = (int32_t)expand6(g->color5[2]);
 	c.ram = -1;
+	c.screen_valid = 0;
 	c.sx = c.sy = 0;
 	asm_push(g, &c);
 }
@@ -1414,6 +1442,7 @@ void gx_job_run(gx_exec *ex, uint32_t flags, uint32_t nwords, const gx_job_io *i
 	} else if (flags & GX_JOB_NEWFRAME) {
 		gx_exec_newframe(ex);
 	}
+	ex->poly_plain = !!(flags & GX_JOB_POLY_PLAIN);
 	ex->vtx = vstage;
 	ex->poly = pstage;
 	ex->vbase = ex->out.nverts;

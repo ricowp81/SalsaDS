@@ -242,6 +242,42 @@ static uint32_t split_at(const uint32_t *log, uint32_t n, uint32_t want)
 	return i;
 }
 
+/* Las tiras conservan vértices al cambiar VIEWPORT, incluso con recorte y caras descartadas. */
+static void projection_cmd(uint32_t cmd, uint32_t a, uint32_t b)
+{
+	const uint32_t p[2] = { a, b };
+
+	gx_exec_cmd(&JR, cmd, p);
+	gx_exec_cmd(&JJ, cmd, p);
+	CHECK(!memcmp(&JR.out, &JJ.out, sizeof JR.out));
+	CHECK(!memcmp(FR.vtx, FJ.vtx, JR.out.nverts * sizeof FR.vtx[0]));
+	CHECK(!memcmp(FR.poly, FJ.poly, JR.out.npolys * sizeof FR.poly[0]));
+}
+
+static void projection_parity(void)
+{
+	for (unsigned prim = 0; prim < 4; prim++) {
+		gx_exec_init(&JR);
+		gx_exec_init(&JJ);
+		JR.poly_plain = 1;
+		JR.vtx = FR.vtx; JR.poly = FR.poly;
+		JJ.vtx = FJ.vtx; JJ.poly = FJ.poly;
+		for (unsigned attr = 0; attr < 4; attr++) {
+			projection_cmd(0x29, 0x1F1000u | (attr << 6), 0);
+			projection_cmd(0x40, prim, 0);
+			for (unsigned i = 0; i < 48; i++) {
+				const int x = i % 5 == 0 ? 6000 : (i & 1) ? -2048 : 2048;
+				const int y = i & 2 ? -2048 : 2048;
+				const uint32_t views[] = { 0xBFFF0000u, 0x80702010u, 0x0101FFFFu, 0xFFFFFFFFu };
+
+				if (i % 3 == 0)
+					projection_cmd(0x60, views[(i / 3) % 4], 0);
+				projection_cmd(0x23, (uint16_t)x | ((uint32_t)(uint16_t)y << 16), 0);
+			}
+		}
+	}
+}
+
 void test_gx_job(void)
 {
 	static gx_vertex vst[40];
@@ -249,6 +285,7 @@ void test_gx_job(void)
 	static uint32_t chunk[80];
 	uint64_t polys = 0;
 
+	projection_parity();
 	for (uint32_t seed = 1; seed <= 12; seed++) {
 		const uint32_t n = gx_selftest_gen(seed, JLOG, 40000, 3000);
 		const uint32_t cut = split_at(JLOG, n, n / 2 + seed * 7);
@@ -256,6 +293,7 @@ void test_gx_job(void)
 		gx_job_io io = { &j, j_fetch, j_pv, j_pp };
 
 		gx_exec_init(&JR);
+		JR.poly_plain = 1; /* referencia sin caché contra trabajos con vértices compartidos */
 		gx_exec_newframe(&JR);
 		JR.vtx = FR.vtx;
 		JR.poly = FR.poly;
