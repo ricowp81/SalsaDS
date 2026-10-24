@@ -3,7 +3,7 @@
  * SalsaDS — los recompiladores del ARM9 y del ARM7 (src/jit/arec*) conectados a la máquina de la DS (Fase 4).
  *
  * Lo propio de la DS que el recompilador no sabe: de dónde sale el código (ITCM, RAM principal, WRAM compartida y la
- * BIOS en HLE; nada de VRAM ni E/S: eso lo ejecuta el intérprete), la tabla de páginas de la ruta rápida (RAM y WRAM
+ * BIOS en HLE; VRAM C/D del ARM7 sin solapamiento), la tabla de páginas de la ruta rápida (RAM y WRAM
  * por las regiones del mapa, encima la DTCM y la ITCM como las ve la CPU según CP15, con su modo de carga) y los
  * avisos de escritura a memoria con código (bus, ITCM desde el núcleo, captura de sonido). El espacio físico para
  * invalidar es el tramo de `struct nds` que va de `itcm` al final de `swram` (ITCM, DTCM, RAM y WRAM seguidas).
@@ -11,7 +11,7 @@
  * El ARM7 (ARMv4T) tiene su propio recompilador: otra caché de código (la cola de la memoria que se da), otras tablas
  * de páginas (su mapa: RAM principal, WRAM compartida y WRAM propia, sin TCM) y su vista de captación (esas memorias y la
  * BIOS del ARM7 en HLE). Los dos comparten el espacio físico para invalidar —que para el ARM7 se extiende hasta el final de
- * `wram7`— y toda escritura a memoria avisa a los dos (NDS_CODE_WRITE).
+ * `vram`— y toda escritura a memoria avisa a los dos (NDS_CODE_WRITE).
  *
  * Código propio (GPL-2.0-or-later).
  */
@@ -20,7 +20,7 @@
 #include "core/nds_priv.h"
 #include "jit/arec.h"
 
-/* El espacio físico para invalidar: del primer byte de `itcm` hasta el final de `swram` (ARM9) o de `wram7` (ARM7). */
+/* Espacio físico: de `itcm` al final de `swram` (ARM9) o de `vram` (ARM7). */
 static uint32_t phys_size9(const struct nds *n)
 {
 	return (uint32_t)((const uint8_t *)n->swram + NDS_SWRAM_SIZE - (const uint8_t *)n->itcm);
@@ -28,7 +28,7 @@ static uint32_t phys_size9(const struct nds *n)
 
 static uint32_t phys_size7(const struct nds *n)
 {
-	return (uint32_t)((const uint8_t *)n->wram7 + NDS_WRAM7_SIZE - (const uint8_t *)n->itcm);
+	return (uint32_t)((const uint8_t *)n->vram + NDS_VRAM_SIZE - (const uint8_t *)n->itcm);
 }
 
 static uint32_t phys_of(const struct nds *n, const uint8_t *p, uint32_t size)
@@ -92,6 +92,16 @@ static const uint8_t *code_ptr7(void *ctx, uint32_t a, uint32_t *phys, uint32_t 
 		*avail = r->mask + 1 - (a & r->mask);
 		return p;
 	}
+	if ((a >> 24) == 6 && !n->jit_cfg.no_vram7) {
+		const uint8_t *p = n->vpg7_ptr[(a & 0x3FFFFu) >> 14];
+		/* Solapamientos: el intérprete conserva la lectura OR de los bancos. */
+		if (!p)
+			return NULL;
+		p += a & 0x3FFFu;
+		*phys = phys_of(n, p, phys_size7(n));
+		*avail = 0x4000u - (a & 0x3FFFu);
+		return p;
+	}
 	if (a < NDS_BIOS7_SIZE) {
 		*phys = AREC_PHYS_NONE;
 		*avail = NDS_BIOS7_SIZE - a;
@@ -132,7 +142,7 @@ static void jit_nocode(void *ctx, const struct acore *c, const struct arec_nocod
 	else if (region == 6) name = "VRAM";
 	else if (region == 7) name = "OAM";
 	else if (region >= 8 && region <= 10) name = "ranura GBA vacia";
-	why = error ? "error del emisor" : !p ? (region == 6 ? "VRAM sin invalidacion de codigo" :
+	why = error ? "error del emisor" : !p ? (region == 6 ? "VRAM sin banco unico traducible o desactivada" :
 		"sin puntero de captacion traducible") : av < ((c->cpsr & ACORE_T) ? 2u : 4u) ?
 		"instruccion cruza limite de memoria" : "captacion/decodificacion rechazada";
 	nds_logf(n, "DATO jit-sin-codigo: ARM%u pasos=%u PC=%08x %s CPSR=%08x LR=%08x SP=%08x region=%s motivo=%s error=%d inicio=%08x ultimo-bloque=%08x",

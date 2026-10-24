@@ -243,6 +243,8 @@ static void wr16(struct nds *n, int cpu, uint32_t o, uint16_t v, uint16_t mask)
 	case 0x240: case 0x242: case 0x244: case 0x246: case 0x248:
 		if (cpu == NDS_CPU9)
 			vramio_write(n, o, v, mask);
+		else
+			NDS_TRACE(n, NDS_DBG_VRAM7, "VRAMSTAT escritura ignorada o=%03x v=%04x mask=%04x", o, v, mask);
 		return;
 	case 0x300:
 		if (mask & 0x00FFu) {

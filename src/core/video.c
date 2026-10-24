@@ -381,6 +381,15 @@ static void capture_frame(struct nds *n, struct nds_vset *s)
 	const uint64_t t0 = timed ? v->clock() : 0;
 	uint64_t tmix;
 
+	/* GBATEK: la captura solo escribe bancos habilitados como LCDC. */
+	if (cur[1] == ge->regs[G2D_R_DISPCAP + 1])
+		cur[1] &= 0x7FFFu;
+	if (!n->vram_lcdc_mask[nds_vram_bank_offset((cap >> 16) & 3u) >> 14]) {
+		NDS_TRACE(n, NDS_DBG_VRAM7, "captura omitida banco=%c cnt=%02x cap=%08x PC7=%08x",
+			'A' + ((cap >> 16) & 3u), n->vramcnt[(cap >> 16) & 3u], cap, acore_pc(&n->a7));
+		return;
+	}
+
 	v->cap.frames++;
 	v->cap.srcsel[srcsel]++;
 	v->cap.fifo += usefifo != 0;
@@ -388,9 +397,6 @@ static void capture_frame(struct nds *n, struct nds_vset *s)
 	if (timed)
 		v->cap.timed++;
 
-	/* se apaga el bit 31 si nadie lo volvió a escribir durante el cuadro */
-	if (cur[1] == ge->regs[G2D_R_DISPCAP + 1])
-		cur[1] &= 0x7FFFu;
 	if (srcsel != 1 && !(use3d && i3)) {
 		/* composición de A sin brillo maestro y con la pantalla en modo de gráficos */
 		e.regs[G2D_R_DISPCNT] &= (uint16_t)~G2D_DC_BLANK;
@@ -488,6 +494,7 @@ static void capture_frame(struct nds *n, struct nds_vset *s)
 			}
 		}
 	}
+	/* El cambio de C/D a LCDC ya vació el código traducido del ARM7. */
 	for (uint32_t pg = 0; pg < 8; pg++)
 		nds_video_vram_dirty(n, nds_vram_bank_offset((cap >> 16) & 3u) + pg * 0x4000u);
 	if (timed) {

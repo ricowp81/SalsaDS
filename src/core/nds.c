@@ -81,7 +81,7 @@ void nds_init(struct nds *n)
 	n->snd.ops = sops;
 	acore_init(&n->a9, ACORE_ARM9, &nds_bus9, n);
 	acore_attach_tcm(&n->a9, n->itcm, n->dtcm);
-	acore_init(&n->a7, ACORE_ARM7, &nds_bus7, n);
+	acore_init(&n->a7, ACORE_ARM7, (dbg & NDS_DBG_VRAM7) ? &nds_bus7_diag : &nds_bus7, n);
 	n->a9.swi_hook = nds_swi_hook;
 	n->a7.swi_hook = nds_swi_hook;
 	n->keyinput = 0x03FF;

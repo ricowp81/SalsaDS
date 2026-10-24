@@ -5,7 +5,7 @@
 #include <string.h>
 
 #include "check.h"
-#include "core/nds.h"
+#include "core/nds_priv.h"
 #include "gpu2d/gpu2d_compose.h"
 #include "gpu2d/gpu2d_scene.h"
 
@@ -74,6 +74,7 @@ static void capture_run(struct capture_run *r, const gpu2d_frame *frame, uint32_
 	if (!n)
 		abort();
 	r->nds = n;
+	nds_vramcnt_write(n, (cap >> 16) & 3u, 0x80);
 	n->vid.capture_classic = classic;
 	n->vid.cur = 0;
 	n->vid.recording = 1;

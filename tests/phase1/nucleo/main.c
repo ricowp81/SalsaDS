@@ -117,6 +117,7 @@ static int geom_poly_plain;
 /* Con este archivo solo el ARM7 vuelve al intérprete (el ARM9 sigue con el recompilador). El ARM7 comparte la marca de seguridad
  * del recompilador (JIT_MARKER): si la aplicación muere con código traducido de cualquiera de las dos CPUs, el siguiente arranque
  * de esta versión usa el intérprete en las dos. */
+#define ARM7_VRAM_NOJIT_FLAG SALSADS_DATA_DIR "/arm7-vram-nojit"
 #define ARM7_NOJIT_FLAG SALSADS_DATA_DIR "/arm7-nojit"
 #define JIT_MARKER SALSADS_DATA_DIR "/nucleo-jit.marker"
 /* Caché del recompilador pedida a PS3MAPI (fase52, experimental): solo con este archivo; si no, la de 4 MB del segmento
@@ -2955,6 +2956,8 @@ int main(void)
 					jc.arm7 = 1;
 					jc.code7_bytes = REC_ARM7_BYTES;
 				}
+				jc.no_vram7 = stat(ARM7_VRAM_NOJIT_FLAG, &jst) == 0;
+				salsads_log("jit: VRAM ARM7 %s", jc.no_vram7 ? "con intérprete" : "traducible con invalidación");
 				if (nds_jit_attach(nds, &jc) == 0) {
 					const uint32_t w_after_attach = ((const volatile uint32_t *)jc.code)[0];
 

@@ -109,6 +109,7 @@ struct nds_jit_cfg {
 	void *code;          /* escribible y ejecutable (en la PS3, la cola del segmento de texto) */
 	size_t code_bytes;   /* con el ARM7 incluye su parte (code7_bytes) */
 	int arm7;            /* 1: el ARM7 (ARMv4T) también va con recompilador, con su propia caché y tablas */
+	int no_vram7;        /* 1: VRAM del ARM7 con intérprete, para comparar en consola */
 	int no_arm9;         /* 1: el ARM9 sigue con el intérprete (probar o medir el ARM7 solo) */
 	size_t code7_bytes;  /* la cola de `code` que usa el ARM7 (el ARM9 usa el resto); con arm7 = 1 */
 	int strict;          /* mismos ciclos que el intérprete (para --lockstep) */
@@ -488,12 +489,14 @@ struct nds {
 	/* recompiladores del ARM9 y del ARM7 (NULL = intérprete); sobreviven a nds_init */
 	struct arec *jit9, *jit7;
 	struct nds_jit_cfg jit_cfg;
-	uint32_t jit_phys;   /* tamaño del espacio físico con código posible (de `itcm` al final de `swram`, o de `wram7` con el ARM7); 0 sin JIT */
+	uint32_t jit_phys;   /* tamaño del espacio físico con código posible (de `itcm` al final de `swram`, o de `vram` con el ARM7); 0 sin JIT */
 	uint32_t jit_phys9;  /* el del ARM9: de `itcm` al final de `swram` */
 	void *jit_user;      /* para el dueño (lockstep) */
+	uint8_t dbg_fetch7[256]; /* primeras captaciones fuera de WRAM/BIOS, por región */
 	uint32_t dbg; /* NDS_DBG_*: trazas de depuración por `log` (0 = ninguna; solo el corredor del host las activa) */
 };
 
+#define NDS_DBG_VRAM7 64u /* bancos C/D, capturas rechazadas y captación ARM7 (host) */
 #define NDS_DBG_SPI 1u
 #define NDS_DBG_IPC 2u
 #define NDS_DBG_IRQ 4u

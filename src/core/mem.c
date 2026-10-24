@@ -233,8 +233,15 @@ void nds_vramcnt_write(struct nds *n, unsigned bank, uint8_t v)
 {
 	if (bank > 8)
 		return;
+	if (bank == 2 || bank == 3)
+		NDS_TRACE(n, NDS_DBG_VRAM7, "VRAMCNT_%c %02x->%02x PC9=%08x PC7=%08x",
+			'A' + bank, n->vramcnt[bank], v, acore_pc(&n->a9), acore_pc(&n->a7));
+	if (n->jit7 && (bank == 2 || bank == 3) && n->vramcnt[bank] != v)
+		arec_flush(n->jit7); /* cambió la identidad física del código en 0x06xxxxxx */
 	n->vramcnt[bank] = v;
 	vram_remap(n);
+	if (bank == 2 || bank == 3)
+		NDS_TRACE(n, NDS_DBG_VRAM7, "VRAMSTAT=%02x", n->vramstat);
 }
 
 /* Páginas de las ventanas: devuelve la máscara de bancos y, si hay uno solo, su puntero (con el desplazamiento
@@ -303,6 +310,7 @@ static void vram_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v)
 
 			if (off < NDS_VRAM_SIZE && n->vram_lcdc_mask[off >> 14]) {
 				wr_sz(n->vram + off, sz, v);
+				NDS_CODE_WRITE(n, n->vram + off, (unsigned)sz);
 				nds_video_vram_dirty(n, off);
 			}
 			return;
@@ -321,6 +329,7 @@ static void vram_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v)
 		return;
 	if (ptr) {
 		wr_sz(ptr + pgoff, sz, v);
+		NDS_CODE_WRITE(n, ptr + pgoff, (unsigned)sz);
 		nds_video_vram_dirty(n, (uint32_t)(ptr + pgoff - n->vram));
 		return;
 	}
@@ -329,6 +338,7 @@ static void vram_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v)
 			const uint32_t o = bank_base[b] + (pgstart - n->vbank_off[b]) + pgoff;
 
 			wr_sz(n->vram + o, sz, v);
+			NDS_CODE_WRITE(n, n->vram + o, (unsigned)sz);
 			nds_video_vram_dirty(n, o);
 		}
 }
@@ -458,6 +468,23 @@ void nds_bus_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v)
 
 BUS_FNS(b9, NDS_CPU9, 1)
 BUS_FNS(b7, NDS_CPU7, 0)
+
+/* Bus optativo del host: el bus habitual no paga una rama por captación. */
+static uint32_t fetch7_diag(struct acore *c, uint32_t a, int sz)
+{
+	struct nds *n = c->user;
+	const unsigned region = a >> 24;
+	const uint32_t word = nds_bus_read(n, NDS_CPU7, a, sz);
+	if (region != 3 && a >= NDS_BIOS7_SIZE && n->dbg_fetch7[region] < 16) {
+		n->dbg_fetch7[region]++;
+		nds_tracef(n, "fetch7 PC=%08x dato=%08x CPSR=%08x LR=%08x C=%02x D=%02x STAT=%02x",
+			a, word, c->cpsr, c->r[14], n->vramcnt[2], n->vramcnt[3], n->vramstat);
+	}
+	return word;
+}
+static uint32_t fetch7_diag16(struct acore *c, uint32_t a) { return fetch7_diag(c, a, 2); }
+static uint32_t fetch7_diag32(struct acore *c, uint32_t a) { return fetch7_diag(c, a, 4); }
+const struct acore_bus nds_bus7_diag = { b7_r8, b7_r16, b7_r32, b7_w8, b7_w16, b7_w32, fetch7_diag16, fetch7_diag32 };
 
 const struct acore_bus nds_bus9 = { b9_r8, b9_r16, b9_r32, b9_w8, b9_w16, b9_w32, b9_r16, b9_r32 };
 const struct acore_bus nds_bus7 = { b7_r8, b7_r16, b7_r32, b7_w8, b7_w16, b7_w32, b7_r16, b7_r32 };

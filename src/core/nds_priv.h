@@ -19,7 +19,7 @@
 
 /* Escritura a memoria (puntero del host `p`): si algún recompilador tiene código traducido ahí, lo invalida. Sin JIT,
  * jit_phys es 0 y no hace nada. El espacio físico (desplazamiento desde `itcm`) es el mismo para los dos: el del ARM9
- * llega hasta el final de `swram` y el del ARM7 hasta el final de `wram7`. */
+ * llega hasta el final de `swram` y el del ARM7 hasta el final de `vram`. */
 static inline void NDS_CODE_WRITE(struct nds *n, const uint8_t *p, unsigned size)
 {
 	const uintptr_t off = (uintptr_t)p - (uintptr_t)n->itcm;
@@ -41,7 +41,7 @@ static inline struct acore *nds_core(struct nds *n, int cpu)
 }
 
 /* mem.c */
-extern const struct acore_bus nds_bus9, nds_bus7;
+extern const struct acore_bus nds_bus9, nds_bus7, nds_bus7_diag;
 void nds_mem_init(struct nds *n);
 void nds_mem_wramcnt(struct nds *n, uint8_t v);
 void nds_vramcnt_write(struct nds *n, unsigned bank, uint8_t v);

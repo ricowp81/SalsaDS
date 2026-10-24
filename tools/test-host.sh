@@ -40,7 +40,7 @@ if tools/build-ppc64.sh >build/logs/build-ppc64.log 2>&1; then
 	check BE BE build/logs/test-host-be.log
 else
 	echo "BE   FALLO  la compilación ppc64 (build/logs/build-ppc64.log)"
-	fail=1
+	exit 1
 fi
 
 # --- ROMs de prueba en la máquina de src/core ---------------------------------------------------------------

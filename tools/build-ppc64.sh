@@ -16,32 +16,31 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
 fi
 
 # El gcc emulado como amd64 a veces muere con "internal compiler error:
-# Segmentation fault" y al repetir compila bien: se reintenta hasta tres
-# veces (make retoma donde quedó). Sin --platform: con la imagen local amd64,
+# Segmentation fault" y al repetir compila bien: se reintenta una vez con -j1
+# (make retoma donde quedó). Sin --platform: con la imagen local amd64,
 # Docker (colima) dice que no la encuentra; sin la opción la usa y solo avisa.
 mkhost() {
 	docker run --rm -i --user "$(id -u):$(id -g)" -e HOME=/tmp \
 		-v "$ROOT:/src" -w /src "$IMAGE" \
-		make --no-print-directory -C src/host CC=powerpc64-linux-gnu-gcc OUT=/src/build/ppc64-run \
+		make -j1 --no-print-directory -C src/host CC=powerpc64-linux-gnu-gcc OUT=/src/build/ppc64-run \
 		CFLAGS="-std=gnu11 -O2 -g -Wall -Wextra -Werror -mcpu=cell -mno-relative-jumptables -I/src/src -static ${SALSADS_PPC64_CFLAGS:-}"
 }
 if [ "${1:-}" = "host" ]; then
 	for try in 1 2; do
 		mkhost && exit 0
-		echo "reintento $try" >&2
+		if [ "$try" = 1 ]; then echo "reintento único con -j1" >&2; fi
 	done
-	mkhost
-	exit $?
+	exit 1
 fi
 
 mk1() {
 	docker run --rm -i --user "$(id -u):$(id -g)" -e HOME=/tmp \
 		-v "$ROOT:/src" -w /src "$IMAGE" \
-		make --no-print-directory -C tests/unit CC=powerpc64-linux-gnu-gcc SAN= OUT=/src/build/ppc64 \
+		make -j1 --no-print-directory -C tests/unit CC=powerpc64-linux-gnu-gcc SAN= OUT=/src/build/ppc64 \
 		EXTRA_CFLAGS="-mcpu=cell -mno-relative-jumptables ${SALSADS_PPC64_CFLAGS:-}" EXTRA_LDFLAGS=-static all
 }
 for try in 1 2; do
 	mk1 && exit 0
-	echo "reintento $try" >&2
+	if [ "$try" = 1 ]; then echo "reintento único con -j1" >&2; fi
 done
-mk1
+exit 1
