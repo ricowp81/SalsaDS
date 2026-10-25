@@ -5,6 +5,14 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-25 — Clasificación de planos por lote en el SPE (cand-v004)
+- `0371c56`: cuatro posiciones alineadas, trasposición y planos SIMD; conserva recorte, cara, contadores y orden. A/B independiente: `geometria-lectura-escalar`; se mantiene `geometria-perfil`.
+- Listas de vértices/polígonos antes/después idénticas byte a byte en MKDS/NSMB/SM64DS; `--vs-ref3d`: 1175/2196/2299 cuadros iguales. Dirigidas con sanitizadores: 3247 comprobaciones, 0 fallos.
+- `test-host=1` solo por los 34 fallos BE conocidos del anillo (`test_arec.c:149/152`, exige destinos de otros episodios); LE/SAN, ROMs BE, hashes y lockstep correctos. Unitarias LE: 8 084 992; BE: 8 088 722 comprobaciones.
+- Build y paquete limpio en 0; holgura mínima SPE 8432 B, geometría 144 032 B. GCC ppc64 cayó una vez en `gxparidad`; el único reintento con `-j1` pasó. Verificadores de publicación y SPDX en 0.
+- Host: armado 0,152880 → 0,152610 ms/cuadro, sin ganancia concluyente; no hay ticks SPU válidos. Metas PS3 ≤ 2,5 ms de armado y ≤ 1 ms de espera pendientes; guion de 2 min y riesgos en `perf-log.md`.
+- Paquete del código `0371c56`: `build/salsads-armado.pkg`, SHA-256 `9b381b0ffd2226e47499848286fe870da95428619c3bc1ffb740272d6d3f0964`; sin probar en la consola.
+
 ## 2026-10-24 — Protección y código de VRAM del ARM7 (cand-v004)
 - Captura: faltaba exigir LCDC al destino; la prueba reproduce `80008000` pisando bancos del ARM7. Ahora los rechaza (GBATEK, «DS Video Capture»; DeSmuME `WillDisplayCapture`, solo consulta).
 - C/D, MST=2, OFS 0/1, espejos de 256 KiB, VRAMSTAT, solapamiento y DMA LCDC→ARM7: pruebas correctas; el mapeo no necesitó cambios.
