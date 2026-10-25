@@ -518,7 +518,8 @@ void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
 	if (d->stencil) {
 		rsxSetStencilMask(ctx, d->stencil_write_mask);
 		rsxSetStencilFunc(ctx, d->stencil == 2 ? GCM_NOTEQUAL : d->stencil == 3 ? GCM_EQUAL : GCM_ALWAYS, d->stencil_ref, d->stencil_compare_mask);
-		rsxSetStencilOp(ctx, GCM_KEEP, GCM_KEEP, d->stencil_op ? GCM_INVERT : GCM_REPLACE);
+		rsxSetStencilOp(ctx, GCM_KEEP, d->stencil_zfail ? GCM_REPLACE : GCM_KEEP,
+		                d->stencil_op == 2 ? GCM_KEEP : d->stencil_op ? GCM_INVERT : GCM_REPLACE);
 	}
 	for (int i = 0; i < ntex; i++)
 		set_texture(i, &d->tex[i]);

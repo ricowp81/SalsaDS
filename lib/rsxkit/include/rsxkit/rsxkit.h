@@ -373,8 +373,10 @@ typedef struct rsxkit_draw {
 	/* Programa opcional: entradas de rsxkit_lincomb.vcg. NULL conserva la combinación. */
 	rsxkit_program *program;
 	/* Stencil: 0 apagado, 1 siempre, 2 distinto, 3 igual.
-	 * op: 0 reemplazar, 1 invertir. Máscaras explícitas si está activo. */
+	 * op: 0 reemplazar, 1 invertir, 2 conservar. Máscaras explícitas si está activo. */
 	uint8_t stencil, stencil_ref, stencil_compare_mask, stencil_write_mask, stencil_op;
+	/* Operación al fallar profundidad: 0 conservar, 1 reemplazar. */
+	uint8_t stencil_zfail;
 	uint8_t blend;      /* rsxkit_blend */
 	uint8_t cull;       /* rsxkit_cull */
 	uint8_t depth;      /* RSXKIT_DEPTH_* */
