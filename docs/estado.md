@@ -5,6 +5,16 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-25 — RSX fase 2 parcial: sombras, toon y niebla opaca
+- `19eb7d8`/`19662be`: stencil genérico MIT; sombras por ID, toon/resaltado y niebla por fragmento en DS. Preparación de texturas, identidad y vértices intacta; reservar LUT de 128 B en el desplazamiento 20 MiB del área RSX al integrar.
+- Sombras: remapeo OID/TID con respaldo por capacidad o profundidad trasera; niebla sin mezcla/toon/sombras y W constante. Clear image, bordes efectivos, igualdad y alambre siguen en SPE; límites y guion en `build/rsx3d-fase2/`.
+- RPCS3: 20 casos de sombras, 16 de niebla, 6 de respaldo y 4096 combinaciones toon; 158 mapas idénticos con/sin lotes y sombras general/optimizada. Persisten diferencias globales de cobertura/interpolación/mezcla; no hay paridad global aprobada.
+- Host MKDS carrera: sombras en 2938/3000 cuadros; captura nueva completa admitida por RSX. SM64DS solo llegó al título; no se presenta como juego. Faltan escenas verificadas con niebla/bordes.
+- Base `c23c56e` medida en PS3 por el autor: pesado 3,93 ms; esta ruta añade pasadas y NO tiene medida PS3 ni aprobación del límite 4 ms. No se extrapola RPCS3.
+- Interruptores por cuadro: `3d-rsx-sombra-spe`, `3d-rsx-toon-spe`, `3d-rsx-niebla-spe`; censo de uso RSX/SPE cada 120 cuadros. Validación de 2 min en consola pendiente.
+- Build completo/paquete y verificadores correctos. `test-host=1`: LE/SAN pasan, unidad BE con 34 fallos conocidos; compilador emulado cae dos veces al construir el ejecutor BE, sin tercer intento ni validación ROM/JIT BE. Holgura SPE mínima 8432 B.
+- Paquete diagnóstico «SalsaDS RSX», SLDS00030: `build/salsads-rsx3d-fase2.pkg`; SHA-256, mapas, reproductor y guion locales en `build/rsx3d-fase2/`. Sin envío a consola ni publicación.
+
 ## 2026-10-25 — RSX ronda 3: lotes; parada por presupuesto conservador
 - `66e1651`: un búfer por cuadro, opacos consecutivos idénticos agrupados, radix estable y conversión por vértice; translúcidos, IDs y empates Z/W conservan su orden.
 - Dibujos MKDS/SM64DS/NSMB/pesado: 596/55/972/1101 → 185/33/211/403; estados lógicos 185/31/211/403 sin cambio. Menos recargas de programa y etiquetas por dibujo.

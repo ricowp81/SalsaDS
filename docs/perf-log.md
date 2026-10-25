@@ -1,5 +1,14 @@
 # Registro de rendimiento
 
+## 2026-10-25 — RSX fase 2 parcial (host/RPCS3; nueva ruta sin medir en PS3)
+- Base `c23c56e`, PS3 real aportada por el autor: raster+exportación MKDS 2,06 ms, SM64DS 2,24, NSMB 1,88, pesado 3,93; preparación caliente MKDS ~1,8/pesado ~2,5 ms, identidad ~0,9 ms y decodificación fría 34–37 ms. Es la base, no una medida de esta entrega.
+- Censo host por trabajo 3D: MKDS carrera, ventana 5000:8000, 2938/3000 con máscara+sombra; resto de modos 0. Muestra anterior MKDS 800/800 con sombras; SM64DS título y NSMB, 800 cada uno, sin modos pendientes. No extrapolar a otros niveles ni confundir título con juego.
+- RPCS3, conteo de dibujos pesado: base filtrada sin sombras 403; original con sombras general 968, optimizado 652. MKDS carrera original: general 152 → optimizado 108. Los 158 mapas coinciden entre remapeos y con/sin lotes. No equivalen a tiempo PS3: comprobar raster+exportación ≤4 ms antes de continuar.
+- RPCS3, mapa MKDS carrera completo contra referencia: diferencias cobertura/RGB/alfa 0/10289/0. En muestras antiguas, incluir sombras cambia 3 píxeles de referencia/3 RSX en MKDS y 25/44 en pesado; no atribuir todos los residuos a estos modos ni certificar paridad global.
+- Niebla: primera hipótesis W falló 8 casos por normalización y precisión cerca de límites; segunda usa W normalizada constante explícita, 16/16 correctos. W variable y mezclas vuelven al SPE. Clear image carece de referencia implementada; bordes necesitan atributos vecinos, igualdad tiene margen DS y alambre exige cobertura de aristas originales: no se sustituyen por aproximaciones nativas.
+- Datos, capturas solo locales y mapas en `build/rsx3d-fase2/`; interruptores SPE independientes para sombra/toon/niebla y `3d-rsx-sombra-general` para comparar. La LUT reserva 128 B en 20 MiB; sin tocar caché, RGBA8, identidad ni conversión de vértices.
+- Validación: LE 8 740 377 comprobaciones sin fallos; unidad BE 8 744 107 con los 34 fallos conocidos del anillo. SAN correcto; compilación del ejecutor BE detenida tras dos caídas del gcc emulado, por lo que ROMs/hashes/lockstep BE no se validaron en esta corrida.
+
 ## 2026-10-25 — RSX ronda 3: costo por lotes (host/RPCS3, base PS3 aportada)
 - PS3 anterior MKDS/SM64DS/NSMB/pesado, raster+exportación: 4,177/2,427/4,644/7,542 ms. Dibujos 596/55/972/1101 → 185/33/211/403; estados lógicos sin cambio: 185/31/211/403.
 - Host nativo, 500 cuadros calientes sin GPU ni reloj de etapas: 120,318/26,376/197,012/312,858 → 76,824/26,932/101,088/121,936 µs; frío MKDS 2141→2468, pesado 2429→2776 µs. No son tiempos PPE.
