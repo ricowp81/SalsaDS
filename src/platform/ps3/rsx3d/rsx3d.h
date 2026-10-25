@@ -4,6 +4,8 @@
 #include "gpu3d/r3d.h"
 typedef struct rsx3d_stats {
     uint32_t polys, draws, textures, uploaded, cache_hits;
+    uint32_t draws_before, state_changes;
+    uint64_t identity_us, vertex_us, lookup_us, decode_us, upload_us;
     uint64_t raster_ns, export_ns;
     uint64_t prepare_us, copy_us, total_us;
 } rsx3d_stats;

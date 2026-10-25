@@ -1816,6 +1816,11 @@ static void r3d_spe_submit(void *ctx, int set, r3d_job *j)
 			salsads_log("DATO rsx3d: modo %s, motivo %s, polígonos %u, dibujos %u, texturas %u, bytes %u, aciertos %u, raster %.3f ms, exportación %.3f ms, preparación %.3f ms, copia %.3f ms, total PPE %.3f ms",
 			    ok > 0 ? "RSX" : "SPE", rsx3d_reason(), st.polys, st.draws, st.textures, st.uploaded, st.cache_hits,
 			    st.raster_ns / 1e6, st.export_ns / 1e6, st.prepare_us / 1e3, st.copy_us / 1e3, st.total_us / 1e3);
+		if (ok > 0 && (count % 120u) == 1 && (st.vertex_us || st.identity_us))
+			salsads_log("DATO rsx3d etapas: dibujos %u -> %u, estados lógicos %u, identidad %llu vértices %llu búsqueda %llu RGBA8 %llu subida %llu us",
+			    st.draws_before, st.draws, st.state_changes,
+			    (unsigned long long)st.identity_us, (unsigned long long)st.vertex_us,
+			    (unsigned long long)st.lookup_us, (unsigned long long)st.decode_us, (unsigned long long)st.upload_us);
 		if (ok > 0) return;
 		if (ok < 0) rsx3d_on = 0;
 	}

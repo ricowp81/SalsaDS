@@ -129,7 +129,28 @@ static int replay_tests(int enabled)
                         st.polys, st.draws, st.textures, st.uploaded, st.cache_hits);
             salsads_log("DATO rsx3d reproducción %s v%u: RGB error <=1 %u, raster %.3f ms exportación %.3f ms preparación %.3f ms copia %.3f ms",
                         names[scene], variant, error1, st.raster_ns/1e6, st.export_ns/1e6, st.prepare_us/1e3, st.copy_us/1e3);
-            if (!variant) preview();
+            salsads_log("DATO rsx3d costo %s v%u: dibujos %u -> %u, estados %u, identidad %llu us vértices %llu us búsqueda %llu us RGBA8 %llu us subida %llu us",
+                        names[scene], variant, st.draws_before, st.draws, st.state_changes,
+                        (unsigned long long)st.identity_us, (unsigned long long)st.vertex_us,
+                        (unsigned long long)st.lookup_us, (unsigned long long)st.decode_us, (unsigned long long)st.upload_us);
+            if (!variant) {
+                preview();
+                if (enabled) {
+                    memcpy(reference, output, sizeof output);
+                    for (unsigned repeat = 0; repeat < 3; repeat++) {
+                        rsxkit_frame_begin(0); rsxkit_frame_end(); rsxkit_frame_begin(0);
+                        int warm = rsx3d_render(&j, &st);
+                        unsigned different = 0;
+                        for (unsigned k = 0; k < R3D_W*R3D_H; k++) different += output[k] != reference[k];
+                        fail += warm != 1 || different != 0;
+                        salsads_log("DATO rsx3d caliente %s %u: estado %d distintos %u dibujos %u estados %u raster %.3f exportación %.3f preparación %.3f ms; identidad %llu vértices %llu búsqueda %llu RGBA8 %llu subida %llu us",
+                            names[scene], repeat, warm, different, st.draws, st.state_changes,
+                            st.raster_ns/1e6, st.export_ns/1e6, st.prepare_us/1e3,
+                            (unsigned long long)st.identity_us, (unsigned long long)st.vertex_us,
+                            (unsigned long long)st.lookup_us, (unsigned long long)st.decode_us, (unsigned long long)st.upload_us);
+                    }
+                }
+            }
         }
     }
     return fail;
@@ -238,6 +259,35 @@ static void blend_probe(r3d_job *j)
         salsads_log("rsx3d límite mezcla RGBA8 alfa %u: estado %d, %08x referencia %08x", n+1, ok, output[k], reference[k]);
     }
 }
+/* Identidad exacta: cambios ajenos, texeles, paleta y reasignación de bancos. */
+static unsigned cache_tests(r3d_job *j)
+{
+    unsigned fail = 0;
+    memset(&frame, 0, sizeof frame);
+    frame.npolys = 1; frame.nverts = 4; frame.regs.clear_depth = 0x7fff;
+    frame.regs.disp3dcnt = D3_TEXTURE | D3_BLEND;
+    quad(0, 1, 31, 63, 63, 63, 1);
+    for (unsigned i = 0; i < 64; i++) { vram[2*i] = 0xe0; vram[2*i+1] = 0x83; }
+    for (unsigned step = 0; step < 6; step++) {
+        if (step == 1) vram[0x80000] ^= 1;
+        if (step == 2) for (unsigned i = 0; i < 64; i++) { vram[2*i] = 0x1f; vram[2*i+1] = 0x80; }
+        if (step == 3) {
+            frame.poly[0].texparam = 2u << 26;
+            memset(vram, 0x55, 16); j->palslot[0] = 0x20000;
+            vram[0x20002] = 0xe0; vram[0x20003] = 3;
+        }
+        if (step == 4) { vram[0x20002] = 31; vram[0x20003] = 0; }
+        if (step == 5) { j->texslot[0] = 0x40000; memset(vram + 0x40000, 0, 16); }
+        r3d_render_ref(&frame, vram, j->texslot, j->palslot, 0, reference);
+        rsxkit_frame_begin(0); rsxkit_frame_end(); rsxkit_frame_begin(0);
+        rsx3d_stats st; int ok = rsx3d_render(j, &st);
+        unsigned different = 0;
+        for (unsigned k = 0; k < R3D_W*R3D_H; k++) different += output[k] != reference[k];
+        fail += ok != 1 || different != 0;
+        salsads_log("rsx3d identidad paso %u: estado %d distintos %u decodificadas %u", step, ok, different, st.textures);
+    }
+    return fail;
+}
 int rsx3d_selftest(void)
 {
     unsigned fail = 0;
@@ -276,6 +326,7 @@ int rsx3d_selftest(void)
     fail += shade_tests(&j);
     fail += w_tests(&j);
     blend_probe(&j);
+    fail += cache_tests(&j);
     fail += replay_tests(1);
     salsads_log("rsx3d autoprueba dirigida: %s, %u fallos (la comparación de juegos y la mezcla RGBA8 son diagnósticos)", fail ? "FALLO" : "OK", fail);
     return fail ? -1 : 0;
