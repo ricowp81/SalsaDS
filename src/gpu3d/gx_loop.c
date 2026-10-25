@@ -32,7 +32,7 @@ static uint32_t post(void *ctx, gx_t *g, uint32_t flags, const uint32_t *log, ui
 
 	lp->log = log;
 	lp->f = f;
-	gx_job_run(&lp->ex, flags | (g->ex.poly_plain ? GX_JOB_POLY_PLAIN : 0u), nwords, &io,
+	gx_job_run(&lp->ex, flags | (g->ex.poly_plain ? GX_JOB_POLY_PLAIN : 0u) | (g->ex.read_scalar ? GX_JOB_READ_SCALAR : 0u), nwords, &io,
 		   lp->vst, GX_LOOP_VCAP, lp->pst, GX_LOOP_PCAP, lp->chunk, GX_LOOP_CHUNK);
 	g->ex.out = lp->ex.out;
 	lp->jobs++;

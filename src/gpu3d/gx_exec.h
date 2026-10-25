@@ -107,7 +107,7 @@ typedef struct gx_cvtx {
 	int64_t screen[4]; /* proyección sin recorte: x/y enteras y con ocho bits fraccionarios */
 	uint32_t screen_viewport, screen_valid;
 	int16_t sx, sy;     /* pantalla del vértice guardado (solo con ram >= 0): el cuadro de salida puede estar ya en memoria principal */
-} gx_cvtx;
+} __attribute__((aligned(16))) gx_cvtx;
 
 
 /* Estado de las pilas de matrices: lo comparten la ejecución (que además mueve las matrices) y el motor de tiempo (que
@@ -165,6 +165,7 @@ typedef struct gx_exec {
 	uint32_t polyattr, polyattr_cur; /* pendiente y la del BEGIN_VTXS vigente */
 	uint32_t texparam, pltt;
 	uint32_t armado_on, armado[GX_AP_N];
+	uint32_t read_scalar;       /* A/B: clasificación de planos escalar, sin cambiar la proyección */
 	uint32_t poly_plain;        /* A/B: copias y proyección por polígono, sin reutilizar la proyección */
 	uint32_t viewport;          /* x1 | y1 << 8 | x2 << 16 | y2 << 24 */
 	uint32_t prim;              /* tipo de BEGIN_VTXS (0 a 3) */
@@ -217,6 +218,7 @@ typedef struct gx_job_io {
 #define GX_JOB_MATS 4u
 #define GX_JOB_POLY_PLAIN 8u
 #define GX_JOB_PROFILE 16u
+#define GX_JOB_READ_SCALAR 32u
 
 void gx_job_run(gx_exec *ex, uint32_t flags, uint32_t nwords, const gx_job_io *io, gx_vertex *vstage, uint32_t vcap,
 		gx_poly *pstage, uint32_t pcap, uint32_t *chunk, uint32_t chunk_words);

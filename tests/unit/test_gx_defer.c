@@ -259,7 +259,8 @@ static void projection_parity(void)
 	for (unsigned prim = 0; prim < 4; prim++) {
 		gx_exec_init(&JR);
 		gx_exec_init(&JJ);
-		JR.poly_plain = 1;
+		JR.poly_plain = prim & 1u;
+		JR.read_scalar = 1;
 		JR.vtx = FR.vtx; JR.poly = FR.poly;
 		JJ.vtx = FJ.vtx; JJ.poly = FJ.poly;
 		for (unsigned attr = 0; attr < 4; attr++) {
@@ -293,7 +294,8 @@ void test_gx_job(void)
 		gx_job_io io = { &j, j_fetch, j_pv, j_pp };
 
 		gx_exec_init(&JR);
-		JR.poly_plain = 1; /* referencia sin caché contra trabajos con vértices compartidos */
+		JR.poly_plain = seed & 1u; /* alterna proyección compartida y copias */
+		JR.read_scalar = 1; /* planos escalares contra lectura SIMD por lote */
 		gx_exec_newframe(&JR);
 		JR.vtx = FR.vtx;
 		JR.poly = FR.poly;

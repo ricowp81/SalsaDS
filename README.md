@@ -110,6 +110,11 @@ party sources and references are listed in
 [docs/THIRD_PARTY.md](docs/THIRD_PARTY.md); no code from melonDS or NooDS
 (GPL-3.0) is used.
 
+## Support
+
+If you enjoy SalsaDS, you can buy me a coffee at
+[buymeacoffee.com/ricowp81](https://buymeacoffee.com/ricowp81). Thanks!
+
 ## AI disclosure
 
 SalsaDS is an AI-assisted project. The emulator itself is tested on real PS3 hardware.
