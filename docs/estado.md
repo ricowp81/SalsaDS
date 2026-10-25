@@ -5,6 +5,16 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-25 — RSX 1×, ronda 2: exportación corregida; paridad aún no aprobada
+- `8475715`: etiquetas FINISH/FENCE inicializadas; antes, la primera espera aceptaba 322420947 como si fuera 1 y copiaba ceros. La comparación síncrona descartó compilación tardía de shaders.
+- `51326bd`: W por fragmento con `wshift`, sin sustituirla por Z; prueba de perspectiva 0/4/8 correcta. Se conserva la aproximación triangular y el respaldo por modos no soportados.
+- Modulación/decal opacos y RGB6/A5: 4096 combinaciones constantes exactas; mezcla RGBA8 no exacta (blanco sobre blanco puede perder un nivel). IDs repetidos cubiertos por pruebas dirigidas.
+- Mapas W/Z en `build/rsx3d-ronda2/`: cobertura/color/alfa MKDS 0/23526/0 (65 sombras excluidas), SM64DS 0/359/0 (original W), NSMB 214/864/227 (original Z). UV constantes reducen RGB a 499/57/537; los residuos no están atribuidos por completo.
+- `3d-rsx-prueba` reproduce instantáneas sin CPUs/SPE, también en consola: izquierda referencia/derecha RSX; apagado usa referencia en ambas. Registra costes y exporta mapas; no se rodeó ni se certificó el fallo SPU de RPCS3.
+- `test-host=1` solo por los 34 fallos BE conocidos del anillo; LE/SAN, ROMs/JIT BE, hashes/lockstep correctos. Build completo y RPCS3 aislado encendido/apagado/manual correctos; 13 referencias LE=PPE BE, holgura mínima 8432 B, verificadores en 0.
+- Paquete de diagnóstico `build/salsads-rsx3d-2.pkg`, «SalsaDS RSX», `SLDS00030` (PARAM.SFO verificado), SHA-256 `0185c3fa4684caa11d961100aa73ad059fb72f96894e58518c2268374e62f786`; sin aprobar para reemplazar el rasterizador habitual. Geometría SIMD y VRAM ARM7 intactas.
+- Sensibilidad del subconjunto MKDS pesado: 1,52–3,81 ms raster+exportación, sin calibrar; 1101 dibujos, 44 texturas/1015808 B en frío. No acredita el cuadro con sombras ni tiempos PS3.
+
 ## 2026-10-25 — RSX 1×: fase 0 detenida, sin aprobar (rsx3d-fase0)
 - `3d-rsx` optativo, `3d-spe` prevalece; Z nativa, W y efectos no soportados vuelven al SPE. Geometría sin cambios.
 - RGBA8 por identidad exacta de VRAM/mapas; stencil para IDs; exportación RGB6/A5 a XDR, sin copia por polígono. Preparación aún en PPE.

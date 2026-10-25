@@ -1,5 +1,15 @@
 # Registro de rendimiento
 
+## 2026-10-25 — RSX 1×, ronda 2 (host/RPCS3; sin medida PS3)
+- Etiqueta de fence previa 322420947/enviada 1: centro 00000000 antes de `finish`, 1f003f00 después. Inicializar etiquetas corrige la primera exportación; compilación síncrona no la corregía.
+- Misma lista con Z/W: RGB MKDS 23523/23526, SM64DS 359/359; UV constantes en W dejan 499/57. NSMB: 214 diferencias de cobertura, 145 sin texturas/mezcla (56 comunes); no son categorías disjuntas.
+- Modulación/decal y empaquetado constantes exactos; mezcla RGBA8 pierde un nivel incluso entre blancos iguales. Interpolación por líneas, aristas, cuantización y mezcla exacta siguen pendientes; no se añadió copia por polígono.
+- Pesado: 1248 originales, 167 sombras omitidas, 1081 polígonos/1101 dibujos, 44 texturas/1015808 B en frío; área ponderada ≈88296 fragmentos. W usa 58 instrucciones y exportación 12.
+- Sensibilidad sin calibrar: 3–6 millones de instrucciones/ms, 1000–3000 dibujos/ms y exportación 0,3–1 ms → 1,52–3,81 ms; preparación/copia PPE aparte. RPCS3 no valida ese presupuesto ni el cuadro completo.
+- Diagnóstico PS3: `3d-rsx-prueba` y `3d-rsx`, instantáneas `rsx3d-{mkds,sm64ds,nsmb,pesado}.rsx` en el directorio de datos; cada comparación aparece 3 s (referencia izquierda). Sin `3d-rsx`, ambas mitades son referencia; sale solo.
+- Juego: renombrar la prueba a `.off`; MKDS pesado 2 min apagado/encendido, misma demostración, salir SELECT+START y O. Mirar aristas, texeles, translucidez, profundidad y primer cuadro; `DATO rsx3d` da modo/motivo, pasadas, bytes y costes.
+- Con sombras el juego vuelve al SPE: medir RSX en el reproductor y no confundir respaldo con mejora. Parar si raster+exportación supera 4 ms; atribución residual y paridad siguen sin aprobar. Detalle local: `build/rsx3d-ronda2/diagnostico.txt`.
+
 ## 2026-10-25 — Lectura local de planos por lote (cand-v004)
 - Base PS3 aportada, MKDS pesado, 159 ventanas: armado ≈ 4,6 ms/cuadro; lectura 1,92, atributos 1,29, recorte 0,80, ensamblado 0,41 y salida 0,20; DMA ≈ 0,03. Meta ≤ 2,5 y espera PPE ≤ 1 ms, aún sin acreditar.
 - El descarte fuera del volumen ya precedía a la copia de atributos; «atributos» incluye proyección/cara/profundidad. No se adelanta la cara al recorte entero: sus redondeos pueden alterar el área.
