@@ -8,6 +8,7 @@
 #include "check.h"
 #include "gpu3d/gx_exec.h"
 
+void gx_t_outcodes(gx_cvtx *const *v, int n, unsigned *all, unsigned *any);
 uint64_t gx_t_mulu32(uint32_t a, uint32_t b);
 int64_t gx_t_muls32(int32_t a, int32_t b);
 int gx_t_udiv_small(uint64_t n, uint64_t d, uint32_t *q);
@@ -51,6 +52,33 @@ void test_gx_math(void)
 		bad += gx_t_muls32((int32_t)a, (int32_t)b) != (int64_t)(int32_t)a * (int32_t)b;
 	}
 	CHECK_EQ(bad, 0);
+
+	/* Los seis planos, incluidos W negativo, extremos y puntos sobre el plano. */
+	{
+		const uint64_t saved = rs;
+		bad = 0;
+		for (int i = 0; i < 100000; i++) {
+			gx_cvtx v[4] = { 0 }, *src[4] = { &v[0], &v[1], &v[2], &v[3] };
+			unsigned all, any, expected_all = 63, expected_any = 0;
+			const int n = 3 + (i & 1);
+			for (int j = 0; j < n; j++) {
+				gx_cvtx *p = &v[j];
+				p->x = rv(); p->y = rv(); p->z = rv(); p->w = rv();
+				if (i % 3 == 0) p->x = p->w;
+				if (i % 5 == 0) p->y = (int32_t)(0u - (uint32_t)p->w);
+				if (j && i % 7 == 0) *p = v[0];
+				const int64_t w = p->w;
+				const unsigned code = ((int64_t)p->z + w < 0) | ((w - p->z < 0) << 1)
+					| (((int64_t)p->x + w < 0) << 2) | ((w - p->x < 0) << 3)
+					| (((int64_t)p->y + w < 0) << 4) | ((w - p->y < 0) << 5);
+				expected_all &= code; expected_any |= code;
+			}
+			gx_t_outcodes(src, n, &all, &any);
+			bad += all != expected_all || any != expected_any;
+		}
+		CHECK_EQ(bad, 0);
+		rs = saved;
+	}
 
 	/* cocientes pequeños (pantalla y profundidad): n / d con n < d * 2^22 */
 	bad = 0;

@@ -85,10 +85,11 @@
  * ~2,8 del PPE, pero libera al hilo principal de la geometría; antes de la vectorización el SPE escalar tardaba 35 ms).
  * Con este archivo vuelve al PPE. */
 #define GEOM_PPE_FLAG SALSADS_DATA_DIR "/geometria-ppe"
+#define GEOM_READ_SCALAR_FLAG SALSADS_DATA_DIR "/geometria-lectura-escalar"
 #define GEOM_POLY_PLAIN_FLAG SALSADS_DATA_DIR "/geometria-sin-reuso"
 #define GEOM_PROFILE_FLAG SALSADS_DATA_DIR "/geometria-perfil"
 static int geom_profile;
-static int geom_poly_plain;
+static int geom_poly_plain, geom_read_scalar;
 /* Con este archivo las bandas del render 3D vuelven al reparto alterno (u, u+2, ...) en lugar del reparto por costo. */
 #define R3D_ALT_FLAG SALSADS_DATA_DIR "/reparto-alterno"
 /* Caché de texturas del render 3D (docs/fase3.md, 3.9): por omisión automática (bloques de 256 texeles mientras no se desborden,
@@ -1670,7 +1671,7 @@ static uint32_t geom_post(void *ctx, gx_t *g, uint32_t flags, const uint32_t *lo
 	j.poly_ea = (uint64_t)(uintptr_t)f->poly;
 	j.out_ea = (uint64_t)(uintptr_t)&g->ex.out;
 	j.nwords = nwords;
-	j.flags = flags | (geom_poly_plain ? GX_JOB_POLY_PLAIN : 0u) | (geom_profile ? GX_JOB_PROFILE : 0u);
+	j.flags = flags | (geom_read_scalar ? GX_JOB_READ_SCALAR : 0u) | (geom_poly_plain ? GX_JOB_POLY_PLAIN : 0u) | (geom_profile ? GX_JOB_PROFILE : 0u);
 	geom_collect(0);
 	geom_last_seq = spukit_post(wk_geom, JOB_GEOM, &j, sizeof j);
 	geom_acc.posts++;
@@ -2852,7 +2853,9 @@ int main(void)
 	struct stat gst;
 	geom_profile = stat(GEOM_PROFILE_FLAG, &gst) == 0;
 	salsads_log("geometría: perfil del armado %s", geom_profile ? "activo" : "apagado");
+	geom_read_scalar = stat(GEOM_READ_SCALAR_FLAG, &gst) == 0;
 	geom_poly_plain = stat(GEOM_POLY_PLAIN_FLAG, &gst) == 0;
+	salsads_log("geometría SPE: lectura local %s", geom_read_scalar || geom_poly_plain ? "escalar" : "SIMD por polígono");
 	salsads_log("geometría SPE: armado %s", geom_poly_plain ? "sin reutilizar proyecciones" : "con proyecciones compartidas");
 	if (spu_on && stat(GEOM_PPE_FLAG, &gst) == 0)
 		salsads_log("geometría: en el PPE (existe %s)", GEOM_PPE_FLAG);

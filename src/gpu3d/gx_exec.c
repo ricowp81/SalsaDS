@@ -433,6 +433,44 @@ static unsigned outcode(const gx_cvtx *v)
 	return c;
 }
 
+/* Cuatro vértices en cargas alineadas; el triángulo repite el último carril.
+ * La trasposición y las reducciones permanecen en registros vectoriales. */
+#ifdef GX_VEC
+#ifdef __clang__
+#define GX_SHUF(a, b, i, j, k, l) __builtin_shufflevector(a, b, i, j, k, l)
+#else
+#define GX_SHUF(a, b, i, j, k, l) __builtin_shuffle(a, b, (vu4){ i, j, k, l })
+#endif
+#endif
+static void outcodes_local(gx_cvtx *const *src, int n, unsigned *all, unsigned *any)
+{
+#ifdef GX_VEC
+	const vi4 a = vload(&src[0]->x), b = vload(&src[1]->x);
+	const vi4 c = vload(&src[2]->x), d = vload(&src[n - 1]->x);
+	const vi4 ab0 = GX_SHUF(a, b, 0, 4, 1, 5), cd0 = GX_SHUF(c, d, 0, 4, 1, 5);
+	const vi4 ab1 = GX_SHUF(a, b, 2, 6, 3, 7), cd1 = GX_SHUF(c, d, 2, 6, 3, 7);
+	const vi4 x = GX_SHUF(ab0, cd0, 0, 1, 4, 5), y = GX_SHUF(ab0, cd0, 2, 3, 6, 7);
+	const vi4 z = GX_SHUF(ab1, cd1, 0, 1, 4, 5), w = GX_SHUF(ab1, cd1, 2, 3, 6, 7);
+	/* x < -w equivale a x <= ~w, incluso para w = INT32_MIN:
+	 * no se niega ni se suma en 32 bits con signo. */
+	const vu4 code = ((vu4)(z <= ~w) & 1u) | ((vu4)(z > w) & 2u)
+		| ((vu4)(x <= ~w) & 4u) | ((vu4)(x > w) & 8u)
+		| ((vu4)(y <= ~w) & 16u) | ((vu4)(y > w) & 32u);
+	const vu4 pairs_and = code & GX_SHUF(code, code, 2, 3, 0, 1);
+	const vu4 pairs_or = code | GX_SHUF(code, code, 2, 3, 0, 1);
+	const vu4 total_and = pairs_and & GX_SHUF(pairs_and, pairs_and, 1, 0, 3, 2);
+	const vu4 total_or = pairs_or | GX_SHUF(pairs_or, pairs_or, 1, 0, 3, 2);
+	*all = total_and[0];
+	*any = total_or[0];
+#else
+	*all = 0x3Fu; *any = 0;
+	for (int i = 0; i < n; i++) {
+		const unsigned code = outcode(src[i]);
+		*all &= code; *any |= code;
+	}
+#endif
+}
+
 static int32_t lerp_field(int32_t a, int32_t b, int64_t da, int64_t db)
 {
 	const int64_t x = (int64_t)b - a, d = da - db;
@@ -621,18 +659,20 @@ static void emit_poly_inner(gx_exec *g, gx_cvtx *const *src, int n)
 
 	AP_ADD(g, GX_AP_INPUT, 1);
 	for (int i = 0; i < n; i++) {
-		unsigned c;
-
 		if (g->poly_plain) {
 			in[i] = *src[i];
 			v[i] = &in[i];
 		} else {
 			v[i] = src[i];
 		}
-		c = outcode(v[i]);
-		oc_and &= c;
-		oc_or |= c;
+		if (g->poly_plain || g->read_scalar) {
+			const unsigned c = outcode(v[i]);
+			oc_and &= c;
+			oc_or |= c;
+		}
 	}
+	if (!g->poly_plain && !g->read_scalar)
+		outcodes_local(src, n, &oc_and, &oc_or);
 	AP_END(g, stage, ap);
 	stage = GX_AP_CLIP; ap = AP_NOW(g);
 	if (oc_and) { /* entero fuera de algún plano */
@@ -1486,6 +1526,7 @@ void gx_job_run(gx_exec *ex, uint32_t flags, uint32_t nwords, const gx_job_io *i
 		gx_exec_newframe(ex);
 	}
 	ex->poly_plain = !!(flags & GX_JOB_POLY_PLAIN);
+	ex->read_scalar = !!(flags & GX_JOB_READ_SCALAR);
 	ex->armado_on = !!(flags & GX_JOB_PROFILE);
 	memset(ex->armado, 0, sizeof ex->armado);
 	ex->vtx = vstage;
@@ -1521,6 +1562,7 @@ void gx_job_run(gx_exec *ex, uint32_t flags, uint32_t nwords, const gx_job_io *i
 
 #ifdef GX_TEST
 /* ganchos de las pruebas unitarias (tests/unit/test_gx_math.c): la aritmética barata contra la de 64 bits */
+void gx_t_outcodes(gx_cvtx *const *v, int n, unsigned *all, unsigned *any) { outcodes_local(v, n, all, any); }
 uint64_t gx_t_mulu32(uint32_t a, uint32_t b) { return mulu32(a, b); }
 int64_t gx_t_muls32(int32_t a, int32_t b) { return muls32(a, b); }
 int gx_t_udiv_small(uint64_t n, uint64_t d, uint32_t *q) { return udiv_small(n, d, q); }

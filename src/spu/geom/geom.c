@@ -8,9 +8,9 @@
  * Presupuesto del local store (256 KB; lo mide el enlace: `spu-size` y tools/spu-stack.py):
  *   contexto gx_exec ≈ 6 KB; ventana de vértices 512 × 32 B = 16 KB, polígonos 256 × 48 B = 12 KB,
  *   tramo del registro 4096 palabras = 16 KB y búfer DMA ≈ 16 KB. La caché de proyección vive en los cuatro vértices
- *   del ensamblador (40 bytes extra por vértice más alineación); no amplía las ventanas ni cambia las transferencias.
- *   Enlace: texto 45 000 B, datos 800 B, bss 69 056 B; pila disponible 147 120 B, cadena máxima 5888 B,
- *   holgura 141 232 B (mínimo exigido 8192 B). La ruta de recorte también cuenta en esa cadena.
+ *   del ensamblador (96 bytes por vértice, alineados a 16 para clasificar los planos por lote); no amplía las ventanas ni cambia las transferencias.
+ *   Enlace: texto 42 040 B, datos 800 B, bss 69 104 B; pila disponible 150 016 B, cadena máxima 5984 B,
+ *   holgura 144 032 B (mínimo exigido 8192 B). La ruta de recorte también cuenta en esa cadena.
  */
 #include <spukit/spu.h>
 #include <sys/spu_thread.h>
