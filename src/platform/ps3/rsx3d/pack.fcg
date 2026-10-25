@@ -1,0 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* A8R8G8B8 en XDR: bytes A5,B6,G6,R6, palabra R3D_PX en BE. */
+void main(float4 uv : TEXCOORD0, uniform sampler2D image : TEXUNIT0,
+          out float4 result : COLOR)
+{
+    float4 c = tex2D(image, uv.xy);
+    float3 rgb = clamp(floor(c.rgb * 255.0 + 0.5) - 16.0, 0.0, 63.0);
+    float alpha = max(floor(c.a * 32.0 + 0.5) - 1.0, 0.0);
+    result = float4(rgb.bgr, alpha) / 255.0;
+}

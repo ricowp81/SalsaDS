@@ -17,6 +17,7 @@
 
 #include "core/nds.h"
 #include "gpu3d/gx_loop.h"
+#include "gpu3d/rsx_replay.h"
 #include "host/jitrun.h"
 #include "jit/arec.h"
 #include "util/endian.h"
@@ -340,6 +341,17 @@ static void gx_dump(const char *path)
 	fclose(o);
 }
 
+static void rsx_dump(const char *path)
+{
+	if (M.vid.last < 0) return;
+	struct nds_vset *s = &M.vid.set[M.vid.last];
+	if (!s->has3d || !s->r3d.frame_ea || (s->r3d.flags & R3D_F_BLANK)) return;
+	FILE *o = fopen(path, "wb");
+	if (!o || !r3d_replay_io(o, (gx_frame *)(uintptr_t)s->r3d.frame_ea, &s->r3d, s->vram, 0))
+		fprintf(stderr, "no se pudo guardar la reproducción 3D\n");
+	if (o) fclose(o);
+}
+
 /* Salida de audio a 48 kHz (estéreo): se junta en memoria y se escribe como WAV de 16 bits al terminar. */
 static float *wav_buf;
 static size_t wav_n, wav_cap;
@@ -602,6 +614,8 @@ int main(int argc, char **argv)
 	int gx_clock = 0, r3d_stats_on = 0, holes_on = 0, gx_defer = 0, gx_lento = 0, geom_plain = 0;
 	const char *holes_dump = NULL, *fdump_prefix = NULL;
 	uint64_t fdump_frame = 0;
+	const char *rsx_max_path = NULL;
+	uint32_t rsx_max_polys = 0;
 	const char *img3d_path = NULL;
 	struct { uint64_t frame; uint32_t keys, x, y; } press[512];
 	struct { uint64_t frame; const char *file; } shot[32];
@@ -674,6 +688,8 @@ int main(int argc, char **argv)
 			fdump_prefix = *e == ':' ? e + 1 : "cuadro";
 		} else if (!strcmp(argv[i], "--img3d") && i + 1 < argc)
 			img3d_path = argv[++i];
+		else if (!strcmp(argv[i], "--rsx-max") && i + 1 < argc)
+			rsx_max_path = argv[++i]; /* cuadro con más polígonos dentro de --r3d-win */
 		else if (!strcmp(argv[i], "--gx-dump") && i + 1 < argc)
 			gxdump_path = argv[++i];
 		else if (!strcmp(argv[i], "--snd-original"))
@@ -1071,6 +1087,16 @@ int main(int argc, char **argv)
 				gx_dump(path);
 			}
 			run_frame();
+			if (rsx_max_path && M.vid.last >= 0 && f >= M.vid.r3d_win0 &&
+			    (!M.vid.r3d_win1 || f < M.vid.r3d_win1)) {
+				struct nds_vset *s = &M.vid.set[M.vid.last];
+				const gx_frame *gf = (const gx_frame *)(uintptr_t)s->r3d.frame_ea;
+				if (s->has3d && gf && !(s->r3d.flags & R3D_F_BLANK) && gf->npolys > rsx_max_polys) {
+					rsx_max_polys = gf->npolys;
+					rsx_dump(rsx_max_path);
+					printf("reproducción 3D: cuadro %llu, %u polígonos\n", (unsigned long long)f, rsx_max_polys);
+				}
+			}
 			arec_prof_frame((uint32_t)f, (uint32_t)M.a9.icount, (uint32_t)M.a7.icount);
 			gx_hash_poll();
 			if (lockstep && hj_fail())
@@ -1080,6 +1106,9 @@ int main(int argc, char **argv)
 
 				snprintf(path, sizeof path, "%s.ppm", fdump_prefix);
 				save_img3d(path);
+				/* Misma instantánea que consumió el rasterizador; reproducción sin CPUs. */
+				snprintf(path, sizeof path, "%s.rsx", fdump_prefix);
+				rsx_dump(path);
 			}
 			if (holes_on) {
 				const uint32_t h = count_holes();

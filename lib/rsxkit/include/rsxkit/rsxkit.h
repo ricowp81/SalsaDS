@@ -170,6 +170,7 @@ typedef enum rsxkit_format {
 	RSXKIT_RGB565,    /* 16 bits: R[15:11] G[10:5] B[4:0] */
 	RSXKIT_RGBA8888,  /* 32 bits: bytes R, G, B, A */
 	RSXKIT_XRGB8888,  /* 32 bits: bytes X, R, G, B */
+	RSXKIT_ARGB8888, /* bytes A, R, G, B; conserva alfa en posprocesado */
 	RSXKIT_FORMAT_COUNT
 } rsxkit_format;
 
@@ -234,10 +235,13 @@ void rsxkit_fence_wait(uint32_t fence);
 /* ---- Destinos de render ------------------------------------------------------ */
 
 typedef struct rsxkit_target rsxkit_target;  /* color X8R8G8B8, memoria local */
+typedef struct rsxkit_program rsxkit_program;
 typedef struct rsxkit_depth rsxkit_depth;    /* profundidad Z24S8, memoria local */
 
 /* NULL si no hay memoria. El color nace negro y la profundidad en 1. */
 rsxkit_target *rsxkit_target_create(uint32_t width, uint32_t height);
+/* Variante con alfa conservado (A8R8G8B8). */
+rsxkit_target *rsxkit_target_create_rgba(uint32_t width, uint32_t height);
 void rsxkit_target_destroy(rsxkit_target *t);
 void rsxkit_target_size(const rsxkit_target *t, uint32_t *width, uint32_t *height);
 rsxkit_depth *rsxkit_depth_create(uint32_t width, uint32_t height);
@@ -270,9 +274,11 @@ void rsxkit_bind_frame(float lw, float lh);
 
 #define RSXKIT_CLEAR_COLOR 0x1u
 #define RSXKIT_CLEAR_DEPTH 0x2u
+#define RSXKIT_CLEAR_ALPHA 0x4u /* incluye el byte alto de rgb */
 /* Borra en el destino ligado el rectángulo lógico (x0, y0, x1, y1), o todo
  * si rect es NULL. depth en [0, 1]. */
 void rsxkit_clear(uint32_t flags, uint32_t rgb, float depth, const float rect[4]);
+void rsxkit_clear_stencil(uint8_t value);
 
 /* Presenta en el cuadro en curso la región `src` del destino (píxeles del
  * destino; NULL = todo), acomodada como una imagen de img_w × img_h con
@@ -326,6 +332,7 @@ typedef enum rsxkit_blend {
 	RSXKIT_BLEND_ALPHA,  /* src·a + dst·(1 − a) */
 	RSXKIT_BLEND_ADD,    /* src·a + dst */
 	RSXKIT_BLEND_NONE,   /* no escribe color */
+	RSXKIT_BLEND_ALPHA_MAX, /* RGB: src*a+dst*(1-a); alfa: máximo */
 } rsxkit_blend;
 
 typedef enum rsxkit_cull {
@@ -363,6 +370,11 @@ enum { RSXKIT_K_T0, RSXKIT_K_T0A, RSXKIT_K_T1, RSXKIT_K_T1A, RSXKIT_K_ONE, RSXKI
 #define RSXKIT_K_FACTORS RSXKIT_FP_MAX_FACTORS
 
 typedef struct rsxkit_draw {
+	/* Programa opcional: entradas de rsxkit_lincomb.vcg. NULL conserva la combinación. */
+	rsxkit_program *program;
+	/* Stencil: 0 apagado, 1 siempre, 2 distinto, 3 igual.
+	 * op: 0 reemplazar, 1 invertir. Máscaras explícitas si está activo. */
+	uint8_t stencil, stencil_ref, stencil_compare_mask, stencil_write_mask, stencil_op;
 	uint8_t blend;      /* rsxkit_blend */
 	uint8_t cull;       /* rsxkit_cull */
 	uint8_t depth;      /* RSXKIT_DEPTH_* */

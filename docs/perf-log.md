@@ -1,6 +1,15 @@
 # Registro de rendimiento
 
 
+## 2026-10-25 — RSX 1×: estimación parcial, sin medición PS3
+- Host, MKDS, máximo de polígonos en cuadros 2200–2499: cuadro 2384, 1248 polígonos; 300 cuadros idénticos a la referencia.
+- Subconjunto Z: 167 polígonos no soportados excluidos, 1101 dibujos, 44 texturas, 1015808 B RGBA8 en frío; área proyectada ponderada por pasadas ≈88296 fragmentos.
+- Shader: 53 instrucciones y una lectura; exportación: 12 instrucciones y 192 KiB. Ninguna copia de pantalla por polígono; una copia XDR final para el compositor.
+- Estimación de sensibilidad del subconjunto: 1,4–3,7 ms si se sostienen 3–6 millones de instrucciones/ms, 1000–3000 dibujos/ms y exportación 0,3–1 ms. Son supuestos sin calibrar, no tiempos PS3 ni prueba del umbral de 4 ms para el cuadro completo.
+- `DATO rsx3d`: polígonos/dibujos/texturas/bytes/aciertos, stamps raster/exportación y tiempos PPE de preparación/copia/total. La caché invalida toda la arena ante cualquier cambio de VRAM.
+- Parada por primera exportación vacía repetida en RPCS3; siete escenas siguientes exactas. W, igualdad y efectos pendientes; los mapas clasifican cobertura, RGB en intersección y alfa, sin aislar profundidad de interpolación.
+- Guion PS3 aplazado: tras resolver las pruebas, misma demostración MKDS 2 min apagado/encendido; exigir modo efectivo RSX y registrar raster+exportación ≤4 ms, preparación, copia y coste completo. Sin envío a consola.
+
 ## 2026-10-23 — Perfil del armado de geometría (pendiente PS3)
 - Evidencia PS3 aportada: MKDS pesado, armado 6,93 ms/cuadro a los 60–64 s; host ≈ 0,17 ms no reproduce ese costo. No se optimiza.
 - `geometria-perfil` activa `DATO geometria-armado` por ventana: ms/cuadro de lectura local y outcodes, ensamblado sin emisión, recorte, atributos (proyección/cara/profundidad), salida local (índices/límites y escritura).

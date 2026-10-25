@@ -343,6 +343,7 @@ void rsxkit_set_2d_state_size(uint32_t w, uint32_t h)
 
 	rsxSetColorMask(g->ctx, GCM_COLOR_MASK_B | GCM_COLOR_MASK_G | GCM_COLOR_MASK_R | GCM_COLOR_MASK_A);
 	rsxSetColorMaskMrt(g->ctx, 0);
+	rsxSetStencilTestEnable(g->ctx, GCM_FALSE);
 	rsxSetViewport(g->ctx, 0, 0, w, h, 0.0f, 1.0f, scale, offset);
 	rsxSetScissor(g->ctx, 0, 0, w, h);
 	rsxSetZMinMaxControl(g->ctx, GCM_FALSE, GCM_TRUE, GCM_FALSE);

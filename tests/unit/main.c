@@ -38,12 +38,19 @@ void test_save(void);
 void test_video_capture(void);
 void test_vram7(void);
 
+void test_rsx_export(void);
+
 int main(int argc, char **argv)
 {
 	const uint16_t probe = 0x0102;
 	const char *order = *(const uint8_t *)&probe == 0x02 ? "LE" : "BE";
 
 	printf("host: %s\n", order);
+	if (argc > 1 && !strcmp(argv[1], "rsx")) {
+		test_rsx_export();
+		printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);
+		return check_failed ? 1 : 0;
+	}
 	if (argc > 1 && !strcmp(argv[1], "arec")) { /* solo el recompilador (para iterar) */
 		test_arec();
 		printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);
@@ -59,6 +66,7 @@ int main(int argc, char **argv)
 		return check_failed ? 1 : 0;
 	}
 	test_endian();
+	test_rsx_export();
 	test_ppe_bench();
 	test_gpu2d();
 	test_dspad();

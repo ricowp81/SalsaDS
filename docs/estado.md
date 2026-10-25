@@ -5,6 +5,15 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-25 — RSX 1×: fase 0 detenida, sin aprobar (rsx3d-fase0)
+- `3d-rsx` optativo, `3d-spe` prevalece; Z nativa, W y efectos no soportados vuelven al SPE. Geometría sin cambios.
+- RGBA8 por identidad exacta de VRAM/mapas; stencil para IDs; exportación RGB6/A5 a XDR, sin copia por polígono. Preparación aún en PPE.
+- RPCS3: primera exportación vacía en dos corridas; parada. En la segunda, las otras siete escenas dirigidas coinciden bit a bit (incluyen IDs repetidos).
+- Aplicación completa apagada: RPCS3 falla en su recompilador SPU (`r3d-1`, instrucción ilegal); reproductor aislado apagado correcto.
+- Mapas locales: cobertura (alfa≠0)/color/alfa MKDS 0/23523/0, SM64DS 0/359/0 (subconjuntos en Z), NSMB 214/864/227 (original Z); no son paridad DS.
+- Host: MKDS 1174, SM64DS 2298, NSMB 2195 cuadros iguales; LE/SAN completos y dirigida LE/BE correctos, unitarias BE solo 34 fallos conocidos. ROMs/JIT BE pendientes: `cc1` cayó dos veces en `salsads-ciclos`; parada.
+- Build y paquete correctos; holgura SPE mínima 8432 B; verificadores de publicación/SPDX en 0. Paquete de diagnóstico `build/salsads-rsx3d.pkg`, título «SalsaDS RSX», `SLDS00030`, SHA-256 `449fa21d0703c4a2b49e31566ef93d25783bd2cdf4865296a85b68ae463c3a59`; no instalar ni medir hasta resolver exportación y completar RPCS3.
+
 ## 2026-10-24 — Protección y código de VRAM del ARM7 (cand-v004)
 - Captura: faltaba exigir LCDC al destino; la prueba reproduce `80008000` pisando bancos del ARM7. Ahora los rechaza (GBATEK, «DS Video Capture»; DeSmuME `WillDisplayCapture`, solo consulta).
 - C/D, MST=2, OFS 0/1, espejos de 256 KiB, VRAMSTAT, solapamiento y DMA LCDC→ARM7: pruebas correctas; el mapeo no necesitó cambios.

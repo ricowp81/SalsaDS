@@ -78,6 +78,10 @@
 #include "platform/ps3/autotest.h"
 #include "platform/ps3/log.h"
 #include "rsxkit/rsxkit.h"
+#ifdef NUCLEO_RSX
+#include "platform/ps3/rsx3d/rsx3d.h"
+static int rsx3d_on;
+#endif
 #include "rsxkit/text.h"
 #include "rsxkit/ui.h"
 
@@ -1802,6 +1806,19 @@ static void r3d_spe_submit(void *ctx, int set, r3d_job *j)
 	struct r3d_inflight *e;
 
 	(void)ctx;
+#ifdef NUCLEO_RSX
+	if (rsx3d_on) {
+		rsx3d_stats st;
+		int ok = rsx3d_render(j, &st);
+		static unsigned count;
+		if ((count++ % 120u) == 0 || ok < 0)
+			salsads_log("DATO rsx3d: modo %s, motivo %s, polígonos %u, dibujos %u, texturas %u, bytes %u, aciertos %u, raster %.3f ms, exportación %.3f ms, preparación %.3f ms, copia %.3f ms, total PPE %.3f ms",
+			    ok > 0 ? "RSX" : "SPE", rsx3d_reason(), st.polys, st.draws, st.textures, st.uploaded, st.cache_hits,
+			    st.raster_ns / 1e6, st.export_ns / 1e6, st.prepare_us / 1e3, st.copy_us / 1e3, st.total_us / 1e3);
+		if (ok > 0) return;
+		if (ok < 0) rsx3d_on = 0;
+	}
+#endif
 	if (r3q.count == 2)
 		r3d_wait_one();
 	e = &r3q.e[(r3q.head + r3q.count) & 1u];
@@ -2765,6 +2782,25 @@ int main(void)
 		return 1;
 	}
 	rsxkit_set_wait_hook(wait_hook, NULL, 100000, 100000);
+#ifdef NUCLEO_RSX
+	{
+		struct stat st;
+		if (stat(SALSADS_DATA_DIR "/3d-rsx", &st) == 0 && stat(SALSADS_DATA_DIR "/3d-spe", &st) != 0) {
+			rsx3d_on = rsx3d_init() == 0;
+			if (rsx3d_on && salsads_autotest() && rsx3d_selftest() != 0) rsx3d_on = 0;
+			salsads_log("3d-rsx: %s; Z nativa, respaldo SPE por modo no soportado", rsx3d_on ? "activo" : "sin recursos");
+		}
+		/* Reproductor aislado de fase 0: no arranca CPUs ni SPE. */
+		if (salsads_autotest() && stat(SALSADS_DATA_DIR "/3d-rsx-prueba", &st) == 0) {
+			int requested = stat(SALSADS_DATA_DIR "/3d-rsx", &st) == 0 && stat(SALSADS_DATA_DIR "/3d-spe", &st) != 0;
+			int failed = requested && !rsx3d_on;
+			salsads_log("RESULTADO rsx3d aislado: %s, interruptor %s", failed ? "FALLO" : "OK", requested ? "encendido" : "apagado");
+			if (rsx3d_on) rsx3d_shutdown();
+			rsxkit_shutdown();
+			return failed;
+		}
+	}
+#endif
 	if (rsxkit_ui_init() != 0) {
 		salsads_log("RESULTADO nucleo: FALLO rsxkit_ui_init");
 		rsxkit_shutdown();

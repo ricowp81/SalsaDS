@@ -217,6 +217,7 @@ static void fixed_state(void)
 	struct rsxkit_state *g = &rsxkit_g;
 	gcmContextData *ctx = g->ctx;
 	rsxSetColorMaskMrt(ctx, 0);
+	rsxSetDitherEnable(ctx, GCM_FALSE);
 	rsxSetShadeModel(ctx, GCM_SHADE_MODEL_SMOOTH);
 	rsxSetZMinMaxControl(ctx, GCM_FALSE, GCM_TRUE, GCM_FALSE);
 	rsxSetDepthFunc(ctx, GCM_LEQUAL);
@@ -239,8 +240,10 @@ static void set_blend(uint8_t blend)
 	if (blend == d3.blend)
 		return;
 	d3.blend = blend;
+	rsxSetBlendEquation(ctx, GCM_FUNC_ADD, blend == RSXKIT_BLEND_ALPHA_MAX ? GCM_FUNC_MAX : GCM_FUNC_ADD);
 	u32 mask = GCM_COLOR_MASK_B | GCM_COLOR_MASK_G | GCM_COLOR_MASK_R | GCM_COLOR_MASK_A;
 	switch (blend) {
+	case RSXKIT_BLEND_ALPHA_MAX:
 	case RSXKIT_BLEND_ALPHA:
 		rsxSetBlendEnable(ctx, GCM_TRUE);
 		rsxSetBlendFunc(ctx, GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA, GCM_ZERO, GCM_ONE);
@@ -337,6 +340,7 @@ static void texture_format(uint8_t fmt, u8 *gcm, u32 *remap)
 		*remap = REMAP(GCM_TEXTURE_REMAP_COLOR_A, GCM_TEXTURE_REMAP_COLOR_R, GCM_TEXTURE_REMAP_COLOR_G,
 			       GCM_TEXTURE_REMAP_COLOR_B);
 		break;
+	case RSXKIT_ARGB8888:
 	case RSXKIT_XRGB8888:
 		*gcm = GCM_TEXTURE_FORMAT_A8R8G8B8;
 		*remap = REMAP(GCM_TEXTURE_REMAP_COLOR_A, GCM_TEXTURE_REMAP_COLOR_R, GCM_TEXTURE_REMAP_COLOR_G,
@@ -459,7 +463,7 @@ void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
 		return;
 	/* Lo más que escribe un dibujo: programa de vértices (~140), constantes
 	 * (~140), programa de fragmentos (~22), texturas, estado y el dibujo. */
-	rsxkit_reserve(RSXKIT_RESERVE_DRAW);
+	rsxkit_reserve(RSXKIT_RESERVE_DRAW + 64u);
 	if (!g->state_valid)
 		fixed_state();
 	/* prog_3d: 1 el de siempre, 2 el interpolado (las constantes de uno
@@ -490,7 +494,10 @@ void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
 		hdr = &fc->hdr;
 		offset = fc->offset;
 	}
-	if (g->fp_3d < 0 || d3.cur_fp != want || d3.cur_fp_gen != rsxkit_fp_generation()) {
+	if (d->program) {
+		if (rsxkit_program_bind_3d(d->program) != RSXKIT_OK) return;
+		g->fp_3d = -1;
+	} else if (g->fp_3d < 0 || d3.cur_fp != want || d3.cur_fp_gen != rsxkit_fp_generation()) {
 		rsxLoadFragmentProgramLocation(ctx, hdr, offset, GCM_LOCATION_RSX);
 		g->fp_3d = 1;
 		d3.cur_fp = want;
@@ -507,6 +514,12 @@ void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
 		set_zconst(d->depth & RSXKIT_DEPTH_CONST ? (d->z < 0.0f ? 0.0f : d->z > 1.0f ? 1.0f : d->z) : -1.0f);
 	set_cull(d->cull);
 	set_alpha(d->alpha_ref);
+	rsxSetStencilTestEnable(ctx, d->stencil ? GCM_TRUE : GCM_FALSE);
+	if (d->stencil) {
+		rsxSetStencilMask(ctx, d->stencil_write_mask);
+		rsxSetStencilFunc(ctx, d->stencil == 2 ? GCM_NOTEQUAL : d->stencil == 3 ? GCM_EQUAL : GCM_ALWAYS, d->stencil_ref, d->stencil_compare_mask);
+		rsxSetStencilOp(ctx, GCM_KEEP, GCM_KEEP, d->stencil_op ? GCM_INVERT : GCM_REPLACE);
+	}
 	for (int i = 0; i < ntex; i++)
 		set_texture(i, &d->tex[i]);
 	set_constants(d, vp);
@@ -539,4 +552,5 @@ void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
 		rsxSetPolygonOffset(ctx, -1.0f, -2.0f);  /* el de las calcomanías (fixed_state) */
 	}
 	rsxDrawVertexArray(ctx, GCM_TYPE_TRIANGLES, first, count);
+	if (d->program) rsxkit_program_used_3d(d->program);
 }

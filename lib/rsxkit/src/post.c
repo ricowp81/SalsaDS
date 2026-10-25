@@ -246,6 +246,20 @@ rsxkit_program *rsxkit_program_create(const void *fpo)
 	return NULL;
 }
 
+int rsxkit_program_bind_3d(rsxkit_program *p)
+{
+	if (!p || !p->used) return RSXKIT_EARG;
+	rsxLoadFragmentProgramLocation(rsxkit_g.ctx, &p->hdr, p->offset, GCM_LOCATION_RSX);
+	return RSXKIT_OK;
+}
+
+void rsxkit_program_used_3d(rsxkit_program *p)
+{
+	uint32_t seq = ++post.seq;
+	rsxSetWriteBackendLabel(rsxkit_g.ctx, RSXKIT_LABEL_POST, seq);
+	p->last_use = seq;
+}
+
 void rsxkit_program_destroy(rsxkit_program *p)
 {
 	if (!p || !p->used)

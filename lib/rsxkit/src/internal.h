@@ -48,6 +48,9 @@ struct rsxkit_state {
 
 extern struct rsxkit_state rsxkit_g;
 
+int rsxkit_program_bind_3d(rsxkit_program *p);
+void rsxkit_program_used_3d(rsxkit_program *p);
+
 /* Destino ligado con rsxkit_bind (target.c). */
 struct rsxkit_bound {
 	struct rsxkit_target *target;
