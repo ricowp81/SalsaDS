@@ -101,6 +101,7 @@ void nds_video_vram_dirty(struct nds *n, uint32_t vram_off)
 
 	n->vid.dirty[0] |= bit;
 	n->vid.dirty[1] |= bit;
+	n->vid.identity_dirty |= bit;
 }
 
 void nds_video_mmem_push(struct nds *n, uint16_t px)
@@ -145,7 +146,7 @@ void nds_video_init(struct nds *n)
 	v->clock = clk;
 	v->cur = 1;
 	v->last = -1;
-	v->dirty[0] = v->dirty[1] = (1ull << NDS_VPAGES) - 1;
+	v->identity_dirty = v->dirty[0] = v->dirty[1] = (1ull << NDS_VPAGES) - 1;
 	nds_video_frame_begin(n); /* el primer cuadro empieza en el instante 0: la línea 0 no tiene evento */
 }
 
@@ -266,6 +267,16 @@ void nds_video_frame_begin(struct nds *n)
 	s = &v->set[v->cur];
 	if (v->ops.wait)
 		v->ops.wait(v->ops.ctx, v->cur);
+
+	/* Un sello por instantánea, también tras reiniciar el núcleo. Las escrituras
+	 * repetidas de una página solo añaden un bit al conjunto pendiente. */
+	static uint64_t identity_serial;
+	++identity_serial;
+	for (unsigned pg = 0; pg < NDS_VPAGES; pg++)
+		if (v->identity_dirty & (1ull << pg))
+			v->vram_version[pg] = identity_serial;
+	v->identity_dirty = 0;
+	memcpy(s->vram_version, v->vram_version, sizeof s->vram_version);
 
 	/* VRAM: solo las páginas cambiadas desde la última vez que se llenó este juego */
 	for (unsigned pg = 0; pg < NDS_VPAGES; pg++)

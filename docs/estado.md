@@ -5,6 +5,14 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-25 — Preparación RSX: identidad incremental de VRAM
+- Sellos por página física de 16 KiB, compartidos entre instantáneas; solo se comparan bytes de páginas escritas. `3d-rsx-identidad-completa` restaura la ruta previa.
+- Host caliente MKDS/SM64DS/NSMB/pesado: 75,8/27,9/99,3/124,6 → 57,1/7,8/80,4/107,3 µs; 400 cambios y flujos de triángulos idénticos, ASan/UBSan correcto.
+- RPCS3: identidad caliente ~322–337 → 2–3 µs; 16 dirigidas y 39 mapas iguales a c23c56e. No acredita tiempos de PS3.
+- VMX descartado tras una vuelta: vértices empeoran en tres escenas. Se conserva la conversión escalar.
+- SPE descartado tras una vuelta: RGBA8 RPCS3 MKDS/pesado 138/48 ms frente a 16,5/18,1 en PPE; un lote frío llega a 67 ms y podría retrasar geometría. Se conserva PPE y sigue pendiente el tirón frío.
+- Validación dirigida final LE/BE: 655 390 comprobaciones por orden, 0 fallos; build completo y revisión SPDX correctos. Unitarias BE conservan los 34 fallos conocidos del anillo.
+
 ## 2026-10-25 — RSX ronda 3: lotes; parada por presupuesto conservador
 - `66e1651`: un búfer por cuadro, opacos consecutivos idénticos agrupados, radix estable y conversión por vértice; translúcidos, IDs y empates Z/W conservan su orden.
 - Dibujos MKDS/SM64DS/NSMB/pesado: 596/55/972/1101 → 185/33/211/403; estados lógicos 185/31/211/403 sin cambio. Menos recargas de programa y etiquetas por dibujo.
