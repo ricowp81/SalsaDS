@@ -47,7 +47,14 @@ PIC1  := $(abspath ../../../assets/ps3/PIC1.PNG)
 
 COMMON += src/platform/ps3/rsx3d/rsx3d.c src/platform/ps3/rsx3d/selftest.c
 CFLAGS += -DNUCLEO_RSX
-SHADERS := ../../../src/platform/ps3/rsx3d/shade.fcg ../../../src/platform/ps3/rsx3d/pack.fcg
+SHADERS := ../../../src/platform/ps3/rsx3d/shade.fcg ../../../src/platform/ps3/rsx3d/pack.fcg ../../../src/platform/ps3/rsx3d/shade_w.fcg
 CGCFLAGS := -Wcg,-nofastprecision
 
 include ../../../mk/ps3.mk
+
+# cgcomp identifica COLOR con R0: preservar su valor hasta terminar DEPTH.
+$(OBJ)/shade_w.fpo: $(ROOT)/src/platform/ps3/rsx3d/shade_w.fcg $(ROOT)/src/platform/ps3/rsx3d/shade.fcg $(ROOT)/tools/rsx3d-shader.py
+	@mkdir -p $(dir $@)
+	cgcomp -f -d $(CGCFLAGS) $< $@
+	python3 $(ROOT)/tools/rsx3d-shader.py $@.dump $@.fixed
+	cgcomp -f -a $@.fixed $@

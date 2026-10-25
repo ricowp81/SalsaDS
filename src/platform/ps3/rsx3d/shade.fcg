@@ -3,8 +3,14 @@
  * q.x: referencia alfa. Pasadas: 0 opacos, 1 mezcla, 2 reemplazo translúcido. */
 void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
           float4 color : COLOR0, uniform sampler2D image : TEXUNIT0,
+#ifdef RSX3D_W
+          float4 pos : WPOS, out float depth : DEPTH,
+#endif
           out float4 result : COLOR)
 {
+#ifdef RSX3D_W
+    depth = min(floor(1.0 / pos.w) * q.y, 1.0);
+#endif
     float4 t = floor(tex2D(image, uv.xy) * 255.0 + 0.5);
     float3 v = min(floor(color.rgb * 255.0 + 0.875), 63.0);
     float3 mod = floor(((t.rgb + 1.0) * (v + 1.0) - 1.0) / 64.0);

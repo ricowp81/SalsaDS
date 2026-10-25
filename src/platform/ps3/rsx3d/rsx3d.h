@@ -9,6 +9,7 @@ typedef struct rsx3d_stats {
 } rsx3d_stats;
 int rsx3d_init(void);
 int rsx3d_selftest(void);
+int rsx3d_reference_test(void);
 /* 1: exportado a out_ea; 0: cuadro no soportado, salida intacta; -1: error. */
 int rsx3d_render(const r3d_job *job, rsx3d_stats *stats);
 const char *rsx3d_reason(void);

@@ -2788,16 +2788,17 @@ int main(void)
 		struct stat st;
 		if (stat(SALSADS_DATA_DIR "/3d-rsx", &st) == 0 && stat(SALSADS_DATA_DIR "/3d-spe", &st) != 0) {
 			rsx3d_on = rsx3d_init() == 0;
-			if (rsx3d_on && salsads_autotest() && rsx3d_selftest() != 0) rsx3d_on = 0;
-			salsads_log("3d-rsx: %s; Z nativa, respaldo SPE por modo no soportado", rsx3d_on ? "activo" : "sin recursos");
+			if (rsx3d_on && (salsads_autotest() || stat(SALSADS_DATA_DIR "/3d-rsx-prueba", &st) == 0) && rsx3d_selftest() != 0) rsx3d_on = 0;
+			salsads_log("3d-rsx: %s; Z nativa y W por fragmento, respaldo SPE por modo no soportado", rsx3d_on ? "activo" : "sin recursos");
 		}
 		/* Reproductor aislado de fase 0: no arranca CPUs ni SPE. */
-		if (salsads_autotest() && stat(SALSADS_DATA_DIR "/3d-rsx-prueba", &st) == 0) {
+		if (stat(SALSADS_DATA_DIR "/3d-rsx-prueba", &st) == 0) {
 			int requested = stat(SALSADS_DATA_DIR "/3d-rsx", &st) == 0 && stat(SALSADS_DATA_DIR "/3d-spe", &st) != 0;
-			int failed = requested && !rsx3d_on;
+			int failed = requested ? !rsx3d_on : rsx3d_reference_test() != 0;
 			salsads_log("RESULTADO rsx3d aislado: %s, interruptor %s", failed ? "FALLO" : "OK", requested ? "encendido" : "apagado");
 			if (rsx3d_on) rsx3d_shutdown();
 			rsxkit_shutdown();
+			salsads_log_shutdown();
 			return failed;
 		}
 	}

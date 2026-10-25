@@ -4,15 +4,51 @@
 #include "platform/ps3/log.h"
 #include "gpu3d/r3d_px.h"
 #include "gpu3d/rsx_replay.h"
+#include "rsxkit/rsxkit.h"
+#include "platform/ps3/autotest.h"
+#include <sys/systime.h>
 static gx_frame frame;
 static uint8_t vram[R3D_VRAM_ZERO_OFF + 128] __attribute__((aligned(128)));
 static uint32_t output[R3D_W * R3D_H] __attribute__((aligned(128)));
 static uint32_t reference[R3D_W * R3D_H] __attribute__((aligned(128)));
-static int replay_tests(void)
+static gx_frame original;
+static void save_pixels(const char *name, const uint32_t *px)
 {
-    const char *names[] = { "mkds", "sm64ds", "nsmb" };
+    char path[160];
+    snprintf(path, sizeof path, "/dev_hdd0/salsads/%s.ppm", name);
+    FILE *io = fopen(path, "wb");
+    if (!io) return;
+    fprintf(io, "P6\n256 192\n255\n");
+    for (unsigned k = 0; k < R3D_W * R3D_H; k++) {
+        fputc(R3D_PX_R(px[k]) * 255 / 63, io);
+        fputc(R3D_PX_G(px[k]) * 255 / 63, io);
+        fputc(R3D_PX_B(px[k]) * 255 / 63, io);
+    }
+    fclose(io);
+}
+static void preview(void)
+{
+    static uint32_t pixels[R3D_W * 2 * R3D_H];
+    for (unsigned y = 0; y < R3D_H; y++) for (unsigned x = 0; x < R3D_W*2; x++) {
+        uint32_t p = (x < R3D_W ? reference : output)[y*R3D_W + x%R3D_W];
+        pixels[y*R3D_W*2+x] = (R3D_PX_R(p)*255/63 << 16) | (R3D_PX_G(p)*255/63 << 8) | R3D_PX_B(p)*255/63;
+    }
+    rsxkit_fb *fb = rsxkit_fb_create(R3D_W*2, R3D_H);
+    if (!fb) return;
+    rsxkit_view view = {RSXKIT_SCALE_INTEGER, RSXKIT_FILTER_NEAREST, 0};
+    rsxkit_fb_upload(fb, pixels, R3D_W*2, R3D_H, R3D_W*8, RSXKIT_XRGB8888);
+    rsxkit_frame_begin(0);
+    rsxkit_fb_draw(fb, &view, NULL);
+    rsxkit_frame_end();
+    rsxkit_finish();
+    if (!salsads_autotest()) sysUsleep(3000000);
+    rsxkit_fb_destroy(fb);
+}
+static int replay_tests(int enabled)
+{
+    const char *names[] = { "mkds", "sm64ds", "nsmb", "pesado" };
     int fail = 0;
-    for (unsigned scene = 0; scene < 3; scene++) {
+    for (unsigned scene = 0; scene < 4; scene++) {
         char path[160];
         snprintf(path, sizeof path, "/dev_hdd0/salsads/rsx3d-%s.rsx", names[scene]);
         FILE *io = fopen(path, "rb");
@@ -25,15 +61,15 @@ static int replay_tests(void)
         j.vram_ea = (uint64_t)(uintptr_t)vram;
         j.out_ea = (uint64_t)(uintptr_t)output;
         rsx3d_stats st;
-        int native = rsx3d_render(&j, &st);
+        memset(&st, 0, sizeof st);
+        int native = enabled ? rsx3d_render(&j, &st) : 0;
         salsads_log("rsx3d reproducción %s: cuadro original %u, estado %d, %s, swap %u, disp3d %04x",
                     names[scene], frame.seq, native, rsx3d_reason(), frame.swap_params, frame.regs.disp3dcnt);
         if (native < 0) { fail++; continue; }
         /* Diagnóstico explícito del subconjunto de fase 0, nunca usado en juego.
-         * Ambas rutas reciben la misma lista filtrada y Z en lugar de W. */
+         * Ambas rutas reciben la misma lista filtrada conservando Z o W. */
         unsigned removed = 0;
         if (!native) {
-            frame.swap_params &= ~2u;
             frame.regs.disp3dcnt &= ~(D3_FOG | D3_EDGE | D3_REARBMP);
             unsigned n = 0;
             for (unsigned i = 0; i < frame.npolys; i++) {
@@ -43,29 +79,58 @@ static int replay_tests(void)
             }
             frame.npolys = n;
         }
-        r3d_render_ref(&frame, vram, j.texslot, j.palslot, j.flags, reference);
-        int ok = rsx3d_render(&j, &st);
-        if (ok != 1) { salsads_log("rsx3d reproducción %s: no dibujada, %s", names[scene], rsx3d_reason()); fail++; continue; }
-        unsigned coverage = 0, color = 0, alpha = 0, maxerr = 0;
-        snprintf(path, sizeof path, "/dev_hdd0/salsads/rsx3d-%s-diff.ppm", names[scene]);
-        io = fopen(path, "wb");
-        if (io) fprintf(io, "P6\n256 192\n255\n");
-        for (unsigned k = 0; k < R3D_W * R3D_H; k++) {
-            unsigned a = R3D_PX_A(output[k]), b = R3D_PX_A(reference[k]);
-            unsigned cov = !!a != !!b;
-            unsigned col = a && b && ((output[k] ^ reference[k]) & 0xffffffu);
-            coverage += cov; color += !!col; alpha += a != b;
-            if (a && b) for (unsigned c = 0; c < 3; c++) {
-                int err = (int)((output[k] >> (8*c)) & 63u) - (int)((reference[k] >> (8*c)) & 63u);
-                unsigned abserr = err < 0 ? -err : err;
-                if (abserr > maxerr) maxerr = abserr;
+        original = frame;
+        for (unsigned variant = 0; variant < (scene == 3 ? 1u : 4u); variant++) {
+            frame = original;
+            /* 1/2 aíslan color/coordenadas conservando geometría, alfa y orden.
+             * 3 quita texturas y mezcla para observar solo cobertura geométrica. */
+            for (unsigned k = 0; k < frame.nverts; k++) {
+                if (variant == 1 || variant == 3) frame.vtx[k].r = frame.vtx[k].g = frame.vtx[k].b = 63;
+                if (variant == 2) frame.vtx[k].s = frame.vtx[k].t = 0;
             }
-            if (io) { fputc(cov ? 255 : 0, io); fputc(col ? 255 : 0, io); fputc(a != b ? 255 : 0, io); }
+            if (variant == 3) {
+                frame.regs.disp3dcnt &= ~D3_TEXTURE;
+                for (unsigned k = 0; k < frame.npolys; k++) frame.poly[k].attr |= 31u << 16;
+            }
+            r3d_render_ref(&frame, vram, j.texslot, j.palslot, j.flags, reference);
+            rsxkit_frame_begin(0);
+            rsxkit_frame_end();
+            rsxkit_frame_begin(0);
+            int ok = enabled ? rsx3d_render(&j, &st) : 1;
+            if (!enabled) memcpy(output, reference, sizeof output);
+            if (ok != 1) { salsads_log("rsx3d reproducción %s: no dibujada, %s", names[scene], rsx3d_reason()); fail++; continue; }
+            char name[80];
+            snprintf(name, sizeof name, "rsx3d-%s-v%u-rsx", names[scene], variant);
+            save_pixels(name, output);
+            snprintf(name, sizeof name, "rsx3d-%s-v%u-ref", names[scene], variant);
+            save_pixels(name, reference);
+            unsigned coverage = 0, color = 0, alpha = 0, maxerr = 0, error1 = 0;
+            snprintf(path, sizeof path, "/dev_hdd0/salsads/rsx3d-%s-v%u-diff.ppm", names[scene], variant);
+            io = fopen(path, "wb");
+            if (io) fprintf(io, "P6\n256 192\n255\n");
+            for (unsigned k = 0; k < R3D_W * R3D_H; k++) {
+                unsigned a = R3D_PX_A(output[k]), b = R3D_PX_A(reference[k]);
+                unsigned cov = !!a != !!b;
+                unsigned col = a && b && ((output[k] ^ reference[k]) & 0xffffffu);
+                coverage += cov; color += !!col; alpha += a != b;
+                unsigned pxerr = 0;
+                if (a && b) for (unsigned c = 0; c < 3; c++) {
+                    int err = (int)((output[k] >> (8*c)) & 63u) - (int)((reference[k] >> (8*c)) & 63u);
+                    unsigned abserr = err < 0 ? -err : err;
+                    if (abserr > pxerr) pxerr = abserr;
+                    if (abserr > maxerr) maxerr = abserr;
+                }
+                error1 += col && pxerr <= 1;
+                if (io) { fputc(cov ? 255 : 0, io); fputc(col ? 255 : 0, io); fputc(a != b ? 255 : 0, io); }
+            }
+            if (io) fclose(io); else fail++;
+            salsads_log("rsx3d reproducción %s variante %u: %s, omitidos %u, cobertura %u color %u alfa %u error RGB6 máximo %u; polígonos %u dibujos %u texturas %u bytes %u aciertos %u",
+                        names[scene], variant, native ? "original" : "subconjunto sin efectos", removed, coverage, color, alpha, maxerr,
+                        st.polys, st.draws, st.textures, st.uploaded, st.cache_hits);
+            salsads_log("DATO rsx3d reproducción %s v%u: RGB error <=1 %u, raster %.3f ms exportación %.3f ms preparación %.3f ms copia %.3f ms",
+                        names[scene], variant, error1, st.raster_ns/1e6, st.export_ns/1e6, st.prepare_us/1e3, st.copy_us/1e3);
+            if (!variant) preview();
         }
-        if (io) fclose(io); else fail++;
-        salsads_log("rsx3d reproducción %s: %s, omitidos %u, cobertura %u color %u alfa %u error RGB6 máximo %u; polígonos %u dibujos %u texturas %u bytes %u aciertos %u",
-                    names[scene], native ? "original Z" : "subconjunto Z sin efectos", removed, coverage, color, alpha, maxerr,
-                    st.polys, st.draws, st.textures, st.uploaded, st.cache_hits);
     }
     return fail;
 }
@@ -84,6 +149,95 @@ static void quad(unsigned n, unsigned id, unsigned alpha, unsigned r, unsigned g
         v->t = k >= 2 ? 7 * 16 : 0;
     }
 }
+/* Colores constantes: separa aritmética/empacado de interpolación y aristas.
+ * Recorre 64 colores de vértice por 32 texeles RGB555, en ambas fórmulas. */
+static unsigned shade_tests(r3d_job *j)
+{
+    unsigned fail = 0;
+    for (unsigned mode = 0; mode < 2; mode++) for (unsigned batch = 0; batch < 4; batch++) {
+        memset(&frame, 0, sizeof frame);
+        frame.npolys = 512; frame.nverts = 2048;
+        frame.regs.clear_depth = 0x7fff; frame.regs.disp3dcnt = D3_TEXTURE | D3_BLEND;
+        for (unsigned t = 0; t < 32; t++) {
+            unsigned rgb = t | ((31-t) << 5) | (((t*7)&31) << 10) | 0x8000;
+            vram[2*t] = rgb; vram[2*t+1] = rgb >> 8;
+        }
+        for (unsigned n = 0; n < 512; n++) {
+            unsigned c = n & 63, t = batch*8 + n/64;
+            unsigned x = (n%32)*8, y = (n/32)*12;
+            quad(n, 1, 31, c, 63-c, (c*13)&63, 1);
+            gx_poly *p = &frame.poly[n];
+            p->attr |= mode << 4;
+            p->xmin = x; p->xmax = x+8; p->ymin = y; p->ymax = y+12;
+            for (unsigned k = 0; k < 4; k++) {
+                gx_vertex *v = &frame.vtx[n*4+k];
+                v->sx = x + ((k == 1 || k == 2) ? 8 : 0);
+                v->sy = y + (k >= 2 ? 12 : 0); v->z = 0x800000;
+                v->s = (t%8)*16+8; v->t = (t/8)*16+8;
+            }
+        }
+        r3d_render_ref(&frame, vram, j->texslot, j->palslot, 0, reference);
+        rsxkit_frame_begin(0); rsxkit_frame_end(); rsxkit_frame_begin(0);
+        rsx3d_stats st;
+        int ok = rsx3d_render(j, &st);
+        unsigned different = 0;
+        for (unsigned k = 0; k < R3D_W*R3D_H; k++) different += output[k] != reference[k];
+        fail += ok != 1 || different != 0;
+        salsads_log("rsx3d aritmética modo %u lote %u: estado %d, distintos %u", mode, batch, ok, different);
+    }
+    return fail;
+}
+/* La W correcta es armónica en pantalla, no la Z lineal de los vértices.
+ * En el centro gana verde (W=5461); con interpolación lineal ganaría rojo. */
+static unsigned w_tests(r3d_job *j)
+{
+    unsigned fail = 0;
+    for (unsigned shift = 0; shift <= 8; shift += 4) {
+        memset(&frame, 0, sizeof frame);
+        frame.npolys = 2; frame.nverts = 8; frame.swap_params = 3;
+        frame.regs.clear_depth = 0x7fff; frame.regs.disp3dcnt = D3_BLEND;
+        quad(0, 1, 31, 0, 63, 0, 0);
+        quad(1, 2, 31, 63, 0, 0, 0);
+        for (unsigned k = 0; k < 4; k++) {
+            frame.vtx[k].w = (k == 1 || k == 2) ? 8192 : 4096;
+            frame.vtx[4+k].w = 6000; frame.vtx[4+k].z = 0x900000;
+        }
+        frame.poly[0].wshift = frame.poly[1].wshift = shift;
+        r3d_render_ref(&frame, vram, j->texslot, j->palslot, 0, reference);
+        rsxkit_frame_begin(0); rsxkit_frame_end(); rsxkit_frame_begin(0);
+        rsx3d_stats st; int ok = rsx3d_render(j, &st);
+        unsigned different = 0;
+        for (unsigned x = 80; x <= 176; x += 48) {
+            unsigned k = 96*R3D_W+x;
+            different += output[k] != reference[k];
+            salsads_log("rsx3d W shift %u x %u: %08x referencia %08x", shift, x, output[k], reference[k]);
+        }
+        fail += ok != 1 || different != 0;
+    }
+    return fail;
+}
+/* Sonda de cuantización de la mezcla fija RGBA8: no declara paridad. */
+static void blend_probe(r3d_job *j)
+{
+    memset(&frame, 0, sizeof frame);
+    frame.npolys = 30; frame.nverts = 120; frame.swap_params = 1;
+    frame.regs.clear_depth = 0x7fff; frame.regs.clear_color = (31u << 16) | 0x7fff;
+    frame.regs.disp3dcnt = D3_BLEND;
+    for (unsigned n = 0; n < 30; n++) {
+        quad(n, 1, n+1, 63, 63, 63, 0);
+        gx_poly *p = &frame.poly[n]; p->xmin = n*8; p->xmax = n*8+8;
+        for (unsigned k = 0; k < 4; k++) {
+            frame.vtx[n*4+k].sx = n*8 + ((k == 1 || k == 2) ? 8 : 0);
+        }
+    }
+    r3d_render_ref(&frame, vram, j->texslot, j->palslot, 0, reference);
+    rsxkit_frame_begin(0); rsxkit_frame_end(); rsxkit_frame_begin(0);
+    rsx3d_stats st; int ok = rsx3d_render(j, &st);
+    for (unsigned n = 0; n < 30; n++) {
+        unsigned k = 96*R3D_W + n*8+4;
+        salsads_log("rsx3d límite mezcla RGBA8 alfa %u: estado %d, %08x referencia %08x", n+1, ok, output[k], reference[k]);
+    }
+}
 int rsx3d_selftest(void)
 {
     unsigned fail = 0;
@@ -93,15 +247,18 @@ int rsx3d_selftest(void)
     for (unsigned i = 0; i < 4; i++) j.texslot[i] = 0;
     for (unsigned i = 0; i < 6; i++) j.palslot[i] = R3D_UNMAPPED;
     for (unsigned i = 0; i < 64; i++) { vram[i*2] = 0xff; vram[i*2+1] = 0xff; }
-    for (unsigned scene = 0; scene < 8; scene++) {
+    for (unsigned test = 0; test < 16; test++) {
+        unsigned scene = test & 7;
         memset(&frame, 0, sizeof frame);
         frame.npolys = scene < 2 ? 1 : 3; frame.nverts = frame.npolys * 4;
-        frame.swap_params = 1; frame.regs.clear_depth = 0x7fff;
+        frame.swap_params = test < 8 ? 1 : 3; frame.regs.clear_depth = 0x7fff;
         frame.regs.disp3dcnt = D3_TEXTURE | D3_BLEND;
         if (scene & 1) frame.regs.clear_color = (31u << 16) | 31u;
         quad(0, 1, scene < 2 ? 31 : 15, 0, 63, 0, scene == 1);
         quad(1, scene < 4 ? 1 : 2, 15, 63, 0, 0, 0);
         quad(2, scene < 6 ? 1 : 2, 15, 0, 0, 63, 0);
+        for (unsigned n = 0; n < frame.npolys; n++)
+            for (unsigned k = 0; k < 4; k++) frame.vtx[n*4+k].w = 4096 - n*256;
         r3d_render_ref(&frame, vram, j.texslot, j.palslot, 0, reference);
         rsx3d_stats st; int ok = rsx3d_render(&j, &st);
         unsigned coverage = 0, color = 0, alpha = 0;
@@ -112,11 +269,19 @@ int rsx3d_selftest(void)
         }
         unsigned center = 96 * R3D_W + 128;
         /* Centro plano: ninguna diferencia puede atribuirse a cobertura ni interpolación. */
-        if (ok != 1 || output[center] != reference[center]) fail++;
+        if (ok != 1 || coverage || color || alpha) fail++;
         salsads_log("rsx3d prueba %u: estado %d, centro %08x referencia %08x, cobertura %u color %u alfa %u, dibujos %u",
-                    scene, ok, output[center], reference[center], coverage, color, alpha, st.draws);
+                    test, ok, output[center], reference[center], coverage, color, alpha, st.draws);
     }
-    fail += replay_tests();
-    salsads_log("rsx3d autoprueba: %s, %u fallos", fail ? "FALLO" : "OK", fail);
+    fail += shade_tests(&j);
+    fail += w_tests(&j);
+    blend_probe(&j);
+    fail += replay_tests(1);
+    salsads_log("rsx3d autoprueba dirigida: %s, %u fallos (la comparación de juegos y la mezcla RGBA8 son diagnósticos)", fail ? "FALLO" : "OK", fail);
     return fail ? -1 : 0;
+}
+
+int rsx3d_reference_test(void)
+{
+    return replay_tests(0) ? -1 : 0;
 }

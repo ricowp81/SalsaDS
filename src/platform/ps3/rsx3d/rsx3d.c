@@ -8,6 +8,7 @@
 #include "rsxkit/rsxkit.h"
 #include "rsxkit/post.h"
 #include "shade_fpo.h"
+#include "shade_w_fpo.h"
 #include "pack_fpo.h"
 
 #define ARENA (24u * 1024u * 1024u)
@@ -21,7 +22,7 @@ static uint32_t offset, used, nc;
 static rsxkit_target *target;
 static rsxkit_depth *depth;
 static rsxkit_surface *output;
-static rsxkit_program *shade, *pack;
+static rsxkit_program *shade, *shade_w, *pack;
 static uint32_t old_slots[10];
 static int snapshot_valid;
 static int ready;
@@ -83,16 +84,17 @@ int rsx3d_init(void)
     target = rsxkit_target_create_rgba(R3D_W, R3D_H);
     depth = rsxkit_depth_create(R3D_W, R3D_H);
     output = rsxkit_surface_wrap_main(R3D_W, R3D_H, RSXKIT_POST_RGBA8, mem + OUT_OFF, offset + OUT_OFF, R3D_W * 4);
+    shade_w = rsxkit_program_create(shade_w_fpo);
     shade = rsxkit_program_create(shade_fpo); pack = rsxkit_program_create(pack_fpo);
-    if (!target || !depth || !output || !shade || !pack) return -1;
-    reason = "Z nativa; W pendiente";
+    if (!target || !depth || !output || !shade || !shade_w || !pack) return -1;
+    reason = "Z nativa; W por fragmento";
     ready = 1;
     return 0;
 }
 void rsx3d_shutdown(void)
 {
     rsxkit_finish();
-    rsxkit_program_destroy(shade); rsxkit_program_destroy(pack);
+    rsxkit_program_destroy(shade_w); rsxkit_program_destroy(shade); rsxkit_program_destroy(pack);
     rsxkit_surface_destroy(output); rsxkit_target_destroy(target); rsxkit_depth_destroy(depth);
     ready = 0;
     /* La memoria mapeada se conserva hasta cerrar rsxkit; no reutilizar un mapeo vivo. */
@@ -118,8 +120,8 @@ int rsx3d_render(const r3d_job *j, rsx3d_stats *st)
     if (f->npolys > GX_MAX_POLYS || f->nverts > GX_MAX_VERTS) return -1;
     st->polys = f->npolys;
     r3d_rstate_init(&rs, f, j->flags);
-    if ((rs.d3 & (D3_FOG | D3_EDGE | D3_REARBMP)) || rs.wbuf) {
-        reason = rs.wbuf ? "W pendiente" : "niebla, bordes o imagen de borrado"; return 0;
+    if (rs.d3 & (D3_FOG | D3_EDGE | D3_REARBMP)) {
+        reason = "niebla, bordes o imagen de borrado"; return 0;
     }
     for (uint32_t i = 0; i < f->npolys; i++) {
         const gx_poly *p = &f->poly[i];
@@ -150,9 +152,10 @@ int rsx3d_render(const r3d_job *j, rsx3d_stats *st)
         if (!r3d_poly_setup(&p, gp, vv, &rs)) continue;
         struct command *c = &command[ncmd++]; memset(c, 0, sizeof *c);
         c->first = nv; c->count = (p.n - 2) * 3; c->trans = p.alpha < 31 || (p.mode == 0 && p.textured && (p.tex.fmt == 1 || p.tex.fmt == 6)); c->id = p.id; c->tdepth = !!(p.attr & PA_TDEPTH);
-        rsxkit_draw *d = &c->d; d->program = shade; d->ntex = 1;
+        rsxkit_draw *d = &c->d; d->program = rs.wbuf ? shade_w : shade; d->ntex = 1;
         d->scissor[2] = R3D_W; d->scissor[3] = R3D_H;
         d->k[0][0][0] = p.textured; d->k[0][0][1] = p.alpha; d->k[0][0][2] = p.mode;
+        d->k[1][0][1] = (float)(1u << p.wshift) / 16777215.0f;
         d->k[1][0][0] = (rs.d3 & D3_ALPHATEST) ? rs.alpha_ref : 0;
         /* Sin textura: una textura blanca de 8x8 propia, colocada fuera de la arena. */
         if (p.textured) {
@@ -213,6 +216,6 @@ int rsx3d_render(const r3d_job *j, rsx3d_stats *st)
     st->total_us = sysGetSystemTime() - start;
     st->polys = ncmd; st->raster_ns = rsxkit_stamp_ns(57) - rsxkit_stamp_ns(56);
     st->export_ns = rsxkit_stamp_ns(58) - rsxkit_stamp_ns(57);
-    reason = "Z nativa; cobertura e interpolación triangular";
+    reason = rs.wbuf ? "W por fragmento; interpolación triangular" : "Z nativa; cobertura e interpolación triangular";
     return 1;
 }
