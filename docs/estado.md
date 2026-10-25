@@ -5,6 +5,16 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-25 — RSX ronda 3: lotes; parada por presupuesto conservador
+- `66e1651`: un búfer por cuadro, opacos consecutivos idénticos agrupados, radix estable y conversión por vértice; translúcidos, IDs y empates Z/W conservan su orden.
+- Dibujos MKDS/SM64DS/NSMB/pesado: 596/55/972/1101 → 185/33/211/403; estados lógicos 185/31/211/403 sin cambio. Menos recargas de programa y etiquetas por dibujo.
+- Caché por identidad exacta de páginas VRAM/paleta; perfil de identidad, vértices, búsqueda, RGBA8 y visibilidad XDR. La decodificación permanece en PPE.
+- RPCS3: 16 dirigidas, aritmética, W, seis cambios de identidad y repeticiones calientes correctos; 39 mapas idénticos a la ronda 2 con optimizaciones activas/inactivas. Host ASan/UBSan: flujos de triángulos idénticos en cinco combinaciones.
+- Host caliente MKDS 120→77 µs, pesado 313→122; frío empeora ~15 %. RPCS3 no muestra mejora uniforme de preparación; no acredita ahorro PPE real.
+- Estimación conservadora PS3 raster+exportación pesado 4,34 ms (sensibilidad 3,17–4,34): supera el tope; parada, sin fase 2 ni decodificación SPE. Se conservan errores de paridad previos.
+- `test-host=1` solo por los 34 fallos BE conocidos del anillo; LE/SAN, ROMs BE, hashes y lockstep correctos. Build completo y paquete limpios en 0; holgura mínima SPE 8432 B; verificadores en 0.
+- Paquete diagnóstico «SalsaDS RSX», SLDS00030: `build/salsads-rsx3d-3.pkg`; reproductor, guion, SHA-256 y detalle en `build/rsx3d-ronda3/`. No enviado ni aprobado para sustituir el SPE.
+
 ## 2026-10-25 — RSX 1×, ronda 2: exportación corregida; paridad aún no aprobada
 - `8475715`: etiquetas FINISH/FENCE inicializadas; antes, la primera espera aceptaba 322420947 como si fuera 1 y copiaba ceros. La comparación síncrona descartó compilación tardía de shaders.
 - `51326bd`: W por fragmento con `wshift`, sin sustituirla por Z; prueba de perspectiva 0/4/8 correcta. Se conserva la aproximación triangular y el respaldo por modos no soportados.

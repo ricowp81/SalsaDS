@@ -1,5 +1,15 @@
 # Registro de rendimiento
 
+## 2026-10-25 — RSX ronda 3: costo por lotes (host/RPCS3, base PS3 aportada)
+- PS3 anterior MKDS/SM64DS/NSMB/pesado, raster+exportación: 4,177/2,427/4,644/7,542 ms. Dibujos 596/55/972/1101 → 185/33/211/403; estados lógicos sin cambio: 185/31/211/403.
+- Host nativo, 500 cuadros calientes sin GPU ni reloj de etapas: 120,318/26,376/197,012/312,858 → 76,824/26,932/101,088/121,936 µs; frío MKDS 2141→2468, pesado 2429→2776 µs. No son tiempos PPE.
+- RPCS3 pesado, medianas de tres: raster 2,020→0,975 ms, preparación 2,823→1,657; MKDS preparación 1,066→2,823, SM64DS 0,363→0,527: variabilidad y ausencia de mejora uniforme; no convertir a tiempos PS3.
+- Calibración prudente con NSMB PS3 sin textura: 4,420/964=4,585 µs/dibujo; conserva el residual. Estima raster+exportación 2,29/2,33/1,15/4,34 ms; con MKDS sin textura, pesado 3,17. Intervalo cruza 4 ms: parada.
+- Preparación PS3 orientativa, sin garantía: caliente MKDS 1,6–2,5 ms, SM64DS 1,0–1,2, NSMB 1,8–3,7, pesado 1–3 (sin base caliente propia); frío MKDS/pesado 20–30. Pendiente medir, no promesa de ahorro.
+- Reproductor: mismos cuatro `.rsx`, `3d-rsx` + `3d-rsx-prueba`, sin `3d-spe`; sale solo. Leer `DATO rsx3d costo/caliente` tras cerrar. La subida es visibilidad de XDR, no copia adicional de textura; las etapas no cubren toda la preparación.
+- A/B por archivos: `3d-rsx-sin-lotes`, `3d-rsx-preparacion-anterior`, `3d-rsx-cache-gruesa`; renombrar a `.off` para desactivar. `3d-rsx-perfil` mide etapas en juego; prueba aislada siempre las mide.
+- Guion completo, comparaciones y estimación en `build/rsx3d-ronda3/`; pesado omite 167 sombras, MKDS en juego sigue usando SPE por efectos. Caché llena conserva el respaldo; sin fase 2 ni envío a consola.
+
 ## 2026-10-25 — RSX 1×, ronda 2 (host/RPCS3; sin medida PS3)
 - Etiqueta de fence previa 322420947/enviada 1: centro 00000000 antes de `finish`, 1f003f00 después. Inicializar etiquetas corrige la primera exportación; compilación síncrona no la corregía.
 - Misma lista con Z/W: RGB MKDS 23523/23526, SM64DS 359/359; UV constantes en W dejan 499/57. NSMB: 214 diferencias de cobertura, 145 sin texturas/mezcla (56 comunes); no son categorías disjuntas.
