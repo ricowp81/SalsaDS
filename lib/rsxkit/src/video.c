@@ -216,6 +216,11 @@ int rsxkit_init(const rsxkit_config *cfg)
 	g->host = memalign(1024 * 1024, host);
 	if (!g->host || rsxInit(&g->ctx, cmd, host, g->host) != 0 || !g->ctx)
 		return RSXKIT_EINIT;
+	/* Las etiquetas de GCM no están inicializadas. La comparación modular
+	 * de las esperas exige partir del mismo cero que los contadores. */
+	*(volatile u32 *)gcmGetLabelAddress(RSXKIT_LABEL_FINISH) = 0;
+	*(volatile u32 *)gcmGetLabelAddress(RSXKIT_LABEL_FENCE) = 0;
+	__sync_synchronize();
 	int rc = init_video(cfg);
 	if (rc != RSXKIT_OK)
 		return rc;
