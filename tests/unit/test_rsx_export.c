@@ -2,6 +2,7 @@
 #include "check.h"
 #include "gpu3d/rsx_export.h"
 #include "gpu3d/rsx_replay.h"
+#include "gpu3d/rsx_modes.h"
 static void replay_roundtrip(void)
 {
     static gx_frame f;
@@ -29,9 +30,30 @@ static void replay_roundtrip(void)
     CHECK(!r3d_replay_io(io, &f, &j, vram, 1));
     fclose(io);
 }
+static void mode_census(void)
+{
+    static gx_frame f;
+    memset(&f, 0, sizeof f);
+    CHECK_EQ(rsx_modes(NULL, 0), 0);
+    CHECK_EQ(rsx_modes(&f, 0), 0);
+    f.regs.disp3dcnt = D3_REARBMP | D3_FOG | D3_EDGE;
+    f.npolys = 4;
+    f.poly[0].attr = (2u << 4) | (31u << 16);
+    f.poly[1].attr = (3u << 4) | (31u << 16);
+    f.poly[2].attr = (3u << 4) | (31u << 16) | (1u << 24);
+    f.poly[3].attr = PA_DEQUAL;
+    uint32_t all = ((1u << RSX_MODE_COUNT)-1u) & ~(1u << RSX_HIGHLIGHT);
+    CHECK_EQ(rsx_modes(&f, 0), all);
+    CHECK_EQ(rsx_modes(&f, R3D_F_BLANK), 0);
+    CHECK_EQ(rsx_modes(&f, R3D_F_NOEDGE | R3D_F_NOFOG), all & ~((1u << RSX_FOG) | (1u << RSX_EDGE)));
+    f.regs.disp3dcnt |= D3_HIGHLIGHT;
+    CHECK_EQ(rsx_modes(&f, 0), (all & ~(1u << RSX_TOON)) | (1u << RSX_HIGHLIGHT));
+    CHECK(strcmp(rsx_mode_names[RSX_SHADOW], rsx_mode_names[RSX_SHADOW_MASK]) != 0);
+}
 void test_rsx_export(void)
 {
     replay_roundtrip();
+    mode_census();
     uint8_t b[4];
     /* Los cuatro canales recorren su dominio, con valores vecinos distintos. */
     for (unsigned a = 0; a < 32; a++) for (unsigned r = 0; r < 64; r++)

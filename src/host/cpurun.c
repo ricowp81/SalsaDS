@@ -18,6 +18,7 @@
 #include "core/nds.h"
 #include "gpu3d/gx_loop.h"
 #include "gpu3d/rsx_replay.h"
+#include "gpu3d/rsx_modes.h"
 #include "host/jitrun.h"
 #include "jit/arec.h"
 #include "util/endian.h"
@@ -616,6 +617,8 @@ int main(int argc, char **argv)
 	uint64_t fdump_frame = 0;
 	const char *rsx_max_path = NULL;
 	uint32_t rsx_max_polys = 0;
+	const char *rsx_census_path = NULL;
+	FILE *rsx_census = NULL;
 	const char *img3d_path = NULL;
 	struct { uint64_t frame; uint32_t keys, x, y; } press[512];
 	struct { uint64_t frame; const char *file; } shot[32];
@@ -690,6 +693,8 @@ int main(int argc, char **argv)
 			fdump_prefix = *e == ':' ? e + 1 : "cuadro";
 		} else if (!strcmp(argv[i], "--img3d") && i + 1 < argc)
 			img3d_path = argv[++i];
+		else if (!strcmp(argv[i], "--rsx-censo") && i + 1 < argc)
+			rsx_census_path = argv[++i];
 		else if (!strcmp(argv[i], "--rsx-max") && i + 1 < argc)
 			rsx_max_path = argv[++i]; /* cuadro con más polígonos dentro de --r3d-win */
 		else if (!strcmp(argv[i], "--gx-dump") && i + 1 < argc)
@@ -1071,6 +1076,14 @@ int main(int argc, char **argv)
 		}
 		return 0;
 	}
+	if (rsx_census_path) {
+		if (!frames) { fprintf(stderr, "--rsx-censo requiere --frames\n"); return 1; }
+		rsx_census = fopen(rsx_census_path, "w");
+		if (!rsx_census) { perror("censo RSX"); return 1; }
+		fprintf(rsx_census, "cuadro,secuencia,poligonos,modos");
+		for (unsigned k = 0; k < RSX_MODE_COUNT; k++) fprintf(rsx_census, ",%s", rsx_mode_names[k]);
+		fputc('\n', rsx_census);
+	}
 	t0 = now();
 	if (frames) {
 		const char *who;
@@ -1090,6 +1103,17 @@ int main(int argc, char **argv)
 				gx_dump(path);
 			}
 			run_frame();
+			if (rsx_census && M.vid.last >= 0 && f >= M.vid.r3d_win0 &&
+			    (!M.vid.r3d_win1 || f < M.vid.r3d_win1)) {
+				struct nds_vset *s = &M.vid.set[M.vid.last];
+				const gx_frame *gf = (const gx_frame *)(uintptr_t)s->r3d.frame_ea;
+				if (s->has3d && gf && !(s->r3d.flags & R3D_F_BLANK)) {
+					uint32_t modes = rsx_modes(gf, s->r3d.flags);
+					fprintf(rsx_census, "%llu,%u,%u,%u", (unsigned long long)f, gf->seq, gf->npolys, modes);
+					for (unsigned k = 0; k < RSX_MODE_COUNT; k++) fprintf(rsx_census, ",%u", (modes >> k) & 1u);
+					fputc('\n', rsx_census);
+				}
+			}
 			if (rsx_max_path && M.vid.last >= 0 && f >= M.vid.r3d_win0 &&
 			    (!M.vid.r3d_win1 || f < M.vid.r3d_win1)) {
 				struct nds_vset *s = &M.vid.set[M.vid.last];
@@ -1190,6 +1214,7 @@ int main(int argc, char **argv)
 			save_img3d(img3d_path);
 		if (r3d_stats_on || M.vid.vs_ref3d)
 			print_r3d_stats();
+		if (rsx_census && fclose(rsx_census)) { perror("censo RSX"); rc_gfx = 1; }
 		if (holes_on)
 			printf("agujeros 3D: %u píxeles en %u cuadros de %llu; el peor, %u en el cuadro %u\n", holes_total, holes_frames,
 			       (unsigned long long)frames, holes_worst, holes_worst_frame);

@@ -3,8 +3,17 @@
  * q.x: referencia alfa. Pasadas: 0 opacos, 1 mezcla, 2 reemplazo translúcido. */
 void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
           float4 color : COLOR0, uniform sampler2D image : TEXUNIT0,
+#if defined(RSX3D_TOON) || defined(RSX3D_FOG)
+          uniform sampler2D table : TEXUNIT1,
+#endif
+#ifdef RSX3D_FOG
+          float4 fc : TEXCOORD3, float4 fp : TEXCOORD4,
+#endif
+#if defined(RSX3D_W) || defined(RSX3D_FOG)
+          float4 pos : WPOS,
+#endif
 #ifdef RSX3D_W
-          float4 pos : WPOS, out float depth : DEPTH,
+          out float depth : DEPTH,
 #endif
           out float4 result : COLOR)
 {
@@ -13,6 +22,13 @@ void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
 #endif
     float4 t = floor(tex2D(image, uv.xy) * 255.0 + 0.5);
     float3 v = min(floor(color.rgb * 255.0 + 0.875), 63.0);
+#ifdef RSX3D_TOON
+    float3 tc = floor(tex2D(table, float2((floor(v.r / 2.0) + 0.5) / 32.0, 0.5)).rgb * 255.0 + 0.5);
+    float3 base = lerp(tc, v.rrr, q.z);
+    float3 c = lerp(base, floor(((t.rgb + 1.0) * (base + 1.0) - 1.0) / 64.0), k.x);
+    c = min(c + tc * q.z, 63.0);
+    float a = lerp(k.y, floor(((t.a + 1.0) * (k.y + 1.0) - 1.0) / 32.0), k.x);
+#else
     float3 mod = floor(((t.rgb + 1.0) * (v + 1.0) - 1.0) / 64.0);
     float a = floor(((t.a + 1.0) * (k.y + 1.0) - 1.0) / 32.0);
     float3 decal = floor((t.rgb * t.a + v * (31.0 - t.a)) / 32.0);
@@ -20,10 +36,31 @@ void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
     decal = lerp(decal, t.rgb, step(30.5, t.a));
     float3 c = lerp(v, lerp(mod, decal, k.z), k.x);
     a = lerp(k.y, lerp(a, k.y, k.z), k.x);
+#endif
     clip(a - q.x - 0.5);
     float translucent = 1.0 - step(30.5, a);
+#ifdef RSX3D_SHADOW
+    translucent = 1.0;
+#endif
     float want = step(0.5, k.w);
     clip(0.5 - abs(translucent - want));
+#ifdef RSX3D_FOG
+#ifdef RSX3D_W
+    /* W constante por polígono: evita el error de un entero del recíproco. */
+    float z = min(fp.w, 16777215.0);
+#else
+    float z = floor(pos.z * 16777215.0 + 0.5);
+#endif
+    float f = max(floor(z / 512.0) - fp.x, 0.0) * fp.y;
+    float ix = floor(f);
+    float d0 = floor(tex2D(table, float2((min(ix, 31.0) + 0.5) / 32.0, 0.5)).r * 255.0 + 0.5);
+    float d1 = floor(tex2D(table, float2((min(ix + 1.0, 31.0) + 0.5) / 32.0, 0.5)).r * 255.0 + 0.5);
+    float density = floor(d0 + (d1 - d0) * (f - ix));
+    density += step(126.5, density);
+    density *= q.z;
+    c = lerp(floor((fc.rgb * density + c * (128.0 - density)) / 128.0), c, fp.z);
+    a = floor((fc.a * density + a * (128.0 - density)) / 128.0);
+#endif
     float weight = (a + 1.0) / 32.0;
     float bias = step(0.5, k.w) * (1.0 - step(1.5, k.w));
     result = float4((c + 16.0 - bias * 0.501 / weight) / 255.0, weight);

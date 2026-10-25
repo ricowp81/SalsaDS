@@ -5,18 +5,29 @@
 #include <sys/stat.h>
 #include <sys/systime.h>
 #include "platform/ps3/rsx3d/rsx3d.h"
+#include "platform/ps3/log.h"
 #include "gpu3d/r3d_px.h"
 #include "rsxkit/rsxkit.h"
 #include "rsxkit/post.h"
 #include "shade_fpo.h"
 #include "shade_w_fpo.h"
 #include "pack_fpo.h"
+#include "fog_fpo.h"
+#include "fog_w_fpo.h"
+#include "mask_fpo.h"
+#include "mask_w_fpo.h"
+#include "shadow_fpo.h"
+#include "shadow_w_fpo.h"
+#include "toon_fpo.h"
+#include "toon_w_fpo.h"
+#include "gpu3d/rsx_modes.h"
 
 #define ARENA (24u * 1024u * 1024u)
 #define TEX_BYTES (16u * 1024u * 1024u)
 #define VERT_OFF TEX_BYTES
 #define OUT_OFF (18u * 1024u * 1024u)
 #define SNAP_OFF (19u * 1024u * 1024u)
+#define TOON_OFF (20u * 1024u * 1024u)
 #define CACHE_N 256u
 #define PAGE_SIZE 1024u
 #define PAGE_WORDS ((R3D_VRAM_ZERO_OFF / PAGE_SIZE + 31u) / 32u)
@@ -25,7 +36,13 @@ static uint32_t offset, used, nc;
 static rsxkit_target *target;
 static rsxkit_depth *depth;
 static rsxkit_surface *output;
-static rsxkit_program *shade, *shade_w, *pack;
+static rsxkit_program *shade, *shade_w, *pack, *toon, *toon_w;
+static int toon_spe, shadow_spe, fog_spe;
+static rsxkit_program *fog, *fog_w;
+static rsxkit_program *shadow, *shadow_w, *mask, *mask_w;
+static uint8_t oid[64], tid[64];
+static int shadows, single_shadow, shadow_general;
+static uint8_t trans_mask;
 static uint32_t old_slots[10];
 static int snapshot_valid;
 static int ready;
@@ -48,7 +65,7 @@ static struct cache_entry {
     rsxkit_texture tx;
 } cache[CACHE_N];
 static struct cache_entry *decoding;
-static struct command { rsxkit_draw d; uint32_t first, count, id, tdepth, trans; } command[GX_MAX_POLYS];
+static struct command { rsxkit_draw d; uint32_t first, count, id, tdepth, trans, mode; } command[GX_MAX_POLYS];
 static uint16_t order[GX_MAX_POLYS];
 static uint32_t keys[GX_MAX_POLYS];
 static uint16_t sorted[GX_MAX_POLYS];
@@ -127,6 +144,10 @@ int rsx3d_init(void)
     coarse_cache = stat("/dev_hdd0/salsads/3d-rsx-cache-gruesa", &flag) == 0;
     profile = stat("/dev_hdd0/salsads/3d-rsx-prueba", &flag) == 0 ||
               stat("/dev_hdd0/salsads/3d-rsx-perfil", &flag) == 0;
+    fog_spe = stat("/dev_hdd0/salsads/3d-rsx-niebla-spe", &flag) == 0;
+    shadow_general = stat("/dev_hdd0/salsads/3d-rsx-sombra-general", &flag) == 0;
+    shadow_spe = stat("/dev_hdd0/salsads/3d-rsx-sombra-spe", &flag) == 0;
+    toon_spe = stat("/dev_hdd0/salsads/3d-rsx-toon-spe", &flag) == 0;
     tick_hz = sysGetTimebaseFrequency();
     memset(mem + OUT_OFF + R3D_W * R3D_H * 4u, 31, 512);
     if (rsxkit_map_main(mem, ARENA, &offset)) return -1;
@@ -135,7 +156,11 @@ int rsx3d_init(void)
     output = rsxkit_surface_wrap_main(R3D_W, R3D_H, RSXKIT_POST_RGBA8, mem + OUT_OFF, offset + OUT_OFF, R3D_W * 4);
     shade_w = rsxkit_program_create(shade_w_fpo);
     shade = rsxkit_program_create(shade_fpo); pack = rsxkit_program_create(pack_fpo);
-    if (!target || !depth || !output || !shade || !shade_w || !pack) return -1;
+    fog = rsxkit_program_create(fog_fpo); fog_w = rsxkit_program_create(fog_w_fpo);
+    shadow = rsxkit_program_create(shadow_fpo); shadow_w = rsxkit_program_create(shadow_w_fpo);
+    mask = rsxkit_program_create(mask_fpo); mask_w = rsxkit_program_create(mask_w_fpo);
+    toon = rsxkit_program_create(toon_fpo); toon_w = rsxkit_program_create(toon_w_fpo);
+    if (!target || !depth || !output || !shade || !shade_w || !pack || !toon || !toon_w || !shadow || !shadow_w || !mask || !mask_w || !fog || !fog_w) return -1;
     reason = "Z nativa; W por fragmento";
     ready = 1;
     return 0;
@@ -143,6 +168,10 @@ int rsx3d_init(void)
 void rsx3d_shutdown(void)
 {
     rsxkit_finish();
+    rsxkit_program_destroy(fog); rsxkit_program_destroy(fog_w);
+    rsxkit_program_destroy(shadow); rsxkit_program_destroy(shadow_w);
+    rsxkit_program_destroy(mask); rsxkit_program_destroy(mask_w);
+    rsxkit_program_destroy(toon); rsxkit_program_destroy(toon_w);
     rsxkit_program_destroy(shade_w); rsxkit_program_destroy(shade); rsxkit_program_destroy(pack);
     rsxkit_surface_destroy(output); rsxkit_target_destroy(target); rsxkit_depth_destroy(depth);
     ready = 0;
@@ -187,7 +216,7 @@ static int prepare_poly(r3d_poly *p, const gx_poly *gp, const gx_vertex *const *
     }
     return 1;
 }
-int rsx3d_render(const r3d_job *j, rsx3d_stats *st)
+static int render_frame(const r3d_job *j, rsx3d_stats *st)
 {
     const uint64_t start = sysGetSystemTime();
     const gx_frame *f = (const gx_frame *)(uintptr_t)j->frame_ea;
@@ -200,14 +229,111 @@ int rsx3d_render(const r3d_job *j, rsx3d_stats *st)
     if (f->npolys > GX_MAX_POLYS || f->nverts > GX_MAX_VERTS) return -1;
     st->polys = f->npolys;
     r3d_rstate_init(&rs, f, j->flags);
-    if (rs.d3 & (D3_FOG | D3_EDGE | D3_REARBMP)) {
-        reason = "niebla, bordes o imagen de borrado"; return 0;
+    if (j->flags & R3D_F_NOFOG) rs.d3 &= ~D3_FOG;
+    if (j->flags & R3D_F_NOEDGE) rs.d3 &= ~D3_EDGE;
+    uint32_t modes = rsx_modes(f, j->flags);
+    /* Registros habilitados sin efecto observable: no requieren otra pasada.
+     * Densidad cero es identidad incluso con alfa/AND de flags translúcidos.
+     * Sin cambio posible de OID, ningún vecino activa el marcado de bordes. */
+    if ((modes & (1u << RSX_FOG)) && !fog_spe) {
+        unsigned nonzero = 0;
+        for (unsigned k = 0; k < 32; k++) nonzero |= rs.fog_table[k];
+        if (!nonzero) { modes &= ~(1u << RSX_FOG); rs.d3 &= ~D3_FOG; }
+    }
+    if (modes & (1u << RSX_EDGE)) {
+        unsigned changes = 0;
+        for (unsigned i = 0; i < f->npolys; i++) {
+            uint32_t a = f->poly[i].attr;
+            changes |= PA_MODE(a) != 3 && PA_ALPHA(a) == 31 && PA_ID(a) != AT_OID(rs.clear_attr);
+        }
+        if (!changes) { modes &= ~(1u << RSX_EDGE); rs.d3 &= ~D3_EDGE; }
+    }
+    uint32_t supported = (1u << RSX_TOON) | (1u << RSX_HIGHLIGHT) |
+                         (1u << RSX_SHADOW_MASK) | (1u << RSX_SHADOW) | (1u << RSX_FOG);
+    if (fog_spe) supported &= ~(1u << RSX_FOG);
+    if (toon_spe) supported &= ~((1u << RSX_TOON) | (1u << RSX_HIGHLIGHT));
+    if (shadow_spe) supported &= ~((1u << RSX_SHADOW_MASK) | (1u << RSX_SHADOW));
+    uint32_t unsupported = modes & ~supported;
+    if (unsupported) {
+        for (unsigned k = 0; k < RSX_MODE_COUNT; k++) if (unsupported & (1u << k)) {
+            reason = rsx_mode_names[k]; break;
+        }
+        return 0;
+    }
+    if (modes & (1u << RSX_FOG)) {
+        if (modes & ((1u << RSX_TOON) | (1u << RSX_HIGHLIGHT) | (1u << RSX_SHADOW_MASK) | (1u << RSX_SHADOW))) {
+            reason = "niebla combinada con toon o sombra"; return 0;
+        }
+        for (unsigned i = 0; i < f->npolys; i++) {
+            const gx_poly *p = &f->poly[i];
+            unsigned fmt = (p->texparam >> 26) & 7u;
+            if (rs.wbuf) {
+                if (p->nverts < 3 || p->nverts > GX_POLY_MAXV || p->wshift > 28 || p->vidx[0] >= f->nverts) return -1;
+                int32_t w = f->vtx[p->vidx[0]].w;
+                for (unsigned k = 1; k < p->nverts; k++) {
+                    if (p->vidx[k] >= f->nverts) return -1;
+                    if (f->vtx[p->vidx[k]].w != w) {
+                        reason = "niebla W interpolada: cuantización sin validar"; return 0;
+                    }
+                }
+            }
+            if (PA_ALPHA(p->attr) != 31 || (PA_MODE(p->attr) != 1 && (rs.d3 & D3_TEXTURE) && (fmt == 1 || fmt == 6))) {
+                reason = "niebla con translúcidos: requiere pasada final"; return 0;
+            }
+        }
+        for (unsigned i = 0; i < 32; i++) {
+            uint8_t *b = mem + TOON_OFF + 4*i;
+            b[0] = rs.fog_table[i]; b[1] = b[2] = b[3] = 0;
+        }
+    }
+    shadows = !!(modes & ((1u << RSX_SHADOW_MASK) | (1u << RSX_SHADOW)));
+    if (shadows) {
+        /* Si solo hay un ID de sombra basta guardar OID==sombra. El resto
+         * de los IDs opacos son indistinguibles para las operaciones admitidas.
+         * Cuatro bits TID: 0 vacío, 1..7 otros IDs, 8 sombra; bits 5/6/7
+         * máscara, temporal y ocupado. Con varias sombras: OID2 + TID3. */
+        unsigned shadow_id = 64;
+        single_shadow = !shadow_general;
+        for (unsigned i = 0; i < f->npolys; i++) {
+            uint32_t a = f->poly[i].attr;
+            if (PA_MODE(a) == 3 && PA_ID(a)) {
+                if (shadow_id != 64 && shadow_id != PA_ID(a)) single_shadow = 0;
+                shadow_id = PA_ID(a);
+            }
+        }
+        if (shadow_id == 64) single_shadow = 0;
+        memset(oid, 255, sizeof oid); memset(tid, 255, sizeof tid);
+        unsigned no = 1, nt = 1;
+        if (single_shadow) {
+            for (unsigned id = 0; id < 64; id++) oid[id] = id == shadow_id;
+            tid[shadow_id] = 16;
+        } else oid[AT_OID(rs.clear_attr)] = 0;
+        trans_mask = single_shadow ? 30 : 28;
+        for (unsigned i = 0; i < f->npolys; i++) {
+            const gx_poly *p = &f->poly[i];
+            unsigned a = PA_ALPHA(p->attr), m = PA_MODE(p->attr), id = PA_ID(p->attr);
+            unsigned fmt = (p->texparam >> 26) & 7u;
+            if (m == 3 && !id) continue;
+            /* LESS solo es equivalente si ningún escritor deja AT_BACK.
+             * No confundir el empate frontal/trasero con igualdad explícita. */
+            if (!(p->flags & GX_POLY_FRONT) && ((m != 3 && a == 31) || (p->attr & PA_TDEPTH))) {
+                reason = "sombras: profundidad de cara trasera"; return 0;
+            }
+            if (m != 3 && a == 31 && oid[id] == 255) oid[id] = no++;
+            if ((m == 3 || a < 31 || (m != 1 && (rs.d3 & D3_TEXTURE) && (fmt == 1 || fmt == 6))) && tid[id] == 255)
+                tid[id] = nt++ << (single_shadow ? 1 : 2);
+        }
+        if (no > 4 || nt > 8) { reason = "sombras: capacidad de IDs excedida"; return 0; }
+    }
+    if (modes & ((1u << RSX_TOON) | (1u << RSX_HIGHLIGHT))) {
+        for (unsigned i = 0; i < 32; i++) {
+            uint8_t *b = mem + TOON_OFF + 4*i;
+            b[0] = R3D_PX_R(rs.toon[i]); b[1] = R3D_PX_G(rs.toon[i]);
+            b[2] = R3D_PX_B(rs.toon[i]); b[3] = 0;
+        }
     }
     for (uint32_t i = 0; i < f->npolys; i++) {
         const gx_poly *p = &f->poly[i];
-        if (PA_MODE(p->attr) > 1 || !PA_ALPHA(p->attr) || (p->attr & PA_DEQUAL)) {
-            reason = "toon, sombra, alambre o igualdad"; return 0;
-        }
         if (p->nverts < 3 || p->nverts > GX_POLY_MAXV || p->wshift > 28) return -1;
         for (uint32_t k = 0; k < p->nverts; k++) if (p->vidx[k] >= f->nverts) return -1;
         uint32_t key = r3d_sort_key(p, f->swap_params & 1u), k = i;
@@ -254,12 +380,35 @@ int rsx3d_render(const r3d_job *j, rsx3d_stats *st)
         for (uint32_t k = 0; k < gp->nverts; k++) vv[k] = &f->vtx[gp->vidx[k]];
         if (!prepare_poly(&p, gp, vv, &rs)) continue;
         struct command *c = &command[ncmd++]; memset(c, 0, sizeof *c);
-        c->first = nv; c->count = (p.n - 2) * 3; c->trans = p.alpha < 31 || (p.mode == 0 && p.textured && (p.tex.fmt == 1 || p.tex.fmt == 6)); c->id = p.id; c->tdepth = !!(p.attr & PA_TDEPTH);
+        c->mode = p.mode; c->first = nv; c->count = (p.n - 2) * 3; c->trans = p.alpha < 31 || (p.mode != 1 && p.textured && (p.tex.fmt == 1 || p.tex.fmt == 6)); c->id = p.id; c->tdepth = !!(p.attr & PA_TDEPTH);
         rsxkit_draw *d = &c->d; d->program = rs.wbuf ? shade_w : shade; d->ntex = 1;
         d->scissor[2] = R3D_W; d->scissor[3] = R3D_H;
-        d->k[0][0][0] = p.textured; d->k[0][0][1] = p.alpha; d->k[0][0][2] = p.mode;
+        d->k[0][0][0] = p.textured; d->k[0][0][1] = p.alpha; d->k[0][0][2] = p.mode == 3 ? 0 : p.mode;
         d->k[1][0][1] = (float)(1u << p.wshift) / 16777215.0f;
         d->k[1][0][0] = (rs.d3 & D3_ALPHATEST) ? rs.alpha_ref : 0;
+        if (p.mode == 3) d->program = rs.wbuf ? shadow_w : shadow;
+        if ((rs.d3 & D3_FOG) || p.mode == 2) {
+            d->tex[1].offset = offset + TOON_OFF; d->tex[1].pitch = 128;
+            d->tex[1].width = 32; d->tex[1].height = 1;
+            d->tex[1].format = RSXKIT_RGBA8888; d->tex[1].location = RSXKIT_MEM_MAIN;
+            d->tex[1].filter = RSXKIT_FILTER_NEAREST;
+            d->tex[1].wrap_s = d->tex[1].wrap_t = RSXKIT_WRAP_CLAMP;
+        }
+        if (rs.d3 & D3_FOG) {
+            d->program = rs.wbuf ? fog_w : fog; d->ntex = 2;
+            d->k[1][0][2] = !!(p.attr & PA_FOG);
+            d->k[3][0][3] = (float)(p.v[0].w << p.wshift);
+            uint32_t fc = rs.fog_px;
+            d->k[2][0][0] = R3D_PX_R(fc); d->k[2][0][1] = R3D_PX_G(fc);
+            d->k[2][0][2] = R3D_PX_B(fc); d->k[2][0][3] = R3D_PX_A(fc);
+            d->k[3][0][0] = rs.fog_offset;
+            d->k[3][0][1] = 1.0f / (1u << (rs.fog_shift > 10 ? 0 : 10-rs.fog_shift));
+            d->k[3][0][2] = !!(rs.d3 & D3_FOG_ALPHA);
+        }
+        if (p.mode == 2) {
+            d->program = rs.wbuf ? toon_w : toon; d->ntex = 2;
+            d->k[1][0][2] = !!(rs.d3 & D3_HIGHLIGHT);
+        }
         st->vertex_us += ticks() - t0;
         /* Sin textura: una textura blanca de 8x8 propia, colocada fuera de la arena. */
         if (p.textured) {
@@ -293,11 +442,14 @@ int rsx3d_render(const r3d_job *j, rsx3d_stats *st)
     uint32_t batches = 0;
     for (uint32_t i = 0; i < ncmd; i++) {
         struct command *c = &command[i];
-        st->draws_before += c->trans ? 5 : 1;
+        st->draws_before += shadows ? (c->mode == 3 ? (c->id ? (single_shadow ? 3u : 6u + (oid[c->id] != 255)) : 1u) :
+                                                    (c->trans ? 6u : 1u)) : (c->trans ? 5u : 1u);
         struct command *prev = batches ? &command[batches-1] : NULL;
         /* No mover primitivas: ni empates Z/W ni IDs repetidos cambian ganador.
          * Las cinco pasadas translúcidas permanecen juntas por polígono. */
-        if (!unbatched && prev && !prev->trans && !c->trans && prev->id == c->id &&
+        if (!unbatched && prev &&
+            ((!prev->trans && !c->trans && prev->mode != 3 && c->mode != 3) ||
+             (prev->mode == 3 && c->mode == 3 && !prev->id && !c->id)) && prev->id == c->id &&
             prev->tdepth == c->tdepth && prev->first + prev->count == c->first &&
             !memcmp(&prev->d, &c->d, sizeof c->d)) prev->count += c->count;
         else command[batches++] = *c;
@@ -314,16 +466,81 @@ int rsx3d_render(const r3d_job *j, rsx3d_stats *st)
     st->prepare_us = sysGetSystemTime() - start;
     if (rsxkit_bind(target, depth, R3D_W, R3D_H)) return -1;
     uint32_t clear = rs.clear_px;
+    if ((rs.d3 & D3_FOG) && (rs.clear_attr & AT_FOG)) {
+        uint32_t d = r3d_fog_density(&rs, rs.clear_depth), inv = 128-d, fc = rs.fog_px;
+        uint32_t r = R3D_PX_R(clear), g = R3D_PX_G(clear), b = R3D_PX_B(clear);
+        if (!(rs.d3 & D3_FOG_ALPHA)) {
+            r = (r*inv + R3D_PX_R(fc)*d) >> 7;
+            g = (g*inv + R3D_PX_G(fc)*d) >> 7;
+            b = (b*inv + R3D_PX_B(fc)*d) >> 7;
+        }
+        clear = R3D_PX(r,g,b,(R3D_PX_A(clear)*inv + R3D_PX_A(fc)*d) >> 7);
+    }
     uint32_t ca = R3D_PX_A(clear), encoded_a = ca ? ((ca + 1u) * 255u + 16u) / 32u : 0;
     uint32_t encoded = (encoded_a << 24) | ((R3D_PX_R(clear) + 16u) << 16) |
         ((R3D_PX_G(clear) + 16u) << 8) | (R3D_PX_B(clear) + 16u);
     rsxkit_stamp(56);
     rsxkit_clear(RSXKIT_CLEAR_COLOR | RSXKIT_CLEAR_DEPTH | RSXKIT_CLEAR_ALPHA, encoded, rs.clear_depth / 16777215.0f, NULL);
-    rsxkit_clear_stencil(ca ? 64 : 255);
+    rsxkit_clear_stencil(shadows ? ((ca ? 128 : 0) | oid[AT_OID(rs.clear_attr)]) : (ca ? 64 : 255));
     rsxkit_vertices(offset + VERT_OFF, RSXKIT_MEM_MAIN);
     for (uint32_t i = 0; i < ncmd; i++) {
         struct command *c = &command[i];
         uint8_t z = RSXKIT_DEPTH_TEST | RSXKIT_DEPTH_LESS;
+        if (shadows) {
+            rsxkit_program *color_program = c->d.program;
+            uint8_t label = tid[c->id];
+            if (c->mode == 3) {
+                c->d.program = rs.wbuf ? mask_w : mask;
+                if (!c->id) {
+                    c->d.stencil_zfail = 1;
+                    draw(c, 1, 32, 255, 32, 2, RSXKIT_BLEND_NONE, z, 0, st);
+                    c->d.stencil_zfail = 0;
+                } else if (single_shadow) {
+                    /* Bits 7/5/4/0: ocupado, máscara, último ID de sombra,
+                     * OID igual a sombra. La comparación rechaza ambos IDs;
+                     * invertir publica el TID sin exigirlo antes de dibujar.
+                     * Los bits bajos del TID anterior ya no se consultan hasta
+                     * que otro translúcido los reemplaza (y limpia el bit 4). */
+                    c->d.program = color_program;
+                    draw(c, 3, 160, 177, 16, 1,
+                         (rs.d3 & D3_BLEND) ? RSXKIT_BLEND_ALPHA_MAX : RSXKIT_BLEND_OFF,
+                         z | (c->tdepth ? RSXKIT_DEPTH_WRITE : 0), (rs.d3 & D3_BLEND) ? 1 : 2, st);
+                    draw(c, 3, 32, 177, 144, 1, RSXKIT_BLEND_OFF,
+                         z | (c->tdepth ? RSXKIT_DEPTH_WRITE : 0), 2, st);
+                    c->d.program = rs.wbuf ? mask_w : mask;
+                    draw(c, 1, 0, 0, 32, 0, RSXKIT_BLEND_NONE, 0, 0, st);
+                } else {
+                    /* Consumir la máscara aun si falla Z, ID o alfa. El bit 6
+                     * solo vive durante este polígono; OID nunca se pierde. */
+                    draw(c, 3, 96, 32, 64, 0, RSXKIT_BLEND_NONE, 0, 0, st);
+                    if (oid[c->id] != 255)
+                        draw(c, 3, oid[c->id], 3, 64, 0, RSXKIT_BLEND_NONE, 0, 0, st);
+                    draw(c, 3, label, trans_mask, 64, 0, RSXKIT_BLEND_NONE, 0, 0, st);
+                    c->d.program = color_program;
+                    draw(c, 3, label | 192, 192, trans_mask | 128, 0,
+                         (rs.d3 & D3_BLEND) ? RSXKIT_BLEND_ALPHA_MAX : RSXKIT_BLEND_OFF,
+                         z | (c->tdepth ? RSXKIT_DEPTH_WRITE : 0), (rs.d3 & D3_BLEND) ? 1 : 2, st);
+                    draw(c, 3, label | 64, 192, trans_mask, 0, RSXKIT_BLEND_OFF,
+                         z | (c->tdepth ? RSXKIT_DEPTH_WRITE : 0), 2, st);
+                    draw(c, 3, label | 128, trans_mask, 128, 0, RSXKIT_BLEND_NONE, 0, 2, st);
+                    c->d.program = rs.wbuf ? mask_w : mask;
+                    draw(c, 1, 0, 0, 96, 0, RSXKIT_BLEND_NONE, 0, 0, st);
+                }
+                c->d.program = color_program;
+                continue;
+            }
+            draw(c, 1, oid[c->id] | 128, 255, 159, 0, RSXKIT_BLEND_OFF, z | RSXKIT_DEPTH_WRITE, 0, st);
+            if (!c->trans) continue;
+            draw(c, 3, label, single_shadow && label == 16 ? 16 : trans_mask, 64, 1, RSXKIT_BLEND_NONE, z, 2, st);
+            draw(c, 3, label | 128, 192, trans_mask | 128, 0,
+                 (rs.d3 & D3_BLEND) ? RSXKIT_BLEND_ALPHA_MAX : RSXKIT_BLEND_OFF,
+                 z | (c->tdepth ? RSXKIT_DEPTH_WRITE : 0), (rs.d3 & D3_BLEND) ? 1 : 2, st);
+            draw(c, 3, label, 128, trans_mask, 0, RSXKIT_BLEND_OFF,
+                 z | (c->tdepth ? RSXKIT_DEPTH_WRITE : 0), 2, st);
+            draw(c, 3, label | 128, trans_mask, 128, 0, RSXKIT_BLEND_NONE, 0, 2, st);
+            draw(c, 3, 64, 64, 64, 1, RSXKIT_BLEND_NONE, 0, 2, st);
+            continue;
+        }
         draw(c, 1, 64, 255, 255, 0, RSXKIT_BLEND_OFF, z | RSXKIT_DEPTH_WRITE, 0, st);
         if (!c->trans) continue;
         /* Marcar repetidos, mezclar ocupados, reemplazar vacíos y restaurar el marcador.
@@ -350,4 +567,21 @@ int rsx3d_render(const r3d_job *j, rsx3d_stats *st)
     st->export_ns = rsxkit_stamp_ns(58) - rsxkit_stamp_ns(57);
     reason = rs.wbuf ? "W por fragmento; interpolación triangular" : "Z nativa; cobertura e interpolación triangular";
     return 1;
+}
+
+int rsx3d_render(const r3d_job *j, rsx3d_stats *st)
+{
+    static unsigned frames, rendered, counts[RSX_MODE_COUNT];
+    int result = render_frame(j, st);
+    const gx_frame *f = (const gx_frame *)(uintptr_t)j->frame_ea;
+    uint32_t modes = rsx_modes(f, j->flags);
+    rendered += result > 0;
+    for (unsigned k = 0; k < RSX_MODE_COUNT; k++) counts[k] += (modes >> k) & 1u;
+    if (++frames == 120) {
+        salsads_log("DATO rsx3d censo: cuadros %u modo RSX %u SPE %u; imagen-borrado %u niebla %u bordes %u toon %u resaltado %u mascara-sombra %u sombra %u igualdad %u alambre %u",
+                    frames, rendered, frames-rendered, counts[0], counts[1], counts[2], counts[3],
+                    counts[4], counts[5], counts[6], counts[7], counts[8]);
+        frames = rendered = 0; memset(counts, 0, sizeof counts);
+    }
+    return result;
 }

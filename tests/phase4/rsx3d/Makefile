@@ -48,6 +48,9 @@ PIC1  := $(abspath ../../../assets/ps3/PIC1.PNG)
 COMMON += src/platform/ps3/rsx3d/rsx3d.c src/platform/ps3/rsx3d/selftest.c
 CFLAGS += -DNUCLEO_RSX
 SHADERS := ../../../src/platform/ps3/rsx3d/shade.fcg ../../../src/platform/ps3/rsx3d/pack.fcg ../../../src/platform/ps3/rsx3d/shade_w.fcg
+SHADERS += ../../../src/platform/ps3/rsx3d/toon.fcg ../../../src/platform/ps3/rsx3d/toon_w.fcg
+SHADERS += ../../../src/platform/ps3/rsx3d/mask.fcg ../../../src/platform/ps3/rsx3d/mask_w.fcg ../../../src/platform/ps3/rsx3d/shadow.fcg ../../../src/platform/ps3/rsx3d/shadow_w.fcg
+SHADERS += ../../../src/platform/ps3/rsx3d/fog.fcg ../../../src/platform/ps3/rsx3d/fog_w.fcg
 CGCFLAGS := -Wcg,-nofastprecision
 
 include ../../../mk/ps3.mk
@@ -58,3 +61,33 @@ $(OBJ)/shade_w.fpo: $(ROOT)/src/platform/ps3/rsx3d/shade_w.fcg $(ROOT)/src/platf
 	cgcomp -f -d $(CGCFLAGS) $< $@
 	python3 $(ROOT)/tools/rsx3d-shader.py $@.dump $@.fixed
 	cgcomp -f -a $@.fixed $@
+
+$(OBJ)/toon_w.fpo: $(ROOT)/src/platform/ps3/rsx3d/toon_w.fcg $(ROOT)/src/platform/ps3/rsx3d/shade.fcg $(ROOT)/tools/rsx3d-shader.py
+	@mkdir -p $(dir $@)
+	cgcomp -f -d $(CGCFLAGS) $< $@
+	python3 $(ROOT)/tools/rsx3d-shader.py $@.dump $@.fixed
+	cgcomp -f -a $@.fixed $@
+
+$(OBJ)/toon.fpo $(OBJ)/shade.fpo: $(ROOT)/src/platform/ps3/rsx3d/shade.fcg
+
+$(OBJ)/shadow_w.fpo: $(ROOT)/src/platform/ps3/rsx3d/shadow_w.fcg $(ROOT)/src/platform/ps3/rsx3d/shade.fcg $(ROOT)/tools/rsx3d-shader.py
+	@mkdir -p $(dir $@)
+	cgcomp -f -d $(CGCFLAGS) $< $@
+	python3 $(ROOT)/tools/rsx3d-shader.py $@.dump $@.fixed
+	cgcomp -f -a $@.fixed $@
+
+$(OBJ)/mask_w.fpo: $(ROOT)/src/platform/ps3/rsx3d/mask_w.fcg $(ROOT)/src/platform/ps3/rsx3d/mask.fcg $(ROOT)/tools/rsx3d-shader.py
+	@mkdir -p $(dir $@)
+	cgcomp -f -d $(CGCFLAGS) $< $@
+	python3 $(ROOT)/tools/rsx3d-shader.py $@.dump $@.fixed
+	cgcomp -f -a $@.fixed $@
+
+$(OBJ)/shadow.fpo: $(ROOT)/src/platform/ps3/rsx3d/shade.fcg
+
+$(OBJ)/fog_w.fpo: $(ROOT)/src/platform/ps3/rsx3d/fog_w.fcg $(ROOT)/src/platform/ps3/rsx3d/shade.fcg $(ROOT)/tools/rsx3d-shader.py
+	@mkdir -p $(dir $@)
+	cgcomp -f -d $(CGCFLAGS) $< $@
+	python3 $(ROOT)/tools/rsx3d-shader.py $@.dump $@.fixed
+	cgcomp -f -a $@.fixed $@
+
+$(OBJ)/fog.fpo: $(ROOT)/src/platform/ps3/rsx3d/shade.fcg

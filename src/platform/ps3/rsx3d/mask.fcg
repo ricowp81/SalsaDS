@@ -1,0 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+void main(float4 q : TEXCOORD2,
+#ifdef RSX3D_W
+          float4 pos : WPOS, out float depth : DEPTH,
+#endif
+          out float4 result : COLOR)
+{
+#ifdef RSX3D_W
+    depth = min(floor(1.0 / pos.w) * q.y, 1.0);
+#endif
+    result = float4(0.0, 0.0, 0.0, 0.0);
+}
