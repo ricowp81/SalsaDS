@@ -363,9 +363,11 @@ void nds_cart_write(struct nds *n, int cpu, uint32_t off, int sz, uint32_t v)
 		switch (o) {
 		case 0:
 			c->auxcnt = (uint16_t)((c->auxcnt & ~0x0043u) | (b & 0x43u));
+			NDS_TRACE(n, NDS_DBG_CART, "AUXSPICNT%d low %02x cnt %04x", cpu ? 7 : 9, b, c->auxcnt);
 			break;
 		case 1:
 			c->auxcnt = (uint16_t)((c->auxcnt & 0x00FFu) | ((b & 0xE0u) << 8));
+			NDS_TRACE(n, NDS_DBG_CART, "AUXSPICNT%d high %02x cnt %04x", cpu ? 7 : 9, b, c->auxcnt);
 			break;
 		case 2: /* AUXSPIDATA: un byte hacia el chip de guardado (si la ranura está en modo serie y habilitada) */
 			if ((c->auxcnt & 0xA000u) == 0xA000u) {
@@ -378,6 +380,7 @@ void nds_cart_write(struct nds *n, int cpu, uint32_t off, int sz, uint32_t v)
 				NDS_TRACE(n, NDS_DBG_CART, "AUXSPI%d cnt %04x out %02x in %02x", cpu ? 7 : 9, c->auxcnt, b, c->auxdata);
 			} else {
 				c->auxdata = 0xFF;
+				NDS_TRACE(n, NDS_DBG_CART, "AUXSPI%d cnt %04x out %02x in ff deshabilitado", cpu ? 7 : 9, c->auxcnt, b);
 			}
 			break;
 		case 4: case 5: case 6:

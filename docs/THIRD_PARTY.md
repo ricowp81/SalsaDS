@@ -33,6 +33,8 @@ quedan bajo la licencia de SalsaDS (GPL-2.0-or-later).
 
 ## Datos de compatibilidad de guardado
 
+Consulta del 2026-10-26: [GBATEK, comandos SPI del cartucho infrarrojo](https://mgba-emu.github.io/gbatek/#ds-cart-infrared-cartridge-spi-commands), prefijo 00h y cambio de 1 a 4 MHz; [DeSmuME, mc.cpp](https://github.com/TASEmulators/desmume/blob/master/desmume/src/mc.cpp), GPL-2.0-o-posterior, tratamiento de 00h y RDSR. Implementación propia del paso hacia la flash, sin copiar código. JEDEC y latencias sin cambios: el fallo observado ocurre en RDSR antes de cualquier RDID.
+
 | Archivo | Origen | Licencia | Notas |
 |---|---|---|---|
 | `src/core/save.c` (tabla `known[]`) | DeSmuME, `desmume/src/mc.cpp` (lista blanca por código de juego: `ASMK`, `AL3`, `AH5`, `AVH`, `AQ3` con dirección de un byte; `BDE`, `BPV` con dos; consultada el 2026-10-19) | GPL-2.0-o-posterior | Solo se tomaron los códigos y el dato (ancho de dirección), no código. La idea de deducir por el número de bytes de dirección es de su autodetección; la implementación es propia |

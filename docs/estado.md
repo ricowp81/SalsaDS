@@ -4,6 +4,13 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-26 — Prefijo de guardado infrarrojo (pokemon-w2-guardado)
+- White 2: `00 05 00` recibía `FF FF FF`; 00h anulaba RDSR. Se admite el prefijo para códigos I; JEDEC, latencias y acceso directo sin cambios.
+- Host: error reproducido; con la corrección llega al título y escribe 524288 bytes durante la creación del personaje. Capturas y trazas crudas en `build/w2/`; guardado manual y continuación aún pendientes.
+- Pruebas de prefijo, cambio de velocidad con CS retenido, estado, escritura, lectura y borrado: LE con sanitizadores, 8085059 comprobaciones, 0 fallos.
+- Parada: GCC BE cayó dos veces por segmentación (`test_gx.o`, reintento en `test_r3d.o`); `test-host=1`. BE, lockstep de cuatro juegos, build PS3 y holguras pendientes; sin paquete.
+- HeartGold real pendiente de respaldo disponible; pruebas sintéticas cubren IPK/IPG y Negro/Blanco/Negro 2/Blanco 2. Guion PS3 en `build/w2/guion-ps3.txt`; sin envío a consola.
+
 
 ## 2026-10-25 — Clasificación de planos por lote en el SPE (cand-v004)
 - `0371c56`: cuatro posiciones alineadas, trasposición y planos SIMD; conserva recorte, cara, contadores y orden. A/B independiente: `geometria-lectura-escalar`; se mantiene `geometria-perfil`.

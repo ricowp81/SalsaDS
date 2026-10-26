@@ -19,8 +19,8 @@
  * Las excepciones por código de juego con
  * dirección de un byte vienen de la lista blanca de DeSmuME (src/mc.cpp, GPL-2.0-o-posterior); la idea de deducir por
  * el número de bytes de dirección, de su autodetección. Código propio. Simplificaciones: las escrituras y borrados
- * terminan al instante (WIP siempre 0), la protección de bloques (BP) se guarda y se lee pero no se aplica, y los
- * chips con el puerto infrarrojo compartido no se imitan.
+ * terminan al instante (WIP siempre 0), la protección de bloques (BP) se guarda y se lee pero no se aplica;
+ * del puerto infrarrojo compartido solo se admite el paso hacia la memoria de guardado.
  */
 #include <ctype.h>
 #include <string.h>
@@ -330,6 +330,11 @@ static uint8_t xfer_core(struct nds *n, uint8_t in)
 		s->first = 1;
 		s->a8 = 0;
 		switch (c) {
+		case 0x00:
+			/* GBATEK: el adaptador infrarrojo antepone 00h al acceso al guardado.
+			 * Los cartuchos sin adaptador conservan el rechazo de esta orden. */
+			s->state = n->cart.rom && n->cart.rom[0x0C] == 'I' ? ST_CMD : ST_IGNORE;
+			break;
 		case 0x06: s->wel = 1; s->state = ST_IGNORE; break;
 		case 0x04: s->wel = 0; s->state = ST_IGNORE; break;
 		case 0x05: s->state = ST_STATUS; break;
