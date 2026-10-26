@@ -1,5 +1,11 @@
 # Registro de rendimiento
 
+## 2026-10-26 — Tic por cuadro y régimen nominal del audio (host)
+- NSMB, 3300 cuadros, captura PCM16 previa al PPE: 3098 trabajos de 547 muestras, 200 de 548 y el primero parcial. Con la frontera antigua, pico/media de saltos L/R 1,961/2,527; conservando la línea SOUNDCAP de las voces 1/3, 1,240/1,196 (meta ≤ 1,5).
+- El residuo antigua−corregida tiene los doce primeros múltiplos de 59,826 Hz entre 14,0 y 20,8 dB sobre sus vecinos. Aislamiento por voz: conservar solo la 1 aplana L 3,03→1,30; conservar solo la 3 aplana R 3,78→1,27.
+- Simulación de 600 bloques de 480 pares con producción por cuadro de 799/800: salida exacta, 0 uniones, 0 pares insertados y 0 bloques WSOLA activos. Corrección de deriva del remuestreo ±0,25 %, suficiente para 59,94 frente a 59,826 Hz; falta confirmar contadores en PS3.
+- El host solo acredita comportamiento y orden relativo, no tiempos del Cell. Guion A/B local en `build/audio5/guion-ps3.txt`; medir en NSMB faltas, uniones, producción y la captura nativa con `tools/audio-frame-metric.py`.
+
 ## 2026-10-26 — Audio HD opcional (audio-estirar)
 - Banco propio `tools/audio-hd-quality.c/.py`, host LE: PCM16 periódico, seno Fs/16, amplitudes 0,5 y 0,01; Fs efectiva 7998,56/16004,77/21990,80 Hz; ajuste senoidal entre 1 y 3 s, sin WSOLA (velocidad completa), debajo de la rodilla. Evidencia en `build/audio3/`.
 - Fiel de 16 bits → Hermite, Fs 8/16/22 kHz: SINAD 19,65/22,59/18,90 → 62,76/62,75/62,76 dB; mayor espurio superior −23,51/−29,53/−23,47 → −64,06/−64,06/−64,04 dBc. A 22 kHz domina una imagen plegada a 12,11 kHz; la imagen directa Fs−f ya era rechazada por el FIR fiel.

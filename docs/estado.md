@@ -5,6 +5,14 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-26 — Frontera del audio y velocidad nominal (audio-estirar)
+- `b073287`: el tic por cuadro era la línea de 128 B de las voces 1/3 que reproducen SOUNDCAP: se descartaba al acabar cada trabajo y saltaba a la instantánea de RAM siguiente. Ahora se conserva hasta cambiar SAD, arrancar o volver al bucle; `audio-frontera-antigua` restaura el fallo para A/B.
+- `--wav-native` reproduce la partición PS3 (547/548 muestras) y `tools/audio-frame-metric.py` mide segunda diferencia, fase y armónicos. En NSMB host: pico/media L/R 1,961/2,527 → 1,240/1,196; el residuo antiguo contiene H1–H12 de 59,826 Hz entre 14,0 y 20,8 dB sobre los vecinos.
+- A velocidad completa, una reserva real de 50 ms ya no entra en WSOLA por la oscilación de las entregas; 600 bloques con ráfagas 799/800 dieron identidad, 0 uniones y 1000/1000. La deriva de relojes pasa al remuestreo, limitada a ±0,25 %.
+- Las 20 muestras recortadas de la captura PS3 son fieles: la DS suma y limita a 16 bits, aplica volumen maestro y recorta su DAC de 10 bits; no se redujo la ganancia.
+- `test-host`: LE 22 430 253 (0 fallos); BE 22 433 983 (solo los 34 conocidos de `test_arec.c`); SAN, ROMs, imágenes, hashes y lockstep correctos.
+- Autoprueba RPCS3 interpretada: audio SPE/PPE, 4 trabajos fiel/HD, 0 diferencias de muestras, estado, captura y salida flotante; el resultado global falla después en composición 2D, fuera de este cambio. Paquete limpio `build/salsads-audio-5.pkg`, «SalsaDS Audio», `SLDS00033`, holgura mínima 8432 B; SHA-256 `7fcc5f3301162f74683cf906d8681d19fca22fb2990b3d7d8305f0bf739d714a`; verificadores en 0. Sin envío a consola.
+
 ## 2026-10-26 — Grabación digital del audio, ganancia y métricas del limitador
 - Para el ruido de la PS3 que el micrófono no permite aislar: con el archivo vacío `/dev_hdd0/salsads/audio-grabar` al abrir un juego se graban 20 s a partir de los 5 s de juego en dos puntos.
   `grab-mezcla.wav`: la mezcla nativa que devuelve el SPE (`nat`: enteros de 16 bits, 2 canales, 32 728 Hz), antes del FIR/Hermite, el estiramiento, el remuestreo, la ganancia y el limitador; 2,6 MB.
