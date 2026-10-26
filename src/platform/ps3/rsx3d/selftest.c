@@ -318,7 +318,7 @@ static unsigned shadow_tests(r3d_job *j)
 {
     if (forced_spe("sombra")) return 0;
     unsigned fail = 0;
-    for (unsigned test = 0; test < 54; test++) {
+    for (unsigned test = 0; test < 64; test++) {
         if (test == 16 && forced_spe("niebla")) continue;
         memset(&frame, 0, sizeof frame);
         frame.npolys = 5; frame.nverts = 20; frame.swap_params = 1;
@@ -417,12 +417,35 @@ static unsigned shadow_tests(r3d_job *j)
             if (test&2) frame.poly[2].attr|=PA_TDEPTH;
             if (test&4) frame.swap_params=3;
         }
-        if (test >= 52) {
+        if (test >= 52 && test < 54) {
             frame.regs.clear_color=63u<<24;
             frame.poly[4].attr=(frame.poly[4].attr&0xffffffu)|(3u<<24);
             frame.npolys=14; frame.nverts=56;
             for (unsigned n=5;n<14;n++) quad(n,n,31,63,n*3,0,0);
             if (test==53) frame.poly[0].flags=0;
+        }
+        if (test >= 54 && test < 62) {
+            /* Una sola máscara: otra pasada no puede ocultar el empate. */
+            unsigned bits=test-54;
+            frame.npolys=3; frame.nverts=12; frame.swap_params=1;
+            frame.regs.clear_color=(63u<<24)|(31u<<16);
+            quad(0,1,31,63,63,63,0); quad(1,0,13,0,0,0,0); quad(2,2,13,0,0,0,0);
+            frame.poly[0].flags=0;
+            frame.poly[1].flags=(bits&4) ? 0 : GX_POLY_FRONT;
+            frame.poly[2].flags=(bits&1) ? 0 : GX_POLY_FRONT;
+            frame.poly[1].attr|=3u<<4; frame.poly[2].attr|=3u<<4;
+            for (unsigned k=0;k<4;k++) {
+                frame.vtx[k].z=frame.vtx[8+k].z=0x800000;
+                frame.vtx[4+k].z=(bits&2) ? 0x800000 : 0x900000;
+            }
+        }
+        if (test >= 62) {
+            frame.swap_params=3; frame.npolys=14; frame.nverts=56;
+            frame.regs.clear_color=63u<<24;
+            frame.poly[4].attr=(frame.poly[4].attr&0xffffffu)|(3u<<24);
+            for (unsigned n=5;n<14;n++) quad(n,n,31,63,n*3,0,0);
+            for (unsigned n=0;n<14;n++) for (unsigned k=0;k<4;k++)
+                frame.vtx[n*4+k].w=test==62 ? 8192 : n==0 ? 8192 : (n==1 || n==3) ? 9000 : n<5 ? 7000 : 6000-n*32;
         }
         if (test == 16) frame.regs.disp3dcnt |= D3_FOG;
         if (test == 17) {
@@ -434,9 +457,9 @@ static unsigned shadow_tests(r3d_job *j)
         memset(output,0xa5,sizeof output);
         rsx3d_stats st; int ok = rsx3d_render(j, &st);
         unsigned different = 0;
-        int backcase=(test>=24 && test<32) || test==34 || test==35 || (test>=36 && test<52) || test==53;
+        int backcase=(test>=24 && test<32) || test==34 || test==35 || (test>=36 && test<52) || test==53 || (test>=54 && test<62);
         int fallback = test==33 || test==35 || (backcase && (frame.swap_params&2)) ||
-            (backcase && forced_spe("sombra-trasera")) || (test>=52 && forced_spe("sombra-ids"));
+            (backcase && forced_spe("sombra-trasera")) || ((test==52 || test==53 || test>=62) && forced_spe("sombra-ids"));
         for (unsigned k = 0; k < R3D_W*R3D_H; k++) different += output[k] != (fallback ? 0xa5a5a5a5u : reference[k]);
         fail += ok != !fallback || different != 0;
         salsads_log("rsx3d sombra prueba %u: estado %d, distintos %u, centro %08x referencia %08x dibujos %u estados %u raster %.3f ms",
@@ -450,7 +473,7 @@ static unsigned shadow_tests(r3d_job *j)
 }
 static unsigned equality_tests(r3d_job *j)
 {
-    if (forced_spe("igualdad")) return 0;
+    const int forced=forced_spe("igualdad");
     unsigned fail=0;
     const int delta[]={-513,-512,-511,-1,0,1,511,512,513};
     for (unsigned t=0;t<81;t++) {
@@ -482,9 +505,10 @@ static unsigned equality_tests(r3d_job *j)
         }
         r3d_render_ref(&frame,vram,j->texslot,j->palslot,0,reference);
         rsxkit_frame_begin(0); rsxkit_frame_end(); rsxkit_frame_begin(0);
+        memset(output,0xa5,sizeof output);
         rsx3d_stats st; int ok=rsx3d_render(j,&st); unsigned different=0;
-        for (unsigned k=0;k<R3D_W*R3D_H;k++) different+=output[k]!=reference[k];
-        fail+=ok!=1 || different!=0;
+        for (unsigned k=0;k<R3D_W*R3D_H;k++) different+=output[k]!=(forced ? 0xa5a5a5a5u : reference[k]);
+        fail+=ok!=!forced || different!=0;
         salsads_log("rsx3d igualdad prueba %u: estado %d distintos %u dibujos %u raster %.3f ms",t,ok,different,st.draws,st.raster_ns/1000000.0);
     }
     return fail;
