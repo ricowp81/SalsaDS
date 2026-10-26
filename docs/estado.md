@@ -5,6 +5,13 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-26 — RSX ronda 8: parada por solapamiento HD
+- Exportar nativo antes de HD, con etiquetas separadas, falla en RPCS3 2×: 15/16 cuadros solapados devuelven colores anteriores, 24576 píxeles por cuadro.
+- Renovar además el sampler de exportación repite exactamente el fallo; parada tras dos intentos, sin tercer cambio.
+- Los 32 contratos HD, línea cambiante y seis escenas SPE pasan; 177 mapas nativos síncronos iguales a ronda 7. Eso no acredita el solapamiento.
+- Build completo correcto en ambos intentos; holguras 2D 8720 B, mínima global 8432 B. Evidencia y parche descartado en `build/rsx3d-hd-4/`.
+- Código restaurado a ronda 7; HD en juego sigue bloqueado, sin paquete hd-4 ni nueva validación LE/BE/SAN. Mañana corresponde el reproductor hd-3, sin acreditar juego HD ni tiempos PS3.
+
 ## 2026-10-26 — RSX ronda 7: metadatos HD renovados
 - RPCS3 retenía el sampler con descriptor idéntico: invalidación/etiqueta, vaciado XDR y escritura PPE directa no bastan; cambiar el offset sí actualiza. Mapeos y emparejamiento correctos.
 - Recarga optativa del sampler en `rsxkit` (MIT), activada solo para metadatos HD; se conserva la invalidación previa. Sin cambios al shader, texturas DS, identidad ni vértices.

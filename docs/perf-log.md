@@ -1,5 +1,10 @@
 # Registro de rendimiento
 
+## 2026-10-26 — Ronda 8 HD: exactitud bloqueante (RPCS3)
+- Dos intentos con exportación nativa antes del raster HD: ambos fallan 15/16 cuadros solapados; cada fallo afecta 24576 píxeles. El segundo renueva también el sampler nativo, sin mejora.
+- 177 mapas síncronos sin cambios; 32 contratos, línea cambiante y seis escenas SPE exactos. No se toman tiempos como resultado válido ni se extrapolan a PS3.
+- Experimento revertido; logs y parche en `build/rsx3d-hd-4/`. No se midió MKDS en juego HD ni se certifican 60 fps.
+
 ## 2026-10-26 — Composición HD renovada (RPCS3, no PS3)
 - Misma instantánea 3D; destino completo 512×384/768×576/1024×768. Metadatos 2D sintéticos prearmados; excluye emulación, generación SPE y flip.
 - Copia/composición: media de ocho pasadas tras dos de calentamiento. Total GPU suma esas medias al último raster nativo+HD+exportación caliente; no es tiempo de cuadro de un juego.
