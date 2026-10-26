@@ -573,7 +573,7 @@ static inline int r3d_row_at(const r3d_poly *p, int32_t y, r3d_row *row)
 	if (xrs < xl)
 		xl = xrs;
 	if (xr == xl) { /* línea vacía por redondeo: un píxel, salvo en la última línea de un polígono de más de una cuya izquierda es x-mayor */
-		if (y == p->ybot - 1 && y > p->ytop && !r3d_ymajor(lb->x - la->x, lb->y - la->y))
+		if (!p->full && y == p->ybot - 1 && y > p->ytop && !r3d_ymajor(lb->x - la->x, lb->y - la->y))
 			return 0;
 		xr = xl + 1;
 	}

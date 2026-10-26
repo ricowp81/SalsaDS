@@ -188,6 +188,13 @@ static void test_tjunction_full(void)
 		/* y no se pasa del tramo: la línea 124 no gana nada a la izquierda de su arista */
 		CHECK_EQ(quad_cover_x(xq, yq, 4, 1, 125, 30), 0);
 	}
+	/* la última línea de un polígono con la izquierda x-mayor (el 31 de la misma escena, abajo de (127,147) a (158,149)) también se dibuja */
+	{
+		const int xq[4] = { 158, 158, 128, 127 }, yq[4] = { 149, 135, 133, 147 };
+
+		CHECK_EQ(quad_cover_x(xq, yq, 4, 0, 148, 150), 0);
+		CHECK_EQ(quad_cover_x(xq, yq, 4, 1, 148, 150), 1);
+	}
 	printf("render 3D unión en T de HeartGold: %u líneas con hueco con la regla anterior, %u con el tamaño completo\n", old_gaps, new_gaps);
 }
 
