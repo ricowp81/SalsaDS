@@ -597,7 +597,7 @@ int main(int argc, char **argv)
 	int dump_cpu = 0;
 	uint32_t trace_from = 0;
 	const char *wav_path = NULL;
-	int snd_original = 0, g2d_stats = 0;
+	int snd_original = 0, snd_hd = 0, g2d_stats = 0;
 	const char *gxdump_path = NULL;
 	int gx_clock = 0, r3d_stats_on = 0, holes_on = 0, gx_defer = 0, gx_lento = 0, geom_plain = 0, geom_scalar = 0;
 	const char *holes_dump = NULL, *fdump_prefix = NULL;
@@ -678,6 +678,8 @@ int main(int argc, char **argv)
 			img3d_path = argv[++i];
 		else if (!strcmp(argv[i], "--gx-dump") && i + 1 < argc)
 			gxdump_path = argv[++i];
+		else if (!strcmp(argv[i], "--audio-hd"))
+			snd_hd = 1;
 		else if (!strcmp(argv[i], "--snd-original"))
 			snd_original = 1;
 		else if (!strcmp(argv[i], "--cycles") && i + 1 < argc)
@@ -849,15 +851,15 @@ int main(int argc, char **argv)
 		M.vid.clock = clock_ns;
 	if (wav_path)
 		M.snd.ops.sink = wav_sink;
-	if (snd_original)
-		nds_snd_set_mode(&M, SND_MODE_ORIGINAL);
+	if (snd_original || snd_hd)
+		nds_snd_set_mode(&M, snd_hd ? SND_MODE_HD : SND_MODE_ORIGINAL);
 	if (lockstep) {
 		R.quantum = quantum;
 		R.vid.use_ref = use_ref;
 		R.gx_lento = (uint8_t)gx_lento;
 		nds_init(&R);
-		if (snd_original)
-			nds_snd_set_mode(&R, SND_MODE_ORIGINAL);
+		if (snd_original || snd_hd)
+			nds_snd_set_mode(&R, snd_hd ? SND_MODE_HD : SND_MODE_ORIGINAL);
 		if (hj_lockstep_attach(&M, &R, jit_arm7, jit_arm9))
 			return 2;
 	} else if (jit_mode && jit_prof && arec_prof_open(jit_prof)) {

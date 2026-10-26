@@ -22,6 +22,10 @@
  * función que sabe del filtro; arrastra entre trabajos las últimas 32 muestras nativas por canal (`snd_state.hist`) y
  * `frac`, y la salida va retrasada 16 muestras nativas. La opción `SND_MODE_ORIGINAL` reproduce la
  * cuantización a 10 bits con el sesgo (SOUNDBIAS) de la salida de la DS real.
+ * SND_MODE_HD sustituye solo la escucha: Hermite causal por voz PCM/ADPCM a 48 kHz,
+ * mezcla flotante sin recorte (limitador en audio_out), PSG/ruido sin interpolar.
+ * La captura, las muestras nativas y el estado de los canales permanecen fieles.
+ * La opción se fija al abrir el juego; no se conmuta durante la reproducción.
  */
 #ifndef SALSADS_AUDIO_SND_H
 #define SALSADS_AUDIO_SND_H
@@ -40,6 +44,7 @@
 #define SND_HIST 32
 
 /* modos (snd_state.mode) */
+#define SND_MODE_HD 2u               /* escucha a 48 kHz; captura y estado nativos intactos */
 #define SND_MODE_ORIGINAL 1u         /* cuantizar a 10 bits con SOUNDBIAS, como la salida de la DS */
 
 /* Una escritura a un registro de sonido (media palabra): `off` es el desplazamiento desde 0x04000400. */
@@ -81,6 +86,13 @@ typedef struct snd_state {
 	float frac;                      /* fase dentro de la muestra nativa, [0, 1) */
 	float ratio_adj;                 /* corrección de la razón de remuestreo (control de deriva), 0 = ninguna */
 	uint32_t mode;
+	/* Historia causal por voz: Hermite entre las dos muestras centrales, sin anticipar RAM. */
+	float hd_hist[SND_NCH][4];
+	float hd_last[SND_NCH][2], hd_anchor[SND_NCH][2], hd_inv[SND_NCH];
+	uint32_t hd_period[SND_NCH];
+	uint32_t hd_fade[SND_NCH], hd_on[SND_NCH];
+	uint32_t hd_phase;              /* fase en unidades de 1/48000 de ciclo del temporizador */
+	uint32_t hd_active, hd_pad[2];
 	/* resultados del último trabajo */
 	uint32_t busy;                   /* bit c: canal c encendido; bit 16 y 17: captura 0 y 1 */
 	uint32_t peak;                   /* pico absoluto de lo mezclado (0-32768), para el log */

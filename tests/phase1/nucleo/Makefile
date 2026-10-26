@@ -35,7 +35,7 @@ geom_STACK_ARGS := --edge emit_poly_inner:job_flush --edge job_flush:put_verts -
 # Mezclador de sonido: un SPE (src/spu/snd + src/audio)
 snd_SRCS     := ../../../src/spu/snd/snd.c ../../../src/audio/snd_mix.c
 snd_STACK_MIN := 8192
-snd_STACK_ARGS := --edge snd_run:bus_fetch --edge snd_run:bus_store --ignore __call_exitprocs --ignore __do_global_ctors_aux --ignore exit --ignore register_tm_clones
+snd_STACK_ARGS := --edge snd_run:bus_fetch --edge snd_run:bus_store --edge chan_step:bus_fetch --ignore __call_exitprocs --ignore __do_global_ctors_aux --ignore exit --ignore register_tm_clones
 
 # ROM de carga propia, embebida (símbolos carga_bin, carga_bin_end y carga_bin_size en carga_bin.h): se usa
 # si no existe /dev_hdd0/salsads/rom.nds.

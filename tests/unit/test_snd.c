@@ -31,7 +31,7 @@ static void bus_store(void *ctx, uint32_t addr, const uint8_t *src, uint32_t n)
 
 static const snd_bus bus = { NULL, bus_fetch, bus_store };
 
-static snd_ent log_buf[64];
+static snd_ent log_buf[128];
 static uint32_t nlog;
 
 static void w16(uint32_t off, uint32_t v)
@@ -229,7 +229,7 @@ static void test_capture(void)
 }
 
 /* Partir el trabajo en trozos da lo mismo que correrlo entero (muestras, estado y salida a 48 kHz). */
-static void test_split(void)
+static void test_split(uint32_t mode, float adj)
 {
 	static snd_state a, b;
 	static int16_t nat_a[2 * SND_TICKS_MAX], nat_b[2 * SND_TICKS_MAX];
@@ -243,9 +243,12 @@ static void test_split(void)
 		mem[0x400 + i] = (uint8_t)(i * 37);
 	snd_reset(&a);
 	snd_reset(&b);
+	a.mode = b.mode = mode;
+	a.ratio_adj = b.ratio_adj = adj;
 	w16(0x100, 0x805A);
 	chan(0, CNT(90, 1, 20, 1, 1), 0x02000100u, 0x10000u - 700u, 0, 128);
 	chan(1, CNT(120, 0, 100, 1, 0), 0x02000400u, P512, 4, 12);
+	chan(2, CNT(77, 0, 65, 1, 2), 0x02000400u, 0xFC00u, 1, 3);
 	chan(9, CNT(127, 0, 64, 0, 3) | (5u << 24), 0, 0xFF00u, 0, 0);
 	chan(15, CNT(80, 0, 90, 0, 3), 0, 0xFFC0u, 0, 0);
 	(void)snd_run(&a, log_buf, nlog, 500, &bus, nat_a, out_a, SND_OUT_MAX, &na);
@@ -267,7 +270,7 @@ static void test_split(void)
 	CHECK_EQ(a.tick, b.tick);
 	CHECK_EQ(a.busy, b.busy);
 	/* 500 muestras de 32,7 kHz son 733,5 de 48 kHz */
-	CHECK(na >= 732 && na <= 735);
+	CHECK(fabsf((float)na - 500.0f*SND_RATE_OUT/(SND_RATE_NATIVE*(1.0f+adj))) < 2.0f);
 }
 
 static void test_resample(void)
@@ -313,10 +316,75 @@ static void test_resample(void)
 	}
 }
 
+/* HD debe conservar decodificación, temporizadores y capturas incluso con paros,
+ * reinicios, recargas, rutas 1/3, saturación y RAM de captura como fuente. */
+static void test_hd_native(void)
+{
+	static snd_state a, b;
+	static uint8_t saved[MEM_SIZE], reference[MEM_SIZE];
+	static int16_t na[2*SND_TICKS_MAX], nb[2*SND_TICKS_MAX];
+	static float out[2*SND_OUT_MAX];
+	uint32_t seed = 4917, produced;
+	reset(); snd_reset(&a); snd_reset(&b); b.mode = SND_MODE_HD;
+	for (unsigned i = 0; i < MEM_SIZE; i++) mem[i] = (uint8_t)(i*37);
+	for (unsigned frame = 0; frame < 96; frame++) {
+		nlog = 0;
+		w16(0x100, 0x8000u | ((frame*997u) & 0x3F7Fu));
+		unsigned ci = frame % 16, fmt = frame / 16 % 4;
+		seed = seed*1664525u + 1013904223u;
+		chan(ci, CNT(90, frame%4, frame%128, frame%3, fmt), 0x02000100,
+		     65536u - (1u + seed%3000u), frame%3, 8);
+		w32(0x110, 0x02000100); w16(0x114, 32); w16(0x108, 0x80 | (frame%16));
+		/* Parar otra voz a mitad del trabajo. */
+		w16(((ci+3)%16)*16+2, 0); log_buf[nlog-1].tick = (uint32_t)a.tick+25;
+		for (unsigned i=0; i+1<nlog; i++) log_buf[i].tick = (uint32_t)a.tick;
+		memcpy(saved, mem, MEM_SIZE);
+		snd_run(&a, log_buf, nlog, 120, &bus, na, out, SND_OUT_MAX, &produced);
+		memcpy(reference, mem, MEM_SIZE); memcpy(mem, saved, MEM_SIZE);
+		snd_run(&b, log_buf, nlog, 120, &bus, nb, out, SND_OUT_MAX, &produced);
+		CHECK_EQ(memcmp(na, nb, 240*sizeof *na), 0);
+		CHECK_EQ(memcmp(reference, mem, MEM_SIZE), 0);
+		CHECK_EQ(memcmp(a.ch, b.ch, sizeof a.ch), 0);
+		CHECK_EQ(memcmp(a.cap, b.cap, sizeof a.cap), 0);
+		CHECK_EQ(a.busy, b.busy); CHECK_EQ(a.peak, b.peak);
+		for (unsigned i=0; i<2*produced; i++) CHECK(isfinite(out[i]));
+	}
+}
+
+static void test_hd_edges(void)
+{
+	static snd_state st;
+	float out[2*SND_OUT_MAX];
+	uint32_t n;
+	reset(); snd_reset(&st); st.mode = SND_MODE_HD;
+	for (unsigned i=0; i<128; i++) wr16le(mem+0x100+2*i, 0x4000);
+	w16(0x100, 0x807F);
+	chan(0, CNT(127, 0, 0, 1, 1), 0x02000100, P512, 0, 64);
+	snd_run(&st, log_buf, nlog, 120, &bus, NULL, out, SND_OUT_MAX, &n);
+	CHECK(fabsf(out[2*(n-1)]-0.5f)<1e-6f);
+	/* El apagado conserva el último valor y cae a cero en 32 pares. */
+	nlog=0; w32(0, 0); log_buf[0].tick=log_buf[1].tick=(uint32_t)st.tick-1;
+	snd_run(&st, log_buf, nlog, 120, &bus, NULL, out, SND_OUT_MAX, &n);
+	CHECK(fabsf(out[0]-0.5f)<1e-6f);
+	for (unsigned i=1; i<n; i++) CHECK(fabsf(out[2*i]-out[2*(i-1)]) <= 0.5f/32+1e-6f);
+	CHECK_EQ(out[64], 0); CHECK_EQ(st.busy, 0);
+	/* La mezcla HD mantiene margen flotante y no recorta antes del limitador. */
+	nlog=0; snd_reset(&st); st.mode=SND_MODE_HD;
+	w16(0x100, 0x807F);
+	for (unsigned c=0; c<4; c++) chan(c, CNT(127,0,0,1,1),0x02000100,P512,0,64);
+	snd_run(&st, log_buf, nlog, 120, &bus, NULL, out, SND_OUT_MAX, &n);
+	CHECK(fabsf(out[2*(n-1)]-2.0f)<1e-6f);
+}
+
 void test_snd(void)
 {
+	test_hd_edges();
+	test_hd_native();
 	test_model();
 	test_capture();
-	test_split();
+	test_split(0, 0);
+	test_split(SND_MODE_HD, 0);
+	test_split(SND_MODE_HD, -0.02f);
+	test_split(SND_MODE_HD, 0.02f);
 	test_resample();
 }

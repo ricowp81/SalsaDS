@@ -1,5 +1,15 @@
 # Registro de rendimiento
 
+## 2026-10-26 — Audio HD opcional (audio-estirar)
+- Banco propio `tools/audio-hd-quality.c/.py`, host LE: PCM16 periódico, seno Fs/16, amplitudes 0,5 y 0,01; Fs efectiva 7998,56/16004,77/21990,80 Hz; ajuste senoidal entre 1 y 3 s, sin WSOLA (velocidad completa), debajo de la rodilla. Evidencia en `build/audio3/`.
+- Fiel de 16 bits → Hermite, Fs 8/16/22 kHz: SINAD 19,65/22,59/18,90 → 62,76/62,75/62,76 dB; mayor espurio superior −23,51/−29,53/−23,47 → −64,06/−64,06/−64,04 dBc. A 22 kHz domina una imagen plegada a 12,11 kHz; la imagen directa Fs−f ya era rechazada por el FIR fiel.
+- SNR tras excluir continua, armónicos 2–10 e imagen Fs−f: 21,96/23,58/18,91 → 68,69/68,68/68,69 dB; residuo −31,05/−32,67/−28,00 → −77,72/−77,71/−77,72 dBFS RMS (incluye otros espurios, no solo ruido blanco). THD2–10 0,0330/0,2143/0,4968 → 0,00216 %.
+- Silencio: cero exacto en las tres rutas, RMS −∞ dBFS; SNR no definida. Señal débil a 8 kHz: THD2–10 0,110 % (16 bits), 8,601 % (10 bits), 0,0978 % (HD). La cuantización a 10 bits exige `original = si`; no explica por sí sola el ruido de la salida habitual.
+- 16 voces en host: fiel 0,0542 → HD 0,1328 ms/cuadro; no son tiempos del SPE. Banco de arranque `DATO audio-hd-banco`: 120 cuadros por ruta, PCM16 a 8/16/22 kHz, media/máximo del decrementador; referencia histórica en juego 0,31 ms/cuadro, nueva medida PS3 pendiente.
+- `audio-hd` en el directorio de datos, apagado por omisión; host `--audio-hd`. Hermite causal retrasa dos muestras por voz, reloj racional, mezcla flotante y compensación de parada de 32 pares; limitador existente al final. Decodificación, SOUNDCAP y lectura del juego conservan la ruta fiel.
+- Se conserva Hermite sin sinc de ocho puntos: el costo host ya aumenta y falta el margen SPE real. No elimina cuantización de origen PCM8/ADPCM ni todo alias; atenúa cerca de Nyquist por voz. No se justifica activarlo por omisión sin escucha y costo PS3.
+- Guion único `build/audio3/guion-ps3.txt`: Metroid (intro/menú/voces) y MKDS (demostración/carrera), mismos tramos con `audio-hd.off` y `audio-hd`; oír siseo, aspereza y clics; comparar banco de 16 voces y `DATO audio`. Salir SELECT+START y O, conservar ambos logs; no borrar interruptores.
+
 ## 2026-10-25 — Lectura local de planos por lote (cand-v004)
 - Base PS3 aportada, MKDS pesado, 159 ventanas: armado ≈ 4,6 ms/cuadro; lectura 1,92, atributos 1,29, recorte 0,80, ensamblado 0,41 y salida 0,20; DMA ≈ 0,03. Meta ≤ 2,5 y espera PPE ≤ 1 ms, aún sin acreditar.
 - El descarte fuera del volumen ya precedía a la copia de atributos; «atributos» incluye proyección/cara/profundidad. No se adelanta la cara al recorte entero: sus redondeos pueden alterar el área.

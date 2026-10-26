@@ -1014,7 +1014,7 @@ static void snd_sink(void *ctx, const float *out, uint32_t n, const int16_t *nat
 
 /* Autoprueba del SPE de audio: el mismo trabajo en el SPE y en el PPE (mismo código C) con una memoria de prueba propia:
  * las muestras de 16 bits, el estado y lo capturado tienen que ser idénticos; la salida flotante, igual salvo el redondeo
- * del SPU. Dos trabajos seguidos (el estado se arrastra). Devuelve 0 si coincide. */
+ * del SPU. Cuatro trabajos seguidos, dos de ellos HD (el estado se arrastra). Devuelve 0 si coincide. */
 #define ST_MEM 0x10000u
 static uint8_t st_mem_spe[ST_MEM] __attribute__((aligned(128))), st_mem_ppe[ST_MEM] __attribute__((aligned(128)));
 static snd_ent st_log[SND_LOG_MAX] __attribute__((aligned(128)));
@@ -1066,8 +1066,8 @@ static int snd_selftest(void)
 	memcpy(st_mem_ppe, st_mem_spe, sizeof st_mem_ppe);
 	snd_reset(&st_spe);
 	snd_reset(&st_ppe);
-	for (int pass = 0; pass < 2; pass++) {
-		const uint32_t nt = 300u + 77u * (uint32_t)pass;
+	for (int pass = 0; pass < 4; pass++) {
+		const uint32_t nt = 300u + 77u * (uint32_t)(pass & 1);
 		uint32_t n_ppe = 0, applied;
 		snd_bus bus = { NULL, st_bus_fetch, st_bus_store };
 
@@ -1144,14 +1144,59 @@ static int snd_selftest(void)
 				bad_state++;
 		bad_mem += memcmp(st_mem_spe, st_mem_ppe, sizeof st_mem_ppe) != 0;
 	}
-	salsads_log("autoprueba del audio: SPE contra PPE, 2 trabajos: %u muestras distintas, %u del estado, %u de la memoria "
+	salsads_log("autoprueba del audio: SPE contra PPE, 4 trabajos (fiel y HD): %u muestras distintas, %u del estado, %u de la memoria "
 		    "capturada, %u de la salida flotante", (unsigned)bad_nat, (unsigned)bad_state, (unsigned)bad_mem,
 		    (unsigned)bad_out);
 	return bad_nat || bad_state || bad_mem || bad_out ? -1 : 0;
 }
 
+/* Banco aislado: 16 voces PCM16, frecuencias próximas a 8/16/22 kHz.
+ * No entrega muestras al puerto. El decrementador solo mide esta PS3. */
+static void snd_hd_bench(void)
+{
+	for (unsigned mode = 0; mode <= SND_MODE_HD; mode += SND_MODE_HD) {
+		job_snd js;
+		uint64_t ticks = 0;
+		uint32_t maximum = 0;
+		snd_reset(&st_spe);
+		st_spe.soundcnt = 0x807f;
+		for (unsigned c = 0; c < SND_NCH; c++) {
+			snd_chan *ch = &st_spe.ch[c];
+			const unsigned period[3] = {2095, 1047, 762};
+			ch->cnt = (1u << 29) | (1u << 27) | (64u << 16) | 8u;
+			ch->sad = 0x02000100; ch->len = 128; ch->on = 1; ch->pos = -3;
+			ch->tmr = (uint16_t)(65536u - period[c % 3]); ch->tcnt = ch->tmr;
+		}
+		memset(&js, 0, sizeof js);
+		js.state_ea = (uint64_t)(uintptr_t)&st_spe;
+		js.out_ea = (uint64_t)(uintptr_t)st_out_spe;
+		js.nat_ea = (uint64_t)(uintptr_t)st_nat_spe;
+		js.nticks = 547; js.out_max = SND_OUT_MAX; js.mode = mode;
+		js.rgn_ea[0] = (uint64_t)(uintptr_t)st_mem_spe; js.rgn_mask[0] = ST_MEM - 1;
+		for (unsigned frame = 0; frame < 124; frame++) {
+			const uint32_t seq = spukit_post(wk_snd, JOB_SND, &js, sizeof js);
+			const spukit_result *r = spukit_wait(wk_snd, seq);
+			job_snd_result jr;
+			if (r->error) { salsads_log("FALLO banco Audio HD: %d", r->error); return; }
+			memcpy(&jr, r->data, sizeof jr);
+			if (frame < 4) continue;
+			ticks += jr.mix_ticks;
+			if (jr.mix_ticks > maximum) maximum = jr.mix_ticks;
+		}
+		salsads_log("DATO audio-hd-banco: HD %u, 16 voces, 120 cuadros; snd_run media %llu us, máximo %llu us",
+			mode != 0, (unsigned long long)(ticks * 1000000ull / 120 / spukit_tick_hz()),
+			(unsigned long long)((uint64_t)maximum * 1000000ull / spukit_tick_hz()));
+	}
+}
+
 static void snd_load_cfg(void)
 {
+	struct stat hd_file;
+	if (stat(SALSADS_DATA_DIR "/audio-hd", &hd_file) == 0) {
+		nds_snd_set_mode(nds, SND_MODE_HD);
+		salsads_log("audio: HD, Hermite por voz a 48 kHz; captura nativa, limitador al final");
+		return;
+	}
 	FILE *f = fopen(AUDIO_CFG_PATH, "r");
 	char text[256];
 	size_t len;
@@ -2892,6 +2937,7 @@ int main(void)
 			nds->snd.ops.wait = snd_wait;
 			snd_on = 1;
 			salsads_log("sonido: mezclador en un SPE (autoprueba contra el PPE: igual)");
+			snd_hd_bench();
 		} else {
 			failures++;
 			salsads_log("sonido: la autoprueba del SPE falló: mezcla el PPE");

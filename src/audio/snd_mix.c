@@ -3,7 +3,7 @@
  * SalsaDS — mezclador de sonido de la DS (ver snd.h). Código propio; el comportamiento sale de GBATEK y de lo medido
  * contra melonDS 1.1 con la ROM `snd` (tools/snd-compare.py). Sin asignaciones ni libc: compila en el SPE.
  *
- * Presupuesto del local store (SPE de audio): snd_state ≈ 3,4 KB; la entrada de escrituras (SND_LOG_MAX * 16 =
+ * Presupuesto del local store (SPE de audio): snd_state ≈ 4,5 KB; la entrada de escrituras (SND_LOG_MAX * 16 =
  * 32 KB), 2 * SND_TICKS_MAX muestras nativas (2,5 KB), la salida flotante (SND_OUT_MAX * 8 = 8 KB) y el escalón de la
  * captura (2 * 1 KB): menos de 60 KB en total.
  */
@@ -428,6 +428,60 @@ static uint32_t snd_resample(snd_state *st, const float *wl, const float *wr, ui
 	return produced;
 }
 
+/* HD comparte el decodificador y sus lecturas: divide los mismos 512 ciclos por tick
+ * en los instantes de salida. No anticipa muestras ni modifica la captura. Hermite
+ * causal retrasa dos muestras de cada voz; PSG/ruido conservan sus escalones. */
+static void hd_advance(snd_chan *c, int ci, const snd_bus *bus, uint32_t cycles, float *h)
+{
+	c->tcnt += cycles;
+	while (c->tcnt >= 0x10000u && c->on) {
+		c->tcnt = c->tcnt - 0x10000u + c->tmr;
+		chan_step(c, ci, bus);
+		h[0] = h[1]; h[1] = h[2]; h[2] = h[3]; h[3] = (float)c->out;
+	}
+}
+
+static float hd_sample(snd_state *st, int ci, float subcycle)
+{
+	const snd_chan *c = &st->ch[ci];
+	const float *h = st->hd_hist[ci];
+	float x = 0;
+	if (c->on) {
+		if ((c->cnt >> 29 & 3u) == 3u) x = (float)c->out;
+		else {
+			float f = ((float)((int32_t)c->tcnt - (int32_t)c->tmr) + subcycle) * st->hd_inv[ci];
+			/* Un cambio de TMR puede dejar el contador antes de la nueva recarga. */
+			if (f < 0) f = 0;
+			if (f > 1) f = 1;
+			const float m0 = 0.5f * (h[2] - h[0]), m1 = 0.5f * (h[3] - h[1]);
+			x = ((2*(h[1]-h[2])+m0+m1)*f + 3*(h[2]-h[1])-2*m0-m1)*f*f + m0*f + h[1];
+		}
+	}
+	return x;
+}
+
+/* Compensación posterior al volumen/balance: apagar escribiendo CNT=0 también
+ * conserva la cola. Rampa finita de 32 pares (0,67 ms), sin continua residual. */
+static void hd_declick(snd_state *st, int ci, float *l, float *r)
+{
+	float x[2] = {*l, *r};
+	const uint32_t on = st->ch[ci].on;
+	if (st->hd_on[ci] != on) {
+		for (int side = 0; side < 2; side++) st->hd_anchor[ci][side] = st->hd_last[ci][side];
+		st->hd_fade[ci] = 32;
+		st->hd_on[ci] = on;
+	}
+	for (int side = 0; side < 2; side++) {
+		if (st->hd_fade[ci]) {
+			const float a = (float)st->hd_fade[ci] / 32.0f;
+			x[side] = x[side] * (1.0f - a) + st->hd_anchor[ci][side] * a;
+		}
+		st->hd_last[ci][side] = x[side];
+	}
+	if (st->hd_fade[ci]) st->hd_fade[ci]--;
+	*l = x[0]; *r = x[1];
+}
+
 /* ---- el trabajo ---------------------------------------------------------------------------------------------- */
 
 static inline int32_t clamp16(int32_t v)
@@ -443,7 +497,21 @@ uint32_t snd_run(snd_state *st, const snd_ent *log, uint32_t nlog, uint32_t ntic
 	float wl_[SND_HIST + SND_TICKS_MAX + 4] __attribute__((aligned(16)));
 	float wr_[SND_HIST + SND_TICKS_MAX + 4] __attribute__((aligned(16)));
 	float *const wl = wl_, *const wr = wr_;
-	uint32_t ie = 0, peak = 0;
+	uint32_t ie = 0, peak = 0, hd_n = 0;
+	const int hd = (st->mode & SND_MODE_HD) != 0;
+	/* Reloj racional idéntico en PPE/SPE: evita desplazar flancos PSG por el
+	 * redondeo hacia cero del SPU. Deriva cuantizada a 1/65536 (15 ppm). */
+	const int32_t adj = (int32_t)(st->ratio_adj * 65536.0f);
+	const uint32_t hd_step = (uint32_t)(16756991 + (int64_t)16756991 * adj / 65536);
+	if (hd && !st->hd_active) {
+		st->hd_phase = 0;
+		for (int c = 0; c < SND_NCH; c++) {
+			for (int k = 0; k < 4; k++) st->hd_hist[c][k] = (float)st->ch[c].out;
+			for (int side = 0; side < 2; side++) st->hd_last[c][side] = st->hd_anchor[c][side] = 0;
+			st->hd_fade[c] = st->hd_on[c] = 0;
+		}
+	}
+	st->hd_active = (uint32_t)hd;
 
 	if (nticks > SND_TICKS_MAX)
 		nticks = SND_TICKS_MAX;
@@ -459,17 +527,63 @@ uint32_t snd_run(snd_state *st, const snd_ent *log, uint32_t nlog, uint32_t ntic
 		int32_t mix[2] = { 0, 0 }, c1[3] = { 0, 0, 0 }, c3[3] = { 0, 0, 0 };
 		int32_t L, R, capv[2];
 		uint32_t sc;
-
-		while (ie < nlog && log[ie].tick < T)
-			apply(st, &log[ie++]);
+		float hm[2][2] = {{0}}, h1[2][2] = {{0}}, h3[2][2] = {{0}}, subcycle[2];
+		uint32_t sample_at[2];
+		uint32_t hn = 0;
+		if (hd) {
+			while (st->hd_phase < 24576000u && hn < 2) {
+				sample_at[hn] = st->hd_phase / 48000u;
+				subcycle[hn++] = (float)(st->hd_phase % 48000u) * (1.0f / 48000.0f);
+				st->hd_phase += hd_step;
+			}
+			st->hd_phase -= 24576000u;
+		}
+		while (ie < nlog && log[ie].tick < T) {
+			const snd_ent *e = &log[ie++];
+			if (hd && e->off < 0x100 && (e->off & 15u) == 2 &&
+			    (e->mask & e->val & 0x8000u) && !st->ch[e->off >> 4].on) {
+				for (int k = 0; k < 4; k++) st->hd_hist[e->off >> 4][k] = 0;
+				st->hd_on[e->off >> 4] = 0;
+			}
+			apply(st, e);
+		}
 		for (int ci = 0; ci < SND_NCH; ci++) {
 			snd_chan *c = &st->ch[ci];
 			int32_t x, l, r;
 			uint32_t vol, pan;
 
+			if (!c->on && (!hd || (!st->hd_on[ci] && !st->hd_fade[ci]))) {
+				if (hd) st->hd_last[ci][0] = st->hd_last[ci][1] = 0;
+				continue;
+			}
+			if (hd) {
+				const int started = c->on;
+				const uint32_t period = 0x10000u - c->tmr;
+				if (st->hd_period[ci] != period) {
+					st->hd_period[ci] = period;
+					st->hd_inv[ci] = 1.0f / (float)period;
+				}
+				uint32_t elapsed = 0;
+				const uint32_t v = (c->cnt & 127u) == 127u ? 128u : c->cnt & 127u;
+				const uint32_t p = (c->cnt >> 16 & 127u) == 127u ? 128u : c->cnt >> 16 & 127u;
+				const float gain = (float)v * (1.0f/262144.0f) * (float)(16u >> divsh[c->cnt >> 8 & 3u]);
+				for (uint32_t j = 0; j < hn; j++) {
+					const uint32_t at = sample_at[j];
+					if (started) hd_advance(c, ci, bus, at - elapsed, st->hd_hist[ci]);
+					elapsed = at;
+					const float sample = hd_sample(st, ci, subcycle[j]) * gain;
+					float l = sample * (float)(128u - p), r = sample * (float)p;
+					hd_declick(st, ci, &l, &r);
+					if (ci == 1) { h1[j][0] = l; h1[j][1] = r; }
+					if (ci == 3) { h3[j][0] = l; h3[j][1] = r; }
+					if ((ci == 1 && (st->soundcnt & 0x1000u)) || (ci == 3 && (st->soundcnt & 0x2000u))) continue;
+					hm[j][0] += l; hm[j][1] += r;
+				}
+				if (started) hd_advance(c, ci, bus, 512u - elapsed, st->hd_hist[ci]);
+			}
 			if (!c->on)
 				continue;
-			c->tcnt += 512u;
+			if (!hd) c->tcnt += 512u;
 			while (c->tcnt >= 0x10000u && c->on) {
 				c->tcnt = c->tcnt - 0x10000u + c->tmr;
 				chan_step(c, ci, bus);
@@ -504,6 +618,22 @@ uint32_t snd_run(snd_state *st, const snd_ent *log, uint32_t nlog, uint32_t ntic
 		}
 		/* salida izquierda y derecha: el mezclador o los canales 1 y 3 (SOUNDCNT bits 8-11) */
 		sc = st->soundcnt;
+		if (hd) {
+			const uint32_t mv = (sc & 127u) == 127u ? 128u : sc & 127u;
+			for (uint32_t j = 0; j < hn; j++) {
+				for (int side = 0; side < 2; side++) {
+					float x;
+					switch (sc >> (8 + 2*side) & 3u) {
+					case 0: x = hm[j][side]; break;
+					case 1: x = h1[j][side]; break;
+					case 2: x = h3[j][side]; break;
+					default: x = h1[j][side] + h3[j][side]; break;
+					}
+					if (out && hd_n < out_max) out[2*hd_n + side] = (sc & 0x8000u) ? x * ((float)mv / (128.0f*32768.0f)) : 0;
+				}
+				if (hd_n < out_max) hd_n++;
+			}
+		}
 		{
 			const int32_t ml = clamp16(mix[0]), mr = clamp16(mix[1]);
 
@@ -574,7 +704,7 @@ uint32_t snd_run(snd_state *st, const snd_ent *log, uint32_t nlog, uint32_t ntic
 	st->ticks_run = nticks;
 	st->log_applied = ie;
 	if (out && out_n) {
-		*out_n = snd_resample(st, wl, wr, nticks, out, out_max);
+		*out_n = hd ? hd_n : snd_resample(st, wl, wr, nticks, out, out_max);
 		for (uint32_t i = 0; i < SND_HIST; i++) { /* historia del siguiente trabajo: las últimas SND_HIST de la ventana */
 			st->hist[0][i] = wl[nticks + i];
 			st->hist[1][i] = wr[nticks + i];

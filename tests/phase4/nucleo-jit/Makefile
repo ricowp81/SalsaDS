@@ -30,7 +30,7 @@ geom_STACK_MIN := 8192
 geom_STACK_ARGS := --edge emit_poly_inner:job_flush --edge job_flush:put_verts --edge job_flush:put_polys --edge gx_job_run:fetch --ignore __call_exitprocs --ignore __do_global_ctors_aux --ignore exit --ignore register_tm_clones
 snd_SRCS     := ../../../src/spu/snd/snd.c ../../../src/audio/snd_mix.c
 snd_STACK_MIN := 8192
-snd_STACK_ARGS := --edge snd_run:bus_fetch --edge snd_run:bus_store --ignore __call_exitprocs --ignore __do_global_ctors_aux --ignore exit --ignore register_tm_clones
+snd_STACK_ARGS := --edge snd_run:bus_fetch --edge snd_run:bus_store --edge chan_step:bus_fetch --ignore __call_exitprocs --ignore __do_global_ctors_aux --ignore exit --ignore register_tm_clones
 
 DATA     := carga
 carga_FILE := tests/roms/homebrew/carga.nds
