@@ -5,10 +5,17 @@
 typedef struct rsx3d_stats {
     uint32_t polys, draws, textures, uploaded, cache_hits;
     uint32_t draws_before, state_changes;
-    uint64_t identity_us, vertex_us, lookup_us, decode_us, upload_us;
+    uint64_t identity_us, vertex_us, state_us, lookup_us, decode_us, upload_us;
     uint64_t raster_ns, export_ns;
     uint64_t prepare_us, copy_us, total_us, wait_us, reuse_us;
 } rsx3d_stats;
+struct spukit_worker;
+void rsx3d_decode_worker(struct spukit_worker *worker);
+/* Llamar después de encolar el raster de respaldo: tiene prioridad sobre RGBA8. */
+void rsx3d_decode_kick(void);
+void rsx3d_decode_drain(void);
+int rsx3d_decode_test(void);
+int rsx3d_decode_raster_test(const r3d_job *job);
 int rsx3d_init(void);
 int rsx3d_selftest(void);
 int rsx3d_reference_test(void);

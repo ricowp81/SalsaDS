@@ -21,6 +21,12 @@
 #include "toon_fpo.h"
 #include "toon_w_fpo.h"
 #include "gpu3d/rsx_modes.h"
+#include "gpu3d/rsx_vertex.h"
+#include "spu/rsxprep/job.h"
+#include "spu/raster3d/job.h"
+#include <spukit/spukit.h>
+#include "spu_rsxprep_bin.h"
+_Static_assert(sizeof(rsx3d_vertex) == sizeof(rsxkit_vertex), "formato de vértices RSX");
 
 #define ARENA (24u * 1024u * 1024u)
 #define TEX_BYTES (16u * 1024u * 1024u)
@@ -32,6 +38,7 @@
 _Static_assert(GX_MAX_POLYS * (GX_POLY_MAXV - 2u) * 3u * sizeof(rsxkit_vertex) <= 2u * 1024u * 1024u, "vértices por ranura");
 #define PAGE_SIZE 1024u
 #define PAGE_WORDS ((R3D_VRAM_ZERO_OFF / PAGE_SIZE + 31u) / 32u)
+_Static_assert(RSX_DECODE_PAGES == PAGE_WORDS, "máscara de páginas compartida");
 static uint8_t *mem;
 static uint32_t offset, used, nc;
 static rsxkit_target *target;
@@ -61,7 +68,7 @@ void rsx3d_identity_versions(uint64_t vram_ea, const uint64_t *versions)
     version_ea = vram_ea; next_versions = versions;
 }
 static int ready;
-static int unbatched, old_prepare, coarse_cache, profile;
+static int unbatched, old_prepare, coarse_cache, profile, scalar_vertices;
 static uint64_t tick_hz;
 static uint64_t ticks(void)
 {
@@ -77,8 +84,80 @@ static const r3d_job *cur;
 static struct cache_entry {
     uint32_t key, pal, pages[PAGE_WORDS];
     int valid;
+    uint32_t rows, wanted;
     rsxkit_texture tx;
 } cache[CACHE_N];
+/* Parámetros fríos separados de las claves consultadas por cada polígono. */
+static r3d_tex cache_source[CACHE_N];
+static spukit_worker *decode_worker;
+static int decode_owned, decode_ppe, decode_missing, decode_error;
+static uint32_t decode_seq, decode_count, decode_index[CACHE_N];
+static rsx_decode_item decode_items[CACHE_N] __attribute__((aligned(128)));
+static rsx_decode_job decode_job;
+static unsigned cold_frames, busy_frames, decode_batches;
+static uint64_t decode_ticks, decode_pixels;
+static int decode_check(const rsx_decode_item *d, const rsx_decode_job *job);
+static int decode_verify;
+/* La instantánea y las entradas no se modifican hasta retirar este lote. */
+static int decode_collect(void)
+{
+    if (!decode_seq) return 1;
+    if (!spukit_done(decode_worker, decode_seq)) { busy_frames++; return 0; }
+    const spukit_result *r = spukit_wait(decode_worker, decode_seq);
+    decode_seq = 0;
+    if (!r || r->error) { decode_error = 1; return 0; }
+    decode_ticks += r->ticks;
+    for (unsigned i = 0; i < decode_count; i++) {
+        decode_pixels += decode_items[i].rows * (1u << decode_items[i].tex.sl);
+        if (decode_verify && decode_check(&decode_items[i], &decode_job)) { decode_error = 1; return 0; }
+        struct cache_entry *e = &cache[decode_index[i]];
+        for (unsigned k = 0; k < PAGE_WORDS; k++) e->pages[k] |= decode_items[i].pages[k];
+        e->rows += decode_items[i].rows;
+        e->valid = e->rows == e->tx.height;
+    }
+    decode_count = 0;
+    return 1;
+}
+void rsx3d_decode_kick(void)
+{
+    if (!decode_worker || decode_ppe || decode_seq || !decode_count || decode_error) return;
+    decode_seq = spukit_post(decode_worker, JOB_RSX_RGBA8, &decode_job, sizeof decode_job);
+    decode_batches++;
+}
+void rsx3d_decode_drain(void)
+{
+    rsx3d_decode_kick();
+    if (decode_seq) spukit_wait(decode_worker, decode_seq);
+}
+void rsx3d_decode_worker(spukit_worker *worker)
+{
+    if (decode_seq) { spukit_wait(decode_worker, decode_seq); decode_collect(); }
+    if (decode_owned) spukit_worker_stop(decode_worker);
+    decode_owned = 0; decode_worker = worker;
+    decode_count = 0;
+}
+static void decode_plan(void)
+{
+    unsigned remaining = RSX_DECODE_PIXELS;
+    decode_count = 0;
+    for (unsigned k = 0; k < nc && remaining; k++) {
+        struct cache_entry *e = &cache[k];
+        if (!e->wanted || e->valid) continue;
+        unsigned rows = remaining / e->tx.width;
+        if (rows > e->tx.height - e->rows) rows = e->tx.height - e->rows;
+        if (!rows) continue;
+        rsx_decode_item *d = &decode_items[decode_count];
+        memset(d, 0, sizeof *d); d->tex = cache_source[k];
+        d->out_ea = (uint64_t)(uintptr_t)(mem + (e->tx.offset - offset));
+        d->pitch = e->tx.pitch; d->first = e->rows; d->rows = rows;
+        decode_index[decode_count++] = k;
+        remaining -= rows * e->tx.width;
+    }
+    decode_job.items_ea = (uint64_t)(uintptr_t)decode_items;
+    decode_job.vram_ea = (uint64_t)(uintptr_t)(mem + SNAP_OFF);
+    decode_job.count = decode_count;
+    memcpy(decode_job.texslot, old_slots, 16); memcpy(decode_job.palslot, old_slots+4, 24);
+}
 static struct cache_entry *decoding;
 static struct command { rsxkit_draw d; uint32_t first, count, id, tdepth, trans, mode; } command[GX_MAX_POLYS];
 static uint16_t order[GX_MAX_POLYS];
@@ -107,13 +186,64 @@ static uint32_t pal_read(void *unused, uint32_t a)
     decoding->pages[off / PAGE_SIZE / 32u] |= 1u << (off / PAGE_SIZE % 32u);
     return ((const uint8_t *)(uintptr_t)cur->vram_ea)[off];
 }
+static int decode_check(const rsx_decode_item *d, const rsx_decode_job *job)
+{
+    r3d_job j = {0}; j.vram_ea = job->vram_ea;
+    memcpy(j.texslot, job->texslot, 16); memcpy(j.palslot, job->palslot, 24);
+    const r3d_job *saved = cur; struct cache_entry *saved_decoding = decoding;
+    struct cache_entry check = {0}; cur = &j; decoding = &check;
+    unsigned fail = 0;
+    for (unsigned y = d->first; y < d->first+d->rows; y++) for (unsigned x = 0; x < (1u << d->tex.sl); x++) {
+        uint32_t p = r3d_decode(&d->tex, x, y, tex_read, pal_read, NULL);
+        const uint8_t *b = (const uint8_t *)(uintptr_t)d->out_ea + y*d->pitch+x*4;
+        fail += b[0] != R3D_PX_R(p) || b[1] != R3D_PX_G(p) || b[2] != R3D_PX_B(p) || b[3] != R3D_PX_A(p);
+    }
+    fail += memcmp(check.pages, d->pages, sizeof check.pages) != 0;
+    cur = saved; decoding = saved_decoding;
+    if (fail) salsads_log("FALLO RGBA8 SPE: formato %u filas %u+%u diferencias %u", d->tex.fmt, d->first, d->rows, fail);
+    return fail != 0;
+}
+int rsx3d_decode_test(void)
+{
+    if (!decode_worker || decode_ppe) return 0;
+    unsigned fail = 0;
+    rsx_decode_job j = {0};
+    j.items_ea = (uint64_t)(uintptr_t)decode_items;
+    j.vram_ea = (uint64_t)(uintptr_t)(mem+SNAP_OFF); j.count = 1;
+    for (unsigned a = 0; a < R3D_VRAM_ZERO_OFF; a++) mem[SNAP_OFF+a] = (a*73u+(a>>8)) & 255;
+    for (unsigned i = 0; i < 4; i++) j.texslot[i] = i*0x20000u;
+    for (unsigned i = 0; i < 6; i++) j.palslot[i] = 0x80000u+i*0x4000u;
+    for (unsigned fmt = 1; fmt <= 7; fmt++) for (unsigned unmapped = 0; unmapped < 2; unmapped++) {
+        rsx_decode_item *d = decode_items; memset(d, 0, sizeof *d);
+        d->tex.fmt = fmt; d->tex.sl = 7; d->tex.tl = 6; d->tex.addr = 0x1ff80;
+        d->tex.pal = 0x3ff0; d->tex.c0t = unmapped;
+        d->out_ea = (uint64_t)(uintptr_t)mem; d->pitch = 512; d->first = 3; d->rows = 61;
+        j.texslot[1] = unmapped ? R3D_UNMAPPED : 0x20000;
+        j.palslot[1] = unmapped ? R3D_UNMAPPED : 0x84000;
+        uint32_t seq = spukit_post(decode_worker, JOB_RSX_RGBA8, &j, sizeof j);
+        const spukit_result *r = spukit_wait(decode_worker, seq);
+        fail += !r || r->error || decode_check(d, &j);
+    }
+    snapshot_valid = 0;
+    salsads_log("rsx3d RGBA8 SPE: 14 casos, %u fallos", fail);
+    return fail;
+}
+int rsx3d_decode_raster_test(const r3d_job *job)
+{
+    if (!decode_worker || decode_ppe) return 0;
+    r3d_job j = *job; j.band = 16; j.nunits = 1; j.unit = 0; j.bt_ea = 0;
+    uint32_t seq = spukit_post(decode_worker, JOB_RASTER3D, &j, sizeof j);
+    const spukit_result *r = spukit_wait(decode_worker, seq);
+    job_r3d_result result; memcpy(&result, r->data, sizeof result);
+    return r->error || result.rc;
+}
 static int texture(const r3d_tex *t, rsxkit_texture *out, rsx3d_stats *st)
 {
     uint64_t t0 = ticks();
     struct cache_entry *entry = NULL;
     for (uint32_t i = 0; i < nc; i++) {
         if (cache[i].key == t->key && cache[i].pal == t->pkey) {
-            entry = &cache[i];
+            entry = &cache[i]; entry->wanted = 1;
             if (entry->valid) {
                 *out = entry->tx; st->cache_hits++;
                 st->lookup_us += ticks() - t0; goto wrap;
@@ -125,8 +255,12 @@ static int texture(const r3d_tex *t, rsxkit_texture *out, rsx3d_stats *st)
     if (!entry && (nc == CACHE_N || used + pitch * h > TEX_BYTES)) return 0;
     st->lookup_us += ticks() - t0;
     uint32_t dest = entry ? entry->tx.offset - offset : used;
-    if (!entry) { entry = &cache[nc++]; used = (used + pitch * h + 127u) & ~127u; }
-    memset(entry->pages, 0, sizeof entry->pages);
+    if (!entry) {
+        entry = &cache[nc++]; memset(entry, 0, sizeof *entry);
+        used = (used + pitch * h + 127u) & ~127u;
+    }
+    entry->wanted = 1;
+    if (!entry->rows) memset(entry->pages, 0, sizeof entry->pages);
     decoding = entry;
     t0 = ticks();
     memset(out, 0, sizeof *out);
@@ -134,6 +268,10 @@ static int texture(const r3d_tex *t, rsxkit_texture *out, rsx3d_stats *st)
     out->width = w; out->height = h; out->format = RSXKIT_RGBA8888;
     out->location = RSXKIT_MEM_MAIN; out->filter = RSXKIT_FILTER_NEAREST;
     out->xf[0] = 1.0f / w; out->xf[1] = 1.0f / h;
+    if (decode_worker && !decode_ppe) {
+        entry->key = t->key; entry->pal = t->pkey; entry->tx = *out; cache_source[entry-cache] = *t;
+        decode_missing = 1; goto wrap;
+    }
     for (uint32_t y = 0; y < h; y++) for (uint32_t x = 0; x < w; x++) {
         uint32_t p = r3d_decode(t, x, y, tex_read, pal_read, NULL);
         uint8_t *b = mem + dest + y * pitch + x * 4u;
@@ -154,7 +292,12 @@ int rsx3d_init(void)
     if (!mem) return -1;
     memset(mem, 0, ARENA);
     struct stat flag;
+    const int incremental_issue = stat("/dev_hdd0/salsads/3d-rsx-envio-anterior", &flag) != 0;
+    rsxkit_3d_incremental(incremental_issue);
     unbatched = stat("/dev_hdd0/salsads/3d-rsx-sin-lotes", &flag) == 0;
+    decode_verify = stat("/dev_hdd0/salsads/3d-rsx-prueba", &flag) == 0;
+    decode_ppe = stat("/dev_hdd0/salsads/3d-rsx-texturas-ppe", &flag) == 0;
+    scalar_vertices = stat("/dev_hdd0/salsads/3d-rsx-vertices-ppe", &flag) == 0;
     old_prepare = stat("/dev_hdd0/salsads/3d-rsx-preparacion-anterior", &flag) == 0;
     full_identity = stat("/dev_hdd0/salsads/3d-rsx-identidad-completa", &flag) == 0;
     coarse_cache = stat("/dev_hdd0/salsads/3d-rsx-cache-gruesa", &flag) == 0;
@@ -165,6 +308,9 @@ int rsx3d_init(void)
     shadow_general = stat("/dev_hdd0/salsads/3d-rsx-sombra-general", &flag) == 0;
     shadow_spe = stat("/dev_hdd0/salsads/3d-rsx-sombra-spe", &flag) == 0;
     toon_spe = stat("/dev_hdd0/salsads/3d-rsx-toon-spe", &flag) == 0;
+    salsads_log("rsx3d preparación: vértices %s, RGBA8 %s, envío %s; presupuesto %u texeles",
+                scalar_vertices || old_prepare ? "escalar PPE" : "VMX PPE",
+                decode_ppe ? "PPE" : "SPE por lotes", incremental_issue ? "incremental" : "anterior", RSX_DECODE_PIXELS);
     tick_hz = sysGetTimebaseFrequency();
     for (unsigned slot = 0; slot < 2; slot++)
         memset(mem + OUT_OFF(slot) + R3D_W * R3D_H * 4u, 31, 512);
@@ -182,10 +328,18 @@ int rsx3d_init(void)
     if (!target || !depth || !output[0] || !output[1] || !shade || !shade_w || !pack || !toon || !toon_w || !shadow || !shadow_w || !mask || !mask_w || !fog || !fog_w) return -1;
     reason = "Z nativa; W por fragmento";
     ready = 1;
+    if (!decode_ppe && (stat("/dev_hdd0/salsads/3d-rsx-prueba", &flag) == 0 ||
+                       stat("/dev_hdd0/salsads/autotest", &flag) == 0)) {
+        spukit_init(6);
+        decode_worker = spukit_worker_start(spu_rsxprep_bin, "rsx-prep", 0);
+        decode_owned = decode_worker != NULL;
+        if (!decode_worker) return -1;
+    }
     return 0;
 }
 void rsx3d_shutdown(void)
 {
+    rsx3d_decode_worker(NULL);
     rsxkit_finish();
     rsxkit_program_destroy(fog); rsxkit_program_destroy(fog_w);
     rsxkit_program_destroy(shadow); rsxkit_program_destroy(shadow_w);
@@ -245,7 +399,10 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     uint32_t ncmd = 0, nv = 0;
     memset(st, 0, sizeof *st);
     last_valid = 0;
-    if (!ready) { reason = "sin recursos"; return -1; }
+    if (!ready || decode_error) { reason = "sin recursos o fallo de RGBA8"; return -1; }
+    if (!decode_collect()) { reason = "texturas SPE pendientes"; return decode_error ? -1 : 0; }
+    decode_count = 0; decode_missing = 0;
+    for (unsigned k = 0; k < nc; k++) cache[k].wanted = 0;
     if (!f || (j->flags & R3D_F_BLANK)) { reason = "cuadro vacío"; return 0; }
     if (f->npolys > GX_MAX_POLYS || f->nverts > GX_MAX_VERTS) return -1;
     st->polys = f->npolys;
@@ -393,7 +550,7 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
         for (uint32_t i = 0; i < nc; i++) for (unsigned w = 0; w < PAGE_WORDS; w++) {
             if (coarse_cache ? changed[w] != 0 : (changed[w] & cache[i].pages[w]) != 0) {
                 if (coarse_cache) { used = nc = 0; break; }
-                cache[i].valid = 0; break;
+                cache[i].valid = 0; cache[i].rows = 0; break;
             }
         }
     }
@@ -401,11 +558,12 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     if (versions) memcpy(old_versions, versions, sizeof old_versions);
     st->identity_us = ticks() - t0;
     cur = j;
-    rsxkit_vertex *v = (rsxkit_vertex *)(void *)(mem + VERT_OFF(slot));
+    rsx3d_vertex *v = (rsx3d_vertex *)(void *)(mem + VERT_OFF(slot));
     for (uint32_t i = 0; i < f->npolys; i++) {
         t0 = ticks();
         const gx_poly *gp = &f->poly[order[i]];
-        const gx_vertex *vv[GX_POLY_MAXV]; r3d_poly p = {0};
+        const gx_vertex *vv[GX_POLY_MAXV]; r3d_poly p;
+        if (old_prepare) memset(&p, 0, sizeof p);
         for (uint32_t k = 0; k < gp->nverts; k++) vv[k] = &f->vtx[gp->vidx[k]];
         if (!prepare_poly(&p, gp, vv, &rs)) continue;
         struct command *c = &command[ncmd++]; memset(c, 0, sizeof *c);
@@ -439,7 +597,7 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
             d->program = rs.wbuf ? toon_w : toon; d->ntex = 2;
             d->k[1][0][2] = !!(rs.d3 & D3_HIGHLIGHT);
         }
-        st->vertex_us += ticks() - t0;
+        st->state_us += ticks() - t0;
         /* Sin textura: una textura blanca de 8x8 propia, colocada fuera de la arena. */
         if (p.textured) {
             if (!texture(&p.tex, &d->tex[0], st)) { reason = "arena de texturas llena"; used = nc = 0; return 0; }
@@ -450,23 +608,26 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
             d->tex[0].location = RSXKIT_MEM_MAIN; d->tex[0].format = RSXKIT_RGBA8888;
             d->tex[0].filter = RSXKIT_FILTER_NEAREST;
         }
+        if (decode_missing) continue;
         t0 = ticks();
-        rsxkit_vertex pv[GX_POLY_MAXV];
+        rsx3d_vertex pv[GX_POLY_MAXV];
         int count = old_prepare ? (p.n - 2) * 3 : p.n;
         for (int a = 0; a < count; a++) {
             int ix = old_prepare ? (a % 3 ? a / 3 + a % 3 : 0) : a;
-            const gx_vertex *g = vv[ix]; rsxkit_vertex *b = old_prepare ? &v[nv++] : &pv[ix];
-            float w = (float)p.v[ix].w;
-            memset(b, 0, sizeof *b);
-            b->pos[0] = g->sx * w; b->pos[1] = g->sy * w;
-            b->pos[2] = (g->z / 16777215.0f) * w; b->pos[3] = w;
-            b->st[0] = g->s / 16.0f; b->st[1] = g->t / 16.0f;
-            b->rgba[0] = g->r; b->rgba[1] = g->g; b->rgba[2] = g->b; b->rgba[3] = 255;
+            const gx_vertex *g = vv[ix]; rsx3d_vertex *b = old_prepare ? &v[nv++] : &pv[ix];
+            if (scalar_vertices || old_prepare) rsx3d_vertex_scalar(b, g, p.v[ix].w);
+            else rsx3d_vertex_vector(b, g, p.v[ix].w);
         }
         if (!old_prepare) for (int k = 1; k + 1 < p.n; k++) {
             v[nv++] = pv[0]; v[nv++] = pv[k]; v[nv++] = pv[k+1];
         }
         st->vertex_us += ticks() - t0;
+    }
+    if (decode_missing) {
+        decode_plan(); cold_frames++;
+        reason = "texturas SPE pendientes";
+        st->prepare_us = sysGetSystemTime() - start - st->reuse_us;
+        return 0;
     }
     st->polys = ncmd;
     uint32_t batches = 0;
@@ -494,6 +655,7 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     st->lookup_us = st->lookup_us * 1000000u / tick_hz;
     st->decode_us = st->decode_us * 1000000u / tick_hz;
     st->vertex_us = st->vertex_us * 1000000u / tick_hz;
+    st->state_us = st->state_us * 1000000u / tick_hz;
     st->upload_us = st->upload_us * 1000000u / tick_hz;
     st->prepare_us = sysGetSystemTime() - start - st->reuse_us;
     if (rsxkit_bind(target, depth, R3D_W, R3D_H)) return -1;
@@ -614,7 +776,12 @@ int rsx3d_submit(const r3d_job *j, unsigned slot, rsx3d_stats *st)
 {
     static unsigned frames, rendered, counts[RSX_MODE_COUNT];
     if (slot > 1 || flight[slot].pending) return -1;
+    uint64_t start = sysGetSystemTime();
     int result = render_frame(j, slot, st);
+    if (result <= 0) {
+        st->total_us = sysGetSystemTime() - start;
+        st->prepare_us = st->total_us - st->reuse_us;
+    }
     /* Un error tras emitir órdenes también debe proteger la caché. */
     if (result < 0) { texture_fence = rsxkit_fence(); rsxkit_fence_wait(texture_fence); }
     const gx_frame *f = (const gx_frame *)(uintptr_t)j->frame_ea;
@@ -625,6 +792,10 @@ int rsx3d_submit(const r3d_job *j, unsigned slot, rsx3d_stats *st)
         salsads_log("DATO rsx3d censo: cuadros %u modo RSX %u SPE %u; imagen-borrado %u niebla %u bordes %u toon %u resaltado %u mascara-sombra %u sombra %u igualdad %u alambre %u",
                     frames, rendered, frames-rendered, counts[0], counts[1], counts[2], counts[3],
                     counts[4], counts[5], counts[6], counts[7], counts[8]);
+        salsads_log("DATO rsx3d frio: cuadros pendientes %u ocupado %u lotes %u; presupuesto %u texeles, espera PPE 0; SPE %.3f ms, texeles %llu",
+                    cold_frames, busy_frames, decode_batches, RSX_DECODE_PIXELS,
+                    decode_ticks * 1000.0 / spukit_tick_hz(), (unsigned long long)decode_pixels);
+        cold_frames = busy_frames = decode_batches = 0; decode_ticks = decode_pixels = 0;
         frames = rendered = 0; memset(counts, 0, sizeof counts);
     }
     return result;
@@ -651,5 +822,13 @@ int rsx3d_wait(unsigned slot, rsx3d_stats *st)
 int rsx3d_render(const r3d_job *j, rsx3d_stats *st)
 {
     int result = rsx3d_submit(j, 0, st);
+    /* Solo la API síncrona del diagnóstico precalienta. En juego submit nunca
+     * espera RGBA8: kick se hace después de publicar el cuadro de respaldo. */
+    for (unsigned retry = 0; !result && decode_worker &&
+         !strcmp(reason, "texturas SPE pendientes") && retry < 512; retry++) {
+        rsx3d_decode_kick();
+        if (decode_seq) spukit_wait(decode_worker, decode_seq);
+        result = rsx3d_submit(j, 0, st);
+    }
     return result > 0 ? rsx3d_wait(0, st) : result;
 }

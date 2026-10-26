@@ -22,7 +22,14 @@
 _Static_assert(sizeof(job_r3d_result) <= 112, "el resultado de un trabajo de spukit es de 112 bytes");
 _Static_assert(sizeof(r3d_job) <= 112, "los parámetros de un trabajo de spukit son de 112 bytes");
 
+#ifdef RSX_PREP
+#include "spu/rsxprep/decode.h"
+static union { r3d_ctx raster; rsx_decode_local prep; } storage;
+#define ctx storage.raster
+_Static_assert(sizeof(rsx_decode_local) <= sizeof(r3d_ctx), "reserva temporal de RGBA8");
+#else
 static r3d_ctx ctx;
+#endif
 
 static int handler(void *user, const spukit_job *job, spukit_result *res)
 {
@@ -31,6 +38,12 @@ static int handler(void *user, const spukit_job *job, spukit_result *res)
 	(void)user;
 	memset(&out, 0, sizeof out);
 	out.ctx_bytes = sizeof ctx;
+#ifdef RSX_PREP
+    if (job->kind == JOB_RSX_RGBA8 && job->size >= sizeof(rsx_decode_job)) {
+        rsx_decode_job j; memcpy(&j, job->data, sizeof j);
+        return rsx_decode_run(&storage.prep, &j);
+    }
+#endif
 	if (job->kind == JOB_RASTER3D && job->size >= sizeof(r3d_job)) {
 		r3d_job j;
 

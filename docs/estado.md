@@ -5,6 +5,17 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-25 — RSX fase 2, cuarta ronda: preparación y envío
+- Base PS3 `abddb45`, MKDS misma pista: preparación 1,13 ms y envío 0,59; emulación RSX 11,36 frente a SPE 10,37; cuadros >20 ms 22,9 frente a 12,6/120.
+- Vértices VMX con división Z escalar exacta; armado separado en el perfil y sin limpiar campos de aristas que RSX no consume.
+- RGBA8 en el segundo SPE del raster: doble búfer, lotes de hasta 65 536 texeles después del respaldo; instantánea inmutable, publicación solo al completar y sin espera PPE en juego.
+- Constantes y stencil incrementales en `rsxkit` (MIT); formato DS y decodificador en `src/` (GPL-2.0-or-later).
+- Interruptores: `3d-rsx-vertices-ppe`, `3d-rsx-texturas-ppe`, `3d-rsx-envio-anterior`; se conserva `3d-rsx-sin-solapar`.
+- Validación: LE/SAN, ROMs BE, hashes y lockstep correctos; solo 34 fallos BE conocidos. Dirigidas LE/BE 871 923 por orden, 0 fallos; build completo correcto.
+- RPCS3: autoprueba 0 fallos, 16 cuadros solapados exactos, 176 mapas iguales a ronda 3 y 177 iguales A/B. RGBA8 14 casos, alternancia raster y publicación e invalidación entre lotes correctas; holgura nueva 13 840 B, mínima global 8432 B.
+- Entrega «SalsaDS RSX»/SLDS00030: `build/salsads-rsx3d-fase2-4.pkg`; SHA-256, guion y evidencia en `build/rsx3d-fase2-4/`. Verificadores en 0; sin envío ni publicación.
+- Riesgo: el trabajador de RGBA8 usa 448 celdas al rasterizar; su lote puede retrasar el respaldo siguiente. La meta preparación+envío ≤0,3 ms y la ausencia de tirones requieren PS3 real.
+
 ## 2026-10-25 — RSX fase 2, tercera ronda: solapamiento con emulación
 - Integrada la identidad incremental de `6a03335`, conservando pruebas y documentación de ambas ramas.
 - Cola común RSX/SPE: envío sin esperar, dos ranuras de vértices/tabla toon/exportación/estadísticas y etiquetas por trabajo; captura DISPCAPCNT retira el resultado antes de leerlo.

@@ -60,7 +60,12 @@ struct vprog {
 	int block;  /* constantes consecutivas: se suben de una vez */
 };
 
+static int incremental;
+void rsxkit_3d_incremental(int enabled) { incremental = !!enabled; }
+
 static struct {
+	int stencil_valid;
+	uint64_t stencil_key;
 	int ready;
 	struct vprog prog[2];   /* 0: el de siempre; 1: con posiciones interpoladas */
 	rsxFragmentProgram *fp[3];
@@ -229,6 +234,7 @@ static void fixed_state(void)
 	/* Forzar que el primer dibujo ponga todo. */
 	d3.blend = d3.cull = d3.depth = d3.alpha_ref = 0xFF;
 	d3.line_width = 0;
+	d3.stencil_valid = 0;
 	d3.tex[0].valid = d3.tex[1].valid = 0;
 	rsxkit_bound.scissor_valid = 0;
 	g->state_valid = 1;
@@ -435,16 +441,21 @@ static void set_constants(const rsxkit_draw *d, const struct vprog *p)
 		if (fog_term >= 0)
 			c[C_FOGSEL + fog_term / 4][fog_term % 4] = 1.0f;
 	}
-	if (d3.c_valid && !memcmp(c, d3.c, sizeof c))
-		return;
-	memcpy(d3.c, c, sizeof c);
+	unsigned first = 0, end = NCONST;
+	if (d3.c_valid) {
+		while (first < end && !memcmp(c[first], d3.c[first], sizeof c[0])) first++;
+		if (first == end) return;
+		while (end > first && !memcmp(c[end-1], d3.c[end-1], sizeof c[0])) end--;
+	}
+	if (!incremental) { first = 0; end = NCONST; }
+	memcpy(d3.c + first, c + first, (end - first) * sizeof c[0]);
 	d3.c_valid = 1;
 	if (p->block) {
-		/* No rsxSetVertexProgramConstants: en PSL1GHT f649a08 avanza el
-		 * búfer de comandos dos veces (docs/rsx-notes.md). */
-		rsxLoadVertexProgramParameterBlock(ctx, p->const_start + p->consts[0]->index, NCONST, &c[0][0]);
+		/* Un tramo contiguo, con los mismos valores y registros del bloque completo. */
+		rsxLoadVertexProgramParameterBlock(ctx, p->const_start + p->consts[first]->index,
+		                                   end - first, &c[first][0]);
 	} else {
-		for (int i = 0; i < NCONST; i++)
+		for (unsigned i = first; i < end; i++)
 			rsxSetVertexProgramParameter(ctx, p->vp, p->consts[i], c[i]);
 	}
 }
@@ -514,12 +525,18 @@ void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
 		set_zconst(d->depth & RSXKIT_DEPTH_CONST ? (d->z < 0.0f ? 0.0f : d->z > 1.0f ? 1.0f : d->z) : -1.0f);
 	set_cull(d->cull);
 	set_alpha(d->alpha_ref);
-	rsxSetStencilTestEnable(ctx, d->stencil ? GCM_TRUE : GCM_FALSE);
-	if (d->stencil) {
-		rsxSetStencilMask(ctx, d->stencil_write_mask);
-		rsxSetStencilFunc(ctx, d->stencil == 2 ? GCM_NOTEQUAL : d->stencil == 3 ? GCM_EQUAL : GCM_ALWAYS, d->stencil_ref, d->stencil_compare_mask);
-		rsxSetStencilOp(ctx, GCM_KEEP, d->stencil_zfail == 2 ? GCM_ZERO : d->stencil_zfail ? GCM_REPLACE : GCM_KEEP,
-		                d->stencil_op == 2 ? GCM_KEEP : d->stencil_op ? GCM_INVERT : GCM_REPLACE);
+	uint64_t sk = (uint64_t)d->stencil | ((uint64_t)d->stencil_ref << 8) |
+	              ((uint64_t)d->stencil_compare_mask << 16) | ((uint64_t)d->stencil_write_mask << 24) |
+	              ((uint64_t)d->stencil_op << 32) | ((uint64_t)d->stencil_zfail << 40);
+	if (!incremental || !d3.stencil_valid || d3.stencil_key != sk) {
+		rsxSetStencilTestEnable(ctx, d->stencil ? GCM_TRUE : GCM_FALSE);
+		if (d->stencil) {
+			rsxSetStencilMask(ctx, d->stencil_write_mask);
+			rsxSetStencilFunc(ctx, d->stencil == 2 ? GCM_NOTEQUAL : d->stencil == 3 ? GCM_EQUAL : GCM_ALWAYS, d->stencil_ref, d->stencil_compare_mask);
+			rsxSetStencilOp(ctx, GCM_KEEP, d->stencil_zfail == 2 ? GCM_ZERO : d->stencil_zfail ? GCM_REPLACE : GCM_KEEP,
+			                d->stencil_op == 2 ? GCM_KEEP : d->stencil_op ? GCM_INVERT : GCM_REPLACE);
+		}
+		d3.stencil_key = sk; d3.stencil_valid = 1;
 	}
 	for (int i = 0; i < ntex; i++)
 		set_texture(i, &d->tex[i]);

@@ -80,11 +80,12 @@
 #include "rsxkit/rsxkit.h"
 #ifdef NUCLEO_RSX
 #include "platform/ps3/rsx3d/rsx3d.h"
+#include "spu_rsxprep_bin.h"
 static int rsx3d_on, rsx3d_sync;
 static struct {
     uint64_t prepare, label, reuse, copy, issue, raster, export, comp[2];
     uint64_t interval, emu, begin, screen;
-    unsigned frames, rsx, spe;
+    unsigned frames, rsx, spe, over20;
 } rsx_pipe;
 #endif
 #include "rsxkit/text.h"
@@ -1836,6 +1837,7 @@ static void r3d_spe_submit(void *ctx, int set, r3d_job *j)
 			if (rsx3d_sync) r3d_spe_wait(NULL, set);
 			return;
 		}
+		rsx_pipe.prepare += st.prepare_us; rsx_pipe.reuse += st.reuse_us;
 		if (ok < 0) { rsx3d_on = 0; salsads_log("FALLO envío RSX; respaldo SPE"); }
 	}
 	rsx_pipe.spe++;
@@ -1852,6 +1854,12 @@ static void r3d_spe_submit(void *ctx, int set, r3d_job *j)
 		jj.bt_ea = (uint64_t)(uintptr_t)r3d_bt[e->slot];
 		e->seq[u] = spukit_post(wk3d[u], JOB_RASTER3D, &jj, sizeof jj);
 	}
+#ifdef NUCLEO_RSX
+    if (rsx3d_on) {
+        uint64_t kick_start = now_us(); rsx3d_decode_kick();
+        rsx_pipe.issue += now_us() - kick_start;
+    }
+#endif
 }
 
 /* Autoprueba durante la prueba automática: la capa 3D de los SPE contra la referencia del PPE sobre el mismo cuadro */
@@ -1906,10 +1914,10 @@ static void r3d_wait_one(void)
 				    st.raster_ns / 1e6, st.export_ns / 1e6, st.prepare_us / 1e3, st.copy_us / 1e3,
 				    st.total_us / 1e3, st.wait_us / 1e3, st.reuse_us / 1e3);
 			if ((rsx_pipe.rsx % 120u) == 1 && (st.vertex_us || st.identity_us))
-				salsads_log("DATO rsx3d etapas: dibujos %u -> %u, estados lógicos %u, identidad %llu vértices %llu búsqueda %llu RGBA8 %llu subida %llu us",
+				salsads_log("DATO rsx3d etapas: dibujos %u -> %u, estados lógicos %u, identidad %llu vértices %llu búsqueda %llu RGBA8 %llu subida %llu estados %llu us",
 				    st.draws_before, st.draws, st.state_changes,
 				    (unsigned long long)st.identity_us, (unsigned long long)st.vertex_us,
-				    (unsigned long long)st.lookup_us, (unsigned long long)st.decode_us, (unsigned long long)st.upload_us);
+				    (unsigned long long)st.lookup_us, (unsigned long long)st.decode_us, (unsigned long long)st.upload_us, (unsigned long long)st.state_us);
 		}
 		r3q.head = (r3q.head + 1u) & 1u;
 		r3q.count--;
@@ -2007,6 +2015,10 @@ static int r3d_spe_selftest(void)
 	static uint32_t ref[R3D_W * R3D_H] __attribute__((aligned(128))), out[R3D_W * R3D_H] __attribute__((aligned(128)));
 	static const uint32_t seeds[] = { 3, 8, 21, 40 };
 	int bad = 0;
+#ifdef NUCLEO_RSX
+    const int saved_rsx = rsx3d_on;
+    rsx3d_on = 0; /* Esta prueba compara los trabajadores del raster, sin pasar por RSX. */
+#endif
 
 	/* primero la aritmética de r3d_px.h, función por función */
 	{
@@ -2082,6 +2094,9 @@ static int r3d_spe_selftest(void)
 			r3d_dump_ppm(seeds[k], "ppe", ref);
 		}
 	}
+#ifdef NUCLEO_RSX
+    rsx3d_on = saved_rsx;
+#endif
 	return bad;
 }
 
@@ -2250,16 +2265,17 @@ static void render_frame(void)
 	rsxkit_frame_end();
 #ifdef NUCLEO_RSX
 	rsx_pipe.interval += cur_stats.frame_us;
+	rsx_pipe.over20 += cur_stats.frame_us > 20000;
 	rsx_pipe.emu += tb_us(tb3 - tb2);
 	rsx_pipe.begin += tb_us(tb1 - tb0);
 	rsx_pipe.screen += tb_us(tb5 - tb4);
 	if (++rsx_pipe.frames == 120) {
-		salsads_log("DATO rsx3d cuadro: %s; cuadros %u RSX %u SPE %u; medias ms intervalo %.3f emulación %.3f flip %.3f preparación %.3f envío %.3f etiqueta %.3f reutilización %.3f copia %.3f raster %.3f exportación %.3f compositor-A %.3f compositor-B %.3f recogida-2D %.3f",
+		salsads_log("DATO rsx3d cuadro: %s; cuadros %u RSX %u SPE %u; medias ms intervalo %.3f emulación %.3f flip %.3f preparación %.3f envío %.3f etiqueta %.3f reutilización %.3f copia %.3f raster %.3f exportación %.3f compositor-A %.3f compositor-B %.3f recogida-2D %.3f; cuadros >20 ms %u",
 		    !rsx3d_on ? "SPE" : rsx3d_sync ? "síncrono" : "solapado", rsx_pipe.frames, rsx_pipe.rsx, rsx_pipe.spe,
 		    rsx_pipe.interval / 120e3, rsx_pipe.emu / 120e3, rsx_pipe.begin / 120e3,
 		    rsx_pipe.prepare / 120e3, rsx_pipe.issue / 120e3, rsx_pipe.label / 120e3,
 		    rsx_pipe.reuse / 120e3, rsx_pipe.copy / 120e3, rsx_pipe.raster / 120e6,
-		    rsx_pipe.export / 120e6, rsx_pipe.comp[0] / 120e3, rsx_pipe.comp[1] / 120e3, rsx_pipe.screen / 120e3);
+		    rsx_pipe.export / 120e6, rsx_pipe.comp[0] / 120e3, rsx_pipe.comp[1] / 120e3, rsx_pipe.screen / 120e3, rsx_pipe.over20);
 		memset(&rsx_pipe, 0, sizeof rsx_pipe);
 	}
 #endif
@@ -2860,7 +2876,7 @@ int main(void)
 			if (rsx3d_on && (salsads_autotest() || stat(SALSADS_DATA_DIR "/3d-rsx-prueba", &st) == 0) && rsx3d_selftest() != 0) rsx3d_on = 0;
 			salsads_log("3d-rsx: %s; Z nativa y W por fragmento, respaldo SPE por modo no soportado", rsx3d_on ? "activo" : "sin recursos");
 		}
-		/* Reproductor aislado de fase 0: no arranca CPUs ni SPE. */
+		/* Reproductor aislado: sin CPUs emuladas; prueba el SPE de RGBA8 y su respaldo raster. */
 		if (stat(SALSADS_DATA_DIR "/3d-rsx-prueba", &st) == 0) {
 			int requested = stat(SALSADS_DATA_DIR "/3d-rsx", &st) == 0 && stat(SALSADS_DATA_DIR "/3d-spe", &st) != 0;
 			int failed = requested ? !rsx3d_on : rsx3d_reference_test() != 0;
@@ -2871,6 +2887,7 @@ int main(void)
 			return failed;
 		}
 	}
+    rsx3d_decode_worker(NULL);
 #endif
 	if (rsxkit_ui_init() != 0) {
 		salsads_log("RESULTADO nucleo: FALLO rsxkit_ui_init");
@@ -2917,8 +2934,19 @@ int main(void)
 	if (spu_on) {
 		struct stat xst;
 		const int use_xdr = stat(R3D_XDR_FLAG, &xst) == 0;
-		for (int u = 0; u < 2; u++)
-			wk3d[u] = spukit_worker_start(use_xdr ? spu_raster3d_xdr_bin : spu_raster3d_bin, u ? "r3d-1" : "r3d-0", 0);
+        const void *raster_program = use_xdr ? spu_raster3d_xdr_bin : spu_raster3d_bin;
+        for (int u = 0; u < 2; u++) {
+            const void *program = raster_program;
+#ifdef NUCLEO_RSX
+            struct stat prep_flag;
+            if (u == 1 && rsx3d_on && stat(SALSADS_DATA_DIR "/3d-rsx-texturas-ppe", &prep_flag) != 0)
+                program = spu_rsxprep_bin;
+#endif
+            wk3d[u] = spukit_worker_start(program, u ? "r3d-1" : "r3d-0", 0);
+        }
+#ifdef NUCLEO_RSX
+        if (rsx3d_on && wk3d[1]) rsx3d_decode_worker(wk3d[1]);
+#endif
 		if (wk3d[0] && wk3d[1]) {
 			if (r3d_spe_selftest() == 0) {
 				r3d_on = 1;
@@ -3178,6 +3206,9 @@ int main(void)
 		}
 	}
 	/* Fin de la aplicación: ahora sí se detienen los SPE y el audio */
+#ifdef NUCLEO_RSX
+    rsx3d_decode_worker(NULL);
+#endif
 	salsads_log("salida: deteniendo los SPE y el audio");
 	if (wk_snd)
 		spukit_worker_stop(wk_snd);

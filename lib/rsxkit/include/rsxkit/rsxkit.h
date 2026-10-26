@@ -421,6 +421,8 @@ void rsxkit_vertices(uint32_t offset, uint8_t location);
  * está). Hasta el próximo rsxkit_vertices, que lo apaga. */
 void rsxkit_vertices_prev(uint32_t offset, uint8_t location, float t);
 /* Triángulos sueltos: vértices first .. first + count − 1 del arreglo. */
+/* Optativo: 1 envía solo constantes/stencil cambiados; 0 (inicial) envía completos. */
+void rsxkit_3d_incremental(int enabled);
 void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count);
 
 /* ---- Un destino como textura y de vuelta a la memoria principal --------------

@@ -5,6 +5,7 @@
 #include "platform/ps3/log.h"
 #include "gpu3d/r3d_px.h"
 #include "gpu3d/rsx_replay.h"
+#include "gpu3d/rsx_vertex.h"
 #include "rsxkit/rsxkit.h"
 #include "platform/ps3/autotest.h"
 #include <sys/systime.h>
@@ -506,6 +507,66 @@ static unsigned cache_tests(r3d_job *j)
     }
     return fail;
 }
+/* Una textura mayor que el presupuesto no publica filas incompletas. Una
+ * escritura entre lotes obliga a rehacer lo ya decodificado de esa página. */
+static unsigned cold_tests(r3d_job *j)
+{
+    struct stat flag;
+    if (stat("/dev_hdd0/salsads/3d-rsx-texturas-ppe", &flag) == 0) return 0;
+    unsigned fail = 0;
+    memset(&frame, 0, sizeof frame); memset(vram, 0, sizeof vram);
+    frame.npolys = 1; frame.nverts = 4; frame.regs.clear_depth = 0x7fff;
+    frame.regs.disp3dcnt = D3_TEXTURE;
+    quad(0, 1, 31, 63, 63, 63, 1);
+    frame.poly[0].texparam = (7u << 26) | (6u << 20) | (6u << 23);
+    for (unsigned i = 0; i < 4; i++) {
+        j->texslot[i] = 0;
+        frame.vtx[i].s = (i == 1 || i == 2) ? 511*16 : 0;
+        frame.vtx[i].t = i >= 2 ? 511*16 : 0;
+    }
+    /* Color uniforme: esta prueba mide vida útil, no precisión del muestreo. */
+    for (unsigned i = 0; i < 0x20000; i += 2) { vram[i] = 31; vram[i+1] = 0x80; }
+    memset(output, 0xcd, sizeof output);
+    rsx3d_stats st;
+    int first = rsx3d_submit(j, 0, &st);
+    fail += first != 0;
+    fail += output[0] != 0xcdcdcdcdu;
+    rsx3d_decode_drain();
+    for (unsigned i = 0; i < 0x20000; i += 2) { vram[i] = 0xe0; vram[i+1] = 0x83; }
+    int changed = rsx3d_submit(j, 0, &st);
+    fail += changed != 0;
+    fail += output[0] != 0xcdcdcdcdu;
+    rsx3d_decode_drain();
+    int ready = rsx3d_render(j, &st);
+    fail += ready != 1;
+    r3d_render_ref(&frame, vram, j->texslot, j->palslot, 0, reference);
+    unsigned different = 0;
+    for (unsigned i = 0; i < R3D_W*R3D_H; i++) different += output[i] != reference[i];
+    fail += different != 0;
+    salsads_log("rsx3d frío: estados %d/%d/%d, distintos %u, publicación aplazada e invalidación entre lotes, %u fallos",
+                first, changed, ready, different, fail);
+    if (fail) { save_pixels("rsx3d-frio-rsx", output); save_pixels("rsx3d-frio-ref", reference); }
+    return fail;
+}
+/* Muestreo de un texel aislado: mapa diagnóstico A/B, separado de la
+ * prueba de publicación. La precisión global RSX/DS no está certificada. */
+static unsigned cold_sampling_probe(r3d_job *j)
+{
+    memset(&frame, 0, sizeof frame); memset(vram, 0, sizeof vram);
+    frame.npolys = 1; frame.nverts = 4; frame.regs.clear_depth = 0x7fff;
+    frame.regs.disp3dcnt = D3_TEXTURE;
+    quad(0, 1, 31, 63, 63, 63, 1);
+    frame.poly[0].texparam = (7u << 26) | (6u << 20) | (6u << 23);
+    for (unsigned i = 0; i < 4; i++) { j->texslot[i] = 0; frame.vtx[i].s = frame.vtx[i].t = 8; }
+    vram[0] = 0xe0; vram[1] = 0x83;
+    rsx3d_stats st; int result = rsx3d_render(j, &st);
+    r3d_render_ref(&frame, vram, j->texslot, j->palslot, 0, reference);
+    unsigned different = 0;
+    for (unsigned i = 0; i < R3D_W*R3D_H; i++) different += output[i] != reference[i];
+    save_pixels("rsx3d-frio-muestreo", output);
+    salsads_log("rsx3d diagnóstico texel aislado 512: estado %d, distintos de DS %u; comparar mapa con rutas anteriores", result, different);
+    return result != 1;
+}
 /* Dos envíos antes de retirar: cambiar lista, textura y destino no puede
  * alterar el cuadro anterior. Retirar también en orden inverso prueba etiquetas. */
 static unsigned overlap_tests(r3d_job *j)
@@ -528,7 +589,12 @@ static unsigned overlap_tests(r3d_job *j)
             memset(got[slot], 0xcd, sizeof got[slot]);
             j->out_ea = (uint64_t)(uintptr_t)got[slot];
             rsx3d_stats st;
-            posted[slot] = rsx3d_submit(j, slot, &st) == 1;
+            int result = rsx3d_submit(j, slot, &st);
+            for (unsigned retry = 0; !result && !strcmp(rsx3d_reason(), "texturas SPE pendientes") && retry < 512; retry++) {
+                fail += got[slot][0] != 0xcdcdcdcdu;
+                rsx3d_decode_drain(); result = rsx3d_submit(j, slot, &st);
+            }
+            posted[slot] = result == 1;
             fail += !posted[slot];
             if (posted[slot]) fail += rsx3d_submit(j, slot, &st) != -1;
             /* El destino del consumidor solo se publica al retirar. */
@@ -550,9 +616,52 @@ static unsigned overlap_tests(r3d_job *j)
     return fail;
 }
 
+/* El mismo banco permite decidir escalar/VMX en la consola durante la
+ * autoprueba, sin atribuir a la consola los tiempos del reproductor. */
+static void vertex_bench(void)
+{
+    gx_vertex in[256] __attribute__((aligned(16)));
+    rsx3d_vertex out[256] __attribute__((aligned(16)));
+    uint64_t elapsed[2] = {0, 0}; uint32_t seed = 19;
+    for (unsigned i = 0; i < 256; i++) {
+        seed = seed*1664525u+1013904223u;
+        memset(&in[i], 0, sizeof in[i]);
+        in[i].sx = seed; in[i].sy = seed >> 16; in[i].z = seed & 0xffffff;
+        in[i].s = seed >> 3; in[i].t = seed >> 5;
+    }
+    /* Dos órdenes, misma entrada, salidas calientes; barrera por lote. */
+    for (unsigned pass = 0; pass < 4; pass++) {
+        unsigned vectorized = pass == 1 || pass == 2;
+        uint64_t start = sysGetSystemTime();
+        for (unsigned repeat = 0; repeat < 32; repeat++) {
+            for (unsigned i = 0; i < 256; i++) {
+                if (vectorized) rsx3d_vertex_vector(&out[i], &in[i], i*251+1);
+                else rsx3d_vertex_scalar(&out[i], &in[i], i*251+1);
+            }
+            __asm__ volatile("" : : "r"(out) : "memory");
+        }
+        elapsed[vectorized] += sysGetSystemTime()-start;
+    }
+    salsads_log("DATO rsx3d banco vértices: 16384 vértices por ruta, escalar %llu us VMX %llu us (medir en PS3)",
+                (unsigned long long)elapsed[0], (unsigned long long)elapsed[1]);
+}
 int rsx3d_selftest(void)
 {
-    unsigned fail = 0;
+    unsigned fail = rsx3d_decode_test();
+    uint32_t seed = 1; unsigned vertex_fail = 0;
+    for (unsigned i = 0; i < 100000; i++) {
+        gx_vertex g = {0}; rsx3d_vertex a, b;
+        seed = seed * 1664525u + 1013904223u;
+        g.sx = seed; g.sy = seed >> 16; g.z = seed & 0xffffff;
+        g.s = seed >> 8; g.t = seed >> 4; g.r = seed & 63; g.g = (seed >> 6) & 63; g.b = (seed >> 12) & 63;
+        uint32_t w = (i & 1) ? (seed & 0x7fffffffu) | 1u : (seed >> 16)+1;
+        rsx3d_vertex_scalar(&a, &g, w);
+        rsx3d_vertex_vector(&b, &g, w);
+        vertex_fail += memcmp(&a, &b, sizeof a) != 0;
+    }
+    salsads_log("rsx3d vértices VMX: 100000 casos, %u fallos", vertex_fail);
+    fail += vertex_fail;
+    vertex_bench();
     r3d_job j; memset(&j, 0, sizeof j);
     j.frame_ea = (uint64_t)(uintptr_t)&frame; j.vram_ea = (uint64_t)(uintptr_t)vram;
     j.out_ea = (uint64_t)(uintptr_t)output;
@@ -584,6 +693,11 @@ int rsx3d_selftest(void)
         if (ok != 1 || coverage || color || alpha) fail++;
         salsads_log("rsx3d prueba %u: estado %d, centro %08x referencia %08x, cobertura %u color %u alfa %u, dibujos %u",
                     test, ok, output[center], reference[center], coverage, color, alpha, st.draws);
+        if (test < 2) {
+            unsigned bad = rsx3d_decode_raster_test(&j) || memcmp(output, reference, sizeof output);
+            salsads_log("rsx3d alternancia RGBA8/raster %u: %u fallos", test, bad);
+            fail += bad;
+        }
     }
     fail += shade_tests(&j);
     fail += shadow_tests(&j);
@@ -592,6 +706,8 @@ int rsx3d_selftest(void)
     fail += w_tests(&j);
     blend_probe(&j);
     fail += cache_tests(&j);
+    fail += cold_tests(&j);
+    fail += cold_sampling_probe(&j);
     fail += overlap_tests(&j);
     fail += replay_tests(1);
     salsads_log("rsx3d autoprueba dirigida: %s, %u fallos (la comparación de juegos y la mezcla RGBA8 son diagnósticos)", fail ? "FALLO" : "OK", fail);

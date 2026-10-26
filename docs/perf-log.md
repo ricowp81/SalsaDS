@@ -1,5 +1,15 @@
 # Registro de rendimiento
 
+## 2026-10-25 — RSX fase 2, cuarta ronda
+- **PS3 recibida, ronda 3:** MKDS misma pista, RSX 90 %; intervalo mediana 16,68 ms, 58/71 ventanas a 60; SPE 59/66. Emulación 11,36/10,37 ms y cuadros >20 ms 22,9/12,6 por 120.
+- Preparación mediana/p90 1,13/2,73 ms, envío 0,59/1,0; pesado «vértices» 1,68 ms incluía estados; RGBA8 frío 34–41 ms PPE.
+- **Cambio:** VMX conserva la división Z; perfil separa estados/vértices y autoprueba compara ambas rutas sobre 16 384 vértices. RGBA8 por lotes de 65 536 texeles en el SPE, tras el raster de respaldo; constantes y stencil solo si cambian.
+- **Política fría:** ningún sondeo espera al decodificador; el cuadro completo vuelve al SPE hasta completar sus texturas. Instantánea y arena protegidas; el siguiente raster puede encontrar trabajo pendiente.
+- **Validación host/RPCS3:** dirigidas LE/BE 871 923 por orden sin fallos; LE/SAN, ROMs/hashes/lockstep BE correctos, solo 34 fallos conocidos. Autoprueba 0 fallos, 16 cuadros exactos; 176 mapas ronda 3 y 177 A/B iguales. Sonda de texel aislado 512: mismas 24 090 diferencias DS con ambas rutas; no es regresión ni paridad global.
+- Arena RSX 24 MiB, descriptores 64 KiB y metadatos adicionales ≈15 KiB; reserva local compartida, doble salida de 4 KiB, holgura 13 840 B. Banco RPCS3 16 384 vértices: escalar 301 µs/VMX 191 µs en una corrida; no acredita mejora en PS3.
+- **Guion PS3:** autoprueba aislada; MKDS misma pista 2 min con `3d-rsx` y 2 min con `3d-spe`; salir antes de recoger logs. Resumidor y detalle en `build/rsx3d-fase2-4/`.
+- **Decisión pendiente:** preparación+envío ≤0,3 ms mediana y emulación no peor que SPE; una vuelta medida por parte. Si no baja, conservar su interruptor anterior y seguir; no extrapolar RPCS3 ni declarar paridad global RSX/DS.
+
 ## 2026-10-25 — Juego RSX solapado (base PS3 recibida; nueva ruta sin medir)
 - Base recibida, MKDS carrera: 6590 RSX/730 SPE, intervalo 33,3 ms; raster+exportación mediana 2,36, p90 3,06, máximo 4,49 ms. Aislado pesado 4,24 ms, autoprueba sin fallos.
 - Relectura local: 53 muestras RSX, preparación mediana 2,232, copia 0,247, total PPE 5,485 ms; residual envío+espera 2,854. 72 ventanas: emulación 16,59 y frame_begin 14,295 ms. No sumar medianas como si fueran el mismo cuadro.

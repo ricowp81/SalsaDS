@@ -14,7 +14,10 @@ SPUKIT  := 1
 
 SPU_EXTRA_CFLAGS := -DG2D_PROF -DGX_PROF -DGX_VEC
 
-SPU_PROGS    := gpu2d snd raster3d raster3d_xdr geom
+SPU_PROGS    := gpu2d snd raster3d raster3d_xdr geom rsxprep
+rsxprep_SRCS := ../../../src/spu/rsxprep/rsxprep.c ../../../src/spu/raster3d/core_xdr.c
+rsxprep_STACK_MIN := 8192
+rsxprep_STACK_ARGS = $(raster3d_STACK_ARGS)
 gpu2d_SRCS   := ../../../src/spu/gpu2d/gpu2d.c ../../../src/gpu2d/gpu2d_compose.c
 gpu2d_STACK_MIN := 8192
 gpu2d_STACK_ARGS := --ignore __call_exitprocs --ignore __do_global_ctors_aux --ignore exit --ignore register_tm_clones
@@ -54,6 +57,8 @@ SHADERS += ../../../src/platform/ps3/rsx3d/fog.fcg ../../../src/platform/ps3/rsx
 CGCFLAGS := -Wcg,-nofastprecision
 
 include ../../../mk/ps3.mk
+
+$(OBJ)/src/platform/ps3/rsx3d/rsx3d.c.o $(OBJ)/src/platform/ps3/rsx3d/selftest.c.o: PPU_CFLAGS += -maltivec
 
 # cgcomp identifica COLOR con R0: preservar su valor hasta terminar DEPTH.
 $(OBJ)/shade_w.fpo: $(ROOT)/src/platform/ps3/rsx3d/shade_w.fcg $(ROOT)/src/platform/ps3/rsx3d/shade.fcg $(ROOT)/tools/rsx3d-shader.py

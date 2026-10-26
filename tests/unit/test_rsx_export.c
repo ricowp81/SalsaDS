@@ -3,9 +3,68 @@
 #include "gpu3d/rsx_export.h"
 #include "gpu3d/rsx_replay.h"
 #include "gpu3d/rsx_modes.h"
+#include "gpu3d/rsx_vertex.h"
 
 #include "core/nds_priv.h"
 #include <stdlib.h>
+/* La misma función del SPE con DMA de memoria: límites bajo ASan/UBSan. */
+static void decode_get(void *dst, uint64_t src, uint32_t n, uint32_t tag)
+{ (void)tag; memcpy(dst, (const void *)(uintptr_t)src, n); }
+static void decode_put(const void *src, uint64_t dst, uint32_t n, uint32_t tag)
+{ (void)tag; memcpy((void *)(uintptr_t)dst, src, n); }
+static void decode_wait(uint32_t tags) { (void)tags; }
+#define spukit_dma_get decode_get
+#define spukit_dma_put decode_put
+#define spukit_dma_wait decode_wait
+#include "spu/rsxprep/decode.h"
+#undef spukit_dma_get
+#undef spukit_dma_put
+#undef spukit_dma_wait
+static uint32_t check_decode_tex(void *v, uint32_t a)
+{
+    const rsx_decode_job *j = v; uint32_t off = j->texslot[(a >> 17) & 3];
+    return off == R3D_UNMAPPED ? 0 : ((const uint8_t *)(uintptr_t)j->vram_ea)[off+(a&0x1ffff)];
+}
+static uint32_t check_decode_pal(void *v, uint32_t a)
+{
+    const rsx_decode_job *j = v; unsigned slot = (a >> 14)&7;
+    uint32_t off = slot < 6 ? j->palslot[slot] : R3D_UNMAPPED;
+    return off == R3D_UNMAPPED ? 0 : ((const uint8_t *)(uintptr_t)j->vram_ea)[off+(a&0x3fff)];
+}
+static void decode_portable(void)
+{
+    static uint8_t vr[R3D_VRAM_ZERO_OFF], pixels[64*512+128];
+    static rsx_decode_local local;
+    static rsx_decode_item d;
+    rsx_decode_job j = {0};
+    j.items_ea = (uint64_t)(uintptr_t)&d; j.vram_ea = (uint64_t)(uintptr_t)vr; j.count = 1;
+    for (unsigned i = 0; i < sizeof vr; i++) vr[i] = (i*73+(i>>8))&255;
+    for (unsigned i = 0; i < 4; i++) j.texslot[i] = i*0x20000;
+    for (unsigned i = 0; i < 6; i++) j.palslot[i] = 0x80000+i*0x4000;
+    for (unsigned fmt = 1; fmt <= 7; fmt++) for (unsigned unmapped = 0; unmapped < 2; unmapped++) {
+        memset(&d, 0, sizeof d); memset(pixels, 0xcd, sizeof pixels);
+        d.tex.fmt = fmt; d.tex.sl = 7; d.tex.tl = 6; d.tex.addr = 0x1ff80;
+        d.tex.pal = 0x3ff0; d.tex.c0t = unmapped; d.pitch = 512;
+        d.out_ea = (uint64_t)(uintptr_t)pixels;
+        j.texslot[1] = unmapped ? R3D_UNMAPPED : 0x20000;
+        j.palslot[1] = unmapped ? R3D_UNMAPPED : 0x84000;
+        for (unsigned part = 0; part < 2; part++) {
+            d.first = part*32; d.rows = 32;
+            CHECK_EQ(rsx_decode_run(&local, &j), 0);
+        }
+        for (unsigned y = 0; y < 64; y++) for (unsigned x = 0; x < 128; x++) {
+            uint32_t p = r3d_decode(&d.tex, x, y, check_decode_tex, check_decode_pal, &j);
+            const uint8_t *b = pixels+y*512+x*4;
+            CHECK(b[0] == R3D_PX_R(p) && b[1] == R3D_PX_G(p) && b[2] == R3D_PX_B(p) && b[3] == R3D_PX_A(p));
+        }
+        for (unsigned k = 64*512; k < sizeof pixels; k++) CHECK_EQ(pixels[k], 0xcd);
+    }
+    d.first = 63; d.rows = 2;
+    CHECK_EQ(rsx_decode_run(&local, &j), -1);
+    d.first = 0; d.rows = 64; d.pitch = 511;
+    CHECK_EQ(rsx_decode_run(&local, &j), -1);
+}
+
 static void replay_roundtrip(void)
 {
     static gx_frame f;
@@ -129,6 +188,19 @@ static void delayed_consumers(void)
 }
 void test_rsx_export(void)
 {
+    /* Incluye negativos, extremos, W normalizada y Z no múltiplo de 512. */
+    uint32_t seed = 1;
+    for (unsigned i = 0; i < 100000; i++) {
+        gx_vertex g = {0}; rsx3d_vertex a, b;
+        seed = seed * 1664525u + 1013904223u;
+        g.sx = seed; g.sy = seed >> 16; g.z = seed & 0xffffffu;
+        g.s = seed >> 8; g.t = seed >> 4;
+        g.r = seed & 63; g.g = (seed >> 6) & 63; g.b = (seed >> 12) & 63;
+        uint32_t w = (i & 1) ? (seed & 0x7fffffffu) | 1u : (seed >> 16) + 1;
+        rsx3d_vertex_scalar(&a, &g, w); rsx3d_vertex_vector(&b, &g, w);
+        CHECK(!memcmp(&a, &b, sizeof a));
+    }
+    decode_portable();
     delayed_consumers();
     snapshot_identity();
     replay_roundtrip();
