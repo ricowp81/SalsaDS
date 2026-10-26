@@ -5,6 +5,15 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-26 — RSX ronda 10: paquete de diagnóstico HD para consola
+- `3d-rsx-hd-juego` + escala HD activa el orden nativo→HD de ronda 8; sin el archivo se conserva la ruta de 883bf2a. Preparación de texturas, identidad y vértices intacta.
+- Autoprueba informativa: 16 cuadros, exacto/anterior/otro por cuadro; repetición con otro destino nativo para cambiar el descriptor de exportación por ranura. No es un arreglo ni se activa esa variante en juego.
+- Composición leída en otro banco de 16 cuadros por variante: la espera entre parejas altera la sincronía y no sustituye la secuencia original.
+- Juego: porcentaje HD y caídas cada 120 presentaciones; sin esperas PPE nuevas. El atraso no aborta la autoprueba: consultar los resúmenes diagnósticos además del resultado global.
+- RPCS3: 1× y reproductor 2×, autoprueba 0 fallos, 16 exactos y 177 mapas iguales a hd-3; experimento original 1 exacto/15 anteriores, variante 0/15/1. No demuestra el comportamiento de PS3.
+- Build completo correcto; holgura mínima 8432 B. LE/SAN, ROMs, hashes y lockstep pasan; `test-host=1` solo por los 34 fallos BE conocidos del anillo JIT, fuera de alcance. Verificadores en 0.
+- Paquete `build/salsads-rsx3d-hd-diag.pkg`, «SalsaDS RSX»/SLDS00030; SHA-256, evidencia y guion único en `build/rsx3d-hd-diag/`. PS3 pendiente; sin envío ni publicación.
+
 ## 2026-10-26 — RSX ronda 9: descartada la banda de 96 líneas
 - RPCS3 2×, base restaurada de ronda 7: 16 cuadros solapados exactos; el parche de ronda 8 reproduce 15/16 fallos.
 - Los 24576 píxeles forman el rectángulo de prueba 192×128: x=32..223, y=32..159; 12288 diferencias en cada mitad.

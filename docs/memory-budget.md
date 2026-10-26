@@ -103,3 +103,5 @@ permanecen reservadas hasta que captura o compositor retiren cada trabajo.
 - SPE 2D de esta variante: bloques DMA de 64 cambios, misma capacidad del registro y mismos mapas; reutiliza la línea temporal para exportar. Holgura enlazada 8720 B; mínimo global 8432 B, ambos ≥8192.
 - Banco aislado HD: una superficie RGBA8 temporal adicional, 0,75/1,6875/3 MiB a 2×/3×/4×; se libera tras cada escena. No se reserva en juego.
 - Autopruebas HD: aproximadamente 324 KiB temporales adicionales para escenas 2D, liberados al terminar; reutilizan las imágenes y VRAM del reproductor.
+
+- Diagnóstico HD de solapamiento: 192 KiB XDR extra para el cuadro previo; dos destinos RGBA8 nativos (384 KiB GDDR3), solo en autoprueba experimental. Uno cambia el descriptor de exportación de la ranura 1; otro evita borrar el destino nativo durante la lectura de composición.

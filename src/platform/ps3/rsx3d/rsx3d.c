@@ -47,6 +47,17 @@ static uint32_t offset, used, nc;
 static rsxkit_target *target;
 static unsigned hd_scale = 1;
 static int hd_refresh = 1;
+static int hd_game, hd_distinct;
+static rsxkit_target *hd_diag_target, *hd_diag_scratch;
+int rsx3d_hd_experimental(void) { return hd_game && hd_scale > 1; }
+int rsx3d_hd_descriptors(int distinct)
+{
+    if (distinct && !hd_diag_target)
+        hd_diag_target = rsxkit_target_create_rgba(R3D_W, R3D_H);
+    if (distinct && !hd_diag_target) return -1;
+    hd_distinct = distinct;
+    return 0;
+}
 static rsxkit_target *hd_target[2], *hd_saved[2];
 static rsxkit_depth *hd_depth;
 static uint8_t *hd_mem;
@@ -126,7 +137,7 @@ int rsx3d_hd_present(unsigned set, int x, int y, int w, int h)
         if (why) errors++;
     }
     if (++count == 120) {
-        salsads_log("DATO rsx3d HD: escala %ux; HD %u; nativa por raster ausente %u, modo no gráfico %u, error %u", hd_scale, shown, missing, modes, errors);
+        salsads_log("DATO rsx3d HD: escala %ux; HD %u/120 (%.1f%%); nativa por raster ausente %u, modo no gráfico %u, error %u", hd_scale, shown, shown*100.0/120, missing, modes, errors);
         count=shown=missing=modes=errors=0;
     }
     return why == NULL;
@@ -430,10 +441,12 @@ int rsx3d_init(void)
     if (stat("/dev_hdd0/salsads/3d-rsx-2x", &flag) == 0) hd_scale=2;
     if (stat("/dev_hdd0/salsads/3d-rsx-3x", &flag) == 0) hd_scale=3;
     if (stat("/dev_hdd0/salsads/3d-rsx-4x", &flag) == 0) hd_scale=4;
-    if (hd_scale > 1 && !decode_verify) {
+    hd_game = stat("/dev_hdd0/salsads/3d-rsx-hd-juego", &flag) == 0;
+    if (hd_scale > 1 && !decode_verify && !hd_game) {
         salsads_log("rsx3d escala solicitada %ux: presentación nativa 1x; HD limitado al reproductor; pendiente validar en consola",hd_scale);
         hd_scale = 1;
     }
+    if (hd_game && hd_scale > 1) salsads_log("rsx3d HD juego EXPERIMENTAL: diagnóstico de atraso, sin acreditar paridad");
     if (hd_scale > 1) {
         hd_refresh = stat("/dev_hdd0/salsads/3d-rsx-hd-sin-recarga", &flag) != 0;
         salsads_log("rsx3d HD recarga de metadatos: %s",hd_refresh ? "activa" : "desactivada");
@@ -474,6 +487,7 @@ void rsx3d_shutdown(void)
     rsxkit_program_destroy(shade_w); rsxkit_program_destroy(shade); rsxkit_program_destroy(pack);
     rsxkit_surface_destroy(output[0]); rsxkit_surface_destroy(output[1]); rsxkit_target_destroy(target); rsxkit_depth_destroy(depth);
     for (unsigned i=0;i<2;i++) { rsxkit_target_destroy(hd_target[i]); rsxkit_target_destroy(hd_saved[i]); }
+    rsxkit_target_destroy(hd_diag_target); rsxkit_target_destroy(hd_diag_scratch);
     rsxkit_depth_destroy(hd_depth); rsxkit_program_destroy(hd_program);
     ready = 0;
     /* La memoria mapeada se conserva hasta cerrar rsxkit; no reutilizar un mapeo vivo. */
@@ -786,11 +800,12 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     st->state_us = st->state_us * 1000000u / tick_hz;
     st->upload_us = st->upload_us * 1000000u / tick_hz;
     st->prepare_us = sysGetSystemTime() - start - st->reuse_us;
-    /* Terminar con raster y exportación nativos conserva el estado de salida
-     * de la ruta 1x, también con dos trabajos pendientes. */
+    /* Solo el experimento publica nativo antes de HD, con etiquetas separadas.
+     * Sin él se conserva el orden de la ruta validada del reproductor. */
+    rsxkit_target *native_target = hd_distinct && slot ? hd_diag_target : target;
     for (unsigned render_pass=0;render_pass<(hd_scale>1?2u:1u);render_pass++) {
-    const unsigned hd_pass = hd_scale>1 && render_pass==0;
-    if (rsxkit_bind(hd_pass ? hd_target[slot] : target, hd_pass ? hd_depth : depth, R3D_W, R3D_H)) return -1;
+    const unsigned hd_pass = hd_scale>1 && render_pass==(hd_game ? 1u : 0u);
+    if (rsxkit_bind(hd_pass ? hd_target[slot] : native_target, hd_pass ? hd_depth : depth, R3D_W, R3D_H)) return -1;
     uint32_t clear = rs.clear_px;
     if ((rs.d3 & D3_FOG) && (rs.clear_attr & AT_FOG)) {
         uint32_t d = r3d_fog_density(&rs, rs.clear_depth), inv = 128-d, fc = rs.fog_px;
@@ -890,14 +905,17 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     }
     if (hd_pass) { rsxkit_stamp(49+slot*2); hd_native[slot]=j->out_ea; continue; }
     rsxkit_stamp(57 + slot * 3);
-    rsxkit_texture tx; rsxkit_target_texture(target, 0, R3D_H, &tx);
+    rsxkit_texture tx; rsxkit_target_texture(native_target, 0, R3D_H, &tx);
     rsxkit_post_pass pass; memset(&pass, 0, sizeof pass);
     pass.program = pack; pass.out = output[slot]; pass.inputs = 1;
     pass.in[0] = rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
+    pass.in[0].refresh = hd_game && hd_scale > 1;
     if (rsxkit_post_run(&pass)) return -1;
     rsxkit_stamp(58 + slot * 3);
+    if (hd_game && hd_scale > 1) flight[slot].fence = rsxkit_fence();
     }
-    flight[slot].fence = texture_fence = rsxkit_fence();
+    texture_fence = rsxkit_fence();
+    if (!hd_game || hd_scale == 1) flight[slot].fence = texture_fence;
     flight[slot].out_ea = j->out_ea;
     flight[slot].pending = 1;
     st->total_us = sysGetSystemTime() - start;
@@ -975,6 +993,7 @@ int rsx3d_render(const r3d_job *j, rsx3d_stats *st)
         if (decode_seq) spukit_wait(decode_worker, decode_seq);
         result = rsx3d_submit(j, 0, st);
     }
+    if (result > 0 && hd_game && hd_scale > 1 && decode_verify) rsxkit_fence_wait(texture_fence);
     return result > 0 ? rsx3d_wait(0, st) : result;
 }
 
@@ -986,6 +1005,38 @@ static void hd_test_finish(void)
     rsxkit_bind(target,depth,256,192);
     rsxkit_clear(RSXKIT_CLEAR_COLOR,0,1,NULL);
     rsxkit_fence_wait(rsxkit_fence());
+}
+
+/* Solo autoprueba: leer el compositor después de retirar ambos trabajos.
+ * Las esperas y la superficie de lectura no forman parte de la ruta de juego. */
+int rsx3d_hd_sequence(uint64_t ea, unsigned slot, unsigned frame,
+                      const uint32_t *current, const uint32_t *previous)
+{
+    if (!hd_diag_scratch) hd_diag_scratch=rsxkit_target_create_rgba(R3D_W,R3D_H);
+    if (!hd_diag_scratch || !rsx3d_hd_acquire(ea,slot)) return -1;
+    g2d_hd_pixel *p=(g2d_hd_pixel *)(void *)(hd_mem+slot*HD_STRIDE);
+    for (unsigned i=0;i<R3D_W*R3D_H;i++) {
+        memset(p[i].b,0,16); p[i].b[3]=G2D_HD_SAMPLE;
+    }
+    rsxkit_post_pass pass; hd_compose_pass(&pass,slot,0,0,R3D_W,R3D_H);
+    pass.out=output[slot];
+    if (rsxkit_post_run(&pass)) return -1;
+    /* No borrar el destino nativo: conservar su contenido entre vueltas. */
+    rsxkit_bind(hd_diag_scratch,depth,R3D_W,R3D_H);
+    rsxkit_clear(RSXKIT_CLEAR_COLOR,0,1,NULL);
+    rsxkit_fence_wait(rsxkit_fence());
+    unsigned now=0, prev=0;
+    for (unsigned i=0;i<R3D_W*R3D_H;i++) {
+        const uint8_t *b=mem+OUT_OFF(slot)+i*4;
+        uint16_t actual=((b[1]*31u+127)/255) | (((b[2]*31u+127)/255)<<5) | (((b[3]*31u+127)/255)<<10);
+        now += actual != g2d_hd_eval(&p[i],current[i]);
+        prev += !previous || actual != g2d_hd_eval(&p[i],previous[i]);
+    }
+    int result = !now ? 0 : !prev ? 1 : 2;
+    salsads_log("rsx3d HD diagnóstico: descriptores %s cuadro %u ranura %u composición %s; diferencias actual %u anterior %u",
+        hd_distinct ? "distintos" : "originales", frame, slot,
+        result==0 ? "exacto" : result==1 ? "igual al cuadro anterior" : "otro",now,prev);
+    return result;
 }
 
 /* Solo diagnóstico: salida nativa del compositor, nunca lectura de un plano HD. */

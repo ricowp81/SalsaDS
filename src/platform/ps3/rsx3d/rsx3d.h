@@ -18,6 +18,11 @@ int rsx3d_decode_test(void);
 int rsx3d_decode_raster_test(const r3d_job *job);
 int rsx3d_init(void);
 unsigned rsx3d_scale(void);
+int rsx3d_hd_experimental(void);
+/* Solo autoprueba; restaurar descriptores originales antes del reproductor. */
+int rsx3d_hd_descriptors(int distinct);
+int rsx3d_hd_sequence(uint64_t ea, unsigned slot, unsigned frame,
+                      const uint32_t *current, const uint32_t *previous);
 int rsx3d_hd_contract_test(uint64_t ea, uint32_t sample);
 int rsx3d_hd_line_test(uint64_t ea, uint32_t sample);
 int rsx3d_hd_native_test(const uint16_t *native);

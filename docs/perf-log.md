@@ -1,5 +1,12 @@
 # Registro de rendimiento
 
+## 2026-10-26 — Diagnóstico HD solapado, ronda 10
+- RPCS3, secuencia original: descriptores originales 1 exacto/15 anteriores/0 otros; distintos 0/15/1 (primer cuadro). Protocolo sin fallos en ambos; 177 mapas iguales a hd-3.
+- La variante cambia solo el destino nativo de la ranura 1 y su descriptor de exportación; la preparación DS no cambia. No se promueve a juego.
+- Sin tiempos nuevos de PS3: mañana corresponde reproductor 2×, diagnóstico experimental, MKDS 1× y solo con exactitud original MKDS 2×, misma pista dos minutos.
+- RPCS3, composición leída entre parejas: 16 exactos en ambas variantes; nativo 7/8/1 y 8/8/0. Esa espera altera la reproducción: no sustituye el banco original ni certifica el solapamiento en juego.
+- Evidencia y guion en `build/rsx3d-hd-diag/`; los costos HD con etiqueta nativa temprana no certifican el tiempo total GPU.
+
 ## 2026-10-26 — Ronda 9 HD: localización del cuadro anterior (RPCS3)
 - Base ronda 7: 16/16 solapados exactos a 2×. Parche ronda 8: 15/16 incorrectos, ambos tras compilación completa.
 - Error en x=32..223, y=32..159: 192×128=24576 píxeles, repartidos 12288/12288 entre las mitades superior e inferior.

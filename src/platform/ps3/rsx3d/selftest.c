@@ -577,11 +577,15 @@ static unsigned cold_sampling_probe(r3d_job *j)
 }
 /* Dos envíos antes de retirar: cambiar lista, textura y destino no puede
  * alterar el cuadro anterior. Retirar también en orden inverso prueba etiquetas. */
-static unsigned overlap_tests(r3d_job *j)
+static unsigned overlap_tests(r3d_job *j, int diagnostic, int distinct)
 {
     static uint32_t want[2][R3D_W * R3D_H], got[2][R3D_W * R3D_H];
+    static uint32_t previous[R3D_W * R3D_H];
+    unsigned native[3]={0}, hd[4]={0};
     unsigned fail = 0;
     uint64_t saved_out = j->out_ea;
+    if (diagnostic) salsads_log("rsx3d HD diagnóstico inicio: descriptores %s; lectura %s",
+        distinct ? "distintos" : "originales", diagnostic==2 ? "composición entre parejas (altera sincronía)" : "nativa, secuencia original");
     for (unsigned round = 0; round < 8; round++) {
         int posted[2] = {0, 0};
         for (unsigned slot = 0; slot < 2; slot++) {
@@ -617,13 +621,32 @@ static unsigned overlap_tests(r3d_job *j)
                 unsigned different=0,first=0;
                 for (unsigned px=0;px<R3D_W*R3D_H;px++) if (got[slot][px]!=want[slot][px]) { if (!different) first=px; different++; }
                 if (different) salsads_log("rsx3d solapamiento detalle: vuelta %u ranura %u distintos %u primero %u %08x != %08x",round,slot,different,first,got[slot][first],want[slot][first]);
-                fail += different != 0;
+                if (diagnostic) {
+                    unsigned f=round*2+slot, prev=0;
+                    for (unsigned px=0;px<R3D_W*R3D_H;px++)
+                        prev += !f || got[slot][px]!=(slot ? want[0] : previous)[px];
+                    unsigned kind=!different ? 0 : !prev ? 1 : 2;
+                    native[kind]++;
+                    salsads_log("rsx3d HD diagnóstico: descriptores %s cuadro %u ranura %u nativo %s; diferencias actual %u anterior %u",
+                        distinct ? "distintos" : "originales",f,slot,
+                        kind==0 ? "exacto" : kind==1 ? "igual al cuadro anterior" : "otro",different,prev);
+                } else fail += different != 0;
                 fail += rsx3d_wait(slot, &st) != -1;
             }
         }
+        if (diagnostic==2) for (unsigned slot=0;slot<2;slot++) {
+            unsigned f=round*2+slot;
+            int result=posted[slot] ? rsx3d_hd_sequence((uint64_t)(uintptr_t)got[slot],slot,f,want[slot],f ? (slot ? want[0] : previous) : NULL) : -1;
+            hd[result<0 ? 3 : result]++;
+        }
+        if (diagnostic) memcpy(previous,want[1],sizeof previous);
     }
+    if (diagnostic) salsads_log("rsx3d HD diagnóstico resumen: descriptores %s lectura %s; nativo exacto %u anterior %u otro %u; protocolo %u",
+        distinct ? "distintos" : "originales",diagnostic==2 ? "entre parejas" : "original",native[0],native[1],native[2],fail);
+    if (diagnostic==2) salsads_log("rsx3d HD composición resumen: descriptores %s; exacto %u anterior %u otro %u error %u; lectura entre parejas",
+        distinct ? "distintos" : "originales",hd[0],hd[1],hd[2],hd[3]);
     j->out_ea = saved_out;
-    salsads_log("rsx3d solapamiento: 16 cuadros, %u fallos", fail);
+    salsads_log("rsx3d solapamiento: 16 cuadros, %u fallos de %s", fail,diagnostic ? "protocolo" : "paridad");
     return fail;
 }
 
@@ -771,7 +794,18 @@ int rsx3d_selftest(void)
     fail += cache_tests(&j);
     fail += cold_tests(&j);
     fail += cold_sampling_probe(&j);
-    fail += overlap_tests(&j);
+    if (rsx3d_hd_experimental()) {
+        /* Diagnóstico informativo: no abortar aunque aparezca atraso. */
+        overlap_tests(&j,1,0);
+        if (!rsx3d_hd_descriptors(1)) overlap_tests(&j,1,1);
+        else salsads_log("rsx3d HD diagnóstico: sin memoria para descriptores distintos");
+        rsx3d_hd_descriptors(0);
+        /* Leer la composición introduce espera entre parejas: banco separado,
+         * nunca sustituye el diagnóstico nativo sin esa espera. */
+        overlap_tests(&j,2,0);
+        if (!rsx3d_hd_descriptors(1)) overlap_tests(&j,2,1);
+        rsx3d_hd_descriptors(0);
+    } else fail += overlap_tests(&j,0,0);
     if (rsx3d_scale()>1) for (unsigned a=0;a<32;a++) {
         memset(&frame,0,sizeof frame); frame.regs.clear_depth=0x7fff;
         frame.regs.clear_color=(a<<16)|((a*13u)&31)|(((a*7u)&31)<<5)|(((a*3u)&31)<<10);
