@@ -4,6 +4,13 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-26 — Comparación del guardado de HeartGold (pokemon-w2-guardado)
+- Host, copia de la partida: v0.0.4 y `007d384` muestran el mismo aviso de corrupción; no se reproduce una regresión exclusiva del prefijo.
+- Base: 12 sondeos `00 05 00` fallidos y acceso directo; rama: acceso con prefijo. Después, conversaciones normalizadas idénticas: 1121 lecturas, 286721 bytes, todos iguales al archivo.
+- Sin RDID ni otras órdenes IR; sin escrituras. Original y copias conservan SHA-256 `bb92a224b6c3def07e2b527689ed8b3add9acf1afa5f15839a3af5307548a3a0`.
+- Trazas completas, capturas del aviso y comparación en `build/w2/regresion/`; espera inicial de unos 28 minutos por turno de desarrollo.
+- Sin cambios al protocolo ni paquete nuevo: falta una partida comprobada con la base o aclarar la diferencia entre host y consola antes de corregir y validar.
+
 ## 2026-10-26 — Prefijo de guardado infrarrojo (pokemon-w2-guardado)
 - `007d384`: `00 05 00` recibía `FF FF FF`; se admite el prefijo para códigos I. JEDEC, latencias y acceso directo sin cambios.
 - White 2, host: título, partida nueva, guardado manual de 524288 bytes y reinicio con «CONTINUE» verificados; vuelve al personaje y ubicación guardados. Capturas y trazas en `build/w2/`.
