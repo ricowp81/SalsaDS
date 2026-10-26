@@ -13,6 +13,9 @@
 void nds_gx_init(struct nds *n)
 {
 	gx_init(&n->gx);
+	/* CLEAR_DEPTH como lo deja el arranque: la profundidad máxima. Plants vs. Zombies nunca lo escribe y con 0 la
+	 * prueba de profundidad descarta todos sus polígonos (la lápida del menú salía sin texto). */
+	n->io[NDS_CPU9].gen[0x354 >> 1] = 0x7FFF;
 }
 
 /* El motor corre a su ritmo en el tiempo de la CPU que lo toca. Una escritura que llena la FIFO frena a esa CPU. */
