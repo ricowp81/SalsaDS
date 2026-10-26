@@ -1,5 +1,12 @@
 # Registro de rendimiento
 
+## 2026-10-26 — RSX ronda 12 parcial [RPCS3, no PS3]
+- Sombras Z dirigidas: 26 dibujos/escena, mediana raster 0,090 ms (12 muestras); dos escenas con muchos OID: 62 dibujos, 0,120 ms. Son pasadas adicionales, no una ganancia de tiempo acreditada.
+- Igualdad: 8 dibujos opacos o 12 con mezcla; mediana raster 0,058 ms en 76 muestras tras excluir los primeros usos de cada grupo. A 2× se dibuja además el destino HD; tiempos de RPCS3 no extrapolables.
+- Sondeo de texturas, 14 lotes: 14 vencen el plazo de 250 µs y luego coinciden al retirarlos; máximo observado en validación final 297 µs a 1× y 273 µs a 2×. Se comprueba también la ruta de lote ya completado; no acredita rescates en juego.
+- Parada: TID ampliado deja 24576 diferencias tras ambas variantes; cara trasera W deja 24576 en cuatro dirigidas tras ambas variantes. Se mantienen en SPE; Z y remapeo OID admitidos solo tras paridad.
+- 1×/2×/interruptores apagados: 0 fallos, 16 cuadros exactos y 177 mapas iguales. Evidencia y guion único en `build/rsx3d-hd-7/`; medir % RSX/HD, motivos y coste en PS3 real.
+
 ## 2026-10-26 — HD en juego, ronda 11
 - PS3 real, `build/ps3-hd-diag/d-mkds-2x.log`: 6294 retiradas RSX, 901 SPE; 6294/8520 presentaciones HD. Hay cuadros sin 3D; el porcentaje total no mide pérdidas de rasters aceptados.
 - 48 ventanas con ≥100 retiradas RSX: medianas intervalo 39,623, emulación 25,862, compositor A 39,305, B 7,472, etiqueta/reutilización 0,004 y recogida final 0,005 ms. Incluyen distintas escenas; no sustituyen el recorte de pista del autor.

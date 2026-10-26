@@ -5,6 +5,16 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-26 — RSX ronda 12: ampliación parcial con respaldo exacto
+- Stencil por cara en Z, con puerta temporal de profundidad y ocupación; OID remapeados solo cuando una sombra puede consultarlos. Se conserva la ruta anterior para los cuadros ya admitidos.
+- Igualdad inclusiva Z ±512/W ±255 con dos límites y escritura posterior; 81 dirigidas exactas, incluidas Z inclinada, destino transparente y niebla constante. Estados genéricos de profundidad propios en `rsxkit` (MIT).
+- Tope aplicado: sombras traseras W y exceso de TID siguen en SPE tras dos hipótesis fallidas. El volcado de Metroid sigue en SPE por niebla interpolada; no se acredita cobertura casi total ni mejora de velocidad en juego.
+- Texturas ya encoladas: sondeo con plazo de 250 µs, sin publicar lotes incompletos; coste/listos/vencidos por 120 intentos de cuadro. No cambia RGBA8, identidad ni vértices.
+- A/B: `3d-rsx-sombra-trasera-spe`, `3d-rsx-sombra-ids-spe`, `3d-rsx-igualdad-spe`, `3d-rsx-texturas-sin-espera`; límites sin paridad siempre conservan el respaldo.
+- RPCS3 1×/2× y A/B apagado: 0 fallos, 16 cuadros solapados exactos, 177 mapas previos iguales; 54 escenarios de sombras incluyen rechazos sin modificar salida. Holgura SPE mínima 8336 B.
+- LE/SAN correctas; unitarias BE conservan los 34 fallos conocidos del anillo JIT, fuera de alcance.
+- Paquete «SalsaDS RSX»/SLDS00030: `build/salsads-rsx3d-hd-7.pkg`; SHA-256, pruebas y guion en `build/rsx3d-hd-7/`. Medir autoprueba, MKDS y Metroid dos minutos a 2× en PS3; sin envío.
+
 ## 2026-10-26 — RSX ronda 11: espera del compositor y metadatos HD
 - PS3 de 6121383: 6294 retiradas RSX y 6294 composiciones HD; «raster ausente» incluye respaldo SPE y ausencia de capa 3D, sin pérdida global acreditada por emparejamiento.
 - Ventanas con ≥100 RSX: mediana compositor A 39,305 ms, emulación 25,862; etiqueta/reutilización 0,004 ms. Eventos de línea: 2,380→15,345 ms; la reutilización de instantáneas espera al SPE dentro de la emulación.

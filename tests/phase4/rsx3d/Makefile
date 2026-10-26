@@ -54,6 +54,7 @@ SHADERS := ../../../src/platform/ps3/rsx3d/shade.fcg ../../../src/platform/ps3/r
 SHADERS += ../../../src/platform/ps3/rsx3d/toon.fcg ../../../src/platform/ps3/rsx3d/toon_w.fcg
 SHADERS += ../../../src/platform/ps3/rsx3d/mask.fcg ../../../src/platform/ps3/rsx3d/mask_w.fcg ../../../src/platform/ps3/rsx3d/shadow.fcg ../../../src/platform/ps3/rsx3d/shadow_w.fcg
 SHADERS += ../../../src/platform/ps3/rsx3d/fog.fcg ../../../src/platform/ps3/rsx3d/fog_w.fcg
+SHADERS += ../../../src/platform/ps3/rsx3d/range.fcg ../../../src/platform/ps3/rsx3d/range_w.fcg
 SHADERS += ../../../src/platform/ps3/rsx3d/compose_hd.fcg ../../../src/platform/ps3/rsx3d/probe_hd.fcg
 CGCFLAGS := -Wcg,-nofastprecision
 
@@ -105,3 +106,15 @@ $(OBJ)/compose_hd.fpo: $(ROOT)/src/platform/ps3/rsx3d/compose_hd.fcg
 $(OBJ)/probe_hd.fpo: $(ROOT)/src/platform/ps3/rsx3d/probe_hd.fcg
 	@mkdir -p $(dir $@)
 	cgcomp -f -d $(CGCFLAGS) $< $@
+
+$(OBJ)/range_w.fpo: $(ROOT)/src/platform/ps3/rsx3d/range_w.fcg $(ROOT)/src/platform/ps3/rsx3d/range.fcg $(ROOT)/tools/rsx3d-shader.py
+	@mkdir -p $(dir $@)
+	cgcomp -f -d $(CGCFLAGS) $< $@
+	python3 $(ROOT)/tools/rsx3d-shader.py $@.dump $@.fixed
+	cgcomp -f -a $@.fixed $@
+
+$(OBJ)/range.fpo: $(ROOT)/src/platform/ps3/rsx3d/range.fcg $(ROOT)/tools/rsx3d-shader.py
+	@mkdir -p $(dir $@)
+	cgcomp -f -d $(CGCFLAGS) $< $@
+	python3 $(ROOT)/tools/rsx3d-shader.py $@.dump $@.fixed
+	cgcomp -f -a $@.fixed $@

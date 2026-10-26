@@ -318,7 +318,7 @@ static unsigned shadow_tests(r3d_job *j)
 {
     if (forced_spe("sombra")) return 0;
     unsigned fail = 0;
-    for (unsigned test = 0; test < 24; test++) {
+    for (unsigned test = 0; test < 54; test++) {
         if (test == 16 && forced_spe("niebla")) continue;
         memset(&frame, 0, sizeof frame);
         frame.npolys = 5; frame.nverts = 20; frame.swap_params = 1;
@@ -370,7 +370,7 @@ static unsigned shadow_tests(r3d_job *j)
             quad(3, test == 18 ? 2 : 4, 15, 63, 0, 0, 0);
             for (unsigned k = 0; k < 4; k++) frame.vtx[12+k].z = 0x600000;
         }
-        if (test >= 20) {
+        if (test >= 20 && test < 24) {
             /* Sombras consecutivas del mismo ID: solape, fallo Z primero,
              * destino vacío y escritura Z; consumir antes de la siguiente. */
             frame.npolys = 4; frame.nverts = 16;
@@ -385,6 +385,45 @@ static unsigned shadow_tests(r3d_job *j)
             }
             if (test == 23) { frame.poly[2].attr |= PA_TDEPTH; frame.poly[3].attr |= PA_TDEPTH; }
         }
+        if (test >= 24 && test < 32) {
+            frame.poly[0].flags = 0;
+            if (test & 1) frame.poly[2].flags = 0;
+            if (test & 2) for (unsigned k=0;k<4;k++) frame.vtx[4+k].z=frame.vtx[k].z;
+            if (test & 4) {
+                frame.poly[2].attr |= PA_TDEPTH;
+                for (unsigned k=0;k<4;k++) frame.vtx[8+k].z=frame.vtx[k].z;
+            }
+        }
+        if (test >= 32 && test < 36) {
+            frame.npolys=14; frame.nverts=56;
+            for (unsigned n=5;n<14;n++) {
+                quad(n, n, (test&1) ? 15 : 31, 63, n*3, 0, 0);
+                for (unsigned k=0;k<4;k++) frame.vtx[n*4+k].z=0x700000-n*0x1000;
+            }
+            if (test&2) frame.poly[0].flags=0;
+        }
+        if (test >= 36 && test < 44) {
+            frame.swap_params=3;
+            frame.poly[0].flags=0;
+            if (test&1) frame.poly[2].flags=0;
+            if (test&4) frame.poly[2].attr|=PA_TDEPTH;
+            for (unsigned n=0;n<5;n++) for (unsigned k=0;k<4;k++)
+                frame.vtx[n*4+k].w = n==0 ? 8192 : (n==1 || n==3) ? ((test&2) ? 8192 : 9000) : 8192;
+        }
+        if (test >= 44 && test < 52) {
+            frame.regs.clear_color=63u<<24;
+            frame.poly[0].flags=0;
+            if (test&1) for (unsigned k=0;k<4;k++) frame.vtx[k].sx+=256;
+            if (test&2) frame.poly[2].attr|=PA_TDEPTH;
+            if (test&4) frame.swap_params=3;
+        }
+        if (test >= 52) {
+            frame.regs.clear_color=63u<<24;
+            frame.poly[4].attr=(frame.poly[4].attr&0xffffffu)|(3u<<24);
+            frame.npolys=14; frame.nverts=56;
+            for (unsigned n=5;n<14;n++) quad(n,n,31,63,n*3,0,0);
+            if (test==53) frame.poly[0].flags=0;
+        }
         if (test == 16) frame.regs.disp3dcnt |= D3_FOG;
         if (test == 17) {
             frame.regs.disp3dcnt |= D3_EDGE;
@@ -392,12 +431,16 @@ static unsigned shadow_tests(r3d_job *j)
         }
         r3d_render_ref(&frame, vram, j->texslot, j->palslot, 0, reference);
         rsxkit_frame_begin(0); rsxkit_frame_end(); rsxkit_frame_begin(0);
+        memset(output,0xa5,sizeof output);
         rsx3d_stats st; int ok = rsx3d_render(j, &st);
         unsigned different = 0;
-        for (unsigned k = 0; k < R3D_W*R3D_H; k++) different += output[k] != reference[k];
-        fail += ok != 1 || different != 0;
-        salsads_log("rsx3d sombra prueba %u: estado %d, distintos %u, centro %08x referencia %08x dibujos %u estados %u",
-                    test, ok, different, output[96*R3D_W+128], reference[96*R3D_W+128], st.draws, st.state_changes);
+        int backcase=(test>=24 && test<32) || test==34 || test==35 || (test>=36 && test<52) || test==53;
+        int fallback = test==33 || test==35 || (backcase && (frame.swap_params&2)) ||
+            (backcase && forced_spe("sombra-trasera")) || (test>=52 && forced_spe("sombra-ids"));
+        for (unsigned k = 0; k < R3D_W*R3D_H; k++) different += output[k] != (fallback ? 0xa5a5a5a5u : reference[k]);
+        fail += ok != !fallback || different != 0;
+        salsads_log("rsx3d sombra prueba %u: estado %d, distintos %u, centro %08x referencia %08x dibujos %u estados %u raster %.3f ms",
+                    test, ok, different, output[96*R3D_W+128], reference[96*R3D_W+128], st.draws, st.state_changes, st.raster_ns/1000000.0);
         char name[80];
         snprintf(name, sizeof name, "rsx3d-sombra-%u-rsx", test); save_pixels(name, output);
         snprintf(name, sizeof name, "rsx3d-sombra-%u-ref", test); save_pixels(name, reference);
@@ -405,10 +448,51 @@ static unsigned shadow_tests(r3d_job *j)
     }
     return fail;
 }
+static unsigned equality_tests(r3d_job *j)
+{
+    if (forced_spe("igualdad")) return 0;
+    unsigned fail=0;
+    const int delta[]={-513,-512,-511,-1,0,1,511,512,513};
+    for (unsigned t=0;t<81;t++) {
+        unsigned c=t%36, w=c/18, n=c%9;
+        memset(&frame,0,sizeof frame);
+        frame.npolys=2; frame.nverts=8; frame.swap_params=w ? 3 : 1;
+        frame.regs.clear_depth=0x7fff; frame.regs.clear_color=31u<<16;
+        frame.regs.disp3dcnt=D3_BLEND;
+        quad(0,1,31,63,0,0,0); quad(1,2,c%18>=9 ? 15 : 31,0,63,0,0);
+        frame.poly[1].attr|=PA_DEQUAL;
+        int d=delta[n];
+        if (w && (d>1 || d< -1)) d=d>0 ? d-257 : d+257;
+        for (unsigned k=0;k<4;k++) {
+            frame.vtx[k].z=0x700000; frame.vtx[4+k].z=0x700000+d;
+            frame.vtx[k].w=8192; frame.vtx[4+k].w=8192+d;
+        }
+        if (t>=36 && t<72) {
+            frame.regs.clear_color=0;
+            if (!w) for (unsigned k=0;k<4;k++) {
+                unsigned slope=(k==1 || k==2) ? 0x60000 : 0;
+                frame.vtx[k].z+=slope; frame.vtx[4+k].z+=slope;
+            }
+        }
+        if (t>=72) {
+            frame.regs.disp3dcnt|=D3_FOG;
+            frame.regs.fog_color=(31u<<16)|31u;
+            for (unsigned i=0;i<32;i++) frame.regs.fog_table[i]=64;
+            frame.poly[1].attr|=PA_FOG;
+        }
+        r3d_render_ref(&frame,vram,j->texslot,j->palslot,0,reference);
+        rsxkit_frame_begin(0); rsxkit_frame_end(); rsxkit_frame_begin(0);
+        rsx3d_stats st; int ok=rsx3d_render(j,&st); unsigned different=0;
+        for (unsigned k=0;k<R3D_W*R3D_H;k++) different+=output[k]!=reference[k];
+        fail+=ok!=1 || different!=0;
+        salsads_log("rsx3d igualdad prueba %u: estado %d distintos %u dibujos %u raster %.3f ms",t,ok,different,st.draws,st.raster_ns/1000000.0);
+    }
+    return fail;
+}
 static unsigned fallback_tests(r3d_job *j)
 {
     unsigned fail = 0;
-    for (unsigned test = 0; test < 8; test++) {
+    for (unsigned test = 0; test < 10; test++) {
         memset(&frame, 0, sizeof frame);
         frame.npolys = 2; frame.nverts = 8; frame.regs.clear_depth = 0x7fff;
         quad(0, 1, 31, 63, 0, 0, 0); quad(1, 2, 13, 0, 0, 0, 0);
@@ -417,14 +501,26 @@ static unsigned fallback_tests(r3d_job *j)
         if (test == 1) frame.regs.disp3dcnt = D3_EDGE;
         if (test == 2) frame.poly[0].attr |= PA_DEQUAL;
         if (test == 3) frame.poly[0].attr &= ~(31u << 16);
-        if (test == 4) frame.poly[0].flags = 0;
+        if (test == 4) {
+            frame.npolys=18; frame.nverts=72;
+            for (unsigned n=2;n<18;n++) quad(n,n+2,15,63,0,0,0);
+        }
         if (test == 5) { frame.regs.disp3dcnt = D3_FOG; frame.regs.fog_table[0] = 1; }
-        if (test >= 6) {
+        if (test >= 6 && test < 8) {
             frame.npolys = 1; frame.nverts = 4;
             frame.regs.disp3dcnt = D3_FOG; frame.regs.fog_table[0] = 1;
             frame.poly[0].attr |= PA_FOG;
             frame.swap_params = test == 7 ? 3 : 1;
             frame.vtx[1].z++; frame.vtx[1].w++;
+        }
+        if (test==8 || test==9) {
+            frame.regs.disp3dcnt=D3_BLEND; frame.regs.clear_color=31u<<16;
+            quad(1,2,31,0,63,0,0); frame.poly[1].attr|=PA_DEQUAL;
+            if (test==8) { frame.swap_params=3; frame.poly[0].flags=0; }
+            else {
+                frame.npolys=18; frame.nverts=72;
+                for (unsigned n=2;n<18;n++) quad(n,n+2,15,63,0,0,0);
+            }
         }
         memset(output, 0xa5, sizeof output);
         rsx3d_stats st; int ok = rsx3d_render(j, &st);
@@ -796,6 +892,7 @@ int rsx3d_selftest(void)
     }
     fail += shade_tests(&j);
     fail += shadow_tests(&j);
+    fail += equality_tests(&j);
     fail += fog_tests(&j);
     fail += fallback_tests(&j);
     fail += w_tests(&j);

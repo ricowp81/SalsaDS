@@ -9,6 +9,9 @@ SalsaDS es **GPL-2.0-or-later** (copyright de ricowp81); `lib/rsxkit/` y `lib/sp
 No se copia código de melonDS ni de NooDS (GPL-3.0, incompatible con GPL-2.0-o-posterior);
 de DeSmuME (GPL-2.0-o-posterior) sí se podría, registrándolo aquí antes.
 
+## Consulta de profundidad 3D (2026-10-26)
+DeSmuME, [`desmume/src/rasterize.cpp`](https://github.com/TASEmulators/desmume/blob/master/desmume/src/rasterize.cpp), GPL-2.0-or-later: consultada la comparación de igualdad con tolerancia; no se copió código. La implementación RSX y sus pruebas usan como contrato el rasterizador de referencia local (Z ±512, W ±255); sin cambio a ese contrato. Los estados genéricos de profundidad de `rsxkit` son código propio MIT.
+
 ## Bibliotecas propias (subtree)
 
 | Carpeta | Origen | Licencia | Notas |

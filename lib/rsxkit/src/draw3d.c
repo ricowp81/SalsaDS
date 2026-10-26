@@ -280,7 +280,7 @@ static void set_depth(uint8_t depth)
 	rsxSetDepthTestEnable(ctx, (depth & RSXKIT_DEPTH_TEST) ? GCM_TRUE : GCM_FALSE);
 	rsxSetDepthWriteEnable(ctx, (depth & RSXKIT_DEPTH_WRITE) ? GCM_TRUE : GCM_FALSE);
 	rsxSetPolygonOffsetFillEnable(ctx, (depth & RSXKIT_DEPTH_OFFSET) ? GCM_TRUE : GCM_FALSE);
-	rsxSetDepthFunc(ctx, (depth & RSXKIT_DEPTH_LESS) ? GCM_LESS : GCM_LEQUAL);
+	rsxSetDepthFunc(ctx, (depth & RSXKIT_DEPTH_ALWAYS) ? GCM_ALWAYS : (depth & RSXKIT_DEPTH_GEQUAL) ? GCM_GEQUAL : (depth & RSXKIT_DEPTH_LESS) ? GCM_LESS : GCM_LEQUAL);
 }
 
 /* z < 0: la de los vértices (el viewport que puso rsxkit_bind). */

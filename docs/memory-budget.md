@@ -89,6 +89,8 @@ datos, búferes de DMA y pila; la holgura de la pila se mide al enlazar con
 
 ## Render 3D experimental en RSX
 
+Ronda 12: dos campos de 32 bits por comando (cara e igualdad), 16 KiB adicionales en XDR estática; sin nuevos destinos de color/profundidad ni reservas SPE.
+
 Arena XDR de 24 MiB: caché RGBA8 0–16 MiB, vértices de las dos ranuras en
 16–18 y 21–23 MiB, exportaciones de 192 KiB en 18 MiB y 18,25 MiB,
 instantánea de identidad en 19 MiB y dos tablas toon de 128 B en 20 MiB.
