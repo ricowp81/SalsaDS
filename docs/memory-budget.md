@@ -95,3 +95,10 @@ instantánea de identidad en 19 MiB y dos tablas toon de 128 B en 20 MiB.
 No aumenta la arena al solapar; las autopruebas añaden 768 KiB de imágenes.
 Texturas compartidas protegidas por la última etiqueta; salidas y estadísticas
 permanecen reservadas hasta que captura o compositor retiren cada trabajo.
+
+## Presentación HD optativa del RSX
+- XDR: 24 MiB previos + 4 MiB para dos salidas de metadatos y dos copias de publicación; total 28 MiB, bajo el tope de 32. Cada salida útil mide 768 KiB + 128 B de estado; nunca se lee un plano HD desde Cell.
+- GDDR3 adicional: cuatro colores RGBA8 (dos de raster, dos de presentación) y una profundidad Z24S8: 3,75 MiB a 2×, 8,4375 MiB a 3× y 15 MiB a 4×; pitch alineado a 64 B, sin relleno adicional en estas dimensiones.
+- Se conservan color/profundidad nativos (0,375 MiB). A 720p, reservar profundidad para 4× añade 0,234375 MiB; a 1080p ya cabe. Total incremental inferior a 64 MiB, sin texturas residentes nuevas.
+- SPE 2D de esta variante: bloques DMA de 64 cambios, misma capacidad del registro y mismos mapas; reutiliza la línea temporal para exportar. Holgura enlazada 8720 B; mínimo global 8432 B, ambos ≥8192.
+- Autopruebas HD: aproximadamente 324 KiB temporales adicionales para escenas 2D, liberados al terminar; reutilizan las imágenes y VRAM del reproductor.

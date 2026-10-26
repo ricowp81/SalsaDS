@@ -46,6 +46,11 @@ int main(int argc, char **argv)
 	const char *order = *(const uint8_t *)&probe == 0x02 ? "LE" : "BE";
 
 	printf("host: %s\n", order);
+    if (argc > 1 && !strcmp(argv[1], "gpu2d")) {
+        test_gpu2d();
+        printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);
+        return check_failed ? 1 : 0;
+    }
 	if (argc > 1 && !strcmp(argv[1], "rsx")) {
 		test_rsx_export();
 		printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);

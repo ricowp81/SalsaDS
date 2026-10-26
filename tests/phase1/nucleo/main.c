@@ -522,6 +522,14 @@ static void draw_screens(int set, const struct sds_rect r[2], int swap)
 	rsxkit_bind_frame((float)cur_w, (float)cur_h);
 	rsxkit_vertices(vb_offset(set), RSXKIT_MEM_MAIN);
 	for (int s = 0; s < 2; s++) {
+#ifdef NUCLEO_RSX
+        const int engine = swap ? s : 1-s;
+        if (engine == 0 && rsx3d_on && rsx3d_hd_present(set, r[s].x, r[s].y, r[s].w, r[s].h)) {
+            rsxkit_bind_frame((float)cur_w, (float)cur_h);
+            rsxkit_vertices(vb_offset(set), RSXKIT_MEM_MAIN);
+            continue;
+        }
+#endif
 		rsxkit_draw d;
 
 		memset(&d, 0, sizeof d);
@@ -538,6 +546,9 @@ static void draw_screens(int set, const struct sds_rect r[2], int swap)
 		d.tex[0].format = RSXKIT_RGBA5551;
 		d.tex[0].wrap_s = d.tex[0].wrap_t = RSXKIT_WRAP_CLAMP;
 		d.tex[0].filter = RSXKIT_FILTER_LINEAR;
+#ifdef NUCLEO_RSX
+        if (rsx3d_on && rsx3d_scale() > 1) d.tex[0].filter = RSXKIT_FILTER_NEAREST;
+#endif
 		d.tex[0].xf[0] = d.tex[0].xf[1] = 1.0f;
 		for (int c = 0; c < 4; c++)
 			d.k[RSXKIT_K_T0][1][c] = 1.0f;
@@ -857,6 +868,10 @@ static void vid_post_engine(int e, gpu2d_frame *f)
 	job_compose jc;
 
 	f->eng[e].out_ea = (uint64_t)(uintptr_t)tex_px(sub.set, e);
+    f->eng[e].hd_ea = 0;
+#ifdef NUCLEO_RSX
+    if (!e && rsx3d_on) f->eng[e].hd_ea = rsx3d_hd_acquire(f->eng[e].img3d_ea, sub.set);
+#endif
 	jc.frame_ea = (uint64_t)(uintptr_t)f;
 	jc.engine = (uint32_t)e;
 	sub.seq[e] = spukit_post(wk[e], JOB_COMPOSE, &jc, sizeof jc);
@@ -2251,9 +2266,15 @@ static void render_frame(void)
 		tb5 = tb_clock();
 		tb6 = tb_clock();
 		sds_layout_compute(layout, SDS_SCALE_FIT, cur_w, cur_h, r);
+#ifdef NUCLEO_RSX
+        if (show && rsx3d_on) rsx3d_presentation_begin(dset);
+#endif
 		if (show)
 			draw_screens(dset, r, swap);
 		draw_ui(r, &cur_stats);
+#ifdef NUCLEO_RSX
+        if (show && rsx3d_on) rsx3d_presentation_end(dset);
+#endif
 		if (show) {
 			set_fence[dset] = rsxkit_fence();
 			set_used[dset] = 1;

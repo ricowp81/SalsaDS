@@ -1,5 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include <string.h>
+#include <malloc.h>
+#include <spukit/spukit.h>
+#include "spu_gpu2d_bin.h"
+#include "spu/gpu2d/job.h"
+#include "gpu2d/gpu2d_scene.h"
+#include "gpu2d/gpu2d_hd.h"
 #include <sys/stat.h>
 #include "platform/ps3/rsx3d/rsx3d.h"
 #include "platform/ps3/log.h"
@@ -161,6 +167,7 @@ static int replay_tests(int enabled)
                         st.polys, st.draws, st.textures, st.uploaded, st.cache_hits);
             salsads_log("DATO rsx3d reproducción %s v%u: RGB error <=1 %u, raster %.3f ms exportación %.3f ms preparación %.3f ms copia %.3f ms",
                         names[scene], variant, error1, st.raster_ns/1e6, st.export_ns/1e6, st.prepare_us/1e3, st.copy_us/1e3);
+            salsads_log("DATO rsx3d HD reproducción %s v%u: escala %ux raster nativo %.3f HD %.3f exportación %.3f PPE %.3f ms",names[scene],variant,rsx3d_scale(),st.raster_ns/1e6,st.hd_raster_ns/1e6,st.export_ns/1e6,st.total_us/1e3);
             salsads_log("DATO rsx3d costo %s v%u: dibujos %u -> %u, estados %u, identidad %llu us vértices %llu us búsqueda %llu us RGBA8 %llu us subida %llu us",
                         names[scene], variant, st.draws_before, st.draws, st.state_changes,
                         (unsigned long long)st.identity_us, (unsigned long long)st.vertex_us,
@@ -606,7 +613,10 @@ static unsigned overlap_tests(r3d_job *j)
             rsx3d_stats st;
             if (posted[slot]) {
                 fail += rsx3d_wait(slot, &st) != 1;
-                fail += memcmp(got[slot], want[slot], sizeof got[slot]) != 0;
+                unsigned different=0,first=0;
+                for (unsigned px=0;px<R3D_W*R3D_H;px++) if (got[slot][px]!=want[slot][px]) { if (!different) first=px; different++; }
+                if (different) salsads_log("rsx3d solapamiento detalle: vuelta %u ranura %u distintos %u primero %u %08x != %08x",round,slot,different,first,got[slot][first],want[slot][first]);
+                fail += different != 0;
                 fail += rsx3d_wait(slot, &st) != -1;
             }
         }
@@ -645,6 +655,58 @@ static void vertex_bench(void)
     salsads_log("DATO rsx3d banco vértices: 16384 vértices por ruta, escalar %llu us VMX %llu us (medir en PS3)",
                 (unsigned long long)elapsed[0], (unsigned long long)elapsed[1]);
 }
+static unsigned hd_spe_tests(r3d_job *j)
+{
+    if (rsx3d_scale()==1) return 0;
+    static gpu2d_frame f __attribute__((aligned(128)));
+    gpu2d_scene_mem m; memset(&m,0,sizeof m);
+    m.vram=vram; m.mmem=memalign(128,192*512);
+    uint16_t *pixels=memalign(128,256*192*2);
+    unsigned fail=0;
+    spukit_worker *worker=NULL;
+    for (unsigned e=0;e<2;e++) {
+        m.pal[e]=memalign(128,1024); m.oam[e]=memalign(128,1024);
+        m.chg[e]=memalign(128,(GPU2D_SCENE_CHG_CAP+2)*sizeof(gpu2d_change));
+        if (!m.pal[e] || !m.oam[e] || !m.chg[e]) fail=1;
+    }
+    if (!m.mmem || !pixels || fail) { fail=1; goto done; }
+    worker=spukit_worker_start(spu_gpu2d_bin,"hd-2d",0);
+    if (!worker) { fail=1; goto done; }
+    for (unsigned test=0;test<6;test++) {
+        gpu2d_scene_build(&f,&m,test%GPU2D_SCENE_FIJAS,1+test);
+        memset(&frame,0,sizeof frame); frame.regs.clear_depth=0x7fff;
+        frame.regs.clear_color=((test%3==2?31:test%3*15)<<16)|0x3217;
+        rsx3d_stats st;
+        if (rsx3d_render(j,&st)!=1) { fail++; break; }
+        gpu2d_engine *e=&f.eng[0];
+        e->regs[G2D_R_DISPCNT] |= G2D_DC_3D | (1u<<8);
+        e->img3d_ea=j->out_ea; e->out_ea=(uint64_t)(uintptr_t)pixels;
+        e->hd_ea=rsx3d_hd_acquire(j->out_ea,0);
+        if (!e->hd_ea) { fail++; break; }
+        job_compose work={ (uint64_t)(uintptr_t)&f, 0 };
+        uint32_t seq=spukit_post(worker,JOB_COMPOSE,&work,sizeof work);
+        const spukit_result *res=spukit_wait(worker,seq);
+        if (!res || res->error) { fail++; break; }
+        gpu2d_ref_engine(e,(uint16_t *)(void *)reference);
+        unsigned native_bad=0,meta_bad=0;
+        const g2d_hd_pixel *meta=(const g2d_hd_pixel *)(uintptr_t)e->hd_ea;
+        for (unsigned i=0;i<256*192;i++) {
+            unsigned sx=(i%256+meta[i].b[11]+256u*meta[i].b[12])&511;
+            uint32_t sample=sx<256?output[i/256*256+sx]:0;
+            native_bad += pixels[i]!=((uint16_t *)(void *)reference)[i];
+            meta_bad += pixels[i]!=gpu2d_to_5551(g2d_hd_eval(&meta[i],sample));
+        }
+        int shader_bad=rsx3d_hd_native_test(pixels);
+        fail += native_bad || meta_bad || shader_bad;
+        salsads_log("rsx3d HD SPE caso %u: nativo %u metadatos %u shader %d diferencias; SPE %.3f ms",test,native_bad,meta_bad,shader_bad,res->ticks*1000.0/spukit_tick_hz());
+    }
+done:
+    if (worker) spukit_worker_stop(worker);
+    for (unsigned e=0;e<2;e++) { free(m.pal[e]); free(m.oam[e]); free(m.chg[e]); }
+    free(m.mmem); free(pixels);
+    return fail;
+}
+
 int rsx3d_selftest(void)
 {
     unsigned fail = rsx3d_decode_test();
@@ -709,6 +771,14 @@ int rsx3d_selftest(void)
     fail += cold_tests(&j);
     fail += cold_sampling_probe(&j);
     fail += overlap_tests(&j);
+    if (rsx3d_scale()>1) for (unsigned a=0;a<32;a++) {
+        memset(&frame,0,sizeof frame); frame.regs.clear_depth=0x7fff;
+        frame.regs.clear_color=(a<<16)|((a*13u)&31)|(((a*7u)&31)<<5)|(((a*3u)&31)<<10);
+        rsx3d_stats st;
+        fail += rsx3d_render(&j,&st)!=1;
+        fail += rsx3d_hd_contract_test(j.out_ea,output[0]);
+    }
+    fail += hd_spe_tests(&j);
     fail += replay_tests(1);
     salsads_log("rsx3d autoprueba dirigida: %s, %u fallos (la comparación de juegos y la mezcla RGBA8 son diagnósticos)", fail ? "FALLO" : "OK", fail);
     return fail ? -1 : 0;

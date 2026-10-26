@@ -5,6 +5,15 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-26 — RSX fase 3: HD detenido por paridad
+- Prototipo 2×: raster HD separado, exportación nativa intacta, metadatos 2D con dos capas elegibles, ventanas, alfa y brillo; B nearest.
+- `3d-rsx-2x`/`3d-rsx-3x`/`3d-rsx-4x` quedan limitados a `3d-rsx-prueba`; en juego se fuerza 1× con motivo en log. No se habilita HD ni se certifican 60 fps.
+- RPCS3 1×: autoprueba 0 fallos, 16 cuadros solapados exactos y 177 mapas iguales a bcd37c1. 2× conserva esos mapas; contrato del shader: 32 × 49152 casos exactos.
+- Bloqueo: seis escenas SPE producen imagen nativa y metadatos exactos, pero el shader difiere en 48200–49151 píxeles. Repetido con publicación PPE separada: parada, sin probar 3×/4×.
+- Se corrigieron el alfa de copias RGBA y el remapeo de metadatos; terminar el envío con la exportación nativa recupera el solapamiento. Esos arreglos no resuelven el bloqueo SPE/RSX.
+- LE/SAN y metadatos con bloques DMA de 64/256 cambios correctos; BE conserva 34 fallos conocidos. Holguras: 2D 8720 B, mínima global 8432 B. Presupuesto en memory-budget.md.
+- Evidencia, guion y límites en `build/rsx3d-hd/`; paquete de diagnóstico `build/salsads-rsx3d-hd.pkg`, sin envío ni validación para medir HD en consola.
+
 ## 2026-10-25 — RSX fase 2, cuarta ronda: preparación y envío
 - Base PS3 `abddb45`, MKDS misma pista: preparación 1,13 ms y envío 0,59; emulación RSX 11,36 frente a SPE 10,37; cuadros >20 ms 22,9 frente a 12,6/120.
 - Vértices VMX con división Z escalar exacta; armado separado en el perfil y sin limpiar campos de aristas que RSX no consume.

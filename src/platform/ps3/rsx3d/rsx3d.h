@@ -6,7 +6,7 @@ typedef struct rsx3d_stats {
     uint32_t polys, draws, textures, uploaded, cache_hits;
     uint32_t draws_before, state_changes;
     uint64_t identity_us, vertex_us, state_us, lookup_us, decode_us, upload_us;
-    uint64_t raster_ns, export_ns;
+    uint64_t raster_ns, export_ns, hd_raster_ns;
     uint64_t prepare_us, copy_us, total_us, wait_us, reuse_us;
 } rsx3d_stats;
 struct spukit_worker;
@@ -17,6 +17,16 @@ void rsx3d_decode_drain(void);
 int rsx3d_decode_test(void);
 int rsx3d_decode_raster_test(const r3d_job *job);
 int rsx3d_init(void);
+unsigned rsx3d_scale(void);
+int rsx3d_hd_contract_test(uint64_t ea, uint32_t sample);
+int rsx3d_hd_native_test(const uint16_t *native);
+/* Capturar la imagen correcta antes de reutilizar una ranura de raster.
+ * El consumidor espera su compositor SPE antes de llamar a present. */
+uint64_t rsx3d_hd_acquire(uint64_t native_ea, unsigned set);
+void rsx3d_hd_invalidate(uint64_t native_ea);
+int rsx3d_hd_present(unsigned set, int x, int y, int w, int h);
+void rsx3d_presentation_begin(unsigned set);
+void rsx3d_presentation_end(unsigned set);
 int rsx3d_selftest(void);
 int rsx3d_reference_test(void);
 /* Opcional, válido solo para la siguiente llamada; 41 páginas físicas de 16 KiB.

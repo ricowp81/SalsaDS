@@ -475,7 +475,7 @@ int rsxkit_target_copy(rsxkit_target *dst, const rsxkit_target *src)
 	rsxSetWaitForIdle(ctx);
 	rsxInvalidateTextureCache(ctx, GCM_INVALIDATE_TEXTURE);
 	rsxkit_rect full = { 0, 0, dst->w, dst->h };
-	rsxkit_blit_to(src->offset, RSXKIT_MEM_LOCAL, src->pitch, src->w, src->h, 0.0f, 0.0f, 1.0f, 1.0f, RSXKIT_XRGB8888,
+	rsxkit_blit_to(src->offset, RSXKIT_MEM_LOCAL, src->pitch, src->w, src->h, 0.0f, 0.0f, 1.0f, 1.0f, src->rgba ? RSXKIT_ARGB8888 : RSXKIT_XRGB8888,
 		       &full, dst->w, dst->h, RSXKIT_FILTER_NEAREST);
 	rsxkit_g.state_valid = 0;
 	return RSXKIT_OK;

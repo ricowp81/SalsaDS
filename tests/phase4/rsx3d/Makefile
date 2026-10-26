@@ -12,7 +12,7 @@ LIBS    := -lrsx -lgcm_sys -lio -lsysutil -lnet -lsysmodule -lrt -llv2 -laudio -
 RSXKIT  := 1
 SPUKIT  := 1
 
-SPU_EXTRA_CFLAGS := -DG2D_PROF -DGX_PROF -DGX_VEC
+SPU_EXTRA_CFLAGS := -DG2D_HD_ENABLE -DG2D_PROF -DGX_PROF -DGX_VEC
 
 SPU_PROGS    := gpu2d snd raster3d raster3d_xdr geom rsxprep
 rsxprep_SRCS := ../../../src/spu/rsxprep/rsxprep.c ../../../src/spu/raster3d/core_xdr.c
@@ -48,12 +48,13 @@ CFLAGS  := -DNUCLEO_VERSION=\"$(or $(SALSADS_VERSION),desconocida)\" -DNUCLEO_JI
 ICON0 := $(abspath ../../../assets/ps3/ICON0.PNG)
 PIC1  := $(abspath ../../../assets/ps3/PIC1.PNG)
 
-COMMON += src/platform/ps3/rsx3d/rsx3d.c src/platform/ps3/rsx3d/selftest.c
+COMMON += src/gpu2d/gpu2d_scene.c src/platform/ps3/rsx3d/rsx3d.c src/platform/ps3/rsx3d/selftest.c
 CFLAGS += -DNUCLEO_RSX
 SHADERS := ../../../src/platform/ps3/rsx3d/shade.fcg ../../../src/platform/ps3/rsx3d/pack.fcg ../../../src/platform/ps3/rsx3d/shade_w.fcg
 SHADERS += ../../../src/platform/ps3/rsx3d/toon.fcg ../../../src/platform/ps3/rsx3d/toon_w.fcg
 SHADERS += ../../../src/platform/ps3/rsx3d/mask.fcg ../../../src/platform/ps3/rsx3d/mask_w.fcg ../../../src/platform/ps3/rsx3d/shadow.fcg ../../../src/platform/ps3/rsx3d/shadow_w.fcg
 SHADERS += ../../../src/platform/ps3/rsx3d/fog.fcg ../../../src/platform/ps3/rsx3d/fog_w.fcg
+SHADERS += ../../../src/platform/ps3/rsx3d/compose_hd.fcg
 CGCFLAGS := -Wcg,-nofastprecision
 
 include ../../../mk/ps3.mk

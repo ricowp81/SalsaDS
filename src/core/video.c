@@ -388,6 +388,7 @@ static void capture_frame(struct nds *n, struct nds_vset *s)
 	/* El descriptor que recibe el SPE via DMA conserva el contrato de 128 bytes
 	 * de gpu2d_frame, aunque aquí solo se componga el motor A. */
 	gpu2d_engine e __attribute__((aligned(128))) = *ge;
+	e.hd_ea = 0; /* La captura nunca publica metadatos de presentación. */
 	const int timed = v->clock != NULL;
 	const uint64_t t0 = timed ? v->clock() : 0;
 	uint64_t tmix;

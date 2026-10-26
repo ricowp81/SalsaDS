@@ -1586,7 +1586,11 @@ static void ppe_3d_only(const gpu2d_ctx *c, const g2d_job *j, unsigned p, uint16
 }
 #endif
 
-static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out)
+#if G2D_HD_ACTIVE
+#include "gpu2d/gpu2d_hd_export.h"
+#endif
+
+static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out, uint64_t hd_ea)
 {
 	const uint32_t dc = j->dc;
 	const int use_win = (dc & (G2D_DC_WIN0 | G2D_DC_WIN1 | G2D_DC_OBJWIN)) != 0;
@@ -1602,7 +1606,7 @@ static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out
 	uint32_t tf_;
 
 #ifndef __SPU__
-	if (c->ppe_final && !use_win && !(dc & G2D_DC_OBJ) && j->bg_type[0] == BG_3D &&
+	if (!hd_ea && c->ppe_final && !use_win && !(dc & G2D_DC_OBJ) && j->bg_type[0] == BG_3D &&
 	    j->bg_type[1] == BG_OFF && j->bg_type[2] == BG_OFF && j->bg_type[3] == BG_OFF) {
 		ppe_3d_only(c, j, p, out);
 		c->stats.fx_lines++;
@@ -1659,6 +1663,11 @@ static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out
 			if (dc & G2D_DC_OBJ)
 				ent[nent++] = 4 + pr;
 		}
+#if G2D_HD_ACTIVE
+		if (hd_ea) hd_export(c, j, p, ent, nent, hd_ea);
+#else
+        (void)hd_ea;
+#endif
 		{
 #ifndef __SPU__
 			if (c->ppe_final) {
@@ -1820,7 +1829,7 @@ static void compose_line(gpu2d_ctx *c, const gpu2d_engine *e, int y)
 			out[x] = gpu2d_to_5551(g2d_master_bright((uint16_t)(g2d_ld16le(c->rawline[p] + x * 2) & 0x7FFFu),
 								 j->regs[G2D_R_MASTER_BRIGHT]));
 	} else {
-		compose_graphics(c, j, p, out);
+		compose_graphics(c, j, p, out, e->hd_ea ? e->hd_ea + (uint64_t)y * GPU2D_W * 16u : 0);
 	}
 	{
 		const uint32_t tp_ = G2D_T();
@@ -1892,6 +1901,9 @@ static int compose_engine(gpu2d_ctx *c, const gpu2d_engine *e)
 		plan_line(c, e, 0);
 		G2D_ACC(c, plan, t0_);
 	}
+#if G2D_HD_ACTIVE
+	unsigned hd_bad = 0;
+#endif
 	for (int y = 0; y < GPU2D_H; y++) {
 		if (y + 1 < GPU2D_H) {
 			const uint32_t t0_ = G2D_T();
@@ -1902,6 +1914,9 @@ static int compose_engine(gpu2d_ctx *c, const gpu2d_engine *e)
 		{
 			const uint32_t t0_ = G2D_T();
 
+#if G2D_HD_ACTIVE
+			hd_bad |= c->job[y & 1].kind != 1;
+#endif
 			compose_line(c, e, y);
 			G2D_ACC(c, compose, t0_);
 		}
@@ -1912,6 +1927,14 @@ static int compose_engine(gpu2d_ctx *c, const gpu2d_engine *e)
 		g2d_wait((1u << G2D_TAG_OUT) | (1u << (G2D_TAG_OUT + 1)));
 		G2D_ACC(c, end_wait, t0_);
 	}
+#if G2D_HD_ACTIVE
+	if (e->hd_ea) {
+		memset(c->l3d_sh, 0, 128);
+		c->l3d_sh[0] = hd_bad;
+		g2d_put(c->l3d_sh, e->hd_ea + G2D_HD_BYTES, 128, G2D_TAG_OUT);
+		g2d_wait(1u << G2D_TAG_OUT);
+	}
+#endif
 	return 0;
 }
 

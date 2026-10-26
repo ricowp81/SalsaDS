@@ -12,6 +12,8 @@
 #include "shade_fpo.h"
 #include "shade_w_fpo.h"
 #include "pack_fpo.h"
+#include "compose_hd_fpo.h"
+#include "gpu2d/gpu2d_hd.h"
 #include "fog_fpo.h"
 #include "fog_w_fpo.h"
 #include "mask_fpo.h"
@@ -42,6 +44,102 @@ _Static_assert(RSX_DECODE_PAGES == PAGE_WORDS, "máscara de páginas compartida"
 static uint8_t *mem;
 static uint32_t offset, used, nc;
 static rsxkit_target *target;
+static unsigned hd_scale = 1;
+static rsxkit_target *hd_target[2], *hd_saved[2];
+static rsxkit_depth *hd_depth;
+static uint8_t *hd_mem;
+static uint32_t hd_offset;
+static uint64_t hd_native[2];
+static int hd_valid[2];
+static uint32_t hd_present_fence[2];
+static uint64_t hd_present_ns, hd_compose_ns, hd_copy_ns, hd_raster_ns, hd_metadata_us;
+static int hd_composed[2], hd_copied[2];
+static unsigned hd_samples;
+static rsxkit_program *hd_program;
+#define HD_STRIDE (1024u * 1024u)
+unsigned rsx3d_scale(void) { return hd_scale; }
+void rsx3d_hd_invalidate(uint64_t ea)
+{
+    for (unsigned i=0;i<2;i++) if (hd_native[i]==ea) hd_native[i]=0;
+}
+uint64_t rsx3d_hd_acquire(uint64_t ea, unsigned set)
+{
+    if (hd_scale == 1 || set > 1) return 0;
+    if (hd_present_fence[set]) {
+        rsxkit_fence_wait(hd_present_fence[set]);
+        hd_present_ns += rsxkit_stamp_ns(41+set*2)-rsxkit_stamp_ns(40+set*2);
+        if (hd_composed[set]) hd_compose_ns += rsxkit_stamp_ns(45+set*2)-rsxkit_stamp_ns(44+set*2);
+        if (hd_copied[set]) hd_copy_ns += rsxkit_stamp_ns(53+set*2)-rsxkit_stamp_ns(52+set*2);
+        hd_present_fence[set]=0;
+        if (++hd_samples == 120) {
+            salsads_log("DATO rsx3d HD costos: escala %ux; copia local %.3f composición HD %.3f presentación completa %.3f ms; publicación PPE %.3f ms por cuadro (%u muestras)",hd_scale,hd_copy_ns/120000000.0,hd_compose_ns/120000000.0,hd_present_ns/120000000.0,hd_metadata_us/120000.0,hd_samples);
+            hd_samples=0; hd_present_ns=hd_compose_ns=hd_copy_ns=hd_metadata_us=0;
+        }
+    }
+    hd_valid[set] = hd_copied[set] = 0;
+    for (unsigned i=0;i<2;i++) if (ea && hd_native[i]==ea) {
+        rsxkit_stamp(52+set*2);
+        if (rsxkit_target_copy(hd_saved[set], hd_target[i])) return 0;
+        rsxkit_stamp(53+set*2); hd_copied[set]=1;
+        hd_valid[set] = 1;
+        return (uint64_t)(uintptr_t)(hd_mem + set*HD_STRIDE);
+    }
+    return 0;
+}
+static uint64_t hd_compose_pass(rsxkit_post_pass *out, unsigned set, int x, int y, int w, int h)
+{
+    /* Publicar una copia nativa inmutable: el productor DMA y la textura
+     * mantienen direcciones distintas hasta la etiqueta de presentación. */
+    uint64_t start = sysGetSystemTime();
+    memcpy(hd_mem+(2+set)*HD_STRIDE,hd_mem+set*HD_STRIDE,G2D_HD_BYTES);
+    __sync_synchronize();
+    rsxkit_texture tx; rsxkit_target_texture(hd_saved[set], 0, R3D_H*hd_scale, &tx);
+    rsxkit_post_pass pass; memset(&pass, 0, sizeof pass);
+    pass.program = hd_program; pass.inputs=2;
+    pass.rect = (rsxkit_rect){x,y,w,h}; pass.step[0]=256.0f/w; pass.step[1]=192.0f/h;
+    pass.k[0][0] = hd_scale;
+    pass.in[0]=rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
+    memset(&tx,0,sizeof tx); tx.offset=hd_offset+(2+set)*HD_STRIDE;
+    tx.width=1024; tx.height=192; tx.pitch=4096;
+    tx.format=RSXKIT_ARGB8888; tx.location=RSXKIT_MEM_MAIN;
+    pass.in[1]=rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
+    *out = pass;
+    return sysGetSystemTime()-start;
+}
+int rsx3d_hd_present(unsigned set, int x, int y, int w, int h)
+{
+    if (hd_scale == 1 || set > 1) return 0;
+    static unsigned count, shown, missing, modes, errors;
+    const char *why = !hd_valid[set] ? "sin raster del cuadro" :
+        *(uint32_t *)(void *)(hd_mem + set*HD_STRIDE + G2D_HD_BYTES) ? "modo de pantalla no gráfico" : NULL;
+    if (why) { if (!hd_valid[set]) missing++; else modes++; }
+    else {
+        rsxkit_post_pass pass; hd_metadata_us += hd_compose_pass(&pass,set,x,y,w,h);
+        rsxkit_stamp(44+set*2);
+        if (rsxkit_post_run(&pass)) why="error de composición";
+        else shown++;
+        rsxkit_stamp(45+set*2);
+        hd_composed[set]=1;
+        if (why) errors++;
+    }
+    if (++count == 120) {
+        salsads_log("DATO rsx3d HD: escala %ux; HD %u; nativa por raster ausente %u, modo no gráfico %u, error %u", hd_scale, shown, missing, modes, errors);
+        count=shown=missing=modes=errors=0;
+    }
+    return why == NULL;
+}
+void rsx3d_presentation_begin(unsigned set)
+{
+    if (hd_scale == 1 || set > 1) return;
+    hd_composed[set]=0;
+    rsxkit_stamp(40+set*2);
+}
+void rsx3d_presentation_end(unsigned set)
+{
+    if (hd_scale == 1 || set > 1) return;
+    rsxkit_stamp(41+set*2);
+    hd_present_fence[set]=rsxkit_fence();
+}
 static rsxkit_depth *depth;
 static rsxkit_surface *output[2];
 static struct {
@@ -326,6 +424,29 @@ int rsx3d_init(void)
     mask = rsxkit_program_create(mask_fpo); mask_w = rsxkit_program_create(mask_w_fpo);
     toon = rsxkit_program_create(toon_fpo); toon_w = rsxkit_program_create(toon_w_fpo);
     if (!target || !depth || !output[0] || !output[1] || !shade || !shade_w || !pack || !toon || !toon_w || !shadow || !shadow_w || !mask || !mask_w || !fog || !fog_w) return -1;
+    if (stat("/dev_hdd0/salsads/3d-rsx-2x", &flag) == 0) hd_scale=2;
+    if (stat("/dev_hdd0/salsads/3d-rsx-3x", &flag) == 0) hd_scale=3;
+    if (stat("/dev_hdd0/salsads/3d-rsx-4x", &flag) == 0) hd_scale=4;
+    if (hd_scale > 1 && !decode_verify) {
+        salsads_log("rsx3d escala solicitada %ux: presentación nativa 1x; composición HD SPE/RSX sin paridad",hd_scale);
+        hd_scale = 1;
+    }
+    if (hd_scale > 1) {
+        hd_mem=memalign(HD_STRIDE,4*HD_STRIDE);
+        if (!hd_mem || rsxkit_map_main(hd_mem,4*HD_STRIDE,&hd_offset)) return -1;
+        memset(hd_mem,0,4*HD_STRIDE);
+        unsigned w=256*hd_scale,h=192*hd_scale;
+        if (rsxkit_depth_reserve(w,h)) return -1;
+        hd_depth=rsxkit_depth_create(w,h);
+        hd_program=rsxkit_program_create(compose_hd_fpo);
+        for (unsigned i=0;i<2;i++) {
+            hd_target[i]=rsxkit_target_create_rgba(w,h);
+            hd_saved[i]=rsxkit_target_create_rgba(w,h);
+            if (!hd_target[i] || !hd_saved[i]) return -1;
+        }
+        if (!hd_depth || !hd_program) return -1;
+    }
+    salsads_log("rsx3d escala: %ux; captura nativa independiente; HD solo GDDR3",hd_scale);
     reason = "Z nativa; W por fragmento";
     ready = 1;
     if (!decode_ppe && (stat("/dev_hdd0/salsads/3d-rsx-prueba", &flag) == 0 ||
@@ -347,6 +468,8 @@ void rsx3d_shutdown(void)
     rsxkit_program_destroy(toon); rsxkit_program_destroy(toon_w);
     rsxkit_program_destroy(shade_w); rsxkit_program_destroy(shade); rsxkit_program_destroy(pack);
     rsxkit_surface_destroy(output[0]); rsxkit_surface_destroy(output[1]); rsxkit_target_destroy(target); rsxkit_depth_destroy(depth);
+    for (unsigned i=0;i<2;i++) { rsxkit_target_destroy(hd_target[i]); rsxkit_target_destroy(hd_saved[i]); }
+    rsxkit_depth_destroy(hd_depth); rsxkit_program_destroy(hd_program);
     ready = 0;
     /* La memoria mapeada se conserva hasta cerrar rsxkit; no reutilizar un mapeo vivo. */
 }
@@ -658,7 +781,11 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     st->state_us = st->state_us * 1000000u / tick_hz;
     st->upload_us = st->upload_us * 1000000u / tick_hz;
     st->prepare_us = sysGetSystemTime() - start - st->reuse_us;
-    if (rsxkit_bind(target, depth, R3D_W, R3D_H)) return -1;
+    /* Terminar con raster y exportación nativos conserva el estado de salida
+     * de la ruta 1x, también con dos trabajos pendientes. */
+    for (unsigned render_pass=0;render_pass<(hd_scale>1?2u:1u);render_pass++) {
+    const unsigned hd_pass = hd_scale>1 && render_pass==0;
+    if (rsxkit_bind(hd_pass ? hd_target[slot] : target, hd_pass ? hd_depth : depth, R3D_W, R3D_H)) return -1;
     uint32_t clear = rs.clear_px;
     if ((rs.d3 & D3_FOG) && (rs.clear_attr & AT_FOG)) {
         uint32_t d = r3d_fog_density(&rs, rs.clear_depth), inv = 128-d, fc = rs.fog_px;
@@ -673,7 +800,7 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     uint32_t ca = R3D_PX_A(clear), encoded_a = ca ? ((ca + 1u) * 255u + 16u) / 32u : 0;
     uint32_t encoded = (encoded_a << 24) | ((R3D_PX_R(clear) + 16u) << 16) |
         ((R3D_PX_G(clear) + 16u) << 8) | (R3D_PX_B(clear) + 16u);
-    rsxkit_stamp(56 + slot * 3);
+    rsxkit_stamp(hd_pass ? 48 + slot*2 : 56 + slot * 3);
     rsxkit_clear(RSXKIT_CLEAR_COLOR | RSXKIT_CLEAR_DEPTH | RSXKIT_CLEAR_ALPHA, encoded, rs.clear_depth / 16777215.0f, NULL);
     rsxkit_clear_stencil(shadows ? ((ca ? 128 : 0) | oid[AT_OID(rs.clear_attr)]) : (ca ? 64 : 255));
     rsxkit_vertices(offset + VERT_OFF(slot), RSXKIT_MEM_MAIN);
@@ -756,6 +883,7 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
         draw(c, 2, c->id, 127, 255, 0, RSXKIT_BLEND_OFF, z | (c->tdepth ? RSXKIT_DEPTH_WRITE : 0), 2, st);
         draw(c, 3, c->id, 127, 128, 0, RSXKIT_BLEND_NONE, 0, 2, st);
     }
+    if (hd_pass) { rsxkit_stamp(49+slot*2); hd_native[slot]=j->out_ea; continue; }
     rsxkit_stamp(57 + slot * 3);
     rsxkit_texture tx; rsxkit_target_texture(target, 0, R3D_H, &tx);
     rsxkit_post_pass pass; memset(&pass, 0, sizeof pass);
@@ -763,6 +891,7 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     pass.in[0] = rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
     if (rsxkit_post_run(&pass)) return -1;
     rsxkit_stamp(58 + slot * 3);
+    }
     flight[slot].fence = texture_fence = rsxkit_fence();
     flight[slot].out_ea = j->out_ea;
     flight[slot].pending = 1;
@@ -777,6 +906,8 @@ int rsx3d_submit(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     static unsigned frames, rendered, counts[RSX_MODE_COUNT];
     if (slot > 1 || flight[slot].pending) return -1;
     uint64_t start = sysGetSystemTime();
+    hd_native[slot] = 0;
+    rsx3d_hd_invalidate(j->out_ea);
     int result = render_frame(j, slot, st);
     if (result <= 0) {
         st->total_us = sysGetSystemTime() - start;
@@ -815,6 +946,15 @@ int rsx3d_wait(unsigned slot, rsx3d_stats *st)
     st->total_us += st->wait_us + st->copy_us;
     st->raster_ns = rsxkit_stamp_ns(57 + slot * 3) - rsxkit_stamp_ns(56 + slot * 3);
     st->export_ns = rsxkit_stamp_ns(58 + slot * 3) - rsxkit_stamp_ns(57 + slot * 3);
+    st->hd_raster_ns = hd_scale > 1 ? rsxkit_stamp_ns(49+slot*2)-rsxkit_stamp_ns(48+slot*2) : 0;
+    if (hd_scale>1) {
+        static unsigned samples;
+        hd_raster_ns += st->hd_raster_ns;
+        if (++samples==120) {
+            salsads_log("DATO rsx3d HD raster: escala %ux; adicional %.3f ms por cuadro",hd_scale,hd_raster_ns/120000000.0);
+            samples=0; hd_raster_ns=0;
+        }
+    }
     flight[slot].pending = 0;
     return 1;
 }
@@ -831,4 +971,52 @@ int rsx3d_render(const r3d_job *j, rsx3d_stats *st)
         result = rsx3d_submit(j, 0, st);
     }
     return result > 0 ? rsx3d_wait(0, st) : result;
+}
+
+/* Solo diagnóstico: salida nativa del compositor, nunca lectura de un plano HD. */
+int rsx3d_hd_contract_test(uint64_t ea, uint32_t sample)
+{
+    if (hd_scale == 1) return 0;
+    if (!rsx3d_hd_acquire(ea,0)) return 1;
+    g2d_hd_pixel *p=(g2d_hd_pixel *)(void *)hd_mem;
+    for (unsigned i=0;i<256*192;i++) {
+        uint8_t *b=p[i].b; memset(b,0,16);
+        b[0]=i&31; b[1]=(i>>5)&31; b[2]=(i>>10)&31;
+        b[3]=1+i%4; b[4]=(i*7)&31; b[5]=(i*11)&31; b[6]=(i*13)&31;
+        b[7]=i%17; b[8]=(i/17)%17;
+        b[9]=(i/289)%3*32+(i/867)%17;
+        b[10]=(i/14739)%3*32+(i/31)%17;
+        b[11]=(i/7)&255; b[12]=(i/1792)&1;
+    }
+    rsxkit_post_pass pass; hd_compose_pass(&pass,0,0,0,256,192);
+    pass.out=output[1];
+    if (rsxkit_post_run(&pass)) return 1;
+    rsxkit_fence_wait(rsxkit_fence());
+    unsigned bad=0;
+    for (unsigned i=0;i<256*192;i++) {
+        unsigned sx=(i%256+p[i].b[11]+256u*p[i].b[12])&511;
+        uint16_t expected=g2d_hd_eval(&p[i],sx<256?sample:0);
+        const uint8_t *b=mem+OUT_OFF(1)+i*4;
+        uint16_t actual=((b[1]*31u+127)/255) | (((b[2]*31u+127)/255)<<5) | (((b[3]*31u+127)/255)<<10);
+        if (expected!=actual && bad++<2)
+            salsads_log("rsx3d HD diferencia píxel %u: esperado %04x recibido %04x bytes %02x %02x %02x %02x operación %u",i,expected,actual,b[0],b[1],b[2],b[3],p[i].b[3]);
+    }
+    salsads_log("rsx3d HD composición %ux muestra %08x: 49152 casos, %u fallos",hd_scale,sample,bad);
+    return bad!=0;
+}
+
+int rsx3d_hd_native_test(const uint16_t *native)
+{
+    rsxkit_post_pass pass; hd_compose_pass(&pass,0,0,0,256,192);
+    pass.out=output[1];
+    if (rsxkit_post_run(&pass)) return -1;
+    rsxkit_fence_wait(rsxkit_fence());
+    unsigned bad=0;
+    for (unsigned i=0;i<256*192;i++) {
+        const uint8_t *b=mem+OUT_OFF(1)+i*4;
+        uint16_t actual=(((b[1]*31u+127)/255)<<11) | (((b[2]*31u+127)/255)<<6) | (((b[3]*31u+127)/255)<<1) | 1;
+        if (native[i]!=actual && bad++<2)
+            salsads_log("rsx3d HD SPE diferencia %u: nativo %04x shader %04x bytes %02x %02x %02x %02x",i,native[i],actual,b[0],b[1],b[2],b[3]);
+    }
+    return (int)bad;
 }

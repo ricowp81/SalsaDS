@@ -37,7 +37,16 @@
 #define G2D_MAP_ARENA 40960  /* mapas residentes de los fondos afines y extendidos de 16 bits (los dos juntos) */
 #define G2D_OBJ_ARENA 16384  /* por paridad de línea: filas de OBJ normales y píxeles de los afines */
 #define G2D_PALCHG_MAX 96    /* cambios de paleta por línea; los que sobran se descartan (cuenta en stats) */
+#ifdef G2D_HD_ENABLE
+#define G2D_CHG_CHUNK 64     /* trozos menores: reserva de código para metadatos HD */
+#else
 #define G2D_CHG_CHUNK 256    /* entradas del registro de cambios por trozo de DMA */
+#endif
+#if !defined(__SPU__) || defined(G2D_HD_ENABLE)
+#define G2D_HD_ACTIVE 1
+#else
+#define G2D_HD_ACTIVE 0
+#endif
 #define G2D_NOPS 128         /* OBJ por línea */
 
 /* Etiquetas de DMA (0..30; la 31 es del bucle de spukit) */
