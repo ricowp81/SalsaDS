@@ -5,6 +5,14 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-26 — Audio HD opcional (audio-estirar)
+- `9948780`: Hermite causal por voz PCM/ADPCM a 48 kHz, reloj racional, mezcla flotante y rampas de 32 pares; PSG/ruido sin interpolar, limitador existente al final. `audio-hd` apagado por omisión; SOUNDCAP y lectura del juego siguen fieles.
+- PCM16, Fs 8/16/22 kHz: SINAD 19,65/22,59/18,90 → 62,76/62,75/62,76 dB; espurio superior −23,51/−29,53/−23,47 → ≈−64 dBc; THD2–10 0,033/0,214/0,497 → 0,00216 %. Silencio cero exacto; método, SNR y cuantización en `perf-log.md`.
+- Apagado idéntico a `f1d353b`: 3 465 666 pares (16/10 bits); captura HD LE/BE idéntica al hash de referencia. Dirigidas SAN: 34 610 comprobaciones, 0 fallos; división de bloques, deriva ±2 %, bucles, reinicios y paradas.
+- `test-host=1` únicamente por los 34 fallos BE conocidos (`test_arec.c:149/152`); LE/SAN, ROMs, hashes y lockstep correctos. Unitarias finales LE 22 429 009 (0 fallos), BE 22 432 739 (solo esos 34); verificadores de publicación/SPDX en 0. GCC cruzado cayó una vez; único reintento correcto.
+- Build y paquete limpios; holgura SPE mínima 8432 B, audio 173392 B. `build/salsads-audio-3.pkg`, «SalsaDS Audio», `SLDS00033`; SHA-256 `b9e15d513ea61c2518430a66713b77264d0c7b7c515aee3b12400a6ce50a25ea`.
+- Host, 16 voces: 0,0542 → 0,1328 ms/cuadro; costo SPE pendiente (banco de 120 cuadros al arrancar, referencia histórica en juego 0,31 ms). Guion Metroid/MKDS en `build/audio3/guion-ps3.txt`; riesgos: coloración cerca de Nyquist y ruido de origen. Sin envío a consola.
+
 ## 2026-10-26 — Audio musical, segunda ronda (audio-estirar)
 - `402ced7`: WSOLA continuo de 40 ms, alineación filtrada en graves y protección de ataques; ajustable a 30 ms. `audio-estirar-v1` recupera la primera ronda; se conservan `audio-sin-estirar` y `audio-sin-limitador`.
 - Host, acordes y percusión estirados 25/50 %: flujo en empalmes −42,7/−24,6 %, modulación por bandas −26,4/−21,7 %, nitidez +3,8/+16,5 %. Copia nominal exacta; no hizo falta vocoder para superar las guardas del banco.
