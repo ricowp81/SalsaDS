@@ -245,15 +245,17 @@ static unsigned fog_tests(r3d_job *j)
 {
     if (forced_spe("niebla")) return 0;
     unsigned fail = 0;
-    for (unsigned test = 0; test < 16; test++) {
+    for (unsigned test = 0; test < 18; test++) {
         memset(&frame, 0, sizeof frame);
         frame.npolys = 256; frame.nverts = 1024; frame.swap_params = test & 1 ? 3 : 1;
         frame.regs.clear_depth = 0x7fff;
         frame.regs.clear_color = (31u << 16) | 0x8000u | 0x4210u;
         frame.regs.fog_color = (test % 3 ? 17u : 0u) << 16 | 0x7c1fu;
-        unsigned shift = test < 12 ? test : 15;
+        /* 16: ambos lados de cada borde Z de la tabla, con offset.
+         * 17: densidades enteras y mezcla exacta, incluido 127 -> 128. */
+        unsigned shift = test == 16 ? 10 : test == 17 ? 15 : test < 12 ? test : 15;
         frame.regs.disp3dcnt = D3_FOG | (shift << 8) | (test & 2 ? D3_FOG_ALPHA : 0);
-        frame.regs.fog_offset = test & 4 ? 7000 : 0;
+        frame.regs.fog_offset = test >= 16 || (test & 4) ? 7000 : 0;
         unsigned step = 1u << (shift > 10 ? 0 : 10-shift);
         for (unsigned t = 0; t < 32; t++) frame.regs.fog_table[t] = t == 31 ? 127 : (t*37)&127;
         for (unsigned n = 0; n < 256; n++) {
@@ -265,6 +267,14 @@ static unsigned fog_tests(r3d_job *j)
             unsigned z = ((n%34)*step + (n/32)*(step/8) + frame.regs.fog_offset) << 9;
             if (z > 0xfffe00) z = 0xfffe00;
             if (n%7 == 0) z = 512;
+            if (test == 16) {
+                z = ((7000 + n/8) << 9) + (n%4) - 1;
+                p->attr |= PA_FOG;
+            }
+            if (test == 17) {
+                z = (7000 + n%32) << 9;
+                frame.regs.fog_table[n%32] = (n%32)*4 + 3;
+            }
             for (unsigned k = 0; k < 4; k++) {
                 gx_vertex *v = &frame.vtx[n*4+k];
                 v->sx = x + ((k == 1 || k == 2) ? 8 : 0);
@@ -291,7 +301,7 @@ static unsigned shadow_tests(r3d_job *j)
 {
     if (forced_spe("sombra")) return 0;
     unsigned fail = 0;
-    for (unsigned test = 0; test < 20; test++) {
+    for (unsigned test = 0; test < 24; test++) {
         if (test == 16 && forced_spe("niebla")) continue;
         memset(&frame, 0, sizeof frame);
         frame.npolys = 5; frame.nverts = 20; frame.swap_params = 1;
@@ -335,13 +345,28 @@ static unsigned shadow_tests(r3d_job *j)
                 frame.vtx[n*4+k].w = n == 0 ? 8192 : n == 1 || n == 3 ? 9000 : 7000;
             if (test == 15) frame.poly[2].attr |= PA_TDEPTH;
         }
-        if (test >= 18) {
+        if (test >= 18 && test < 20) {
             frame.npolys = 4; frame.nverts = 16; frame.regs.disp3dcnt = 0;
             frame.regs.clear_depth = 0x4000;
             frame.poly[0].attr = (1u << 24) | (15u << 16);
             for (unsigned k = 0; k < 4; k++) frame.vtx[k].z = 0x700000;
             quad(3, test == 18 ? 2 : 4, 15, 63, 0, 0, 0);
             for (unsigned k = 0; k < 4; k++) frame.vtx[12+k].z = 0x600000;
+        }
+        if (test >= 20) {
+            /* Sombras consecutivas del mismo ID: solape, fallo Z primero,
+             * destino vacío y escritura Z; consumir antes de la siguiente. */
+            frame.npolys = 4; frame.nverts = 16;
+            frame.regs.disp3dcnt = D3_BLEND;
+            quad(3, 2, 13, 0, 0, 0, 0);
+            frame.poly[3].attr |= 3u << 4;
+            if (test == 21) for (unsigned k = 0; k < 4; k++) frame.vtx[8+k].z = 0x900000;
+            if (test == 22) {
+                frame.regs.clear_color = 63u << 24;
+                frame.regs.clear_depth = 0x4000;
+                for (unsigned k = 0; k < 4; k++) frame.vtx[k].sx += 256;
+            }
+            if (test == 23) { frame.poly[2].attr |= PA_TDEPTH; frame.poly[3].attr |= PA_TDEPTH; }
         }
         if (test == 16) frame.regs.disp3dcnt |= D3_FOG;
         if (test == 17) {
@@ -354,8 +379,8 @@ static unsigned shadow_tests(r3d_job *j)
         unsigned different = 0;
         for (unsigned k = 0; k < R3D_W*R3D_H; k++) different += output[k] != reference[k];
         fail += ok != 1 || different != 0;
-        salsads_log("rsx3d sombra prueba %u: estado %d, distintos %u, centro %08x referencia %08x",
-                    test, ok, different, output[96*R3D_W+128], reference[96*R3D_W+128]);
+        salsads_log("rsx3d sombra prueba %u: estado %d, distintos %u, centro %08x referencia %08x dibujos %u estados %u",
+                    test, ok, different, output[96*R3D_W+128], reference[96*R3D_W+128], st.draws, st.state_changes);
         char name[80];
         snprintf(name, sizeof name, "rsx3d-sombra-%u-rsx", test); save_pixels(name, output);
         snprintf(name, sizeof name, "rsx3d-sombra-%u-ref", test); save_pixels(name, reference);
@@ -366,7 +391,7 @@ static unsigned shadow_tests(r3d_job *j)
 static unsigned fallback_tests(r3d_job *j)
 {
     unsigned fail = 0;
-    for (unsigned test = 0; test < 6; test++) {
+    for (unsigned test = 0; test < 8; test++) {
         memset(&frame, 0, sizeof frame);
         frame.npolys = 2; frame.nverts = 8; frame.regs.clear_depth = 0x7fff;
         quad(0, 1, 31, 63, 0, 0, 0); quad(1, 2, 13, 0, 0, 0, 0);
@@ -377,6 +402,13 @@ static unsigned fallback_tests(r3d_job *j)
         if (test == 3) frame.poly[0].attr &= ~(31u << 16);
         if (test == 4) frame.poly[0].flags = 0;
         if (test == 5) { frame.regs.disp3dcnt = D3_FOG; frame.regs.fog_table[0] = 1; }
+        if (test >= 6) {
+            frame.npolys = 1; frame.nverts = 4;
+            frame.regs.disp3dcnt = D3_FOG; frame.regs.fog_table[0] = 1;
+            frame.poly[0].attr |= PA_FOG;
+            frame.swap_params = test == 7 ? 3 : 1;
+            frame.vtx[1].z++; frame.vtx[1].w++;
+        }
         memset(output, 0xa5, sizeof output);
         rsx3d_stats st; int ok = rsx3d_render(j, &st);
         unsigned modified = 0;

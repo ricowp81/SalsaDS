@@ -41,7 +41,7 @@ static int toon_spe, shadow_spe, fog_spe;
 static rsxkit_program *fog, *fog_w;
 static rsxkit_program *shadow, *shadow_w, *mask, *mask_w;
 static uint8_t oid[64], tid[64];
-static int shadows, single_shadow, shadow_general;
+static int shadows, single_shadow, shadow_general, shadow_unbatched;
 static uint8_t trans_mask;
 static uint32_t old_slots[10];
 static int snapshot_valid;
@@ -145,6 +145,7 @@ int rsx3d_init(void)
     profile = stat("/dev_hdd0/salsads/3d-rsx-prueba", &flag) == 0 ||
               stat("/dev_hdd0/salsads/3d-rsx-perfil", &flag) == 0;
     fog_spe = stat("/dev_hdd0/salsads/3d-rsx-niebla-spe", &flag) == 0;
+    shadow_unbatched = stat("/dev_hdd0/salsads/3d-rsx-sombra-sin-lotes", &flag) == 0;
     shadow_general = stat("/dev_hdd0/salsads/3d-rsx-sombra-general", &flag) == 0;
     shadow_spe = stat("/dev_hdd0/salsads/3d-rsx-sombra-spe", &flag) == 0;
     toon_spe = stat("/dev_hdd0/salsads/3d-rsx-toon-spe", &flag) == 0;
@@ -267,23 +268,19 @@ static int render_frame(const r3d_job *j, rsx3d_stats *st)
         for (unsigned i = 0; i < f->npolys; i++) {
             const gx_poly *p = &f->poly[i];
             unsigned fmt = (p->texparam >> 26) & 7u;
-            if (rs.wbuf) {
+            if (rs.wbuf || (p->attr & PA_FOG)) {
                 if (p->nverts < 3 || p->nverts > GX_POLY_MAXV || p->wshift > 28 || p->vidx[0] >= f->nverts) return -1;
-                int32_t w = f->vtx[p->vidx[0]].w;
+                int32_t w = rs.wbuf ? f->vtx[p->vidx[0]].w : f->vtx[p->vidx[0]].z;
                 for (unsigned k = 1; k < p->nverts; k++) {
                     if (p->vidx[k] >= f->nverts) return -1;
-                    if (f->vtx[p->vidx[k]].w != w) {
-                        reason = "niebla W interpolada: cuantización sin validar"; return 0;
+                    if ((rs.wbuf ? f->vtx[p->vidx[k]].w : f->vtx[p->vidx[k]].z) != w) {
+                        reason = "niebla Z/W interpolada: cuantización sin validar"; return 0;
                     }
                 }
             }
             if (PA_ALPHA(p->attr) != 31 || (PA_MODE(p->attr) != 1 && (rs.d3 & D3_TEXTURE) && (fmt == 1 || fmt == 6))) {
                 reason = "niebla con translúcidos: requiere pasada final"; return 0;
             }
-        }
-        for (unsigned i = 0; i < 32; i++) {
-            uint8_t *b = mem + TOON_OFF + 4*i;
-            b[0] = rs.fog_table[i]; b[1] = b[2] = b[3] = 0;
         }
     }
     shadows = !!(modes & ((1u << RSX_SHADOW_MASK) | (1u << RSX_SHADOW)));
@@ -387,7 +384,7 @@ static int render_frame(const r3d_job *j, rsx3d_stats *st)
         d->k[1][0][1] = (float)(1u << p.wshift) / 16777215.0f;
         d->k[1][0][0] = (rs.d3 & D3_ALPHATEST) ? rs.alpha_ref : 0;
         if (p.mode == 3) d->program = rs.wbuf ? shadow_w : shadow;
-        if ((rs.d3 & D3_FOG) || p.mode == 2) {
+        if (p.mode == 2) {
             d->tex[1].offset = offset + TOON_OFF; d->tex[1].pitch = 128;
             d->tex[1].width = 32; d->tex[1].height = 1;
             d->tex[1].format = RSXKIT_RGBA8888; d->tex[1].location = RSXKIT_MEM_MAIN;
@@ -395,14 +392,15 @@ static int render_frame(const r3d_job *j, rsx3d_stats *st)
             d->tex[1].wrap_s = d->tex[1].wrap_t = RSXKIT_WRAP_CLAMP;
         }
         if (rs.d3 & D3_FOG) {
-            d->program = rs.wbuf ? fog_w : fog; d->ntex = 2;
-            d->k[1][0][2] = !!(p.attr & PA_FOG);
-            d->k[3][0][3] = (float)(p.v[0].w << p.wshift);
+            d->program = rs.wbuf ? fog_w : fog;
+            /* Densidad entera antes del interpolador: ni Z normalizada ni
+             * constantes grandes deben decidir un borde de la tabla. */
+            uint32_t fog_depth = rs.wbuf ? p.v[0].w << p.wshift : vv[0]->z;
+            if (fog_depth > 0xffffffu) fog_depth = 0xffffffu;
+            d->k[3][0][3] = (p.attr & PA_FOG) ? r3d_fog_density(&rs, fog_depth) : 0;
             uint32_t fc = rs.fog_px;
             d->k[2][0][0] = R3D_PX_R(fc); d->k[2][0][1] = R3D_PX_G(fc);
             d->k[2][0][2] = R3D_PX_B(fc); d->k[2][0][3] = R3D_PX_A(fc);
-            d->k[3][0][0] = rs.fog_offset;
-            d->k[3][0][1] = 1.0f / (1u << (rs.fog_shift > 10 ? 0 : 10-rs.fog_shift));
             d->k[3][0][2] = !!(rs.d3 & D3_FOG_ALPHA);
         }
         if (p.mode == 2) {
@@ -449,7 +447,9 @@ static int render_frame(const r3d_job *j, rsx3d_stats *st)
          * Las cinco pasadas translúcidas permanecen juntas por polígono. */
         if (!unbatched && prev &&
             ((!prev->trans && !c->trans && prev->mode != 3 && c->mode != 3) ||
-             (prev->mode == 3 && c->mode == 3 && !prev->id && !c->id)) && prev->id == c->id &&
+             (prev->mode == 3 && c->mode == 3 &&
+              ((!prev->id && !c->id) || (single_shadow && !shadow_unbatched &&
+               c->id && !c->d.k[0][0][0] && c->d.k[0][0][1] > c->d.k[1][0][0])))) && prev->id == c->id &&
             prev->tdepth == c->tdepth && prev->first + prev->count == c->first &&
             !memcmp(&prev->d, &c->d, sizeof c->d)) prev->count += c->count;
         else command[batches++] = *c;
@@ -501,12 +501,23 @@ static int render_frame(const r3d_job *j, rsx3d_stats *st)
                      * invertir publica el TID sin exigirlo antes de dibujar.
                      * Los bits bajos del TID anterior ya no se consultan hasta
                      * que otro translúcido los reemplaza (y limpia el bit 4). */
+                    /* Consumo inmediato: la siguiente primitiva del lote
+                     * ve la máscara apagada también si falla profundidad.
+                     * Solo sin descarte alfa/textura; los demás conservan
+                     * las tres pasadas originales por polígono. */
+                    int consume = !shadow_unbatched && !c->d.k[0][0][0] &&
+                                  c->d.k[0][0][1] > c->d.k[1][0][0];
+                    c->d.stencil_zfail = consume ? 2 : 0;
                     c->d.program = color_program;
-                    draw(c, 3, 160, 177, 16, 1,
+                    draw(c, 3, 160, 177, consume ? 48 : 16, 1,
                          (rs.d3 & D3_BLEND) ? RSXKIT_BLEND_ALPHA_MAX : RSXKIT_BLEND_OFF,
                          z | (c->tdepth ? RSXKIT_DEPTH_WRITE : 0), (rs.d3 & D3_BLEND) ? 1 : 2, st);
-                    draw(c, 3, 32, 177, 144, 1, RSXKIT_BLEND_OFF,
-                         z | (c->tdepth ? RSXKIT_DEPTH_WRITE : 0), 2, st);
+                    /* Un borrado con alfa ocupa toda la pantalla; ninguna
+                     * pasada admitida vuelve a dejar un destino vacío. */
+                    if (!consume || !ca)
+                        draw(c, 3, 32, 177, consume ? 176 : 144, 1, RSXKIT_BLEND_OFF,
+                             z | (c->tdepth ? RSXKIT_DEPTH_WRITE : 0), 2, st);
+                    c->d.stencil_zfail = 0;
                     c->d.program = rs.wbuf ? mask_w : mask;
                     draw(c, 1, 0, 0, 32, 0, RSXKIT_BLEND_NONE, 0, 0, st);
                 } else {

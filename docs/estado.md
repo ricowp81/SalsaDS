@@ -5,6 +5,15 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-25 — RSX fase 2, segunda ronda: niebla constante y lotes de sombras
+- PS3 recibida: 11/16 dirigidas de niebla fallan; pesado 652 dibujos, 5,19 ms raster+exportación. Los mapas de consola sustituyen la aprobación previa de RPCS3.
+- Diagnóstico host: 83/84 rectángulos RGB compatibles con densidad/borde Z anterior; el restante pierde un canal saturado. Hay 39 rectángulos sin niebla con error alfa; recuperar enteros antes de mezclar evita el truncado de constantes.
+- Densidad DS entera por polígono Z/W constante; mezcla RGB6/A5 en RSX con constantes redondeadas. Z/W variable con niebla vuelve al SPE; `3d-rsx-niebla-spe` conserva prioridad. No se certifica niebla variable ni paridad global.
+- Sombras consecutivas del mismo ID/estado, sin textura ni descarte alfa: consumir máscara incluso al fallar Z; omitir destino vacío cuando el borrado tiene alfa. `3d-rsx-sombra-sin-lotes` recupera las pasadas anteriores; stencil genérico MIT separado.
+- Reproductor RPCS3: 18 dirigidas de niebla, 24 de sombras y 8 respaldos correctos; 176 mapas idénticos con lotes apagados/remapeo general y 158 comunes sin cambio respecto a la ronda anterior. Pesado: 652→436 dibujos/estados; no acredita tiempo PS3.
+- Host: 110592 secuencias de stencil y 528384 mezclas perturbadas correctas. Build completo y LE/SAN correctos; BE solo 34 fallos conocidos, ROMs/hashes/lockstep correctos. Holgura mínima SPE 8432 B; verificadores en 0. Paquete pendiente.
+- Preparación de texturas, identidad y conversión de vértices intactas. Guion con las mismas banderas/cuadros y evidencia local en `build/rsx3d-fase2-2/`; confirmar niebla y pesado ≤4 ms en consola antes de integrar.
+
 ## 2026-10-25 — RSX fase 2 parcial: sombras, toon y niebla opaca
 - `19eb7d8`/`19662be`: stencil genérico MIT; sombras por ID, toon/resaltado y niebla por fragmento en DS. Preparación de texturas, identidad y vértices intacta; reservar LUT de 128 B en el desplazamiento 20 MiB del área RSX al integrar.
 - Sombras: remapeo OID/TID con respaldo por capacidad o profundidad trasera; niebla sin mezcla/toon/sombras y W constante. Clear image, bordes efectivos, igualdad y alambre siguen en SPE; límites y guion en `build/rsx3d-fase2/`.

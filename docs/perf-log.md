@@ -1,5 +1,13 @@
 # Registro de rendimiento
 
+## 2026-10-25 — RSX fase 2, ronda 2 (PS3 recibida; cambios pendientes de medir)
+- PS3, base `bc84e66`: pesado caliente raster 4,987–4,993 + exportación 0,197–0,198 ms, 652 dibujos/estados; supera 4 ms. MKDS carrera admitido por RSX, 1,57 ms; Metroid conserva SPE por igualdad.
+- Mapas PS3: 11 fallos de niebla, 384–8832 píxeles; rectángulos completos de 192 píxeles, sin diferencias de cobertura. Error RGB6 máximo 11 en prueba 8 y 1 en las restantes; PPM solo indica presencia, no magnitud del error alfa. Falta la referencia 0 entre los 157 mapas: contraste con la referencia previa y el conteo del log.
+- Host: 38 rectángulos RGB admiten densidad un nivel menor, 45 admiten Z un entero menor antes de `>>9`; el restante pierde azul 63→62. Hay 39 rectángulos sin PA_FOG con error alfa. Son dos mecanismos compatibles con los mapas, no una lectura de los bits internos del interpolador.
+- Densidad entera antes del interpolador y recuperación de constantes pequeñas antes de mezclar; 528384 mezclas host con perturbación de un ULP correctas. Z/W variable con niebla queda en SPE.
+- Sombras: consumo inmediato permite lotes estables del mismo ID/estado sin textura ni descarte; 110592 secuencias host conservan stencil/profundidad/escrituras. RPCS3 pesado: 652→436 dibujos/estados (−33,1 %); 176 mapas iguales con lotes apagados/remapeo general, 158 comunes iguales a la ronda anterior. No hay tiempos nuevos de PS3 ni garantía del límite 4 ms.
+- Guion local `build/rsx3d-fase2-2/guion-ps3.txt`: mismos cuadros y banderas, sin recargar `.rsx`; comparar con `3d-rsx-sombra-sin-lotes` solo si hace falta. No continuar a juego ni aprobar la ruta si pesado supera 4 ms.
+
 ## 2026-10-25 — RSX fase 2 parcial (host/RPCS3; nueva ruta sin medir en PS3)
 - Base `c23c56e`, PS3 real aportada por el autor: raster+exportación MKDS 2,06 ms, SM64DS 2,24, NSMB 1,88, pesado 3,93; preparación caliente MKDS ~1,8/pesado ~2,5 ms, identidad ~0,9 ms y decodificación fría 34–37 ms. Es la base, no una medida de esta entrega.
 - Censo host por trabajo 3D: MKDS carrera, ventana 5000:8000, 2938/3000 con máscara+sombra; resto de modos 0. Muestra anterior MKDS 800/800 con sombras; SM64DS título y NSMB, 800 cada uno, sin modos pendientes. Metroid en juego, ventana 14000:18000: niebla e igualdad 4000/4000, resto 0; referencia host idéntica y reproductor RPCS3 devuelve el original íntegro por igualdad. No extrapolar a otros niveles ni confundir título con juego.

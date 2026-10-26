@@ -3,13 +3,13 @@
  * q.x: referencia alfa. Pasadas: 0 opacos, 1 mezcla, 2 reemplazo translúcido. */
 void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
           float4 color : COLOR0, uniform sampler2D image : TEXUNIT0,
-#if defined(RSX3D_TOON) || defined(RSX3D_FOG)
+#ifdef RSX3D_TOON
           uniform sampler2D table : TEXUNIT1,
 #endif
 #ifdef RSX3D_FOG
           float4 fc : TEXCOORD3, float4 fp : TEXCOORD4,
 #endif
-#if defined(RSX3D_W) || defined(RSX3D_FOG)
+#ifdef RSX3D_W
           float4 pos : WPOS,
 #endif
 #ifdef RSX3D_W
@@ -45,21 +45,14 @@ void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
     float want = step(0.5, k.w);
     clip(0.5 - abs(translucent - want));
 #ifdef RSX3D_FOG
-#ifdef RSX3D_W
-    /* W constante por polígono: evita el error de un entero del recíproco. */
-    float z = min(fp.w, 16777215.0);
-#else
-    float z = floor(pos.z * 16777215.0 + 0.5);
-#endif
-    float f = max(floor(z / 512.0) - fp.x, 0.0) * fp.y;
-    float ix = floor(f);
-    float d0 = floor(tex2D(table, float2((min(ix, 31.0) + 0.5) / 32.0, 0.5)).r * 255.0 + 0.5);
-    float d1 = floor(tex2D(table, float2((min(ix + 1.0, 31.0) + 0.5) / 32.0, 0.5)).r * 255.0 + 0.5);
-    float density = floor(d0 + (d1 - d0) * (f - ix));
-    density += step(126.5, density);
-    density *= q.z;
-    c = lerp(floor((fc.rgb * density + c * (128.0 - density)) / 128.0), c, fp.z);
-    a = floor((fc.a * density + a * (128.0 - density)) / 128.0);
+    /* Entradas constantes pequeñas, recuperadas como enteros antes de
+     * multiplicar. El interpolador puede entregar 31 como 30.999998. */
+    float density = floor(fp.w + 0.5);
+    float4 fogcolor = floor(fc + 0.5);
+    c = floor(c + 0.5);
+    a = floor(a + 0.5);
+    c = lerp(floor((fogcolor.rgb * density + c * (128.0 - density)) / 128.0), c, floor(fp.z + 0.5));
+    a = floor((fogcolor.a * density + a * (128.0 - density)) / 128.0);
 #endif
     float weight = (a + 1.0) / 32.0;
     float bias = step(0.5, k.w) * (1.0 - step(1.5, k.w));
