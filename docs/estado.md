@@ -5,6 +5,13 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-26 — Audio musical, segunda ronda (audio-estirar)
+- `402ced7`: WSOLA continuo de 40 ms, alineación filtrada en graves y protección de ataques; ajustable a 30 ms. `audio-estirar-v1` recupera la primera ronda; se conservan `audio-sin-estirar` y `audio-sin-limitador`.
+- Host, acordes y percusión estirados 25/50 %: flujo en empalmes −42,7/−24,6 %, modulación por bandas −26,4/−21,7 %, nitidez +3,8/+16,5 %. Copia nominal exacta; no hizo falta vocoder para superar las guardas del banco.
+- `test-host`: LE/SAN, ROMs, hashes y lockstep correctos; solo 34 fallos BE conocidos de `test_arec.c:149/152`. Unitarias finales: LE 22 394 443 (0 fallos), BE 22 398 173 (solo esos 34); audio 30/40 ms, sanitizadores, control cerrado y Metroid al 50 % sin faltas.
+- Paquete limpio del código `402ced7`: `build/salsads-audio-2.pkg`, «SalsaDS Audio», `SLDS00033` verificado en PARAM.SFO; SHA-256 `f5d36761919685e01a5cc379b3ef1ed1a8f33f54a4ae7fbe933781d2ff222086`. Holgura SPE mínima 8432 B (audio 178384); verificadores de publicación/SPDX en 0.
+- Pendiente PS3: mismos pasajes de Metroid y MKDS con/sin `audio-estirar-v1`; guion en `build/audio2/guion-ps3.txt`, métricas y método en `perf-log.md`. Riesgos: coloración residual, percusión densa y mayor reserva/latencia; costo y escucha reales pendientes. Sin envío a consola.
+
 ## 2026-10-26 — Audio continuo sin bajar el tono (audio-estirar)
 - `75c81df`: WSOLA en el hilo de audio: 15 ms, solape de 5 ms y búsqueda estéreo; copia exacta sin déficit, deriva ±2 % intacta. Interruptores `audio-sin-estirar` y `audio-sin-limitador`; contadores de extensión, faltas y costo.
 - Rodilla tras el FIR a −3,01 dBFS, techo 0,98; identidad bajo el umbral, sin envolvente. THD a 0 dBFS 3,12 %; con amplitud 1,4 baja 13,16→12,64 % frente al recorte duro. Mezcla/captura nativa sin cambios.
