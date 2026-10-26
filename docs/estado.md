@@ -5,6 +5,14 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-26 — Audio continuo sin bajar el tono (audio-estirar)
+- `75c81df`: WSOLA en el hilo de audio: 15 ms, solape de 5 ms y búsqueda estéreo; copia exacta sin déficit, deriva ±2 % intacta. Interruptores `audio-sin-estirar` y `audio-sin-limitador`; contadores de extensión, faltas y costo.
+- Rodilla tras el FIR a −3,01 dBFS, techo 0,98; identidad bajo el umbral, sin envolvente. THD a 0 dBFS 3,12 %; con amplitud 1,4 baja 13,16→12,64 % frente al recorte duro. Mezcla/captura nativa sin cambios.
+- Dirigidas LE/SAN y BE: 4 473 003 comprobaciones, 0 fallos; consumidor con servicios simulados: 256 000 pares exactos, control de razón, vueltas del anillo y reapertura correctos. Metroid host al 50 %: cero faltas; al 100 %: identidad binaria.
+- `test-host=1` solo por los 34 fallos BE conocidos de `test_arec.c:149/152`; LE/SAN, ROMs BE, hashes y lockstep correctos. Compilación general y paquete limpio en 0; holgura mínima SPE 8432 B, audio 178384 B.
+- Paquete `build/salsads-audio.pkg` del código `75c81df`, «SalsaDS Audio», `SLDS00033` verificado en PARAM.SFO; SHA-256 `0508e6595c4db32991170f3474c5cbc6b849a7f0516ecf03547e4e931c479e0f`. Verificadores de publicación y SPDX en 0; evidencia y guion en `build/audio/`.
+- Pendiente PS3: Metroid intro/menú/juego y MKDS, comparar tono, clics, aspereza, costo y fps. Riesgos: repetición/coloración en déficit extremo y armónicos de la rodilla; sin envío a consola.
+
 ## 2026-10-25 — Clasificación de planos por lote en el SPE (cand-v004)
 - `0371c56`: cuatro posiciones alineadas, trasposición y planos SIMD; conserva recorte, cara, contadores y orden. A/B independiente: `geometria-lectura-escalar`; se mantiene `geometria-perfil`.
 - Listas de vértices/polígonos antes/después idénticas byte a byte en MKDS/NSMB/SM64DS; `--vs-ref3d`: 1175/2196/2299 cuadros iguales. Dirigidas con sanitizadores: 3247 comprobaciones, 0 fallos.

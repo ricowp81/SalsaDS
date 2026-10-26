@@ -36,7 +36,7 @@ Cifras en MB. **Previsto** = estimación de diseño (todavía no hay núcleo);
 | Registro de escrituras de video por línea (cuadro) | 1 | | Para los SPEs (2D/3D); doble búfer |
 | Texturas decodificadas (3D) | 8 | | |
 | Búferes de DMA y anillos de los SPEs | 4 | | |
-| Audio | 1 | 0,3 (2 trabajos de 43 KB + anillo de 128 KB; `sizeof struct nds` pasó de 8 623 872 a 8 749 184 B con el estado y las escrituras del sonido) | Fase 2.2: anillo de 16 384 muestras estéreo flotantes (340 ms) en `audio_out.c` |
+| Audio | 1 | 0,3 (2 trabajos de 43 KB + anillo de 128 KB + ≈27 KiB para historia, solape y grano de salida en el PPE; `sizeof struct nds` pasó de 8 623 872 a 8 749 184 B con el estado y las escrituras del sonido) | Fase 2.2: anillo de 16 384 muestras estéreo flotantes (340 ms) en `audio_out.c` |
 | Estados guardados | 10 | | Foto en segundo plano |
 | Código, pilas, heap de newlib | 16 | | |
 | **Total previsto** | **≈ 230** | | Con una ROM de 128 MB no cabe junto con todo lo demás en ~210 MB: decidir el tope de ROM o leerla por demanda |
