@@ -3,6 +3,9 @@
 #include "gpu3d/rsx_export.h"
 #include "gpu3d/rsx_replay.h"
 #include "gpu3d/rsx_modes.h"
+
+#include "core/nds_priv.h"
+#include <stdlib.h>
 static void replay_roundtrip(void)
 {
     static gx_frame f;
@@ -50,8 +53,38 @@ static void mode_census(void)
     CHECK_EQ(rsx_modes(&f, 0), (all & ~(1u << RSX_TOON)) | (1u << RSX_HIGHLIGHT));
     CHECK(strcmp(rsx_mode_names[RSX_SHADOW], rsx_mode_names[RSX_SHADOW_MASK]) != 0);
 }
+
+static void snapshot_identity(void)
+{
+    struct nds *n = calloc(1, sizeof *n);
+    CHECK(n != NULL);
+    if (!n) return;
+    nds_video_init(n);
+    uint64_t old = n->vid.set[n->vid.cur].vram_version[0];
+    /* Alternar los dos juegos sin escritura no cambia la identidad. */
+    for (unsigned k = 0; k < 4; k++) {
+        nds_video_frame_begin(n);
+        CHECK(n->vid.set[n->vid.cur].vram_version[0] == old);
+    }
+    n->vram[0x4000] = 73;
+    nds_video_vram_dirty(n, 0x4000);
+    nds_video_vram_dirty(n, 0x7fff);
+    nds_video_frame_begin(n);
+    uint64_t changed = n->vid.set[n->vid.cur].vram_version[1];
+    CHECK(changed != old);
+    CHECK(n->vid.set[n->vid.cur].vram_version[0] == old);
+    CHECK_EQ(n->vid.set[n->vid.cur].vram[0x4000], 73);
+    nds_video_frame_begin(n);
+    CHECK(n->vid.set[n->vid.cur].vram_version[1] == changed);
+    CHECK_EQ(n->vid.set[n->vid.cur].vram[0x4000], 73);
+    nds_video_init(n);
+    CHECK(n->vid.set[n->vid.cur].vram_version[0] != old);
+    CHECK(n->vid.set[n->vid.cur].vram_version[1] != changed);
+    free(n);
+}
 void test_rsx_export(void)
 {
+    snapshot_identity();
     replay_roundtrip();
     mode_census();
     uint8_t b[4];

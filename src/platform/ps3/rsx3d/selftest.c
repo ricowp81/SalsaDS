@@ -78,6 +78,12 @@ static int replay_tests(int enabled)
         j.frame_ea = (uint64_t)(uintptr_t)&frame;
         j.vram_ea = (uint64_t)(uintptr_t)vram;
         j.out_ea = (uint64_t)(uintptr_t)output;
+        /* La VRAM grabada permanece inmutable durante sus variantes y repeticiones. */
+        static uint64_t serial = 1ull << 63;
+        uint64_t versions[41];
+        for (unsigned pg = 0; pg < 41; pg++) versions[pg] = serial;
+        serial++;
+        if (enabled) rsx3d_identity_versions(j.vram_ea, versions);
         rsx3d_stats st;
         memset(&st, 0, sizeof st);
         int native = enabled ? rsx3d_render(&j, &st) : 0;
@@ -120,6 +126,7 @@ static int replay_tests(int enabled)
             rsxkit_frame_begin(0);
             rsxkit_frame_end();
             rsxkit_frame_begin(0);
+            if (enabled) rsx3d_identity_versions(j.vram_ea, versions);
             int ok = enabled ? rsx3d_render(&j, &st) : 1;
             if (!enabled) memcpy(output, reference, sizeof output);
             if (ok != 1) { salsads_log("rsx3d reproducción %s: no dibujada, %s", names[scene], rsx3d_reason()); fail++; continue; }
@@ -163,6 +170,7 @@ static int replay_tests(int enabled)
                     memcpy(reference, output, sizeof output);
                     for (unsigned repeat = 0; repeat < 3; repeat++) {
                         rsxkit_frame_begin(0); rsxkit_frame_end(); rsxkit_frame_begin(0);
+                        if (enabled) rsx3d_identity_versions(j.vram_ea, versions);
                         int warm = rsx3d_render(&j, &st);
                         unsigned different = 0;
                         for (unsigned k = 0; k < R3D_W*R3D_H; k++) different += output[k] != reference[k];

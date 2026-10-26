@@ -1810,6 +1810,7 @@ static void r3d_spe_submit(void *ctx, int set, r3d_job *j)
 #ifdef NUCLEO_RSX
 	if (rsx3d_on) {
 		rsx3d_stats st;
+		rsx3d_identity_versions(j->vram_ea, nds->vid.set[set].vram_version);
 		int ok = rsx3d_render(j, &st);
 		static unsigned count;
 		if ((count++ % 120u) == 0 || ok < 0)

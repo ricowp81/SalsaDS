@@ -17,6 +17,16 @@
 - Datos, capturas solo locales y mapas en `build/rsx3d-fase2/`; interruptores SPE independientes para sombra/toon/niebla y `3d-rsx-sombra-general` para comparar. La LUT reserva 128 B en 20 MiB; sin tocar caché, RGBA8, identidad ni conversión de vértices.
 - Validación: LE 8 740 377 comprobaciones sin fallos; unidad BE 8 744 107 con los 34 fallos conocidos del anillo. SAN correcto; compilación del ejecutor BE detenida tras dos caídas del gcc emulado, por lo que ROMs/hashes/lockstep BE no se validaron en esta corrida.
 
+## 2026-10-25 — Identidad incremental del RSX (host/RPCS3)
+- Base c23c56e: resultado comunicado de PS3 real raster+exportación MKDS/SM64DS/NSMB/pesado 2,06/2,24/1,88/3,93 ms; pesado aprobado bajo 4 ms.
+- Host, 500 repeticiones calientes por cuadro grabado: preparación 75,750→57,090 / 27,854→7,846 / 99,290→80,390 / 124,556→107,330 µs. Flujos idénticos; 100 invalidaciones por escena contra decodificación completa.
+- RPCS3, media de tres repeticiones, identidad completa→incremental: 327→2 / 332→2 / 337→2 / 322→3 µs. No son tiempos del PPE real.
+- VMX, misma vuelta RPCS3, vértices escalar→vector: 180→272 / 19→29 / 263→333 / 321→253 µs; descartado, sin segunda ronda.
+- Caché con generaciones únicas tras reiniciar, propagadas con la instantánea; páginas escritas conservan la comparación exacta de 1 KiB. Sin metadatos se usa la comparación completa.
+- A/B PS3: mismos cuadros y banderas `3d-rsx` + `3d-rsx-prueba`, alternar `3d-rsx-identidad-completa`; leer `DATO rsx3d costo` frío y `DATO rsx3d caliente`. En juego, `3d-rsx-perfil` registra las etapas.
+- SPE descartado tras una vuelta RPCS3: lotes de hasta 64 KiB en geometría libre; preparación PPE máxima MKDS/pesado 0,378/2,293 ms frente a 17,032/18,960, pero RGBA8 SPE 138,307/48,159 ms frente a 16,531/18,132 y lote frío máximo 67,096 ms. Incluye coste de ejecución/compilación del emulador; no justifica compartir geometría en consola. Paridad: 39 mapas iguales, geometría intercalada exacta y 710 940 comprobaciones ASan/UBSan.
+- Detalle, guion y resultados crudos locales: `build/rsx3d-prep/` (SPE retirado en `prototipo/`); paquete de entrega `build/salsads-rsx3d-prep.pkg` (SalsaDS RSX, SLDS00030).
+
 ## 2026-10-25 — RSX ronda 3: costo por lotes (host/RPCS3, base PS3 aportada)
 - PS3 anterior MKDS/SM64DS/NSMB/pesado, raster+exportación: 4,177/2,427/4,644/7,542 ms. Dibujos 596/55/972/1101 → 185/33/211/403; estados lógicos sin cambio: 185/31/211/403.
 - Host nativo, 500 cuadros calientes sin GPU ni reloj de etapas: 120,318/26,376/197,012/312,858 → 76,824/26,932/101,088/121,936 µs; frío MKDS 2141→2468, pesado 2429→2776 µs. No son tiempos PPE.

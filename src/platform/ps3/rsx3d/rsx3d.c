@@ -45,6 +45,13 @@ static int shadows, single_shadow, shadow_general, shadow_unbatched;
 static uint8_t trans_mask;
 static uint32_t old_slots[10];
 static int snapshot_valid;
+static int full_identity, versions_valid;
+static uint64_t version_ea, old_versions[41];
+static const uint64_t *next_versions;
+void rsx3d_identity_versions(uint64_t vram_ea, const uint64_t *versions)
+{
+    version_ea = vram_ea; next_versions = versions;
+}
 static int ready;
 static int unbatched, old_prepare, coarse_cache, profile;
 static uint64_t tick_hz;
@@ -141,6 +148,7 @@ int rsx3d_init(void)
     struct stat flag;
     unbatched = stat("/dev_hdd0/salsads/3d-rsx-sin-lotes", &flag) == 0;
     old_prepare = stat("/dev_hdd0/salsads/3d-rsx-preparacion-anterior", &flag) == 0;
+    full_identity = stat("/dev_hdd0/salsads/3d-rsx-identidad-completa", &flag) == 0;
     coarse_cache = stat("/dev_hdd0/salsads/3d-rsx-cache-gruesa", &flag) == 0;
     profile = stat("/dev_hdd0/salsads/3d-rsx-prueba", &flag) == 0 ||
               stat("/dev_hdd0/salsads/3d-rsx-perfil", &flag) == 0;
@@ -220,6 +228,8 @@ static int prepare_poly(r3d_poly *p, const gx_poly *gp, const gx_vertex *const *
 static int render_frame(const r3d_job *j, rsx3d_stats *st)
 {
     const uint64_t start = sysGetSystemTime();
+    const uint64_t *versions = !full_identity && version_ea == j->vram_ea ? next_versions : NULL;
+    next_versions = NULL;
     const gx_frame *f = (const gx_frame *)(uintptr_t)j->frame_ea;
     r3d_rstate rs;
     uint32_t ncmd = 0, nv = 0;
@@ -351,9 +361,12 @@ static int render_frame(const r3d_job *j, rsx3d_stats *st)
         memcpy(old_slots, slots, sizeof slots);
         memcpy(mem + SNAP_OFF, (const void *)(uintptr_t)j->vram_ea, R3D_VRAM_ZERO_OFF);
         used = nc = 0; snapshot_valid = 1;
-    } else if (memcmp(mem + SNAP_OFF, (const void *)(uintptr_t)j->vram_ea, R3D_VRAM_ZERO_OFF)) {
+    } else if (versions || memcmp(mem + SNAP_OFF, (const void *)(uintptr_t)j->vram_ea, R3D_VRAM_ZERO_OFF)) {
         uint32_t changed[PAGE_WORDS] = {0};
         for (uint32_t a = 0; a < R3D_VRAM_ZERO_OFF; a += PAGE_SIZE) {
+            if (versions && versions_valid && versions[a >> 14] == old_versions[a >> 14]) {
+                a += 0x4000u - PAGE_SIZE; continue;
+            }
             const uint8_t *src = (const uint8_t *)(uintptr_t)j->vram_ea + a;
             if (memcmp(mem + SNAP_OFF + a, src, PAGE_SIZE)) {
                 changed[a / PAGE_SIZE / 32u] |= 1u << (a / PAGE_SIZE % 32u);
@@ -367,6 +380,8 @@ static int render_frame(const r3d_job *j, rsx3d_stats *st)
             }
         }
     }
+    versions_valid = versions != NULL;
+    if (versions) memcpy(old_versions, versions, sizeof old_versions);
     st->identity_us = ticks() - t0;
     cur = j;
     rsxkit_vertex *v = (rsxkit_vertex *)(void *)(mem + VERT_OFF);

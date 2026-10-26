@@ -12,6 +12,9 @@ typedef struct rsx3d_stats {
 int rsx3d_init(void);
 int rsx3d_selftest(void);
 int rsx3d_reference_test(void);
+/* Opcional, válido solo para la siguiente llamada; 41 páginas físicas de 16 KiB.
+ * Los sellos deben cambiar al escribir y no reutilizarse tras reiniciar el núcleo. */
+void rsx3d_identity_versions(uint64_t vram_ea, const uint64_t *versions);
 /* 1: exportado a out_ea; 0: cuadro no soportado, salida intacta; -1: error. */
 int rsx3d_render(const r3d_job *job, rsx3d_stats *stats);
 const char *rsx3d_reason(void);

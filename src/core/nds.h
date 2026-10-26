@@ -249,6 +249,7 @@ struct nds_math {
 #define NDS_VPAGES 41     /* páginas de 16 KB de los 656 KB de VRAM */
 
 struct nds_vset {
+	uint64_t vram_version[NDS_VPAGES]; /* identidad de la instantánea, por página física */
 	uint8_t vram[G2D_VRAM_SIZE + G2D_VRAM_ZERO] __attribute__((aligned(128))); /* + 128 bytes en cero al final */
 	uint8_t pal[2][1024] __attribute__((aligned(128)));
 	uint8_t oam[2][1024] __attribute__((aligned(128)));
@@ -309,6 +310,7 @@ struct nds_capture_stats {
 
 struct nds_video {
 	struct nds_vset set[2];
+	uint64_t identity_dirty, vram_version[NDS_VPAGES];
 	uint64_t dirty[2]; /* páginas de VRAM cambiadas desde la última instantánea de cada juego */
 	int cur;           /* juego que graba el cuadro en curso */
 	int recording;     /* 1 entre la línea 0 y la 192 */
