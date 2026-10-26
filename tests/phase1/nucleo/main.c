@@ -1378,7 +1378,7 @@ static void log_stats(void)
 			salsads_log("DATO audio: mezcla en el SPE por cuadro (decrementador): trabajo %u.%02u ms (máx %u.%02u), de eso snd_run "
 				    "%u.%02u ms (máx %u.%02u); el PPE esperando %u.%02u ms por cuadro; %u muestras de 48 kHz por cuadro; "
 				    "errores %u; salida: %s, anillo %u muestras, %u faltas (%u muestras de silencio en este lapso), %u bloques "
-				    "tarde, pico %.0f dBFS",
+				    "tarde, pico %.2f dBFS",
 				    MS(snd_acc.ticks * 1000000ull / snd_acc.jobs / spukit_tick_hz()),
 				    MS((uint64_t)snd_acc.ticks_max * 1000000ull / spukit_tick_hz()),
 				    MS(snd_acc.mix_ticks * 1000000ull / snd_acc.jobs / spukit_tick_hz()),
@@ -1386,6 +1386,10 @@ static void log_stats(void)
 				    MS(snd_acc.wait_us / snd_acc.jobs), (unsigned)(snd_acc.out_n / snd_acc.jobs),
 				    (unsigned)snd_acc.errors, audio_out_is_open() ? "abierta" : "sin audio", as.level, as.underruns,
 				    (unsigned)(as.silent - prev_silent), as.late, as.peak ? 20.0 * log10(as.peak / 32768.0) : -99.0);
+		salsads_log("DATO audio-estirar: activo %d, limitador %d; acumulado %llu muestras añadidas, %u%% tiempo con solape; %u faltas; costo %llu us (máx %u us/grano), hilo %llu us",
+		    as.stretch_enabled, as.limiter_enabled, (unsigned long long)as.inserted,
+		    as.played ? (unsigned)(as.active * 100 / as.played) : 0, as.underruns,
+		    (unsigned long long)as.stretch_us, as.stretch_max_us, (unsigned long long)as.busy_us);
 		prev_silent = as.silent;
 		memset(&snd_acc, 0, sizeof snd_acc);
 	}
@@ -2405,6 +2409,7 @@ static int game_open(const char *path)
 		salsads_rec_marker(JIT_MARKER, NUCLEO_VERSION, 1);
 	}
 #endif
+	audio_out_set_active(1);
 	return 0;
 }
 
@@ -2419,6 +2424,7 @@ static void game_close(void)
 	salsads_log("cierre: esperando sonido, geometría y 3D");
 	if (snd_on && nds->snd.prev >= 0)
 		snd_wait(NULL, nds->snd.prev);
+	audio_out_set_active(0);
 	if (geom_on) {
 		gx_sync(&nds->gx, 0);
 		geom_collect((int)geom_last_seq);

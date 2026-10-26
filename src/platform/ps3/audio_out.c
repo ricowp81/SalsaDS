@@ -9,6 +9,8 @@
 
 #include <audio/audio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include "audio/stretch.h"
 #include <sys/event_queue.h>
 #include <sys/systime.h>
 #include <sys/thread.h>
@@ -18,6 +20,15 @@
 #define PREBUF 2048u       /* muestras que se juntan antes de empezar a sonar */
 #define TARGET 3072u       /* nivel que busca el control de deriva (64 ms) */
 #define THREAD_PRIO 100
+
+static audio_stretch stretch;
+static float pending[2 * STRETCH_HOP], input[2 * STRETCH_GRAIN], last_sample[2];
+static uint32_t pending_pos = STRETCH_HOP, pending_used, pending_active;
+static uint32_t control_tail;
+static int no_stretch, no_limiter;
+static int active, paused = 1;
+static volatile uint64_t c_inserted, c_active, c_stretch_us, c_played;
+static volatile uint32_t c_stretch_max;
 
 static float ring[2 * RING_FRAMES] __attribute__((aligned(128)));
 static volatile uint32_t head, tail; /* en muestras (pares); head solo lo escribe el productor, tail el consumidor */
@@ -43,7 +54,7 @@ static float *block_ptr(uint32_t b)
 
 static uint32_t level(void)
 {
-	return __atomic_load_n(&head, __ATOMIC_ACQUIRE) - __atomic_load_n(&tail, __ATOMIC_ACQUIRE);
+	return __atomic_load_n(&head, __ATOMIC_ACQUIRE) - __atomic_load_n(&control_tail, __ATOMIC_ACQUIRE);
 }
 
 void audio_out_push(const float *stereo, uint32_t frames)
@@ -69,7 +80,7 @@ void audio_out_push(const float *stereo, uint32_t frames)
 	__atomic_store_n(&head, h + frames, __ATOMIC_RELEASE);
 }
 
-static void fill_block(float *dst)
+static void fill_legacy(float *dst)
 {
 	uint32_t t = tail, avail = __atomic_load_n(&head, __ATOMIC_ACQUIRE) - t, n = AUDIO_BLOCK_SAMPLES, got;
 	uint32_t peak = c_peak;
@@ -98,8 +109,96 @@ static void fill_block(float *dst)
 			c_underruns++;
 		}
 	}
-	c_peak = peak;
+	if (no_limiter) c_peak = peak;
 	__atomic_store_n(&tail, t + got, __ATOMIC_RELEASE);
+	__atomic_store_n(&control_tail, t + got, __ATOMIC_RELEASE);
+}
+
+static void fill_block(float *dst)
+{
+	if (!__atomic_load_n(&active, __ATOMIC_ACQUIRE)) {
+		for (uint32_t i = 0; i < AUDIO_BLOCK_SAMPLES; i++)
+			for (uint32_t c = 0; c < 2; c++)
+				dst[2*i+c] = last_sample[c] * (1.0f - (float)i / (AUDIO_BLOCK_SAMPLES - 1));
+		last_sample[0] = last_sample[1] = 0;
+		pending_pos = STRETCH_HOP;
+		memset(&stretch, 0, sizeof stretch);
+		__atomic_store_n(&tail, __atomic_load_n(&head, __ATOMIC_ACQUIRE), __ATOMIC_RELEASE);
+		__atomic_store_n(&control_tail, tail, __ATOMIC_RELEASE);
+		port.started = 0;
+		__atomic_store_n(&paused, 1, __ATOMIC_RELEASE);
+		return;
+	}
+	__atomic_store_n(&paused, 0, __ATOMIC_RELEASE);
+	if (no_stretch) {
+		fill_legacy(dst);
+	} else {
+		uint32_t done = 0;
+		if (!port.started) {
+			if (level() < PREBUF) {
+				memset(dst, 0, 2 * AUDIO_BLOCK_SAMPLES * sizeof(float));
+				return;
+			}
+			port.started = 1;
+		}
+		while (done < AUDIO_BLOCK_SAMPLES) {
+			if (pending_pos == STRETCH_HOP) {
+				uint32_t t = tail, avail = __atomic_load_n(&head, __ATOMIC_ACQUIRE) - t;
+				uint32_t n = avail < STRETCH_GRAIN ? avail : STRETCH_GRAIN;
+				uint64_t t0, ins = stretch.inserted, act = stretch.active, miss = stretch.missing;
+				for (uint32_t i = 0; i < n; i++) {
+					input[2*i] = ring[2*((t+i) & (RING_FRAMES-1))];
+					input[2*i+1] = ring[2*((t+i) & (RING_FRAMES-1))+1];
+				}
+				t0 = sysGetSystemTime();
+				uint32_t used = audio_stretch_run(&stretch, input, n, pending);
+				uint32_t elapsed = (uint32_t)(sysGetSystemTime() - t0);
+				c_stretch_us += elapsed;
+				if (elapsed > c_stretch_max) c_stretch_max = elapsed;
+				pending_used = used;
+				c_inserted += stretch.inserted - ins;
+				pending_active = stretch.active != act;
+				c_silent += stretch.missing - miss;
+				if (stretch.missing != miss) c_underruns++;
+				__atomic_store_n(&tail, t + used, __ATOMIC_RELEASE);
+				pending_pos = 0;
+			}
+			uint32_t take = STRETCH_HOP - pending_pos;
+			if (take > AUDIO_BLOCK_SAMPLES - done) take = AUDIO_BLOCK_SAMPLES - done;
+			memcpy(dst + 2*done, pending + 2*pending_pos, 2*take*sizeof(float));
+			/* El control de ±2 % ve las muestras aún pendientes, igual que
+			 * la ruta de 256 pares; adelantar tail por un grano no cambia la razón. */
+			uint32_t before = pending_pos < pending_used ? pending_pos : pending_used;
+			uint32_t after = pending_pos + take < pending_used ? pending_pos + take : pending_used;
+			__atomic_store_n(&control_tail, control_tail + after - before, __ATOMIC_RELEASE);
+			if (pending_active) c_active += take;
+			pending_pos += take;
+			done += take;
+		}
+	}
+	for (uint32_t i = 0; i < 2 * AUDIO_BLOCK_SAMPLES; i++) {
+		float x = no_limiter ? dst[i] : audio_soft_limit(dst[i]);
+		uint32_t p = (uint32_t)((x < 0 ? -x : x) * 32768.0f);
+		dst[i] = x;
+		if (p > c_peak) c_peak = p;
+	}
+	if (port.started) c_played += AUDIO_BLOCK_SAMPLES;
+	last_sample[0] = dst[2*AUDIO_BLOCK_SAMPLES-2];
+	last_sample[1] = dst[2*AUDIO_BLOCK_SAMPLES-1];
+}
+
+void audio_out_set_active(int enabled)
+{
+	if (!port.open) return;
+	if (enabled) {
+		__atomic_store_n(&active, 1, __ATOMIC_RELEASE);
+		while (__atomic_load_n(&paused, __ATOMIC_ACQUIRE)) sysUsleep(1000);
+	} else {
+		__atomic_store_n(&active, 0, __ATOMIC_RELEASE);
+		/* Solo entre juegos, después de esperar al productor. El consumidor
+		 * confirma que descartó la historia antes de permitir otra apertura. */
+		while (!__atomic_load_n(&paused, __ATOMIC_ACQUIRE)) sysUsleep(1000);
+	}
 }
 
 static void audio_thread(void *arg)
@@ -137,6 +236,16 @@ int audio_out_init(void)
 {
 	audioPortParam params = { AUDIO_PORT_2CH, AUDIO_BLOCK_16, AUDIO_PORT_INITLEVEL, 1.0f };
 	int rc;
+	struct stat fs;
+	no_stretch = stat("/dev_hdd0/salsads/audio-sin-estirar", &fs) == 0;
+	no_limiter = stat("/dev_hdd0/salsads/audio-sin-limitador", &fs) == 0;
+	active = 0; paused = 1;
+	pending_pos = STRETCH_HOP;
+	memset(&stretch, 0, sizeof stretch);
+	c_inserted = c_active = c_stretch_us = c_played = 0;
+	c_stretch_max = 0;
+	control_tail = 0;
+	last_sample[0] = last_sample[1] = 0;
 
 	memset(&port, 0, sizeof port);
 	head = tail = 0;
@@ -185,6 +294,13 @@ float audio_out_ratio_adj(void)
 
 void audio_out_stats(struct audio_out_stats *s, int reset_peak)
 {
+	s->played = c_played;
+	s->stretch_max_us = c_stretch_max;
+	s->inserted = c_inserted;
+	s->active = c_active;
+	s->stretch_us = c_stretch_us;
+	s->stretch_enabled = !no_stretch;
+	s->limiter_enabled = !no_limiter;
 	s->pushed = c_pushed;
 	s->dropped = c_dropped;
 	s->blocks = c_blocks;

@@ -5,9 +5,9 @@
  *   mezclador (SPE) → audio_out_push (anillo) → hilo de audio: llena los bloques del puerto cuando el sistema los consume
  *
  * El hilo de la emulación empuja las muestras que entrega el mezclador (estéreo flotante a 48 kHz, intercaladas). El hilo de
- * audio las saca en bloques; si faltan, completa con silencio y lo cuenta (la emulación más lenta que la DS real no se
- * estira: se oye cortada, y el log lo dice). Para que la latencia no crezca ni se agote, el hilo de la emulación consulta
- * `audio_out_ratio_adj()` antes de cada cuadro y se lo pasa al remuestreador (corrección de la razón de ±2 %).
+ * audio conserva el tono con solape y búsqueda de correlación cuando faltan muestras. La mezcla a velocidad completa
+ * pasa intacta por el estirador; la protección suave tras el FIR tiene su propio interruptor. El control de deriva
+ * `audio_out_ratio_adj()` conserva el límite de ±2 %.
  *
  * Nada de esto toca el log desde el hilo de audio (el logger no es seguro entre hilos): deja contadores.
  */
@@ -17,6 +17,10 @@
 #include <stdint.h>
 
 struct audio_out_stats {
+	uint64_t played; /* pares entregados durante reproducción, sin contar el selector */
+	uint32_t stretch_max_us;
+	uint64_t inserted, active, stretch_us; /* pares añadidos, pares procesados con solape, costo acumulado */
+	int stretch_enabled, limiter_enabled;
 	uint64_t pushed;     /* muestras (pares) recibidas */
 	uint64_t dropped;    /* muestras descartadas porque el anillo estaba lleno */
 	uint64_t blocks;     /* bloques entregados al puerto */
@@ -36,5 +40,7 @@ float audio_out_ratio_adj(void);
 void audio_out_stats(struct audio_out_stats *s, int reset_peak);
 int audio_out_is_open(void);
 void audio_out_shutdown(void);
+/* Llamar al cerrar tras esperar al productor; confirma el vaciado antes del próximo juego. */
+void audio_out_set_active(int enabled);
 
 #endif
