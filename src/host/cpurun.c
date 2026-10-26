@@ -326,6 +326,8 @@ static void gx_dump(const char *path)
 		return;
 	}
 	fprintf(o, "cuadro %u: %u polígonos, %u vértices, swap %u\n", f->seq, f->npolys, f->nverts, f->swap_params);
+	fprintf(o, "regs: disp3dcnt=%04x clear_color=%08x clear_depth=%04x alpha_ref=%04x\n", f->regs.disp3dcnt, f->regs.clear_color,
+		f->regs.clear_depth, f->regs.alpha_test_ref);
 	for (uint32_t i = 0; i < f->npolys; i++) {
 		const gx_poly *p = &f->poly[i];
 
@@ -603,7 +605,7 @@ int main(int argc, char **argv)
 	const char *holes_dump = NULL, *fdump_prefix = NULL;
 	uint64_t fdump_frame = 0;
 	const char *img3d_path = NULL;
-	struct { uint64_t frame; uint32_t keys, x, y; } press[512];
+	struct { uint64_t frame; uint32_t keys, x, y; } press[16384];
 	struct { uint64_t frame; const char *file; } shot[32];
 	uint32_t npress = 0, nshot = 0;
 	int watch_cpu = 0;
@@ -656,7 +658,9 @@ int main(int argc, char **argv)
 			M.vid.ops.wait3d = fk_wait3d;
 			M.vid.ops.submit = fk_submit2d;
 			r3d_defer_sim = 1;
-		} else if (!strcmp(argv[i], "--r3d-celdas"))
+		} else if (!strcmp(argv[i], "--r3d-sin-completo"))
+			M.vid.r3d_flags |= R3D_F_NOFULL; /* regla anterior del borde derecho (sin el tamaño completo) */
+		else if (!strcmp(argv[i], "--r3d-celdas"))
 			M.vid.r3d_texmode = 2; /* celdas de 4×4 siempre (si no, automático: bloques hasta que se desbordan) */
 		else if (!strcmp(argv[i], "--texturas-xdr"))
 			M.vid.r3d_flags |= R3D_F_XDR;
@@ -697,7 +701,31 @@ int main(int argc, char **argv)
 			show_arm7 = 1;
 		else if (!strcmp(argv[i], "--trace") && i + 1 < argc)
 			trace_n = strtoull(argv[++i], NULL, 0);
-		else if (!strcmp(argv[i], "--press") && i + 1 < argc && npress < 512) {
+		else if (!strcmp(argv[i], "--press-file") && i + 1 < argc) {
+			/* ARCHIVO con una orden por línea, «CUADRO:TECLAS_HEX[:X,Y]» (lo mismo que --press, para guiones largos) */
+			FILE *pf = fopen(argv[++i], "r");
+			char line[128];
+
+			if (!pf) {
+				fprintf(stderr, "--press-file: no abre %s\n", argv[i]);
+				return 2;
+			}
+			while (npress < 16384 && fgets(line, sizeof line, pf)) {
+				char *e;
+
+				press[npress].frame = strtoull(line, &e, 0);
+				if (e == line)
+					continue;
+				press[npress].keys = *e == ':' ? (uint32_t)strtoul(e + 1, &e, 16) : 0;
+				press[npress].x = press[npress].y = 0;
+				if (*e == ':') {
+					sscanf(e + 1, "%u,%u", &press[npress].x, &press[npress].y);
+					press[npress].keys |= NDS_KEY_PEN;
+				}
+				npress++;
+			}
+			fclose(pf);
+		} else if (!strcmp(argv[i], "--press") && i + 1 < argc && npress < 16384) {
 			/* CUADRO:TECLAS_HEX[:X,Y] — desde ese cuadro se mantiene ese estado de botones (y del toque) */
 			char *e;
 

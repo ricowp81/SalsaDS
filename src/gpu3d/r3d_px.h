@@ -152,6 +152,7 @@ typedef struct r3d_poly {
 	uint32_t wire, translucent_sort;
 	uint32_t textured;
 	uint32_t front;      /* polígono frontal (GX_POLY_FRONT) */
+	uint32_t full;       /* tamaño completo: el borde derecho inclinado también dibuja su píxel (GBATEK, «Polygon Size») */
 	r3d_tex tex;
 } r3d_poly;
 
@@ -229,6 +230,11 @@ static inline int r3d_poly_setup(r3d_poly *p, const gx_poly *gp, const gx_vertex
 	p->ldir = area < 0 ? 1 : -1;
 	if (p->ybot < 0 || p->ytop > R3D_H - 1)
 		return 0;
+	/* Tamaño completo (GBATEK, «DS 3D Rendering», Polygon Size): los opacos sin edge marking ni antialiasing no dibujan su
+	 * borde derecho (ni el inferior); con cualquiera de los dos, o si son translúcidos con la mezcla activa, sí (salvo el
+	 * derecho vertical). Sin esto, dos polígonos vecinos cuyas aristas no coinciden exacto (uniones en T, comunes en el
+	 * mapa de HeartGold) dejan un hueco de un píxel de ancho. */
+	p->full = !(rs->flags & R3D_F_NOFULL) && ((rs->d3 & (D3_AA | D3_EDGE)) || ((rs->d3 & D3_BLEND) && r3d_is_translucent(gp->attr, tp) && p->alpha != 31u)) ? 1u : 0u;
 	/* textura */
 	{
 		const uint32_t fmt = (tp >> 26) & 7u;
@@ -577,11 +583,15 @@ static inline int r3d_row_at(const r3d_poly *p, int32_t y, r3d_row *row)
 	row->xle = xle > xl + 1 ? (xle < xr ? xle : xr) : xl + 1;
 	row->xrs = xrs < xr - 1 ? (xrs > xl ? xrs : xl) : xr - 1;
 	row->xr = xr;
+	if (p->full && rb->x != ra->x) { /* tamaño completo: un píxel más a la derecha, que es el de la arista */
+		row->xrs++;
+		row->xr++;
+	}
 	row->xo = xl;
 	row->alledge = y == p->ytop || y == p->ybot - 1;
 	/* Denominador de la interpolación a lo largo de la línea: xr - xl, y uno más cuando la arista derecha es inclinada y
 	 * y-mayor (medido contra melonDS con paralelogramos, escena 22 de gx3d; con la derecha vertical o x-mayor no cambia). */
-	row->den = row->xr - row->xl + ((rb->x != ra->x && abs32(rb->x - ra->x) <= rb->y - ra->y) ? 1 : 0);
+	row->den = xr - xl + ((rb->x != ra->x && abs32(rb->x - ra->x) <= rb->y - ra->y) ? 1 : 0);
 	/* Derecha x-mayor que va hacia la izquierda (ortográfica): la interpolación a lo largo de la línea cuenta hasta el extremo de afuera del tramo de la
 	 * arista (la x de esta línea, redondeada), no hasta donde acaba el tramo dibujado: sin esto, en los tallos inclinados de NSMB (aristas de pendiente 1/4)
 	 * la textura corría más rápido que en melonDS y salían dientes y huecos (3.7) */

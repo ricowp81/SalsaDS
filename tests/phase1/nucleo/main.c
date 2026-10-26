@@ -107,6 +107,10 @@ static int geom_poly_plain, geom_read_scalar;
  * la CPU a GXFIFO y a los puertos de órdenes sin pasar por el bus (con el recompilador, tampoco por la ruta lenta general). Con este
  * archivo vuelve a la forma anterior, para comparar en la misma escena. */
 #define GX_LENTO_FLAG SALSADS_DATA_DIR "/gx-lento"
+/* Tamaño completo de los polígonos (GBATEK, «Polygon Size»): con edge marking, antialiasing o translúcidos con mezcla, la arista derecha inclinada
+ * dibuja también su píxel; cierra los huecos de un píxel entre polígonos vecinos del mapa de HeartGold (docs/fase3.md). Con este archivo vuelve
+ * la regla anterior (borde derecho exclusivo siempre), para comparar en la misma escena. */
+#define R3D_SIN_COMPLETO_FLAG SALSADS_DATA_DIR "/r3d-sin-completo"
 
 #ifdef NUCLEO_JIT
 /* «SalsaDS JIT núcleo» (Fase 4): el ARM9 con el recompilador (src/jit/arec*); caché de código y prueba con respaldo de la
@@ -2808,6 +2812,14 @@ int main(void)
 	/* Render 3D: dos SPE con bandas alternas; si no arrancan o la autoprueba falla, el PPE rasteriza (lento) */
 	nds->vid.r3d_band = 16;
 	nds->vid.r3d_units = 1;
+	{
+		struct stat fst;
+
+		if (stat(R3D_SIN_COMPLETO_FLAG, &fst) == 0)
+			nds->vid.r3d_flags |= R3D_F_NOFULL;
+		salsads_log("render 3D: polígonos a tamaño completo con edge marking, antialiasing o translúcidos %s",
+			    (nds->vid.r3d_flags & R3D_F_NOFULL) ? "desactivados (existe " R3D_SIN_COMPLETO_FLAG ")" : "activos");
+	}
 	if (spu_on) {
 		struct stat xst;
 		const int use_xdr = stat(R3D_XDR_FLAG, &xst) == 0;

@@ -5,6 +5,11 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-26 — Rombos negros de HeartGold: tamaño completo de los polígonos (rama heartgold-huecos)
+- Causa: en el mapa (cuadro 29800, Pueblo Primavera) polígonos vecinos con aristas que no coinciden exacto (el 62, derecha de (149,0) a (151,78); el 43, izquierda de (149,4) a (152,89)) dejaban una columna de 1 píxel sin cubrir (x = 150, líneas 61 a 77); con DISP3DCNT = 0x3039 (antialiasing y edge marking). GBATEK «Polygon Size»: solo los opacos sin edge marking ni antialiasing pierden el borde derecho; con cualquiera de los dos (o translúcidos con mezcla) la arista derecha inclinada dibuja su píxel. El rasterizador compartido lo tenía siempre exclusivo; la referencia del host tenía los mismos huecos (no era del SPE).
+- Arreglo: `p->full` en `r3d_poly_setup` y un píxel más en `r3d_row_at` (derecha no vertical); no cambia la interpolación. Interruptor: archivo `r3d-sin-completo` en `/dev_hdd0/salsads/` (`--r3d-sin-completo` en el host). Prueba dirigida en `test_r3d_vrow.c`.
+- Medido en el host (mismo guion de entrada, 29 900 cuadros): píxeles de hueco 187 282 en 5 690 cuadros → 132 en 22 (los que quedan son un tapete del interior, no del mapa). `--vs-ref3d` igual en HeartGold, MKDS, NSMB y SM64DS. Cambian el hash de la semilla 7 y 6 imágenes de `gx3d.golden` (28, 29, 30, 34, 37, 40), iguales en LE, BE y SAN. Falta confirmar en la PS3.
+
 ## 2026-10-25 — Clasificación de planos por lote en el SPE (cand-v004)
 - `0371c56`: cuatro posiciones alineadas, trasposición y planos SIMD; conserva recorte, cara, contadores y orden. A/B independiente: `geometria-lectura-escalar`; se mantiene `geometria-perfil`.
 - Listas de vértices/polígonos antes/después idénticas byte a byte en MKDS/NSMB/SM64DS; `--vs-ref3d`: 1175/2196/2299 cuadros iguales. Dirigidas con sanitizadores: 3247 comprobaciones, 0 fallos.

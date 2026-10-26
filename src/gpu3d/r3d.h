@@ -53,6 +53,7 @@
 #define R3D_XDR_ENTRIES 32768u
 #define R3D_XDR_BYTES (2u * R3D_XDR_ENTRIES * 128u)
 
+#define R3D_F_NOFULL 64u /* regla anterior del borde derecho: siempre exclusivo (sin el tamaño completo de GBATEK, «Polygon Size») */
 #define R3D_F_CELLSCALAR 16u /* diagnóstico: decodificar las celdas de 16 colores texel a texel */
 
 /* Un trabajo: un cuadro, repartido en bandas de `band` líneas entre `nunits` unidades (SPE); esta es la `unit`. Las
