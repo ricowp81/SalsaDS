@@ -18,6 +18,8 @@ int rsx3d_decode_test(void);
 int rsx3d_decode_raster_test(const r3d_job *job);
 int rsx3d_init(void);
 unsigned rsx3d_scale(void);
+int rsx3d_hd_scalar(void);
+int rsx3d_hd_late_flip(void);
 int rsx3d_hd_experimental(void);
 /* Solo autoprueba; restaurar descriptores originales antes del reproductor. */
 int rsx3d_hd_descriptors(int distinct);

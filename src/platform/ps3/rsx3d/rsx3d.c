@@ -47,7 +47,9 @@ static uint32_t offset, used, nc;
 static rsxkit_target *target;
 static unsigned hd_scale = 1;
 static int hd_refresh = 1;
-static int hd_game, hd_distinct;
+static int hd_game, hd_distinct, hd_scalar, hd_early_flip;
+int rsx3d_hd_scalar(void) { return hd_scalar; }
+int rsx3d_hd_late_flip(void) { return hd_game && hd_scale>1 && !hd_early_flip; }
 static rsxkit_target *hd_diag_target, *hd_diag_scratch;
 int rsx3d_hd_experimental(void) { return hd_game && hd_scale > 1; }
 int rsx3d_hd_descriptors(int distinct)
@@ -64,6 +66,19 @@ static uint8_t *hd_mem;
 static uint32_t hd_offset;
 static uint64_t hd_native[2];
 static int hd_valid[2];
+static uint64_t hd_requested[2];
+static const char *hd_rejected[2], *hd_missing[2];
+static uint64_t hd_request_seq[2], hd_request_serial;
+static uint32_t hd_raster_fence[2];
+static unsigned hd_raster_samples;
+static uint64_t hd_wait_us, hd_copy_issue_us, hd_post_us;
+static struct { const char *why; unsigned count; } hd_fallback[24];
+static void hd_fallback_count(const char *why)
+{
+    for (unsigned i=0;i<24;i++) if (!hd_fallback[i].why || !strcmp(hd_fallback[i].why,why)) {
+        hd_fallback[i].why=why; hd_fallback[i].count++; return;
+    }
+}
 static uint32_t hd_present_fence[2];
 static uint64_t hd_present_ns, hd_compose_ns, hd_copy_ns, hd_raster_ns, hd_metadata_us;
 static int hd_composed[2], hd_copied[2];
@@ -71,6 +86,25 @@ static unsigned hd_samples;
 static rsxkit_program *hd_program;
 #define HD_STRIDE (1024u * 1024u)
 unsigned rsx3d_scale(void) { return hd_scale; }
+static uint64_t hd_duration(unsigned first, unsigned last)
+{
+    uint64_t a=rsxkit_stamp_ns(first), b=rsxkit_stamp_ns(last);
+    return a && b >= a ? b-a : 0;
+}
+/* La etiqueta nativa puede preceder al raster HD. Solo leer sus marcas tras
+ * su propia etiqueta, antes de reutilizarlas; nunca esperar para medir. */
+static uint64_t hd_raster_collect(unsigned slot)
+{
+    if (!hd_raster_fence[slot] || !rsxkit_fence_done(hd_raster_fence[slot])) return 0;
+    uint64_t ns=hd_duration(48+slot*2,49+slot*2);
+    hd_raster_fence[slot]=0;
+    hd_raster_ns += ns;
+    if (++hd_raster_samples==120) {
+        salsads_log("DATO rsx3d HD raster: escala %ux; adicional %.3f ms por cuadro; 120 etiquetas HD completas",hd_scale,hd_raster_ns/120000000.0);
+        hd_raster_samples=0; hd_raster_ns=0;
+    }
+    return ns;
+}
 void rsx3d_hd_invalidate(uint64_t ea)
 {
     for (unsigned i=0;i<2;i++) if (hd_native[i]==ea) hd_native[i]=0;
@@ -79,10 +113,12 @@ uint64_t rsx3d_hd_acquire(uint64_t ea, unsigned set)
 {
     if (hd_scale == 1 || set > 1) return 0;
     if (hd_present_fence[set]) {
+        uint64_t t=sysGetSystemTime();
         rsxkit_fence_wait(hd_present_fence[set]);
-        hd_present_ns += rsxkit_stamp_ns(41+set*2)-rsxkit_stamp_ns(40+set*2);
-        if (hd_composed[set]) hd_compose_ns += rsxkit_stamp_ns(45+set*2)-rsxkit_stamp_ns(44+set*2);
-        if (hd_copied[set]) hd_copy_ns += rsxkit_stamp_ns(53+set*2)-rsxkit_stamp_ns(52+set*2);
+        hd_wait_us += sysGetSystemTime()-t;
+        hd_present_ns += hd_duration(40+set*2,41+set*2);
+        if (hd_composed[set]) hd_compose_ns += hd_duration(44+set*2,45+set*2);
+        if (hd_copied[set]) hd_copy_ns += hd_duration(52+set*2,53+set*2);
         hd_present_fence[set]=0;
         if (++hd_samples == 120) {
             salsads_log("DATO rsx3d HD costos: escala %ux; copia local %.3f composición HD %.3f presentación completa %.3f ms; publicación PPE %.3f ms por cuadro (%u muestras)",hd_scale,hd_copy_ns/120000000.0,hd_compose_ns/120000000.0,hd_present_ns/120000000.0,hd_metadata_us/120000.0,hd_samples);
@@ -90,13 +126,22 @@ uint64_t rsx3d_hd_acquire(uint64_t ea, unsigned set)
         }
     }
     hd_valid[set] = hd_copied[set] = 0;
+    hd_missing[set]="error de copia local";
     for (unsigned i=0;i<2;i++) if (ea && hd_native[i]==ea) {
+        uint64_t t=sysGetSystemTime();
         rsxkit_stamp(52+set*2);
         if (rsxkit_target_copy(hd_saved[set], hd_target[i])) return 0;
         rsxkit_stamp(53+set*2); hd_copied[set]=1;
+        hd_copy_issue_us += sysGetSystemTime()-t;
         hd_valid[set] = 1;
         return (uint64_t)(uintptr_t)(hd_mem + set*HD_STRIDE);
     }
+    const char *why=ea ? "emparejamiento sin productor" : "sin capa 3D";
+    uint64_t latest=0;
+    for (unsigned i=0;i<2;i++) if (ea && hd_requested[i]==ea && hd_request_seq[i]>=latest) {
+        why=hd_rejected[i] ? hd_rejected[i] : "raster sobrescrito antes de adquirir"; latest=hd_request_seq[i];
+    }
+    hd_missing[set]=why;
     return 0;
 }
 static uint64_t hd_compose_pass(rsxkit_post_pass *out, unsigned set, int x, int y, int w, int h)
@@ -126,18 +171,28 @@ int rsx3d_hd_present(unsigned set, int x, int y, int w, int h)
     static unsigned count, shown, missing, modes, errors;
     const char *why = !hd_valid[set] ? "sin raster del cuadro" :
         *(uint32_t *)(void *)(hd_mem + set*HD_STRIDE + G2D_HD_BYTES) ? "modo de pantalla no gráfico" : NULL;
-    if (why) { if (!hd_valid[set]) missing++; else modes++; }
+    if (why) {
+        if (!hd_valid[set]) { missing++; hd_fallback_count(hd_missing[set] ? hd_missing[set] : "sin adquisición"); }
+        else modes++;
+    }
     else {
         rsxkit_post_pass pass; hd_metadata_us += hd_compose_pass(&pass,set,x,y,w,h);
         rsxkit_stamp(44+set*2);
+        uint64_t t=sysGetSystemTime();
         if (rsxkit_post_run(&pass)) why="error de composición";
         else shown++;
+        hd_post_us += sysGetSystemTime()-t;
         rsxkit_stamp(45+set*2);
         hd_composed[set]=1;
         if (why) errors++;
     }
     if (++count == 120) {
         salsads_log("DATO rsx3d HD: escala %ux; HD %u/120 (%.1f%%); nativa por raster ausente %u, modo no gráfico %u, error %u", hd_scale, shown, shown*100.0/120, missing, modes, errors);
+        salsads_log("DATO rsx3d HD PPE: espera presentación %.3f; encolar copia %.3f; compositor/sampler %.3f ms por cuadro",hd_wait_us/120000.0,hd_copy_issue_us/120000.0,hd_post_us/120000.0);
+        for (unsigned i=0;i<24;i++) if (hd_fallback[i].count)
+            salsads_log("DATO rsx3d HD caída: %s; cuadros %u",hd_fallback[i].why,hd_fallback[i].count);
+        memset(hd_fallback,0,sizeof hd_fallback);
+        hd_wait_us=hd_copy_issue_us=hd_post_us=0;
         count=shown=missing=modes=errors=0;
     }
     return why == NULL;
@@ -441,15 +496,18 @@ int rsx3d_init(void)
     if (stat("/dev_hdd0/salsads/3d-rsx-2x", &flag) == 0) hd_scale=2;
     if (stat("/dev_hdd0/salsads/3d-rsx-3x", &flag) == 0) hd_scale=3;
     if (stat("/dev_hdd0/salsads/3d-rsx-4x", &flag) == 0) hd_scale=4;
+    hd_early_flip = stat("/dev_hdd0/salsads/3d-rsx-hd-flip-temprano", &flag) == 0;
+    hd_scalar = stat("/dev_hdd0/salsads/3d-rsx-hd-metadatos-escalares", &flag) == 0;
     hd_game = stat("/dev_hdd0/salsads/3d-rsx-hd-juego", &flag) == 0;
     if (hd_scale > 1 && !decode_verify && !hd_game) {
         salsads_log("rsx3d escala solicitada %ux: presentación nativa 1x; HD limitado al reproductor; pendiente validar en consola",hd_scale);
         hd_scale = 1;
     }
-    if (hd_game && hd_scale > 1) salsads_log("rsx3d HD juego EXPERIMENTAL: diagnóstico de atraso, sin acreditar paridad");
+    if (hd_game && hd_scale > 1) salsads_log("rsx3d HD juego EXPERIMENTAL: orden nativo/HD validado en consola con 6121383; presentación actual pendiente de medir");
     if (hd_scale > 1) {
         hd_refresh = stat("/dev_hdd0/salsads/3d-rsx-hd-sin-recarga", &flag) != 0;
-        salsads_log("rsx3d HD recarga de metadatos: %s",hd_refresh ? "activa" : "desactivada");
+        salsads_log("rsx3d HD espera flip: %s",hd_early_flip ? "antes de emular" : "antes de presentar");
+        salsads_log("rsx3d HD recarga de metadatos: %s; exportador %s",hd_refresh ? "activa" : "desactivada",hd_scalar ? "escalar" : "bloques iguales de 8");
         hd_mem=memalign(HD_STRIDE,4*HD_STRIDE);
         if (!hd_mem || rsxkit_map_main(hd_mem,4*HD_STRIDE,&hd_offset)) return -1;
         memset(hd_mem,0,4*HD_STRIDE);
@@ -647,6 +705,7 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     uint64_t reuse_start = sysGetSystemTime();
     if (texture_fence) rsxkit_fence_wait(texture_fence);
     st->reuse_us = sysGetSystemTime() - reuse_start;
+    hd_raster_collect(slot);
     if (rsxkit_lost()) return -1;
     if (modes & ((1u << RSX_TOON) | (1u << RSX_HIGHLIGHT))) {
         for (unsigned i = 0; i < 32; i++) {
@@ -915,6 +974,7 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     if (hd_game && hd_scale > 1) flight[slot].fence = rsxkit_fence();
     }
     texture_fence = rsxkit_fence();
+    if (hd_scale>1) hd_raster_fence[slot]=texture_fence;
     if (!hd_game || hd_scale == 1) flight[slot].fence = texture_fence;
     flight[slot].out_ea = j->out_ea;
     flight[slot].pending = 1;
@@ -932,6 +992,9 @@ int rsx3d_submit(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     hd_native[slot] = 0;
     rsx3d_hd_invalidate(j->out_ea);
     int result = render_frame(j, slot, st);
+    hd_requested[slot]=j->out_ea;
+    hd_request_seq[slot]=++hd_request_serial;
+    hd_rejected[slot]=result>0 ? NULL : reason;
     if (result <= 0) {
         st->total_us = sysGetSystemTime() - start;
         st->prepare_us = st->total_us - st->reuse_us;
@@ -969,15 +1032,7 @@ int rsx3d_wait(unsigned slot, rsx3d_stats *st)
     st->total_us += st->wait_us + st->copy_us;
     st->raster_ns = rsxkit_stamp_ns(57 + slot * 3) - rsxkit_stamp_ns(56 + slot * 3);
     st->export_ns = rsxkit_stamp_ns(58 + slot * 3) - rsxkit_stamp_ns(57 + slot * 3);
-    st->hd_raster_ns = hd_scale > 1 ? rsxkit_stamp_ns(49+slot*2)-rsxkit_stamp_ns(48+slot*2) : 0;
-    if (hd_scale>1) {
-        static unsigned samples;
-        hd_raster_ns += st->hd_raster_ns;
-        if (++samples==120) {
-            salsads_log("DATO rsx3d HD raster: escala %ux; adicional %.3f ms por cuadro",hd_scale,hd_raster_ns/120000000.0);
-            samples=0; hd_raster_ns=0;
-        }
-    }
+    st->hd_raster_ns = hd_raster_collect(slot);
     flight[slot].pending = 0;
     return 1;
 }
@@ -1171,7 +1226,7 @@ int rsx3d_hd_bench(uint64_t ea, const char *name, const rsx3d_stats *st)
         rsxkit_stamp(63);
         rsxkit_fence_wait(rsxkit_fence());
         if (round>=2) {
-            copy += rsxkit_stamp_ns(53+set*2)-rsxkit_stamp_ns(52+set*2);
+            copy += hd_duration(52+set*2,53+set*2);
             compose += rsxkit_stamp_ns(63)-rsxkit_stamp_ns(62);
             publish += cpu;
         }

@@ -1,5 +1,15 @@
 # Registro de rendimiento
 
+## 2026-10-26 — HD en juego, ronda 11
+- PS3 real, `build/ps3-hd-diag/d-mkds-2x.log`: 6294 retiradas RSX, 901 SPE; 6294/8520 presentaciones HD. Hay cuadros sin 3D; el porcentaje total no mide pérdidas de rasters aceptados.
+- 48 ventanas con ≥100 retiradas RSX: medianas intervalo 39,623, emulación 25,862, compositor A 39,305, B 7,472, etiqueta/reutilización 0,004 y recogida final 0,005 ms. Incluyen distintas escenas; no sustituyen el recorte de pista del autor.
+- PS3, ventanas ≥100 RSX: eventos de línea 2,380 ms a 1× frente a 15,345 a 2× (≈12,965 ms extra); geometría 2,30 frente a 2,57. El compositor A termina antes de presentar porque `vid_wait` lo espera al reutilizar la instantánea dentro de `nds_run_frame`; la recogida final pequeña no incluye esa espera.
+- Cambio dirigido: metadatos repetidos por ocho píxeles, conservando prioridades/ventanas/mezclas y ambas alternativas de alfa 3D. No hay tiempos nuevos de PS3; los del SPE bajo RPCS3 no predicen consola.
+- Flip HD esperado después de emular y antes de tocar pantalla; A/B `3d-rsx-hd-flip-temprano`. Permite solapar composición RSX de N con emulación N+1; 1× conserva su orden.
+- `3d-rsx-hd-metadatos-escalares` conserva el recorrido previo; nuevas esperas PPE por etapa y causas de caída en cada ventana. No sumar «instantánea» a SPE: es un subconjunto.
+- RPCS3, juego propio Gouraud: 118/120 HD en la primera ventana (dos cuadros sin capa 3D), 240 cuadros y resultado correcto; alambre vuelve al SPE. No acredita velocidad ni ausencia de retención en PS3.
+- Costos raster HD leídos tras su etiqueta, nunca tras la etiqueta nativa temprana: elimina restas de marcas aún no publicadas. Evidencia y guion en `build/rsx3d-hd-6/`.
+
 ## 2026-10-26 — Diagnóstico HD solapado, ronda 10
 - RPCS3, secuencia original: descriptores originales 1 exacto/15 anteriores/0 otros; distintos 0/15/1 (primer cuadro). Protocolo sin fallos en ambos; 177 mapas iguales a hd-3.
 - La variante cambia solo el destino nativo de la ranura 1 y su descriptor de exportación; la preparación DS no cambia. No se promueve a juego.

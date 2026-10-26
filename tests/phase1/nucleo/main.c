@@ -85,6 +85,7 @@ static int rsx3d_on, rsx3d_sync;
 static struct {
     uint64_t prepare, label, reuse, copy, issue, raster, export, comp[2];
     uint64_t interval, emu, begin, screen;
+    uint64_t collect[2], snapshot, set_wait, hd_acquire, draw, end;
     unsigned frames, rsx, spe, over20;
 } rsx_pipe;
 #endif
@@ -870,7 +871,12 @@ static void vid_post_engine(int e, gpu2d_frame *f)
 	f->eng[e].out_ea = (uint64_t)(uintptr_t)tex_px(sub.set, e);
     f->eng[e].hd_ea = 0;
 #ifdef NUCLEO_RSX
-    if (!e && rsx3d_on) f->eng[e].hd_ea = rsx3d_hd_acquire(f->eng[e].img3d_ea, sub.set);
+    if (!e && rsx3d_on) {
+        uint64_t t=now_us();
+        f->eng[e].hd_ea = rsx3d_hd_acquire(f->eng[e].img3d_ea, sub.set);
+        rsx_pipe.hd_acquire += now_us()-t;
+        if (rsx3d_hd_scalar()) f->eng[e].flags |= G2D_F_HD_SCALAR;
+    }
 #endif
 	jc.frame_ea = (uint64_t)(uintptr_t)f;
 	jc.engine = (uint32_t)e;
@@ -881,8 +887,14 @@ static void vid_begin_sub(int vset)
 {
 	const int set = (int)(sub_count & 1u);
 
+#ifdef NUCLEO_RSX
+    uint64_t t=now_us();
+#endif
 	if (set_used[set])
 		rsxkit_fence_wait(set_fence[set]); /* el RSX ya terminó de leer esta textura */
+#ifdef NUCLEO_RSX
+    rsx_pipe.set_wait += now_us()-t;
+#endif
 	sub.valid = 0;
 	sub.done = 0;
 	sub.set = set;
@@ -921,7 +933,13 @@ static int vid_collect(typeof(sub) *q)
 		const uint64_t t0 = now_us();
 
 		for (int e = 0; e < 2; e++) {
+#ifdef NUCLEO_RSX
+            uint64_t t=now_us();
+#endif
 			const spukit_result *r = spukit_wait(wk[e], q->seq[e]);
+#ifdef NUCLEO_RSX
+            rsx_pipe.collect[e] += now_us()-t;
+#endif
 
 			if (r->error != 0) {
 				salsads_log("FALLO el SPE de la pantalla %c devolvió error %d", 'A' + e, r->error);
@@ -939,11 +957,17 @@ static int vid_collect(typeof(sub) *q)
 /* Antes de reescribir una instantánea: si todavía la lee un trabajo, esperarlo */
 static void vid_wait(void *ctx, int vset)
 {
+#ifdef NUCLEO_RSX
+    uint64_t t=now_us();
+#endif
 	(void)ctx;
 	if (sub.valid && !sub.done && sub.vset == vset)
 		vid_collect(&sub);
 	if (prev.valid && !prev.done && prev.vset == vset)
 		vid_collect(&prev);
+#ifdef NUCLEO_RSX
+    rsx_pipe.snapshot += now_us()-t;
+#endif
 }
 
 /* Autoprueba: la imagen de los SPE contra la referencia del PPE sobre la misma instantánea */
@@ -2122,12 +2146,18 @@ static void render_frame(void)
 	const int set = (int)(frame_no & 1u);
 	const int profiled = (int)(frame_no & 1u);
 	struct sds_rect r[2];
-	uint64_t i9a, i7a, tb0, tb1, tb2, tb3, tb4, tb5, tb6, tb7;
+	uint64_t i9a, i7a, tb0, tb1, tb2, tb3, tb4, tb5, tb6, tb7, flip_ticks;
+#ifdef NUCLEO_RSX
+    const int late_flip=rsx3d_on && rsx3d_hd_late_flip();
+#else
+    const int late_flip=0;
+#endif
 
 	sysUtilCheckCallback();
 	tb0 = tb_clock();
-	rsxkit_frame_begin(CLEAR_RGB);
+    if (!late_flip) rsxkit_frame_begin(CLEAR_RGB);
 	tb1 = tb_clock();
+    flip_ticks=tb1-tb0;
 	{
 		const uint64_t t = now_us();
 		const uint32_t iv = last_begin_us ? (uint32_t)(t - last_begin_us) : 16667;
@@ -2264,6 +2294,13 @@ static void render_frame(void)
 				swap = (nds->vid.set[nds->vid.last].powcnt1 & 0x8000u) != 0;
 		}
 		tb5 = tb_clock();
+        /* El RSX puede componer N y esperar su flip mientras se emula N+1.
+         * Hasta aquí solo se usaron destinos fuera de pantalla. */
+        if (late_flip) {
+            uint64_t t=tb_clock();
+            rsxkit_frame_begin(CLEAR_RGB);
+            flip_ticks += tb_clock()-t;
+        }
 		tb6 = tb_clock();
 		sds_layout_compute(layout, SDS_SCALE_FIT, cur_w, cur_h, r);
 #ifdef NUCLEO_RSX
@@ -2288,8 +2325,10 @@ static void render_frame(void)
 	rsx_pipe.interval += cur_stats.frame_us;
 	rsx_pipe.over20 += cur_stats.frame_us > 20000;
 	rsx_pipe.emu += tb_us(tb3 - tb2);
-	rsx_pipe.begin += tb_us(tb1 - tb0);
+	rsx_pipe.begin += tb_us(flip_ticks);
 	rsx_pipe.screen += tb_us(tb5 - tb4);
+    rsx_pipe.draw += tb_us(tb7 - tb6);
+    rsx_pipe.end += tb_us(tb_clock() - tb7);
 	if (++rsx_pipe.frames == 120) {
 		salsads_log("DATO rsx3d cuadro: %s; cuadros %u RSX %u SPE %u; medias ms intervalo %.3f emulación %.3f flip %.3f preparación %.3f envío %.3f etiqueta %.3f reutilización %.3f copia %.3f raster %.3f exportación %.3f compositor-A %.3f compositor-B %.3f recogida-2D %.3f; cuadros >20 ms %u",
 		    !rsx3d_on ? "SPE" : rsx3d_sync ? "síncrono" : "solapado", rsx_pipe.frames, rsx_pipe.rsx, rsx_pipe.spe,
@@ -2297,13 +2336,16 @@ static void render_frame(void)
 		    rsx_pipe.prepare / 120e3, rsx_pipe.issue / 120e3, rsx_pipe.label / 120e3,
 		    rsx_pipe.reuse / 120e3, rsx_pipe.copy / 120e3, rsx_pipe.raster / 120e6,
 		    rsx_pipe.export / 120e6, rsx_pipe.comp[0] / 120e3, rsx_pipe.comp[1] / 120e3, rsx_pipe.screen / 120e3, rsx_pipe.over20);
+        salsads_log("DATO rsx3d PPE esperas: SPE-A %.3f SPE-B %.3f; dentro emulación por instantánea %.3f; textura presentación %.3f adquirir-HD %.3f; envío presentación %.3f cierre/flip %.3f ms por cuadro (120)",
+            rsx_pipe.collect[0]/120e3,rsx_pipe.collect[1]/120e3,rsx_pipe.snapshot/120e3,
+            rsx_pipe.set_wait/120e3,rsx_pipe.hd_acquire/120e3,rsx_pipe.draw/120e3,rsx_pipe.end/120e3);
 		memset(&rsx_pipe, 0, sizeof rsx_pipe);
 	}
 #endif
-	put(M_BEGIN, tb_us(tb1 - tb0));
+	put(M_BEGIN, tb_us(flip_ticks));
 	put(M_INPUT, tb_us(tb2 - tb1));
 	put(M_SCR, tb_us(tb5 - tb4));
-	put(M_CONV, tb_us(tb6 - tb5));
+	put(M_CONV, late_flip ? 0 : tb_us(tb6 - tb5));
 	put(M_DRAW, tb_us(tb7 - tb6));
 	put(M_END, tb_us(tb_clock() - tb7));
 	frame_no++;

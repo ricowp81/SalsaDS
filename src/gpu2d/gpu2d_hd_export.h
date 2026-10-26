@@ -60,15 +60,36 @@ static void hd_operation(const g2d_job *j, const unsigned *col, const unsigned *
     g2d_hd_color(b + 4, c); b[3] = op; b[7] = a; b[8] = d; b[9] = bright;
     b[10] = hd_effect(j->regs[G2D_R_MASTER_BRIGHT] >> 14, j->regs[G2D_R_MASTER_BRIGHT]);
 }
+/* Un bloque con las mismas capas y ventanas tiene los mismos metadatos:
+ * BG0 3D no se compara porque el contrato conserva ambas alternativas. */
+static int hd_uniform(g2d_v8 a)
+{
+    return !g2d_v8_any(g2d_v8_andc(g2d_v8_splat(0xffff),
+        g2d_v8_eq(a, g2d_v8_splat(g2d_v8_lane(a, 0)))));
+}
+static int hd_repeat(const gpu2d_ctx *c, const g2d_job *j, unsigned p,
+                     const int *ent, int nent, unsigned v, int win)
+{
+    if (win) for (unsigned k = 0; k < 6; k++)
+        if (!hd_uniform(c->allow[k][v])) return 0;
+    for (int k = 0; k < nent; k++) {
+        unsigned e = ent[k];
+        if (!e && j->bg_type[0] == BG_3D) continue;
+        if (!hd_uniform(e < 4 ? c->bg[e][8+v] : c->oidx[p][8+v])) return 0;
+        if (e >= 4 && !hd_uniform(c->omet[p][8+v])) return 0;
+    }
+    return 1;
+}
 static void hd_export(gpu2d_ctx *c, const g2d_job *j, unsigned p,
-                       const int *ent, int nent, uint64_t ea)
+                       const int *ent, int nent, uint64_t ea, int scalar)
 {
     /* draw_3d ya consumió la línea desplazada: reutilizarla sin crecer LS.
      * Esperar cada trozo antes de volver a escribirlo. */
     g2d_hd_pixel *buf = (g2d_hd_pixel *)(void *)c->l3d_sh;
     int win = (j->dc & (G2D_DC_WIN0 | G2D_DC_WIN1 | G2D_DC_OBJWIN)) != 0;
     for (unsigned x0 = 0; x0 < 256; x0 += 64) {
-        for (unsigned i = 0; i < 64; i++) {
+        for (unsigned i = 0; i < 64;) {
+            unsigned repeat = !scalar && !(i & 7) && hd_repeat(c,j,p,ent,nent,(x0+i)/8,win) ? 8 : 1;
             unsigned x = x0+i, col[2], id[2], meta;
             int fx = !win || g2d_v8_lane(c->allow[5][x/8],x%8);
             g2d_hd_pixel *q = &buf[i]; memset(q, 0, sizeof *q);
@@ -80,6 +101,8 @@ static void hd_export(gpu2d_ctx *c, const g2d_job *j, unsigned p,
             g2d_hd_color(q->b, absent);
             unsigned hofs = j->regs[G2D_R_BGHOFS] & 511;
             q->b[11] = hofs; q->b[12] = hofs >> 8;
+            for (unsigned k = 1; k < repeat; k++) memcpy(&buf[i+k], q, sizeof *q);
+            i += repeat;
         }
         g2d_put(buf, ea + x0 * sizeof *buf, 64 * sizeof *buf, G2D_TAG_OUT + p);
         g2d_wait(1u << (G2D_TAG_OUT + p));

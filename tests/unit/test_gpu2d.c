@@ -101,6 +101,7 @@ static void check_hd(gpu2d_ctx *ctx, t_scene *s)
 {
     gpu2d_engine *e = &s->frame.eng[0];
     g2d_hd_pixel *pixels = amalloc(G2D_HD_BYTES + 128);
+    memset(pixels, 0, G2D_HD_BYTES + 128);
     e->hd_ea = (uint64_t)(uintptr_t)pixels;
     CHECK_EQ(gpu2d_compose_engine(ctx, e), 0);
     if (!*(uint32_t *)((uint8_t *)pixels + G2D_HD_BYTES)) {
@@ -114,7 +115,15 @@ static void check_hd(gpu2d_ctx *ctx, t_scene *s)
         }
         CHECK_EQ(bad, 0);
     }
+    g2d_hd_pixel *scalar = amalloc(G2D_HD_BYTES + 128);
+    memset(scalar, 0, G2D_HD_BYTES + 128);
+    e->hd_ea = (uint64_t)(uintptr_t)scalar;
+    e->flags |= G2D_F_HD_SCALAR;
+    CHECK_EQ(gpu2d_compose_engine(ctx, e), 0);
+    CHECK_EQ(memcmp(pixels, scalar, G2D_HD_BYTES + 128), 0);
+    e->flags &= ~G2D_F_HD_SCALAR;
     e->hd_ea = 0;
+    free(scalar);
     free(pixels);
 }
 

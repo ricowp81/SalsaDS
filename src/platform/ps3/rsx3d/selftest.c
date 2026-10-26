@@ -686,6 +686,7 @@ static unsigned hd_spe_tests(r3d_job *j)
     gpu2d_scene_mem m; memset(&m,0,sizeof m);
     m.vram=vram; m.mmem=memalign(128,192*512);
     uint16_t *pixels=memalign(128,256*192*2);
+    void *saved_meta=malloc(G2D_HD_BYTES);
     unsigned fail=0;
     spukit_worker *worker=NULL;
     for (unsigned e=0;e<2;e++) {
@@ -693,7 +694,7 @@ static unsigned hd_spe_tests(r3d_job *j)
         m.chg[e]=memalign(128,(GPU2D_SCENE_CHG_CAP+2)*sizeof(gpu2d_change));
         if (!m.pal[e] || !m.oam[e] || !m.chg[e]) fail=1;
     }
-    if (!m.mmem || !pixels || fail) { fail=1; goto done; }
+    if (!m.mmem || !pixels || !saved_meta || fail) { fail=1; goto done; }
     worker=spukit_worker_start(spu_gpu2d_bin,"hd-2d",0);
     if (!worker) { fail=1; goto done; }
     for (unsigned test=0;test<6;test++) {
@@ -721,13 +722,21 @@ static unsigned hd_spe_tests(r3d_job *j)
             meta_bad += pixels[i]!=gpu2d_to_5551(g2d_hd_eval(&meta[i],sample));
         }
         int shader_bad=rsx3d_hd_native_test(pixels);
-        fail += native_bad || meta_bad || shader_bad;
-        salsads_log("rsx3d HD SPE caso %u: nativo %u metadatos %u shader %d diferencias; SPE %.3f ms",test,native_bad,meta_bad,shader_bad,res->ticks*1000.0/spukit_tick_hz());
+        uint32_t fast_ticks=res->ticks;
+        memcpy(saved_meta,meta,G2D_HD_BYTES);
+        e->flags |= G2D_F_HD_SCALAR;
+        seq=spukit_post(worker,JOB_COMPOSE,&work,sizeof work);
+        res=spukit_wait(worker,seq);
+        unsigned scalar_bad=!res || res->error || memcmp(saved_meta,meta,G2D_HD_BYTES);
+        e->flags &= ~G2D_F_HD_SCALAR;
+        fail += native_bad || meta_bad || shader_bad || scalar_bad;
+        salsads_log("rsx3d HD SPE caso %u: nativo %u metadatos %u shader %d diferencias; SPE %.3f ms; escalar %.3f ms, paridad bytes %u",
+            test,native_bad,meta_bad,shader_bad,fast_ticks*1000.0/spukit_tick_hz(),res ? res->ticks*1000.0/spukit_tick_hz() : 0,scalar_bad);
     }
 done:
     if (worker) spukit_worker_stop(worker);
     for (unsigned e=0;e<2;e++) { free(m.pal[e]); free(m.oam[e]); free(m.chg[e]); }
-    free(m.mmem); free(pixels);
+    free(m.mmem); free(pixels); free(saved_meta);
     return fail;
 }
 

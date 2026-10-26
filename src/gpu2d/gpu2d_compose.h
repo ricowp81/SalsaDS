@@ -38,7 +38,7 @@
 #define G2D_OBJ_ARENA 16384  /* por paridad de línea: filas de OBJ normales y píxeles de los afines */
 #define G2D_PALCHG_MAX 96    /* cambios de paleta por línea; los que sobran se descartan (cuenta en stats) */
 #ifdef G2D_HD_ENABLE
-#define G2D_CHG_CHUNK 64     /* trozos menores: reserva de código para metadatos HD */
+#define G2D_CHG_CHUNK 16     /* trozos menores: reserva de código para metadatos HD */
 #else
 #define G2D_CHG_CHUNK 256    /* entradas del registro de cambios por trozo de DMA */
 #endif

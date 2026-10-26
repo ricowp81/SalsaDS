@@ -1590,7 +1590,7 @@ static void ppe_3d_only(const gpu2d_ctx *c, const g2d_job *j, unsigned p, uint16
 #include "gpu2d/gpu2d_hd_export.h"
 #endif
 
-static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out, uint64_t hd_ea)
+static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out, uint64_t hd_ea, int hd_scalar)
 {
 	const uint32_t dc = j->dc;
 	const int use_win = (dc & (G2D_DC_WIN0 | G2D_DC_WIN1 | G2D_DC_OBJWIN)) != 0;
@@ -1664,9 +1664,9 @@ static void compose_graphics(gpu2d_ctx *c, g2d_job *j, uint32_t p, uint16_t *out
 				ent[nent++] = 4 + pr;
 		}
 #if G2D_HD_ACTIVE
-		if (hd_ea) hd_export(c, j, p, ent, nent, hd_ea);
+		if (hd_ea) hd_export(c, j, p, ent, nent, hd_ea, hd_scalar);
 #else
-        (void)hd_ea;
+        (void)hd_ea; (void)hd_scalar;
 #endif
 		{
 #ifndef __SPU__
@@ -1829,7 +1829,7 @@ static void compose_line(gpu2d_ctx *c, const gpu2d_engine *e, int y)
 			out[x] = gpu2d_to_5551(g2d_master_bright((uint16_t)(g2d_ld16le(c->rawline[p] + x * 2) & 0x7FFFu),
 								 j->regs[G2D_R_MASTER_BRIGHT]));
 	} else {
-		compose_graphics(c, j, p, out, e->hd_ea ? e->hd_ea + (uint64_t)y * GPU2D_W * 16u : 0);
+		compose_graphics(c, j, p, out, e->hd_ea ? e->hd_ea + (uint64_t)y * GPU2D_W * 16u : 0, e->flags & G2D_F_HD_SCALAR);
 	}
 	{
 		const uint32_t tp_ = G2D_T();

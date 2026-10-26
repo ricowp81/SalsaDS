@@ -5,6 +5,16 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-26 — RSX ronda 11: espera del compositor y metadatos HD
+- PS3 de 6121383: 6294 retiradas RSX y 6294 composiciones HD; «raster ausente» incluye respaldo SPE y ausencia de capa 3D, sin pérdida global acreditada por emparejamiento.
+- Ventanas con ≥100 RSX: mediana compositor A 39,305 ms, emulación 25,862; etiqueta/reutilización 0,004 ms. Eventos de línea: 2,380→15,345 ms; la reutilización de instantáneas espera al SPE dentro de la emulación.
+- Metadatos de presentación por bloques de ocho con capas/ventanas idénticas; contrato escalar intacto. A/B `3d-rsx-hd-metadatos-escalares`; flip aplazado hasta presentar: la composición RSX de N puede correr durante la emulación de N+1 (`3d-rsx-hd-flip-temprano` restaura el orden previo).
+- Log por ventana: esperas SPE A/B, instantánea (incluida en SPE), textura, adquisición HD, envío/cierre; motivos concretos de caída. Raster HD se mide solo tras su etiqueta, sin espera adicional.
+- Texturas DS, identidad y vértices intactos. No se reutiliza HD de otro cuadro para ocultar un respaldo SPE ni se cambia su política de admisión.
+- RPCS3: 1×/2× aislados, 0 fallos, 16 cuadros exactos y 177 mapas iguales; seis escenas SPE con metadatos escalares/por bloques idénticos. La secuencia experimental mantiene la limitación propia de RPCS3.
+- Build correcto, holgura mínima 8336 B; LE/SAN, ROMs/hashes/lockstep pasan; solo 34 fallos BE conocidos. Metadatos con DMA de 16 cambios: 8641 comprobaciones, 0 fallos.
+- Juego propio en RPCS3: 240 cuadros, resultado correcto; Gouraud 118/120 HD tras dos cuadros sin 3D, alambre cae al SPE con motivo. Paquete `build/salsads-rsx3d-hd-6.pkg`, SLDS00030; SHA-256 y guion en `build/rsx3d-hd-6/`. Rendimiento nuevo en PS3 pendiente; sin envío.
+
 ## 2026-10-26 — RSX ronda 10: paquete de diagnóstico HD para consola
 - `3d-rsx-hd-juego` + escala HD activa el orden nativo→HD de ronda 8; sin el archivo se conserva la ruta de 883bf2a. Preparación de texturas, identidad y vértices intacta.
 - Autoprueba informativa: 16 cuadros, exacto/anterior/otro por cuadro; repetición con otro destino nativo para cambiar el descriptor de exportación por ranura. No es un arreglo ni se activa esa variante en juego.

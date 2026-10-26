@@ -124,6 +124,7 @@ typedef struct gpu2d_change {
 
 /* Bandera del descriptor. */
 #define G2D_F_ENGINE_B 1u
+#define G2D_F_HD_SCALAR 2u /* comparación del exportador de presentación */
 
 /* Descriptor de un motor para un cuadro. Las direcciones son efectivas (EA) en memoria principal; en el host,
  * punteros convertidos. 16 bytes de alineación (DMA) y múltiplo de 16 de tamaño. */
