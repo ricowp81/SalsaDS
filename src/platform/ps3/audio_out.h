@@ -18,7 +18,7 @@
 
 struct audio_out_stats {
 	uint64_t played; /* pares entregados durante reproducción, sin contar el selector */
-	uint32_t stretch_max_us;
+	uint32_t stretch_max_us, joins, rate_permil, grain_ms;
 	uint64_t inserted, active, stretch_us; /* pares añadidos, pares procesados con solape, costo acumulado */
 	int stretch_enabled, limiter_enabled;
 	uint64_t pushed;     /* muestras (pares) recibidas */

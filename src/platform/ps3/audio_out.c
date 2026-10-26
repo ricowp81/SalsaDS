@@ -22,13 +22,14 @@
 #define THREAD_PRIO 100
 
 static audio_stretch stretch;
-static float pending[2 * STRETCH_HOP], input[2 * STRETCH_GRAIN], last_sample[2];
+static audio_stretch2 stretch2;
+static float pending[2 * STRETCH_HOP], input[2 * STRETCH2_INPUT], last_sample[2];
 static uint32_t pending_pos = STRETCH_HOP, pending_used, pending_active;
 static uint32_t control_tail;
-static int no_stretch, no_limiter;
+static int no_stretch, no_limiter, stretch_v1;
 static int active, paused = 1;
 static volatile uint64_t c_inserted, c_active, c_stretch_us, c_played;
-static volatile uint32_t c_stretch_max;
+static volatile uint32_t c_stretch_max, c_joins, c_rate;
 
 static float ring[2 * RING_FRAMES] __attribute__((aligned(128)));
 static volatile uint32_t head, tail; /* en muestras (pares); head solo lo escribe el productor, tail el consumidor */
@@ -123,6 +124,7 @@ static void fill_block(float *dst)
 		last_sample[0] = last_sample[1] = 0;
 		pending_pos = STRETCH_HOP;
 		memset(&stretch, 0, sizeof stretch);
+		memset(&stretch2, 0, sizeof stretch2);
 		__atomic_store_n(&tail, __atomic_load_n(&head, __ATOMIC_ACQUIRE), __ATOMIC_RELEASE);
 		__atomic_store_n(&control_tail, tail, __ATOMIC_RELEASE);
 		port.started = 0;
@@ -135,7 +137,7 @@ static void fill_block(float *dst)
 	} else {
 		uint32_t done = 0;
 		if (!port.started) {
-			if (level() < PREBUF) {
+			if (level() < (stretch_v1 ? PREBUF : 4096u)) {
 				memset(dst, 0, 2 * AUDIO_BLOCK_SAMPLES * sizeof(float));
 				return;
 			}
@@ -144,22 +146,31 @@ static void fill_block(float *dst)
 		while (done < AUDIO_BLOCK_SAMPLES) {
 			if (pending_pos == STRETCH_HOP) {
 				uint32_t t = tail, avail = __atomic_load_n(&head, __ATOMIC_ACQUIRE) - t;
-				uint32_t n = avail < STRETCH_GRAIN ? avail : STRETCH_GRAIN;
-				uint64_t t0, ins = stretch.inserted, act = stretch.active, miss = stretch.missing;
+				uint32_t limit = stretch_v1 ? STRETCH_GRAIN : STRETCH2_INPUT;
+				uint32_t n = avail < limit ? avail : limit;
+				uint32_t credit = stretch2.credit;
+				uint64_t joins = stretch2.joins;
+				uint32_t blending = stretch.blending;
+				uint64_t t0, ins = stretch_v1 ? stretch.inserted : stretch2.inserted;
+				uint64_t act = stretch_v1 ? stretch.active : stretch2.active;
+				uint64_t miss = stretch_v1 ? stretch.missing : stretch2.missing;
 				for (uint32_t i = 0; i < n; i++) {
 					input[2*i] = ring[2*((t+i) & (RING_FRAMES-1))];
 					input[2*i+1] = ring[2*((t+i) & (RING_FRAMES-1))+1];
 				}
 				t0 = sysGetSystemTime();
-				uint32_t used = audio_stretch_run(&stretch, input, n, pending);
+				uint32_t used = stretch_v1 ? audio_stretch_run(&stretch, input, n, pending) :
+					audio_stretch2_run(&stretch2, input, avail, pending);
 				uint32_t elapsed = (uint32_t)(sysGetSystemTime() - t0);
 				c_stretch_us += elapsed;
+				c_joins += stretch_v1 ? (!used || blending) : (uint32_t)(stretch2.joins - joins);
+				c_rate = stretch_v1 ? 0 : (uint32_t)(stretch2.rate * 1000);
 				if (elapsed > c_stretch_max) c_stretch_max = elapsed;
-				pending_used = used;
-				c_inserted += stretch.inserted - ins;
-				pending_active = stretch.active != act;
-				c_silent += stretch.missing - miss;
-				if (stretch.missing != miss) c_underruns++;
+				pending_used = stretch_v1 ? used : used + credit - stretch2.credit;
+				c_inserted += (stretch_v1 ? stretch.inserted : stretch2.inserted) - ins;
+				pending_active = (stretch_v1 ? stretch.active : stretch2.active) != act;
+				c_silent += (stretch_v1 ? stretch.missing : stretch2.missing) - miss;
+				if ((stretch_v1 ? stretch.missing : stretch2.missing) != miss) c_underruns++;
 				__atomic_store_n(&tail, t + used, __ATOMIC_RELEASE);
 				pending_pos = 0;
 			}
@@ -168,8 +179,10 @@ static void fill_block(float *dst)
 			memcpy(dst + 2*done, pending + 2*pending_pos, 2*take*sizeof(float));
 			/* El control de ±2 % ve las muestras aún pendientes, igual que
 			 * la ruta de 256 pares; adelantar tail por un grano no cambia la razón. */
-			uint32_t before = pending_pos < pending_used ? pending_pos : pending_used;
-			uint32_t after = pending_pos + take < pending_used ? pending_pos + take : pending_used;
+			uint32_t before = stretch_v1 ? (pending_pos < pending_used ? pending_pos : pending_used) :
+				pending_pos * pending_used / STRETCH_HOP;
+			uint32_t after = stretch_v1 ? (pending_pos + take < pending_used ? pending_pos + take : pending_used) :
+				(pending_pos + take) * pending_used / STRETCH_HOP;
 			__atomic_store_n(&control_tail, control_tail + after - before, __ATOMIC_RELEASE);
 			if (pending_active) c_active += take;
 			pending_pos += take;
@@ -237,13 +250,15 @@ int audio_out_init(void)
 	audioPortParam params = { AUDIO_PORT_2CH, AUDIO_BLOCK_16, AUDIO_PORT_INITLEVEL, 1.0f };
 	int rc;
 	struct stat fs;
+	stretch_v1 = stat("/dev_hdd0/salsads/audio-estirar-v1", &fs) == 0;
 	no_stretch = stat("/dev_hdd0/salsads/audio-sin-estirar", &fs) == 0;
 	no_limiter = stat("/dev_hdd0/salsads/audio-sin-limitador", &fs) == 0;
 	active = 0; paused = 1;
 	pending_pos = STRETCH_HOP;
 	memset(&stretch, 0, sizeof stretch);
+	memset(&stretch2, 0, sizeof stretch2);
 	c_inserted = c_active = c_stretch_us = c_played = 0;
-	c_stretch_max = 0;
+	c_stretch_max = c_joins = 0; c_rate = 1000;
 	control_tail = 0;
 	last_sample[0] = last_sample[1] = 0;
 
@@ -294,12 +309,15 @@ float audio_out_ratio_adj(void)
 
 void audio_out_stats(struct audio_out_stats *s, int reset_peak)
 {
+	s->joins = c_joins;
+	s->rate_permil = c_rate;
+	s->grain_ms = stretch_v1 ? 15 : STRETCH2_GRAIN / 48;
 	s->played = c_played;
 	s->stretch_max_us = c_stretch_max;
 	s->inserted = c_inserted;
 	s->active = c_active;
 	s->stretch_us = c_stretch_us;
-	s->stretch_enabled = !no_stretch;
+	s->stretch_enabled = no_stretch ? 0 : stretch_v1 ? 1 : 2;
 	s->limiter_enabled = !no_limiter;
 	s->pushed = c_pushed;
 	s->dropped = c_dropped;

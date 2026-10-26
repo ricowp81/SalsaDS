@@ -1386,10 +1386,10 @@ static void log_stats(void)
 				    MS(snd_acc.wait_us / snd_acc.jobs), (unsigned)(snd_acc.out_n / snd_acc.jobs),
 				    (unsigned)snd_acc.errors, audio_out_is_open() ? "abierta" : "sin audio", as.level, as.underruns,
 				    (unsigned)(as.silent - prev_silent), as.late, as.peak ? 20.0 * log10(as.peak / 32768.0) : -99.0);
-		salsads_log("DATO audio-estirar: activo %d, limitador %d; acumulado %llu muestras añadidas, %u%% tiempo con solape; %u faltas; costo %llu us (máx %u us/grano), hilo %llu us",
+		salsads_log("DATO audio-estirar: versión %d, limitador %d; acumulado %llu muestras añadidas, %u%% tiempo estirando; %u faltas; costo %llu us (máx %u us/grano), hilo %llu us; uniones %u, producción %u/1000, grano %u ms",
 		    as.stretch_enabled, as.limiter_enabled, (unsigned long long)as.inserted,
 		    as.played ? (unsigned)(as.active * 100 / as.played) : 0, as.underruns,
-		    (unsigned long long)as.stretch_us, as.stretch_max_us, (unsigned long long)as.busy_us);
+		    (unsigned long long)as.stretch_us, as.stretch_max_us, (unsigned long long)as.busy_us, as.joins, as.rate_permil, as.grain_ms);
 		prev_silent = as.silent;
 		memset(&snd_acc, 0, sizeof snd_acc);
 	}

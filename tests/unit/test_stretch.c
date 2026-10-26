@@ -13,7 +13,7 @@ static float signal_at(unsigned i, int kind)
 		v = ((v >> ((v >> 28) + 4)) ^ v) * 277803737u;
 		return ((int32_t)((v >> 22) ^ v) / 2147483648.0f) * 0.5f;
 	}
-	return (float)(0.5 * sin(6.283185307179586 * (kind ? 200*t + 1100*t*t : 997*t)));
+	return (float)(0.5 * sin(6.283185307179586 * (kind == 3 ? 73.416*t : kind ? 200*t + 1100*t*t : 997*t)));
 }
 
 static void simulation(int kind, int speed)
@@ -65,6 +65,73 @@ static void simulation(int kind, int speed)
 	else CHECK(s.inserted > 0);
 }
 
+static void simulation2(int kind, unsigned speed)
+{
+	audio_stretch2 s = {0};
+	float fifo[2*16384], out[2*STRETCH_HOP], previous[2] = {0};
+	unsigned have = 4096, index = have, crossings = 0, ne = 0, nb = 0;
+	double edge = 0, body = 0, maxstep = 0;
+	for (unsigned i = 0; i < have; i++)
+		fifo[2*i] = fifo[2*i+1] = signal_at(i, kind);
+	for (unsigned h = 0; h < 1000; h++) {
+		unsigned rate = speed ? speed : h < 200 || h >= 700 ? 100 : h < 500 ? 50 : 0;
+		unsigned add = h%5 ? 0 : 2400*rate/100;
+		CHECK(have + add <= 16384);
+		for (unsigned i = 0; i < add; i++)
+			fifo[2*(have+i)] = fifo[2*(have+i)+1] = signal_at(index++, kind);
+		have += add;
+		unsigned used = audio_stretch2_run(&s, fifo, have, out);
+		CHECK(used <= have);
+		if (speed == 100) CHECK(memcmp(out, fifo, sizeof out) == 0);
+		memmove(fifo, fifo + 2*used, 2*(have-used)*sizeof(float));
+		have -= used;
+		for (unsigned i = 0; i < STRETCH_HOP; i++) {
+			float x = out[2*i];
+			CHECK(isfinite(x) && x == out[2*i+1] && fabsf(x) <= 0.501f);
+			if (h) {
+				double d = x - 2*previous[0] + previous[1];
+				if (i < 8) { edge += d*d; ne++; }
+				else { body += d*d; nb++; }
+				if (fabs(x-previous[0]) > maxstep) maxstep = fabs(x-previous[0]);
+			}
+			if (previous[0] <= 0 && x > 0) crossings++;
+			previous[1] = previous[0]; previous[0] = x;
+		}
+	}
+	double hf = (edge/ne)/(body/nb);
+	printf("audio v2 señal %d producción %u: faltas %llu, uniones %llu, HF %.4f, salto %.5f, Hz %.2f\n",
+								kind, speed, (unsigned long long)s.missing, (unsigned long long)s.joins, hf, maxstep, crossings/10.0);
+	CHECK(s.missing == 0 && hf < 2);
+	if (!kind && speed) { CHECK(fabs(crossings/10.0 - 997) < 3); CHECK(maxstep < 0.08); }
+	if (kind == 3 && speed) { CHECK(fabs(crossings/10.0 - 73.416) < 0.5); CHECK(maxstep < 0.008); }
+	if (speed == 100) CHECK(!s.inserted && !s.active && !s.valid);
+	if (!speed) CHECK(!s.valid); /* recuperación: retorna a la copia nominal */
+}
+
+static void stereo2(void)
+{
+	audio_stretch2 s = {0};
+	float fifo[2*8192], out[2*STRETCH_HOP];
+	unsigned have = 0, index = 0;
+	for (unsigned h = 0; h < 400; h++) {
+		unsigned add = h ? 240 : 4096;
+		for (unsigned i = 0; i < add; i++) {
+			double phase = 6.283185307179586 * 997 * index++ / 48000;
+			fifo[2*(have+i)] = 0.5f*(float)sin(phase);
+			fifo[2*(have+i)+1] = 0.25f*(float)cos(phase);
+		}
+		have += add;
+		unsigned used = audio_stretch2_run(&s, fifo, have, out);
+		CHECK(used <= have);
+		memmove(fifo, fifo+2*used, 2*(have-used)*sizeof(float)); have -= used;
+		for (unsigned i = 0; i < STRETCH_HOP; i++) {
+			float e = out[2*i]*out[2*i] + 4*out[2*i+1]*out[2*i+1];
+			CHECK(e > 0.24f && e < 0.251f);
+		}
+	}
+	CHECK(!s.missing);
+}
+
 static double harmonics(float amplitude, int soft)
 {
 	double power = 0, fundamental = 0;
@@ -85,6 +152,10 @@ static double harmonics(float amplitude, int soft)
 
 void test_stretch(void)
 {
+	stereo2();
+	for (int kind = 0; kind < 4; kind++)
+		for (unsigned speed = 0; speed <= 100; speed += 25)
+			simulation2(kind, speed);
 	for (int kind = 0; kind < 3; kind++)
 		for (int speed = 0; speed <= 100; speed += 25)
 			simulation(kind, speed);
@@ -125,4 +196,8 @@ void test_stretch(void)
 	CHECK(audio_stretch_run(&s, in, 0, out) == 0);
 	CHECK(audio_stretch_run(&s, in, 10, out) == 10);
 	CHECK(s.missing == 950);
+	audio_stretch2 s2 = {0};
+	CHECK(audio_stretch2_run(&s2, in, 0, out) == 0);
+	CHECK(audio_stretch2_run(&s2, in, 10, out) == 10);
+	CHECK(s2.missing == 950 && s2.credit == 0);
 }
