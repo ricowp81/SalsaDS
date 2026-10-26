@@ -11,7 +11,7 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 - Densidad DS entera por polígono Z/W constante; mezcla RGB6/A5 en RSX con constantes redondeadas. Z/W variable con niebla vuelve al SPE; `3d-rsx-niebla-spe` conserva prioridad. No se certifica niebla variable ni paridad global.
 - Sombras consecutivas del mismo ID/estado, sin textura ni descarte alfa: consumir máscara incluso al fallar Z; omitir destino vacío cuando el borrado tiene alfa. `3d-rsx-sombra-sin-lotes` recupera las pasadas anteriores; stencil genérico MIT separado.
 - Reproductor RPCS3: 18 dirigidas de niebla, 24 de sombras y 8 respaldos correctos; 176 mapas idénticos con lotes apagados/remapeo general y 158 comunes sin cambio respecto a la ronda anterior. Pesado: 652→436 dibujos/estados; no acredita tiempo PS3.
-- Host: 110592 secuencias de stencil y 528384 mezclas perturbadas correctas. Build completo y LE/SAN correctos; BE solo 34 fallos conocidos, ROMs/hashes/lockstep correctos. Holgura mínima SPE 8432 B; verificadores en 0. Paquete pendiente.
+- Host: 110592 secuencias de stencil y 528384 mezclas perturbadas correctas. Build completo y LE/SAN correctos; BE solo 34 fallos conocidos, ROMs/hashes/lockstep correctos. Holgura mínima SPE 8432 B; verificadores en 0. Paquete limpio `build/salsads-rsx3d-fase2-2.pkg`, código `ba64c4d`, título «SalsaDS RSX»/SLDS00030; SHA-256 local en `build/rsx3d-fase2-2/SHA256.txt`.
 - Preparación de texturas, identidad y conversión de vértices intactas. Guion con las mismas banderas/cuadros y evidencia local en `build/rsx3d-fase2-2/`; confirmar niebla y pesado ≤4 ms en consola antes de integrar.
 
 ## 2026-10-25 — RSX fase 2 parcial: sombras, toon y niebla opaca
