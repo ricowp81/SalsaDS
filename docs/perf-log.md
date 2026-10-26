@@ -1,5 +1,11 @@
 # Registro de rendimiento
 
+## 2026-10-26 — Ronda 9 HD: localización del cuadro anterior (RPCS3)
+- Base ronda 7: 16/16 solapados exactos a 2×. Parche ronda 8: 15/16 incorrectos, ambos tras compilación completa.
+- Error en x=32..223, y=32..159: 192×128=24576 píxeles, repartidos 12288/12288 entre las mitades superior e inferior.
+- Comparación contra los 16 cuadros: salida n igual a referencia n−1 para n=1..15, incluido fondo; no coincide con n+1. Ranura n%2, exportaciones XDR a 18 MiB + ranura×256 KiB.
+- Descartada la banda única; causa de la retención completa pendiente. Se restaura el código; evidencia en `build/rsx3d-hd-5/`. Sin tiempos PS3 ni validación de juego HD.
+
 ## 2026-10-26 — Ronda 8 HD: exactitud bloqueante (RPCS3)
 - Dos intentos con exportación nativa antes del raster HD: ambos fallan 15/16 cuadros solapados; cada fallo afecta 24576 píxeles. El segundo renueva también el sampler nativo, sin mejora.
 - 177 mapas síncronos sin cambios; 32 contratos, línea cambiante y seis escenas SPE exactos. No se toman tiempos como resultado válido ni se extrapolan a PS3.

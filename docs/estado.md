@@ -5,6 +5,14 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-26 — RSX ronda 9: descartada la banda de 96 líneas
+- RPCS3 2×, base restaurada de ronda 7: 16 cuadros solapados exactos; el parche de ronda 8 reproduce 15/16 fallos.
+- Los 24576 píxeles forman el rectángulo de prueba 192×128: x=32..223, y=32..159; 12288 diferencias en cada mitad.
+- Cada cuadro n=1..15 coincide íntegramente con n−1, nunca n+1; destino n%2, contenido previo de la ranura opuesta, también retirando en orden inverso.
+- No se acredita un fallo por bandas ni su causa interna; parada al tope solicitado. Código e instrumentación revertidos, 1× y reproductor intactos.
+- Dos builds correctos; evidencia y parche diagnóstico en `build/rsx3d-hd-5/`. Sin nueva ejecución LE/BE/SAN: solo documentación conservada.
+- Sin habilitar HD en juego ni generar paquete hd-4. El paquete hd-3 previo sigue limitado al reproductor; no medir MKDS 2× como juego HD.
+
 ## 2026-10-26 — RSX ronda 8: parada por solapamiento HD
 - Exportar nativo antes de HD, con etiquetas separadas, falla en RPCS3 2×: 15/16 cuadros solapados devuelven colores anteriores, 24576 píxeles por cuadro.
 - Renovar además el sampler de exportación repite exactamente el fallo; parada tras dos intentos, sin tercer cambio.
