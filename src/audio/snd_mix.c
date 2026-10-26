@@ -99,10 +99,22 @@ static void apply(snd_state *st, const snd_ent *e)
 			break;
 		}
 		case 4:
-			c->sad = ((c->sad & ~m) | (v & m)) & 0x07FFFFFCu;
+			{
+				const uint32_t sad = ((c->sad & ~m) | (v & m)) & 0x07FFFFFCu;
+
+				if (sad != c->sad)
+					c->tag = 0xFFFFFFFFu;
+				c->sad = sad;
+			}
 			break;
 		case 6:
-			c->sad = ((c->sad & ~(m << 16)) | ((v & m) << 16)) & 0x07FFFFFCu;
+			{
+				const uint32_t sad = ((c->sad & ~(m << 16)) | ((v & m) << 16)) & 0x07FFFFFCu;
+
+				if (sad != c->sad)
+					c->tag = 0xFFFFFFFFu;
+				c->sad = sad;
+			}
 			break;
 		case 8:
 			c->tmr = (uint16_t)((c->tmr & ~m) | (v & m));
@@ -219,6 +231,7 @@ static void chan_step(snd_chan *c, int idx, const snd_bus *bus)
 			return;
 		}
 		c->pos = (int32_t)loopstart;
+		c->tag = 0xFFFFFFFFu; /* el juego puede haber rellenado el búfer antes de esta vuelta */
 		if (fmt == 2) {
 			c->adv = c->alv;
 			c->adi = c->ali;
@@ -520,8 +533,13 @@ uint32_t snd_run(snd_state *st, const snd_ent *log, uint32_t nlog, uint32_t ntic
 		wl[i] = st->hist[0][i];
 		wr[i] = st->hist[1][i];
 	}
+	/* Las voces 1 y 3 suelen reproducir lo que escriben SOUNDCAP0/1. La línea
+	 * que ya estaban leyendo es parte de su estado: volver a traerla aquí
+	 * cambia de golpe a la instantánea de RAM del cuadro siguiente. Se refresca
+	 * al cambiar SAD, al arrancar y al volver al principio del bucle. */
 	for (int c = 0; c < SND_NCH; c++)
-		st->ch[c].tag = 0xFFFFFFFFu; /* lo que haya en RAM ahora (el juego pudo rellenar el búfer) */
+		if ((st->mode & SND_MODE_FRAME_CACHE_OLD) || (c != 1 && c != 3))
+			st->ch[c].tag = 0xFFFFFFFFu;
 	for (uint32_t t = 0; t < nticks; t++) {
 		const uint64_t T = st->tick + t;
 		int32_t mix[2] = { 0, 0 }, c1[3] = { 0, 0, 0 }, c3[3] = { 0, 0, 0 };

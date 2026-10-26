@@ -152,6 +152,34 @@ static double harmonics(float amplitude, int soft)
 
 void test_stretch(void)
 {
+	CHECK(audio_rate_adjust(3072, 3072) == 0.0f);
+	CHECK(fabsf(audio_rate_adjust(3168, 3072) - 0.00046875f) < 1e-9f);
+	CHECK(audio_rate_adjust(4096, 3072) == 0.0025f);
+	CHECK(audio_rate_adjust(0, 3072) == -0.0025f);
+	/* Ráfagas de 799/800 pares por cuadro contra bloques de 480: a velocidad
+	 * completa no hay uniones aunque la disponibilidad oscile. */
+	{
+		audio_stretch2 nominal = {0};
+		float fifo[2*8192], out_nominal[2*STRETCH_HOP];
+		unsigned have = 4096, produced = have;
+
+		for (unsigned i = 0; i < have; i++)
+			fifo[2*i] = fifo[2*i+1] = signal_at(i, 0);
+		for (unsigned h = 0; h < 600; h++) {
+			if ((h % 5) < 3) {
+				unsigned add = (h & 1) ? 799 : 800;
+				for (unsigned i = 0; i < add; i++)
+					fifo[2*(have+i)] = fifo[2*(have+i)+1] = signal_at(produced++, 0);
+				have += add;
+			}
+			unsigned used = audio_stretch2_run(&nominal, fifo, have, out_nominal);
+			CHECK(used == STRETCH_HOP);
+			CHECK(memcmp(out_nominal, fifo, sizeof out_nominal) == 0);
+			memmove(fifo, fifo + 2*used, 2*(have-used)*sizeof(float));
+			have -= used;
+		}
+		CHECK(nominal.joins == 0 && nominal.inserted == 0 && nominal.active == 0);
+	}
 	stereo2();
 	for (int kind = 0; kind < 4; kind++)
 		for (unsigned speed = 0; speed <= 100; speed += 25)

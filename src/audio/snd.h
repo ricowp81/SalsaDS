@@ -46,6 +46,7 @@
 /* modos (snd_state.mode) */
 #define SND_MODE_HD 2u               /* escucha a 48 kHz; captura y estado nativos intactos */
 #define SND_MODE_ORIGINAL 1u         /* cuantizar a 10 bits con SOUNDBIAS, como la salida de la DS */
+#define SND_MODE_FRAME_CACHE_OLD 4u   /* diagnóstico: descartar todas las líneas de voz entre trabajos */
 
 /* Una escritura a un registro de sonido (media palabra): `off` es el desplazamiento desde 0x04000400. */
 typedef struct snd_ent {

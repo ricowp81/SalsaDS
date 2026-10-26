@@ -7,7 +7,7 @@
  * El hilo de la emulación empuja las muestras que entrega el mezclador (estéreo flotante a 48 kHz, intercaladas). El hilo de
  * audio conserva el tono con solape y búsqueda de correlación cuando faltan muestras. La mezcla a velocidad completa
  * pasa intacta por el estirador; la protección suave tras el FIR tiene su propio interruptor. El control de deriva
- * `audio_out_ratio_adj()` conserva el límite de ±2 %.
+ * `audio_out_ratio_adj()` corrige la deriva de los relojes dentro de ±0,25 %.
  *
  * Nada de esto toca el log desde el hilo de audio (el logger no es seguro entre hilos): deja contadores.
  */

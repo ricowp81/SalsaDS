@@ -3,7 +3,8 @@
  * SalsaDS — corre una ROM de prueba (tests/roms) en la máquina de src/core y lee su veredicto del bloque de
  * resultados (tests/roms/src/common/sds.h), como hace tools/melonds-run.py con melonDS.
  *
- *   salsads-cpurun [--wav FILE.wav] [--snd-original] [--cycles N] [--frames N] [--quantum N] [--stats] [--arm7] [--keys HEX] [--touch X,Y]
+ *   salsads-cpurun [--wav FILE.wav] [--wav-native FILE.wav] [--snd-original] [--audio-frontera-antigua]
+ *                  [--cycles N] [--frames N] [--quantum N] [--stats] [--arm7] [--keys HEX] [--touch X,Y]
  *                  [--screens FILE.ppm] [--ref] [--vs-ref] [--expect] [--same-ab] [--unmapped] [--peek ADDR]... [--trace N [--trace7]] ROM.nds
  *
  * Código de salida: 0 = OK, 1 = FALLO, 2 = sin veredicto, 3 = una CPU cayó en un vector de excepción de la BIOS
@@ -344,12 +345,36 @@ static void gx_dump(const char *path)
 static float *wav_buf;
 static size_t wav_n, wav_cap;
 static float wav_peak;
+static const char *wav_native_path;
+static int16_t *wav_native;
+static size_t wav_native_n, wav_native_cap;
+static uint64_t wav_job_sizes[SND_TICKS_MAX + 1];
 
 static void wav_sink(void *ctx, const float *out, uint32_t n, const int16_t *nat, uint32_t nticks)
 {
 	(void)ctx;
-	(void)nat;
-	(void)nticks;
+	if (wav_native_path && nat) {
+		if (wav_native_n + nticks > wav_native_cap) {
+			size_t cap = wav_native_cap ? wav_native_cap * 2 : (size_t)1 << 20;
+			int16_t *nb;
+
+			while (cap < wav_native_n + nticks)
+				cap *= 2;
+			nb = realloc(wav_native, cap * 2 * sizeof(int16_t));
+			if (nb) {
+				wav_native = nb;
+				wav_native_cap = cap;
+			}
+		}
+		if (wav_native_n + nticks <= wav_native_cap) {
+			memcpy(wav_native + 2 * wav_native_n, nat, (size_t)nticks * 2 * sizeof(int16_t));
+			wav_native_n += nticks;
+		}
+		if (nticks <= SND_TICKS_MAX)
+			wav_job_sizes[nticks]++;
+	}
+	if (!out)
+		return;
 	if (wav_n + n > wav_cap) {
 		const size_t cap = wav_cap ? wav_cap * 2 : (size_t)1 << 20;
 		float *nb = realloc(wav_buf, cap * 2 * sizeof(float));
@@ -367,6 +392,36 @@ static void wav_sink(void *ctx, const float *out, uint32_t n, const int16_t *nat
 			wav_peak = a;
 	}
 	wav_n += n;
+}
+
+static void wav_write_native(void)
+{
+	FILE *f = fopen(wav_native_path, "wb");
+	uint8_t h[44] = { 'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ', 16, 0, 0, 0, 1, 0, 2, 0,
+			  0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 16, 0, 'd', 'a', 't', 'a' };
+	const uint32_t data = (uint32_t)(wav_native_n * 4), rate = 32728;
+
+	if (!f)
+		return;
+	for (int i = 0; i < 4; i++) {
+		h[4 + i] = (uint8_t)((36 + data) >> (8 * i));
+		h[24 + i] = (uint8_t)(rate >> (8 * i));
+		h[28 + i] = (uint8_t)((rate * 4) >> (8 * i));
+		h[40 + i] = (uint8_t)(data >> (8 * i));
+	}
+	fwrite(h, 1, sizeof h, f);
+	for (size_t i = 0; i < wav_native_n * 2; i++) {
+		const uint16_t q = (uint16_t)wav_native[i];
+		const uint8_t b[2] = { (uint8_t)q, (uint8_t)(q >> 8) };
+
+		fwrite(b, 1, 2, f);
+	}
+	fclose(f);
+	fprintf(stderr, "audio nativo: %zu muestras estéreo en %s; trabajos", wav_native_n, wav_native_path);
+	for (uint32_t n = 0; n <= SND_TICKS_MAX; n++)
+		if (wav_job_sizes[n])
+			fprintf(stderr, " %u=%llu", n, (unsigned long long)wav_job_sizes[n]);
+	fputc('\n', stderr);
 }
 
 static void wav_write(const char *path)
@@ -598,6 +653,7 @@ int main(int argc, char **argv)
 	uint32_t trace_from = 0;
 	const char *wav_path = NULL;
 	int snd_original = 0, snd_hd = 0, g2d_stats = 0;
+	int snd_frame_cache_old = 0;
 	const char *gxdump_path = NULL;
 	int gx_clock = 0, r3d_stats_on = 0, holes_on = 0, gx_defer = 0, gx_lento = 0, geom_plain = 0, geom_scalar = 0;
 	const char *holes_dump = NULL, *fdump_prefix = NULL;
@@ -626,6 +682,8 @@ int main(int argc, char **argv)
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--wav") && i + 1 < argc)
 			wav_path = argv[++i];
+		else if (!strcmp(argv[i], "--wav-native") && i + 1 < argc)
+			wav_native_path = argv[++i];
 		else if (!strcmp(argv[i], "--g2d-stats"))
 			g2d_stats = 1;
 		else if (!strcmp(argv[i], "--geometria-lectura-escalar"))
@@ -682,6 +740,8 @@ int main(int argc, char **argv)
 			snd_hd = 1;
 		else if (!strcmp(argv[i], "--snd-original"))
 			snd_original = 1;
+		else if (!strcmp(argv[i], "--audio-frontera-antigua"))
+			snd_frame_cache_old = 1;
 		else if (!strcmp(argv[i], "--cycles") && i + 1 < argc)
 			max_cycles = strtoull(argv[++i], NULL, 0);
 		else if (!strcmp(argv[i], "--frames") && i + 1 < argc)
@@ -849,17 +909,19 @@ int main(int argc, char **argv)
 	}
 	if (r3d_stats_on)
 		M.vid.clock = clock_ns;
-	if (wav_path)
+	if (wav_path || wav_native_path)
 		M.snd.ops.sink = wav_sink;
-	if (snd_original || snd_hd)
-		nds_snd_set_mode(&M, snd_hd ? SND_MODE_HD : SND_MODE_ORIGINAL);
+	if (snd_original || snd_hd || snd_frame_cache_old)
+		nds_snd_set_mode(&M, (snd_hd ? SND_MODE_HD : snd_original ? SND_MODE_ORIGINAL : 0u) |
+					 (snd_frame_cache_old ? SND_MODE_FRAME_CACHE_OLD : 0u));
 	if (lockstep) {
 		R.quantum = quantum;
 		R.vid.use_ref = use_ref;
 		R.gx_lento = (uint8_t)gx_lento;
 		nds_init(&R);
-		if (snd_original || snd_hd)
-			nds_snd_set_mode(&R, snd_hd ? SND_MODE_HD : SND_MODE_ORIGINAL);
+		if (snd_original || snd_hd || snd_frame_cache_old)
+			nds_snd_set_mode(&R, (snd_hd ? SND_MODE_HD : snd_original ? SND_MODE_ORIGINAL : 0u) |
+					 (snd_frame_cache_old ? SND_MODE_FRAME_CACHE_OLD : 0u));
 		if (hj_lockstep_attach(&M, &R, jit_arm7, jit_arm9))
 			return 2;
 	} else if (jit_mode && jit_prof && arec_prof_open(jit_prof)) {
@@ -1191,6 +1253,8 @@ int main(int argc, char **argv)
 		save_out(save_path);
 		if (wav_path)
 			wav_write(wav_path);
+		if (wav_native_path)
+			wav_write_native();
 		if (g2d_stats) {
 			static const char *const st[G2D_ST_COUNT] = { "init", "plan", "texto", "afin", "obj", "compone", "extpal" };
 			uint64_t tot[G2D_C_COUNT] = { 0 };

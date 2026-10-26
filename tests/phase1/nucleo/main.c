@@ -163,6 +163,7 @@ static int jit_times; /* JIT_TIMES_FLAG: reloj (timebase) en el despachador, los
 #define ROM_PATH SALSADS_DATA_DIR "/rom.nds"
 #define CFG_PATH SALSADS_DATA_DIR "/controles.cfg"
 #define AUDIO_CFG_PATH SALSADS_DATA_DIR "/audio.cfg"
+#define AUDIO_FRAME_CACHE_OLD_FLAG SALSADS_DATA_DIR "/audio-frontera-antigua"
 
 SYS_PROCESS_PARAM(1001, 0x100000);
 
@@ -1190,26 +1191,37 @@ static void snd_hd_bench(void)
 
 static void snd_load_cfg(void)
 {
-	struct stat hd_file;
-	if (stat(SALSADS_DATA_DIR "/audio-hd", &hd_file) == 0) {
-		nds_snd_set_mode(nds, SND_MODE_HD);
-		salsads_log("audio: HD, Hermite por voz a 48 kHz; captura nativa, limitador al final");
-		return;
-	}
-	FILE *f = fopen(AUDIO_CFG_PATH, "r");
+	struct stat fs;
+	uint32_t mode = 0;
+	FILE *f;
 	char text[256];
 	size_t len;
 
-	if (!f)
+	if (stat(AUDIO_FRAME_CACHE_OLD_FLAG, &fs) == 0) {
+		mode |= SND_MODE_FRAME_CACHE_OLD;
+		salsads_log("audio: las voces 1 y 3 descartan su línea entre trabajos (existe %s)", AUDIO_FRAME_CACHE_OLD_FLAG);
+	} else {
+		salsads_log("audio: las voces 1 y 3 conservan la línea de SOUNDCAP entre trabajos");
+	}
+	if (stat(SALSADS_DATA_DIR "/audio-hd", &fs) == 0) {
+		nds_snd_set_mode(nds, mode | SND_MODE_HD);
+		salsads_log("audio: HD, Hermite por voz a 48 kHz; captura nativa, limitador al final");
 		return;
+	}
+	f = fopen(AUDIO_CFG_PATH, "r");
+	if (!f) {
+		nds_snd_set_mode(nds, mode);
+		return;
+	}
 	len = fread(text, 1, sizeof text - 1, f);
 	fclose(f);
 	text[len] = '\0';
 	/* una clave por línea: «original = si» cuantiza a 10 bits con el sesgo, como la salida de la DS */
 	if (strstr(text, "original = si") || strstr(text, "original=si")) {
-		nds_snd_set_mode(nds, SND_MODE_ORIGINAL);
+		mode |= SND_MODE_ORIGINAL;
 		salsads_log("audio: salida «como el original» (10 bits con SOUNDBIAS) por %s", AUDIO_CFG_PATH);
 	}
+	nds_snd_set_mode(nds, mode);
 }
 
 /* ---- un cuadro ------------------------------------------------------------------------------------------------ */

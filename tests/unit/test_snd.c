@@ -228,6 +228,34 @@ static void test_capture(void)
 	CHECK_EQ(mem[0x1000 + 8], 0);
 }
 
+static void test_capture_playback_boundary(void)
+{
+	static snd_state keep, old;
+	static int16_t first[100], a[8], b[8];
+
+	reset();
+	for (uint32_t i = 0; i < 64; i++)
+		wr16le(mem + 0x100 + 2 * i, 0x2000);
+	snd_reset(&keep);
+	w16(0x100, 0x807F);
+	chan(1, CNT(127, 0, 0, 1, 1), 0x02000100u, P512, 0, 32);
+	run(&keep, 20, first);
+	old = keep;
+	old.mode = SND_MODE_FRAME_CACHE_OLD;
+	nlog = 0;
+	/* SOUNDCAP rellena esta línea mientras la voz 1 sigue leyéndola. La
+	 * instantánea nueva se toma al volver al bucle, no en la frontera del
+	 * trabajo. El modo de diagnóstico reproduce el salto anterior. */
+	for (uint32_t i = 0; i < 64; i++)
+		wr16le(mem + 0x100 + 2 * i, 0x6000);
+	run(&keep, 4, a);
+	run(&old, 4, b);
+	CHECK_EQ(a[0], 0x2000);
+	CHECK_EQ(b[0], 0x6000);
+	run(&keep, 50, first);
+	CHECK_EQ(first[2 * 49], 0x6000); /* el bucle ya refrescó la línea */
+}
+
 /* Partir el trabajo en trozos da lo mismo que correrlo entero (muestras, estado y salida a 48 kHz). */
 static void test_split(uint32_t mode, float adj)
 {
@@ -382,6 +410,7 @@ void test_snd(void)
 	test_hd_native();
 	test_model();
 	test_capture();
+	test_capture_playback_boundary();
 	test_split(0, 0);
 	test_split(SND_MODE_HD, 0);
 	test_split(SND_MODE_HD, -0.02f);

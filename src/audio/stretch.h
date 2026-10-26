@@ -32,5 +32,7 @@ typedef struct audio_stretch2 {
 	uint64_t inserted, active, missing, joins;
 } audio_stretch2;
 uint32_t audio_stretch2_run(audio_stretch2 *s, const float *in, uint32_t n, float *out);
+/* Corrige solo la deriva de los relojes. Alcanza el límite a 512 muestras del objetivo. */
+float audio_rate_adjust(uint32_t level, uint32_t target);
 float audio_soft_limit(float x);
 #endif

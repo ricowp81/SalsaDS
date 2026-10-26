@@ -541,12 +541,9 @@ int audio_out_is_open(void)
 
 float audio_out_ratio_adj(void)
 {
-	float adj;
-
 	if (!port.open || !port.started)
 		return 0.0f;
-	adj = ((float)level() - (float)TARGET) * (0.02f / (float)TARGET);
-	return adj > 0.02f ? 0.02f : adj < -0.02f ? -0.02f : adj;
+	return audio_rate_adjust(level(), TARGET);
 }
 
 void audio_out_stats(struct audio_out_stats *s, int reset_peak)

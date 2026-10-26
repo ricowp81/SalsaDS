@@ -13,6 +13,14 @@ float audio_soft_limit(float x)
 	return x < 0 ? -a : a;
 }
 
+float audio_rate_adjust(uint32_t level, uint32_t target)
+{
+	const float limit = 0.0025f; /* ±0,25 %: cubre 59,94 frente a 59,83 Hz sin cambiar el tono de forma audible */
+	float adj = ((float)level - (float)target) * (limit / 512.0f);
+
+	return adj > limit ? limit : adj < -limit ? -limit : adj;
+}
+
 static void remember(audio_stretch *s, const float *in, uint32_t n)
 {
 	uint32_t keep = s->history_n;
@@ -151,8 +159,9 @@ uint32_t audio_stretch2_run(audio_stretch2 *s, const float *in, uint32_t n, floa
 		s->queued -= STRETCH_HOP;
 		s->credit = s->grain_used*s->queued/STRETCH2_HOP;
 		s->active += STRETCH_HOP;
-	} else if (!s->valid && n >= STRETCH2_GRAIN + STRETCH_HOP && (s->rate >= 0.96f || n >= 3000)) {
-		/* No se calcula ninguna ventana en régimen nominal: identidad binaria. */
+	} else if (!s->valid && n >= STRETCH2_GRAIN + STRETCH_HOP) {
+		/* La entrega por cuadros hace oscilar la estimación de llegadas aunque
+		 * sobren 50 ms. Mientras exista esa reserva no hay déficit: identidad. */
 		memcpy(out, in, 2*STRETCH_HOP*sizeof(float));
 		used = STRETCH_HOP;
 	} else {
