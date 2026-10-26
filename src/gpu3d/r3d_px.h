@@ -234,13 +234,13 @@ static inline int r3d_poly_setup(r3d_poly *p, const gx_poly *gp, const gx_vertex
 	 * borde derecho (ni el inferior); con cualquiera de los dos, o si son translúcidos con la mezcla activa, sí (salvo el
 	 * derecho vertical). Sin esto, dos polígonos vecinos cuyas aristas no coinciden exacto (uniones en T, comunes en el
 	 * mapa de HeartGold) dejan un hueco de un píxel de ancho. */
-	p->full = !(rs->flags & R3D_F_NOFULL) && ((rs->d3 & (D3_AA | D3_EDGE)) || ((rs->d3 & D3_BLEND) && r3d_is_translucent(gp->attr, tp) && p->alpha != 31u)) ? 1u : 0u;
 	/* textura */
 	{
 		const uint32_t fmt = (tp >> 26) & 7u;
 
 		p->textured = (rs->d3 & D3_TEXTURE) && fmt != 0;
 		p->translucent_sort = r3d_is_translucent(gp->attr, tp);
+		p->full = !(rs->flags & R3D_F_NOFULL) && ((rs->d3 & (D3_AA | D3_EDGE)) || ((rs->d3 & D3_BLEND) && p->translucent_sort)) ? 1u : 0u;
 		if (p->textured) {
 			r3d_tex *t = &p->tex;
 
@@ -491,11 +491,13 @@ R3D_INLINE int r3d_ymajor(int32_t dx, int32_t dy)
  *             va a la derecha, redondeo(X(y+1) - 1/2^18) si va a la izquierda; en la última línea de la arista, x1
  *   tramo de arista «gordo»: una izquierda x-mayor que va a la izquierda cubre hasta redondeo(X(y)); una derecha x-mayor
  *   que va a la derecha empieza en redondeo(X(y)). */
-static inline void r3d_edge_x(const r3d_v *a, const r3d_v *b, int32_t y, int right, int32_t *xb, int32_t *xrun, r3d_end *e)
+static inline void r3d_edge_x(const r3d_v *a, const r3d_v *b, int32_t y, int right, int32_t *xb, int32_t *xrun, r3d_end *e, int32_t *xfo)
 {
 	const int32_t dy = b->y - a->y, dx = b->x - a->x, adx = dx < 0 ? -dx : dx;
 	const int32_t xf = r3d_xfix(a, b, y);
 	const int32_t half = 1 << 17;
+
+	*xfo = xf;
 
 	if (r3d_ymajor(dx, dy)) { /* y-mayor */
 		*xb = r3d_fx(xf + (dx < 0 && (!right || y == a->y) ? -1 : 0));
@@ -533,11 +535,42 @@ static inline void r3d_edge_x(const r3d_v *a, const r3d_v *b, int32_t y, int rig
 	}
 }
 
+/* Tamaño completo en las aristas x-mayores que van hacia adentro (la izquierda hacia la derecha, la derecha hacia la izquierda): la
+ * arista también dibuja los píxeles de su tramo en esta línea, no solo los de la línea siguiente. Sin esto, dos polígonos cuyas aristas
+ * casi horizontales no coinciden (la Torre Quemada de la intro de HeartGold) dejan una fila de píxeles sin cubrir. Va aparte (sin
+ * expandirse en la línea) para no agrandar la pila del SPE. */
+static __attribute__((noinline)) void r3d_row_full(const r3d_v *la, const r3d_v *lb, const r3d_v *ra, const r3d_v *rb, int32_t xfl, int32_t xfr, r3d_row *row)
+{
+	if (rb->x != ra->x) { /* un píxel más a la derecha (el de la arista) si la arista derecha no es vertical */
+		row->xrs++;
+		row->xr++;
+	}
+	if (!r3d_ymajor(lb->x - la->x, lb->y - la->y) && lb->x > la->x) {
+		const int32_t xs = r3d_fx(xfl + (1 << 17));
+
+		if (xs < row->xl) {
+			if (row->xo > xs) {
+				row->den += row->xo - xs;
+				row->xo = xs;
+			}
+			row->xl = xs;
+		}
+	}
+	if (!r3d_ymajor(rb->x - ra->x, rb->y - ra->y) && rb->x < ra->x) {
+		const int32_t xe = r3d_fx(xfr + (1 << 17)) + 1;
+
+		if (xe > row->xr) { /* la interpolación termina en el último píxel: sin extrapolar más allá de la arista */
+			row->den += xe - row->xr;
+			row->xr = xe;
+		}
+	}
+}
+
 /* La línea y del polígono. 0 si no cubre nada. */
 static inline int r3d_row_at(const r3d_poly *p, int32_t y, r3d_row *row)
 {
 	const r3d_v *la, *lb, *ra, *rb;
-	int32_t xl, xle, xr, xrs;
+	int32_t xl, xle, xr, xrs, xfl, xfr;
 
 	if (p->ytop == p->ybot) { /* altura cero: una línea de la x mínima a la máxima [sin contrastar] */
 		int il = 0, ir = 0;
@@ -565,8 +598,8 @@ static inline int r3d_row_at(const r3d_poly *p, int32_t y, r3d_row *row)
 		return 0;
 	if (!r3d_chain_edge(p, p->ldir, y, &la, &lb) || !r3d_chain_edge(p, -p->ldir, y, &ra, &rb))
 		return 0;
-	r3d_edge_x(la, lb, y, 0, &xl, &xle, &row->l);
-	r3d_edge_x(ra, rb, y, 1, &xr, &xrs, &row->r);
+	r3d_edge_x(la, lb, y, 0, &xl, &xle, &row->l, &xfl);
+	r3d_edge_x(ra, rb, y, 1, &xr, &xrs, &row->r, &xfr);
 	/* los tramos gordos de las aristas x-mayores que van hacia afuera */
 	if (xle > xr)
 		xr = xle;
@@ -583,12 +616,6 @@ static inline int r3d_row_at(const r3d_poly *p, int32_t y, r3d_row *row)
 	row->xle = xle > xl + 1 ? (xle < xr ? xle : xr) : xl + 1;
 	row->xrs = xrs < xr - 1 ? (xrs > xl ? xrs : xl) : xr - 1;
 	row->xr = xr;
-	{ /* tamaño completo: un píxel más a la derecha (el de la arista) si la arista derecha no es vertical */
-		const int32_t more = (int32_t)(p->full & (uint32_t)(rb->x != ra->x));
-
-		row->xrs += more;
-		row->xr += more;
-	}
 	row->xo = xl;
 	row->alledge = y == p->ytop || y == p->ybot - 1;
 	/* Denominador de la interpolación a lo largo de la línea: xr - xl, y uno más cuando la arista derecha es inclinada y
@@ -598,7 +625,7 @@ static inline int r3d_row_at(const r3d_poly *p, int32_t y, r3d_row *row)
 	 * arista (la x de esta línea, redondeada), no hasta donde acaba el tramo dibujado: sin esto, en los tallos inclinados de NSMB (aristas de pendiente 1/4)
 	 * la textura corría más rápido que en melonDS y salían dientes y huecos (3.7) */
 	if (ra->w == rb->w && !r3d_ymajor(rb->x - ra->x, rb->y - ra->y) && rb->x < ra->x) {
-		const int32_t xo = r3d_fx(r3d_xfix(ra, rb, y) + (1 << 17));
+		const int32_t xo = r3d_fx(xfr + (1 << 17));
 
 		if (xo > xr)
 			row->den = xo - xl;
@@ -606,37 +633,15 @@ static inline int r3d_row_at(const r3d_poly *p, int32_t y, r3d_row *row)
 	/* Izquierda x-mayor que va hacia la derecha (ortográfica): la interpolación a lo largo de la línea arranca en la x de esta línea de la arista
 	 * (redondeada), que queda a la izquierda del primer píxel dibujado (3.8) */
 	if (la->w == lb->w && !r3d_ymajor(lb->x - la->x, lb->y - la->y) && lb->x > la->x) {
-		const int32_t xs = r3d_fx(r3d_xfix(la, lb, y) + (1 << 17));
+		const int32_t xs = r3d_fx(xfl + (1 << 17));
 
 		if (xs < xl) {
 			row->xo = xs;
 			row->den += xl - xs;
 		}
 	}
-	/* Tamaño completo en las aristas x-mayores que van hacia adentro (la izquierda hacia la derecha, la derecha hacia la izquierda): la
-	 * arista también dibuja los píxeles de su tramo en esta línea, no solo los de la línea siguiente. Sin esto, dos polígonos cuyas aristas
-	 * casi horizontales no coinciden (la Torre Quemada de la intro de HeartGold) dejan una fila de píxeles sin cubrir. */
-	if (p->full) {
-		if (!r3d_ymajor(lb->x - la->x, lb->y - la->y) && lb->x > la->x) {
-			const int32_t xs = r3d_fx(r3d_xfix(la, lb, y) + (1 << 17));
-
-			if (xs < row->xl) {
-				if (row->xo > xs) {
-					row->den += row->xo - xs;
-					row->xo = xs;
-				}
-				row->xl = xs;
-			}
-		}
-		if (!r3d_ymajor(rb->x - ra->x, rb->y - ra->y) && rb->x < ra->x) {
-			const int32_t xe = r3d_fx(r3d_xfix(ra, rb, y) + (1 << 17)) + 1;
-
-			if (xe > row->xr) { /* la interpolación termina en el último píxel: sin extrapolar más allá de la arista */
-				row->den += xe - row->xr;
-				row->xr = xe;
-			}
-		}
-	}
+	if (p->full)
+		r3d_row_full(la, lb, ra, rb, xfl, xfr, row);
 	return 1;
 }
 
