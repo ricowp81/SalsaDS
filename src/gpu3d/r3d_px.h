@@ -583,9 +583,11 @@ static inline int r3d_row_at(const r3d_poly *p, int32_t y, r3d_row *row)
 	row->xle = xle > xl + 1 ? (xle < xr ? xle : xr) : xl + 1;
 	row->xrs = xrs < xr - 1 ? (xrs > xl ? xrs : xl) : xr - 1;
 	row->xr = xr;
-	if (p->full && rb->x != ra->x) { /* tamaño completo: un píxel más a la derecha, que es el de la arista */
-		row->xrs++;
-		row->xr++;
+	{ /* tamaño completo: un píxel más a la derecha (el de la arista) si la arista derecha no es vertical */
+		const int32_t more = (int32_t)(p->full & (uint32_t)(rb->x != ra->x));
+
+		row->xrs += more;
+		row->xr += more;
 	}
 	row->xo = xl;
 	row->alledge = y == p->ytop || y == p->ybot - 1;
