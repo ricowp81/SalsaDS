@@ -778,6 +778,7 @@ int rsx3d_selftest(void)
         fail += rsx3d_render(&j,&st)!=1;
         fail += rsx3d_hd_contract_test(j.out_ea,output[0]);
     }
+    if (rsx3d_scale()>1) fail += rsx3d_hd_line_test(j.out_ea,output[0]);
     fail += hd_spe_tests(&j);
     fail += replay_tests(1);
     salsads_log("rsx3d autoprueba dirigida: %s, %u fallos (la comparación de juegos y la mezcla RGBA8 son diagnósticos)", fail ? "FALLO" : "OK", fail);

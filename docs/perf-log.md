@@ -1,5 +1,11 @@
 # Registro de rendimiento
 
+## 2026-10-26 — RSX ronda 6, diagnóstico de composición (RPCS3, no PS3)
+- Hipótesis 1, entrada retenida: línea cambiante sin SPE, 722/768 píxeles distintos; patrón idéntico tras tres publicaciones.
+- Hipótesis 2, lectura de destino ligado: desligado y borrado en otro destino permiten distinguir la sonda; 3/3 muestras RGBA del 3D exactas, 9/12 palabras de metadatos incorrectas.
+- Resultado final de la mínima: 731 diferencias (722 píxeles + 9 sondas); seis escenas SPE siguen con 48200–49151 píxeles distintos y nativo/metadatos exactos. Parada por tope; causa última no demostrada.
+- 1× conserva 177 mapas, autoprueba y solapamiento. No hay medición HD con composición ni conclusión de velocidad PS3; guion y volcados en `build/rsx3d-hd-2/`.
+
 ## 2026-10-25 — RSX fase 2, cuarta ronda
 - **PS3 recibida, ronda 3:** MKDS misma pista, RSX 90 %; intervalo mediana 16,68 ms, 58/71 ventanas a 60; SPE 59/66. Emulación 11,36/10,37 ms y cuadros >20 ms 22,9/12,6 por 120.
 - Preparación mediana/p90 1,13/2,73 ms, envío 0,59/1,0; pesado «vértices» 1,68 ms incluía estados; RGBA8 frío 34–41 ms PPE.

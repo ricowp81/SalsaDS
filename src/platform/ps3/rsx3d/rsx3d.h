@@ -19,6 +19,7 @@ int rsx3d_decode_raster_test(const r3d_job *job);
 int rsx3d_init(void);
 unsigned rsx3d_scale(void);
 int rsx3d_hd_contract_test(uint64_t ea, uint32_t sample);
+int rsx3d_hd_line_test(uint64_t ea, uint32_t sample);
 int rsx3d_hd_native_test(const uint16_t *native);
 /* Capturar la imagen correcta antes de reutilizar una ranura de raster.
  * El consumidor espera su compositor SPE antes de llamar a present. */

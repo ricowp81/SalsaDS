@@ -5,6 +5,15 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-26 — RSX ronda 6: composición HD, parada tras dos hipótesis
+- Línea mínima sin SPE: 722/768 píxeles difieren; tres publicaciones conservan el patrón inicial. Sonda independiente de las cuatro palabras de metadatos y del RGBA 3D, por canal.
+- Desligar el destino antes de leer corrige la retención de la primera lectura; la muestra 3D es exacta, pero 9/12 sondas de metadatos siguen antiguas. Se conserva este cierre solo en autopruebas HD.
+- Seis escenas: nativo y metadatos exactos; shader 49149/48527/48200/49151/49008/49126 diferencias. No se demostró fallo del traductor; shader de composición sin cambios.
+- Ensamblador, binario, GLSL, las dos hipótesis y guion en `build/rsx3d-hd-2/`; 19 instrucciones condicionales señaladas por el verificador, sin atribuirles este fallo.
+- RPCS3 1×: autoprueba 0 fallos, 16 cuadros solapados exactos y 177 mapas sin cambios. Captura y preparación intactas.
+- LE y SAN correctas; unitarias BE conservan los 34 fallos conocidos del anillo.
+- HD sigue bloqueado en juego; sin medir 2×/3×/4× con composición. Paquete diagnóstico `build/salsads-rsx3d-hd-2.pkg`; probar primero autoprueba HD en PS3 real.
+
 ## 2026-10-26 — RSX fase 3: HD detenido por paridad
 - Prototipo 2×: raster HD separado, exportación nativa intacta, metadatos 2D con dos capas elegibles, ventanas, alfa y brillo; B nearest.
 - `3d-rsx-2x`/`3d-rsx-3x`/`3d-rsx-4x` quedan limitados a `3d-rsx-prueba`; en juego se fuerza 1× con motivo en log. No se habilita HD ni se certifican 60 fps.

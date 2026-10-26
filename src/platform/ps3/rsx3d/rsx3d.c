@@ -13,6 +13,7 @@
 #include "shade_w_fpo.h"
 #include "pack_fpo.h"
 #include "compose_hd_fpo.h"
+#include "probe_hd_fpo.h"
 #include "gpu2d/gpu2d_hd.h"
 #include "fog_fpo.h"
 #include "fog_w_fpo.h"
@@ -973,6 +974,16 @@ int rsx3d_render(const r3d_job *j, rsx3d_stats *st)
     return result > 0 ? rsx3d_wait(0, st) : result;
 }
 
+/* Solo autopruebas: cambiar de destino y emitir un borrado antes de leer
+ * evita reutilizar la primera lectura de la superficie en RPCS3. No toca
+ * las exportaciones nativas ni la presentación del juego. */
+static void hd_test_finish(void)
+{
+    rsxkit_bind(target,depth,256,192);
+    rsxkit_clear(RSXKIT_CLEAR_COLOR,0,1,NULL);
+    rsxkit_fence_wait(rsxkit_fence());
+}
+
 /* Solo diagnóstico: salida nativa del compositor, nunca lectura de un plano HD. */
 int rsx3d_hd_contract_test(uint64_t ea, uint32_t sample)
 {
@@ -991,7 +1002,7 @@ int rsx3d_hd_contract_test(uint64_t ea, uint32_t sample)
     rsxkit_post_pass pass; hd_compose_pass(&pass,0,0,0,256,192);
     pass.out=output[1];
     if (rsxkit_post_run(&pass)) return 1;
-    rsxkit_fence_wait(rsxkit_fence());
+    hd_test_finish();
     unsigned bad=0;
     for (unsigned i=0;i<256*192;i++) {
         unsigned sx=(i%256+p[i].b[11]+256u*p[i].b[12])&511;
@@ -1005,12 +1016,64 @@ int rsx3d_hd_contract_test(uint64_t ea, uint32_t sample)
     return bad!=0;
 }
 
+/* Línea cambiante: entradas y salida se contrastan por canal, sin SPE. */
+int rsx3d_hd_line_test(uint64_t ea, uint32_t sample)
+{
+    if (hd_scale == 1) return 0;
+    if (!rsx3d_hd_acquire(ea,0)) return 1;
+    g2d_hd_pixel *p=(g2d_hd_pixel *)(void *)hd_mem;
+    unsigned bad=0;
+    rsxkit_program *probe=rsxkit_program_create(probe_hd_fpo);
+    if (!probe) return 1;
+    for (unsigned round=0;round<3;round++) {
+        for (unsigned x=0;x<256;x++) {
+            uint8_t *b=p[x].b; memset(b,0,16);
+            b[0]=(x+3+round*7)&31; b[1]=(x*3+11+round*5)&31; b[2]=(x*7+19+round*3)&31;
+            b[3]=x%5; b[4]=(x+23+round)&31; b[5]=(x*5+17+round)&31; b[6]=(x*3+7+round)&31;
+            b[7]=9; b[8]=7; b[9]=round*32+5; b[10]=0;
+        }
+        rsxkit_post_pass pass; hd_compose_pass(&pass,0,0,0,256,192);
+        pass.out=output[1]; pass.rect.h=1;
+        for (unsigned input=0;input<5;input++) {
+            pass.program=probe; pass.k[0][1]=input;
+            if (rsxkit_post_run(&pass)) { bad++; goto done; }
+            hd_test_finish();
+            const uint8_t *raw=mem+OUT_OFF(1);
+            uint8_t expected[4];
+            if (input<4) memcpy(expected,p[0].b+input*4,4);
+            else {
+                expected[0]=((((sample>>24)&31)+1)*255+16)/32;
+                expected[1]=(sample&63)+16; expected[2]=((sample>>8)&63)+16;
+                expected[3]=((sample>>16)&63)+16;
+            }
+            bad += memcmp(raw,expected,4)!=0;
+            salsads_log("rsx3d HD sonda %u/%u: ARGB esperado %u %u %u %u recibido %u %u %u %u",round,input,expected[0],expected[1],expected[2],expected[3],raw[0],raw[1],raw[2],raw[3]);
+        }
+        pass.program=hd_program; pass.k[0][1]=0;
+        if (rsxkit_post_run(&pass)) { bad++; goto done; }
+        hd_test_finish();
+        for (unsigned x=0;x<256;x++) {
+            uint16_t c=g2d_hd_eval(&p[x],sample);
+            const uint8_t *b=mem+OUT_OFF(1)+4*x;
+            unsigned r=(b[1]*31u+127)/255,g=(b[2]*31u+127)/255,bl=(b[3]*31u+127)/255;
+            bad += r!=(c&31) || g!=((c>>5)&31) || bl!=((c>>10)&31) || b[0]!=255;
+            if (x<5) salsads_log("rsx3d HD línea %u/%u: RGB esperado %u %u %u recibido %u %u %u A %u",round,x,c&31,(c>>5)&31,(c>>10)&31,r,g,bl,b[0]);
+        }
+    }
+done:
+    rsxkit_program_destroy(probe);
+    salsads_log("rsx3d HD línea cambiante: 768 píxeles y 15 sondas, %u fallos",bad);
+    return bad!=0;
+}
+
 int rsx3d_hd_native_test(const uint16_t *native)
 {
     rsxkit_post_pass pass; hd_compose_pass(&pass,0,0,0,256,192);
     pass.out=output[1];
+    const uint8_t *src=hd_mem, *pub=hd_mem+2*HD_STRIDE;
+    salsads_log("rsx3d HD entrada: %02x %02x %02x %02x / %02x %02x %02x %02x; publicada %02x %02x %02x %02x",src[0],src[1],src[2],src[3],src[4],src[5],src[6],src[7],pub[0],pub[1],pub[2],pub[3]);
     if (rsxkit_post_run(&pass)) return -1;
-    rsxkit_fence_wait(rsxkit_fence());
+    hd_test_finish();
     unsigned bad=0;
     for (unsigned i=0;i<256*192;i++) {
         const uint8_t *b=mem+OUT_OFF(1)+i*4;
