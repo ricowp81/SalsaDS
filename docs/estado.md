@@ -5,6 +5,12 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-26 (2) — Torre Quemada de la intro: aristas x-mayores hacia adentro (rama heartgold-huecos)
+- La intro de HeartGold (3 pueblos): con el arreglo anterior las dos primeras escenas quedaron limpias; en la Torre Quemada (cuadros ~2260 a 2350 desde el arranque) quedaban filas de 3 a 6 píxeles sobre aristas casi horizontales (el polígono 156, arista inferior de (23,124) a (83,129): la línea 125 empezaba en x = 47 en lugar de 35).
+- Arreglo: con el tamaño completo, la izquierda x-mayor que va hacia la derecha y la derecha x-mayor que va hacia la izquierda también dibujan su tramo de la línea (la interpolación se estira para no extrapolar). Mismo interruptor `r3d-sin-completo`.
+- Huecos (píxel transparente con vecinos opacos) en los cuadros 2150–2355: 4 276 → 939. Los 939 restantes están cubiertos por un polígono (índice 0 transparente de la textura, p. ej. el polígono 2 de la roca): no son de geometría. El edge marking solo pinta donde el id del vecino difiere y es más lejano; en estas escenas todos los polígonos tienen id 0 y el borde del plano de fondo (id 63) marca los píxeles junto a un hueco real, como en la DS.
+- `HOLES_LOG=1|2` y `HOLES_COVER=1` (con `--frame-dump`) en `salsads-cpurun` listan huecos por cuadro y qué polígonos cubren cada píxel.
+
 ## 2026-10-26 — Rombos negros de HeartGold: tamaño completo de los polígonos (rama heartgold-huecos)
 - Causa: en el mapa (cuadro 29800, Pueblo Primavera) polígonos vecinos con aristas que no coinciden exacto (el 62, derecha de (149,0) a (151,78); el 43, izquierda de (149,4) a (152,89)) dejaban una columna de 1 píxel sin cubrir (x = 150, líneas 61 a 77); con DISP3DCNT = 0x3039 (antialiasing y edge marking). GBATEK «Polygon Size»: solo los opacos sin edge marking ni antialiasing pierden el borde derecho; con cualquiera de los dos (o translúcidos con mezcla) la arista derecha inclinada dibuja su píxel. El rasterizador compartido lo tenía siempre exclusivo; la referencia del host tenía los mismos huecos (no era del SPE).
 - Arreglo: `p->full` en `r3d_poly_setup` y un píxel más en `r3d_row_at` (derecha no vertical); no cambia la interpolación. Interruptor: archivo `r3d-sin-completo` en `/dev_hdd0/salsads/` (`--r3d-sin-completo` en el host). Prueba dirigida en `test_r3d_vrow.c`.

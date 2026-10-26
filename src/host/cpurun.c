@@ -17,6 +17,8 @@
 
 #include "core/nds.h"
 #include "gpu3d/gx_loop.h"
+#include "gpu3d/r3d.h"
+#include "gpu3d/r3d_px.h"
 #include "host/jitrun.h"
 #include "jit/arec.h"
 #include "util/endian.h"
@@ -253,6 +255,42 @@ static uint32_t count_holes(void)
 				n++;
 		}
 	return n;
+}
+
+
+/* Diagnóstico (HOLES_COVER=1 con --frame-dump): para cada píxel de hueco del cuadro volcado, qué polígonos lo cubren por geometría
+ * (si alguno, el hueco viene de la textura o del alfa, no de la forma) */
+static void explain_holes(void)
+{
+	const gx_frame *f = nds_gx_front(&M);
+	const int set = M.vid.last;
+	r3d_rstate rs;
+
+	if (!f || set < 0)
+		return;
+	r3d_rstate_init(&rs, f, M.vid.r3d_flags);
+	for (int y = 1; y < R3D_H - 1; y++)
+		for (int x = 1; x < R3D_W - 1; x++) {
+			const uint32_t *q = &M.vid.set[set].img3d[y * R3D_W + x];
+
+			if (R3D_PX_A(*q) || !((R3D_PX_A(q[-1]) && R3D_PX_A(q[1])) || (R3D_PX_A(q[-R3D_W]) && R3D_PX_A(q[R3D_W]))))
+				continue;
+			printf("hueco (%d,%d):", x, y);
+			for (uint32_t i = 0; i < f->npolys; i++) {
+				const gx_poly *gp = &f->poly[i];
+				const gx_vertex *vv[GX_POLY_MAXV];
+				r3d_poly p;
+				r3d_row row;
+
+				for (int k = 0; k < gp->nverts && k < (int)GX_POLY_MAXV; k++)
+					vv[k] = &f->vtx[gp->vidx[k] % GX_MAX_VERTS];
+				if (!r3d_poly_setup(&p, gp, vv, &rs) || y < p.ytop || y > p.ybot || !r3d_row_at(&p, y, &row))
+					continue;
+				if (x >= row.xl && x < row.xr)
+					printf(" poly%u(attr %08x tex %08x)", i, gp->attr, gp->texparam);
+			}
+			printf("\n");
+		}
 }
 
 static void print_gx_stats(uint64_t frames)
@@ -1111,13 +1149,25 @@ int main(int argc, char **argv)
 
 				snprintf(path, sizeof path, "%s.ppm", fdump_prefix);
 				save_img3d(path);
+				if (getenv("HOLES_COVER"))
+					explain_holes();
 			}
 			if (holes_on) {
 				const uint32_t h = count_holes();
 
+				if (getenv("HOLES_LOG") && getenv("HOLES_LOG")[0] == '2') {
+					const gx_frame *hf = nds_gx_front(&M);
+
+					printf("TODOS %llu %u %u\n", (unsigned long long)f, h, hf ? hf->npolys : 0u);
+				}
 				if (h) {
 					holes_total += h;
 					holes_frames++;
+					if (getenv("HOLES_LOG")) { /* cuadro, huecos y polígonos del cuadro (para ubicar escenas) */
+						const gx_frame *hf = nds_gx_front(&M);
+
+						printf("HUECOS %llu %u %u\n", (unsigned long long)f, h, hf ? hf->npolys : 0u);
+					}
 				}
 				if (h > holes_worst) {
 					holes_worst = h;

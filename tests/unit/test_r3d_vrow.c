@@ -173,6 +173,21 @@ static void test_tjunction_full(void)
 		CHECK_EQ(quad_cover_x(xv, yv, 4, 1, y, 39), 1);
 		CHECK_EQ(quad_cover_x(xv, yv, 4, 1, y, 19), 0);
 	}
+	/* Torre Quemada (intro de HeartGold, cuadro 2340): el polígono 156 tiene una arista inferior x-mayor de (23,124) a (83,129); sin el tamaño
+	 * completo la línea 125 empezaba en x = 47 y dejaba 43..46 (más la fila entera con el vecino) sin cubrir */
+	{
+		const int xq[4] = { 23, 83, 83, 23 }, yq[4] = { 124, 129, 125, 121 };
+		uint32_t viejo = 0, nuevo = 0;
+
+		for (int x = 36; x <= 46; x++) {
+			viejo += quad_cover_x(xq, yq, 4, 0, 125, x);
+			nuevo += quad_cover_x(xq, yq, 4, 1, 125, x);
+		}
+		CHECK_EQ(viejo, 0);
+		CHECK_EQ(nuevo, 11);
+		/* y no se pasa del tramo: la línea 124 no gana nada a la izquierda de su arista */
+		CHECK_EQ(quad_cover_x(xq, yq, 4, 1, 125, 30), 0);
+	}
 	printf("render 3D unión en T de HeartGold: %u líneas con hueco con la regla anterior, %u con el tamaño completo\n", old_gaps, new_gaps);
 }
 

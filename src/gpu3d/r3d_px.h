@@ -613,6 +613,30 @@ static inline int r3d_row_at(const r3d_poly *p, int32_t y, r3d_row *row)
 			row->den += xl - xs;
 		}
 	}
+	/* Tamaño completo en las aristas x-mayores que van hacia adentro (la izquierda hacia la derecha, la derecha hacia la izquierda): la
+	 * arista también dibuja los píxeles de su tramo en esta línea, no solo los de la línea siguiente. Sin esto, dos polígonos cuyas aristas
+	 * casi horizontales no coinciden (la Torre Quemada de la intro de HeartGold) dejan una fila de píxeles sin cubrir. */
+	if (p->full) {
+		if (!r3d_ymajor(lb->x - la->x, lb->y - la->y) && lb->x > la->x) {
+			const int32_t xs = r3d_fx(r3d_xfix(la, lb, y) + (1 << 17));
+
+			if (xs < row->xl) {
+				if (row->xo > xs) {
+					row->den += row->xo - xs;
+					row->xo = xs;
+				}
+				row->xl = xs;
+			}
+		}
+		if (!r3d_ymajor(rb->x - ra->x, rb->y - ra->y) && rb->x < ra->x) {
+			const int32_t xe = r3d_fx(r3d_xfix(ra, rb, y) + (1 << 17)) + 1;
+
+			if (xe > row->xr) { /* la interpolación termina en el último píxel: sin extrapolar más allá de la arista */
+				row->den += xe - row->xr;
+				row->xr = xe;
+			}
+		}
+	}
 	return 1;
 }
 
