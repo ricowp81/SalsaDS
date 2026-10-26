@@ -86,3 +86,12 @@ datos, búferes de DMA y pila; la holgura de la pila se mide al enlazar con
 | `snd` (mezclador de sonido, Fase 2.2; `src/spu/snd`) | 14,4 KB | 50,2 KB (estado 3,4 KB, escrituras 32 KB, muestras de 16 bits 2,5 KB, salida flotante 8 KB, escalón de la captura) | holgura 190 KB (mínimo 4 KB) | un SPE; medido al enlazar |
 | `raster3d` (render 3D, Fase 3.2, 3.4 y 3.9; `src/spu/raster3d`) | texto 59 968 B | bss 184 480 B (contexto 180 736 B: color 2 × 18 KB, profundidad 18 KB, atributos 18 KB, caché de texturas 73 KB en una `union`: bloques de 256 texeles (64 KB + líneas de VRAM de 128 B 3 KB + paletas convertidas 1 KB) o celdas de 4×4 (32 KB + líneas de 1 KB 20 KB + etiquetas y tablas 8 KB), orden 16 KB, lista 4 KB, lotes 23 KB) | 16 720 B libres; usa 7 360 B (holgura 9 360 B, mínimo 8 192 B) | dos SPE, bandas repartidas por costo; medido al enlazar (3.9: texto +3,9 KB; caché de líneas del modo de bloques de 32 a 16 líneas; la sonda 3 ya no arrastra `__divdi3`) |
 | `spe-raster3d` (0.4) | 27,3 KB | 202,9 KB | 25,6 KB libres; usa 2,5 KB (holgura 23,1 KB, mínimo 8 KB) | Caché de texturas 112 KB, color 2 × 16 KB, profundidad 16 KB, cajas 16 KB, registros 12 KB; detalle en `tests/phase0/spe-raster3d/spu_main.c` |
+
+## Render 3D experimental en RSX
+
+Arena XDR de 24 MiB: caché RGBA8 0–16 MiB, vértices de las dos ranuras en
+16–18 y 21–23 MiB, exportaciones de 192 KiB en 18 MiB y 18,25 MiB,
+instantánea de identidad en 19 MiB y dos tablas toon de 128 B en 20 MiB.
+No aumenta la arena al solapar; las autopruebas añaden 768 KiB de imágenes.
+Texturas compartidas protegidas por la última etiqueta; salidas y estadísticas
+permanecen reservadas hasta que captura o compositor retiren cada trabajo.

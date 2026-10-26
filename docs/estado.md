@@ -5,6 +5,15 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-25 — RSX fase 2, tercera ronda: solapamiento con emulación
+- Integrada la identidad incremental de `6a03335`, conservando pruebas y documentación de ambas ramas.
+- Cola común RSX/SPE: envío sin esperar, dos ranuras de vértices/tabla toon/exportación/estadísticas y etiquetas por trabajo; captura DISPCAPCNT retira el resultado antes de leerlo.
+- La caché compartida espera su última etiqueta antes de modificar texeles; no retiene listas ni VRAM del juego. Arena XDR sin aumento, 24 MiB.
+- `3d-rsx-sin-solapar` restaura la espera inmediata. `DATO rsx3d cuadro` separa emulación, preparación, envío, etiqueta, reutilización, copia, raster/exportación, compositor y flip.
+- Log PS3 anterior: raster+exportación 2,36 ms, preparación 2,23, emulación 16,59 y espera de flip 14,30; compatible con perder un vsync. La recuperación de 16,7 ms requiere medición en consola.
+- Validación: autoprueba aislada RPCS3 0 fallos, 16 cuadros solapados exactos y 176 mapas iguales a la ronda anterior; dirigidas LE/BE 655413 comprobaciones por orden sin fallos. `test-host`: LE/SAN, ROMs, hashes y lockstep correctos; solo los 34 fallos BE conocidos del anillo.
+- Build completo correcto, holgura SPE mínima 8432 B, verificadores en 0. Paquete `build/salsads-rsx3d-fase2-3.pkg`, «SalsaDS RSX»/SLDS00030; SHA-256 y guion locales en `build/rsx3d-fase2-3/`. Sin envío ni publicación; velocidad PS3 pendiente.
+
 ## 2026-10-25 — RSX fase 2, segunda ronda: niebla constante y lotes de sombras
 - PS3 recibida: 11/16 dirigidas de niebla fallan; pesado 652 dibujos, 5,19 ms raster+exportación. Los mapas de consola sustituyen la aprobación previa de RPCS3.
 - Diagnóstico host: 83/84 rectángulos RGB compatibles con densidad/borde Z anterior; el restante pierde un canal saturado. Hay 39 rectángulos sin niebla con error alfa; recuperar enteros antes de mezclar evita el truncado de constantes.

@@ -80,7 +80,12 @@
 #include "rsxkit/rsxkit.h"
 #ifdef NUCLEO_RSX
 #include "platform/ps3/rsx3d/rsx3d.h"
-static int rsx3d_on;
+static int rsx3d_on, rsx3d_sync;
+static struct {
+    uint64_t prepare, label, reuse, copy, issue, raster, export, comp[2];
+    uint64_t interval, emu, begin, screen;
+    unsigned frames, rsx, spe;
+} rsx_pipe;
 #endif
 #include "rsxkit/text.h"
 #include "rsxkit/ui.h"
@@ -1787,6 +1792,8 @@ static spukit_worker *wk3d[2];
 static int r3d_on;
 /* Trabajos en vuelo: con el aplazamiento (nds->vid.r3d_defer_line) el del cuadro anterior sigue corriendo cuando sale el del actual */
 struct r3d_inflight {
+	int rsx;
+	const char *rsx_reason;
 	int set;
 	uint32_t slot;
 	uint32_t seq[2];
@@ -1801,36 +1808,38 @@ static uint32_t r3d_fail;
 static uint32_t r3d_bt[2][2][R3D_BT_WORDS] __attribute__((aligned(128))); /* ticks por banda de cada unidad de cada trabajo en vuelo */
 
 static void r3d_wait_one(void);
+static void r3d_spe_wait(void *ctx, int set);
 
 static void r3d_spe_submit(void *ctx, int set, r3d_job *j)
 {
 	struct r3d_inflight *e;
 
 	(void)ctx;
+	if (r3q.count == 2)
+		r3d_wait_one();
+	e = &r3q.e[(r3q.head + r3q.count) & 1u];
+	memset(e, 0, sizeof *e);
+	e->slot = (r3q.head + r3q.count) & 1u;
+	e->set = set;
+	e->job = *j;
+	e->post_us = now_us();
+	r3q.count++;
 #ifdef NUCLEO_RSX
 	if (rsx3d_on) {
 		rsx3d_stats st;
 		rsx3d_identity_versions(j->vram_ea, nds->vid.set[set].vram_version);
-		int ok = rsx3d_render(j, &st);
-		static unsigned count;
-		if ((count++ % 120u) == 0 || ok < 0)
-			salsads_log("DATO rsx3d: modo %s, motivo %s, polígonos %u, dibujos %u, texturas %u, bytes %u, aciertos %u, raster %.3f ms, exportación %.3f ms, preparación %.3f ms, copia %.3f ms, total PPE %.3f ms",
-			    ok > 0 ? "RSX" : "SPE", rsx3d_reason(), st.polys, st.draws, st.textures, st.uploaded, st.cache_hits,
-			    st.raster_ns / 1e6, st.export_ns / 1e6, st.prepare_us / 1e3, st.copy_us / 1e3, st.total_us / 1e3);
-		if (ok > 0 && (count % 120u) == 1 && (st.vertex_us || st.identity_us))
-			salsads_log("DATO rsx3d etapas: dibujos %u -> %u, estados lógicos %u, identidad %llu vértices %llu búsqueda %llu RGBA8 %llu subida %llu us",
-			    st.draws_before, st.draws, st.state_changes,
-			    (unsigned long long)st.identity_us, (unsigned long long)st.vertex_us,
-			    (unsigned long long)st.lookup_us, (unsigned long long)st.decode_us, (unsigned long long)st.upload_us);
-		if (ok > 0) return;
-		if (ok < 0) rsx3d_on = 0;
+		int ok = rsx3d_submit(j, e->slot, &st);
+		if (ok > 0) {
+			e->rsx = 1;
+			e->rsx_reason = rsx3d_reason();
+			/* A/B: retirar inmediatamente reproduce la barrera anterior. */
+			if (rsx3d_sync) r3d_spe_wait(NULL, set);
+			return;
+		}
+		if (ok < 0) { rsx3d_on = 0; salsads_log("FALLO envío RSX; respaldo SPE"); }
 	}
+	rsx_pipe.spe++;
 #endif
-	if (r3q.count == 2)
-		r3d_wait_one();
-	e = &r3q.e[(r3q.head + r3q.count) & 1u];
-	r3q.count++;
-	e->slot = (r3q.head + r3q.count - 1u) & 1u;
 	memset(r3d_bt[e->slot], 0, sizeof r3d_bt[e->slot]);
 	e->set = set;
 	e->job = *j;
@@ -1875,6 +1884,38 @@ static void r3d_wait_one(void)
 	struct r3d_inflight *e = &r3q.e[r3q.head];
 	r3d_stats fs;
 
+#ifdef NUCLEO_RSX
+	if (e->rsx) {
+		rsx3d_stats st;
+		int ok = rsx3d_wait(e->slot, &st);
+		if (ok < 0) {
+			rsx3d_on = 0;
+			failures++;
+			salsads_log("FALLO espera RSX; salida no disponible");
+			/* No publicar memoria vieja tras perder el dispositivo. */
+			memset((void *)(uintptr_t)e->job.out_ea, 0, R3D_W * R3D_H * 4u);
+		} else {
+			rsx_pipe.rsx++;
+			rsx_pipe.prepare += st.prepare_us; rsx_pipe.label += st.wait_us;
+			rsx_pipe.reuse += st.reuse_us; rsx_pipe.copy += st.copy_us;
+			rsx_pipe.issue += st.total_us - st.prepare_us - st.reuse_us - st.wait_us - st.copy_us;
+			rsx_pipe.raster += st.raster_ns; rsx_pipe.export += st.export_ns;
+			if ((rsx_pipe.rsx % 120u) == 1)
+				salsads_log("DATO rsx3d: modo RSX, motivo %s, polígonos %u, dibujos %u, texturas %u, bytes %u, aciertos %u, raster %.3f ms, exportación %.3f ms, preparación %.3f ms, copia %.3f ms, total PPE %.3f ms, etiqueta %.3f ms, reutilización %.3f ms",
+				    e->rsx_reason, st.polys, st.draws, st.textures, st.uploaded, st.cache_hits,
+				    st.raster_ns / 1e6, st.export_ns / 1e6, st.prepare_us / 1e3, st.copy_us / 1e3,
+				    st.total_us / 1e3, st.wait_us / 1e3, st.reuse_us / 1e3);
+			if ((rsx_pipe.rsx % 120u) == 1 && (st.vertex_us || st.identity_us))
+				salsads_log("DATO rsx3d etapas: dibujos %u -> %u, estados lógicos %u, identidad %llu vértices %llu búsqueda %llu RGBA8 %llu subida %llu us",
+				    st.draws_before, st.draws, st.state_changes,
+				    (unsigned long long)st.identity_us, (unsigned long long)st.vertex_us,
+				    (unsigned long long)st.lookup_us, (unsigned long long)st.decode_us, (unsigned long long)st.upload_us);
+		}
+		r3q.head = (r3q.head + 1u) & 1u;
+		r3q.count--;
+		return;
+	}
+#endif
 	memset(&fs, 0, sizeof fs);
 	for (uint32_t u = 0; u < 2; u++) {
 		const int was_done = spukit_done(wk3d[u], e->seq[u]);
@@ -2170,6 +2211,9 @@ static void render_frame(void)
 					const uint32_t ca = (uint32_t)((uint64_t)prev.res[0].ticks * 1000000ull / spukit_tick_hz()),
 						       cb = (uint32_t)((uint64_t)prev.res[1].ticks * 1000000ull / spukit_tick_hz());
 
+#ifdef NUCLEO_RSX
+					rsx_pipe.comp[0] += ca; rsx_pipe.comp[1] += cb;
+#endif
 					(void)cb;
 					compA_us_ema = (compA_us_ema * 3u + ca) / 4u;
 				}
@@ -2204,6 +2248,21 @@ static void render_frame(void)
 	}
 	tb7 = tb_clock();
 	rsxkit_frame_end();
+#ifdef NUCLEO_RSX
+	rsx_pipe.interval += cur_stats.frame_us;
+	rsx_pipe.emu += tb_us(tb3 - tb2);
+	rsx_pipe.begin += tb_us(tb1 - tb0);
+	rsx_pipe.screen += tb_us(tb5 - tb4);
+	if (++rsx_pipe.frames == 120) {
+		salsads_log("DATO rsx3d cuadro: %s; cuadros %u RSX %u SPE %u; medias ms intervalo %.3f emulación %.3f flip %.3f preparación %.3f envío %.3f etiqueta %.3f reutilización %.3f copia %.3f raster %.3f exportación %.3f compositor-A %.3f compositor-B %.3f recogida-2D %.3f",
+		    !rsx3d_on ? "SPE" : rsx3d_sync ? "síncrono" : "solapado", rsx_pipe.frames, rsx_pipe.rsx, rsx_pipe.spe,
+		    rsx_pipe.interval / 120e3, rsx_pipe.emu / 120e3, rsx_pipe.begin / 120e3,
+		    rsx_pipe.prepare / 120e3, rsx_pipe.issue / 120e3, rsx_pipe.label / 120e3,
+		    rsx_pipe.reuse / 120e3, rsx_pipe.copy / 120e3, rsx_pipe.raster / 120e6,
+		    rsx_pipe.export / 120e6, rsx_pipe.comp[0] / 120e3, rsx_pipe.comp[1] / 120e3, rsx_pipe.screen / 120e3);
+		memset(&rsx_pipe, 0, sizeof rsx_pipe);
+	}
+#endif
 	put(M_BEGIN, tb_us(tb1 - tb0));
 	put(M_INPUT, tb_us(tb2 - tb1));
 	put(M_SCR, tb_us(tb5 - tb4));
@@ -2267,6 +2326,9 @@ static void autotest_check(void)
  * sigue abierto entre juegos, y no se toca. */
 static void stats_reset(void)
 {
+#ifdef NUCLEO_RSX
+	memset(&rsx_pipe, 0, sizeof rsx_pipe);
+#endif
 	memset(buf, 0, sizeof buf);
 	memset(nbuf, 0, sizeof nbuf);
 	stat_n = 0;
@@ -2794,6 +2856,7 @@ int main(void)
 		struct stat st;
 		if (stat(SALSADS_DATA_DIR "/3d-rsx", &st) == 0 && stat(SALSADS_DATA_DIR "/3d-spe", &st) != 0) {
 			rsx3d_on = rsx3d_init() == 0;
+			rsx3d_sync = stat(SALSADS_DATA_DIR "/3d-rsx-sin-solapar", &st) == 0;
 			if (rsx3d_on && (salsads_autotest() || stat(SALSADS_DATA_DIR "/3d-rsx-prueba", &st) == 0) && rsx3d_selftest() != 0) rsx3d_on = 0;
 			salsads_log("3d-rsx: %s; Z nativa y W por fragmento, respaldo SPE por modo no soportado", rsx3d_on ? "activo" : "sin recursos");
 		}

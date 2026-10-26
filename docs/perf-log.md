@@ -1,5 +1,15 @@
 # Registro de rendimiento
 
+## 2026-10-25 — Juego RSX solapado (base PS3 recibida; nueva ruta sin medir)
+- Base recibida, MKDS carrera: 6590 RSX/730 SPE, intervalo 33,3 ms; raster+exportación mediana 2,36, p90 3,06, máximo 4,49 ms. Aislado pesado 4,24 ms, autoprueba sin fallos.
+- Relectura local: 53 muestras RSX, preparación mediana 2,232, copia 0,247, total PPE 5,485 ms; residual envío+espera 2,854. 72 ventanas: emulación 16,59 y frame_begin 14,295 ms. No sumar medianas como si fueran el mismo cuadro.
+- Código anterior: la etiqueta 3D se espera dentro de emulación; frame_begin espera el flip. Inferencia: superar el plazo de presentación pierde un vsync; el log anterior no separa envío de etiqueta.
+- Estimación caliente orientativa: 16,5 − 0,9 de identidad − 2,4 de espera raster/exportación ≈ 13,2 ms de emulación; compatible con intervalo 16,7, por debajo del tope 25 ms. No es medida del nuevo binario ni garantía en carrera.
+- `DATO rsx3d cuadro`: medias por 120 cuadros, tiempos PPE incluidos en emulación; raster/exportación y compositor se solapan, no sumarlos al total. Retiradas RSX y envíos SPE pueden cruzar una ventana.
+- A/B: MKDS carrera 2 min con `3d-rsx`, sin prueba aislada; luego 2 min sin RSX. Comparación adicional con `3d-rsx-sin-solapar` si hace falta; perfil de preparación optativo e idéntico en ambos lados.
+- RPCS3: 16 cuadros con dos exportaciones pendientes y retirada alternada exactos; autoprueba aislada 0 fallos, 176 mapas iguales a la ronda previa. No se midió velocidad PS3.
+- Exigir autoprueba sin fallos y paridad sin regresión; objetivo intervalo 16,7 ms y ~90 % RSX. Si sigue >25 ms, parar con el desglose. Persisten RGBA8 frío en PPE y diferencias RSX de cobertura/interpolación previamente documentadas.
+
 ## 2026-10-25 — RSX fase 2, ronda 2 (PS3 recibida; cambios pendientes de medir)
 - PS3, base `bc84e66`: pesado caliente raster 4,987–4,993 + exportación 0,197–0,198 ms, 652 dibujos/estados; supera 4 ms. MKDS carrera admitido por RSX, 1,57 ms; Metroid conserva SPE por igualdad.
 - Mapas PS3: 11 fallos de niebla, 384–8832 píxeles; rectángulos completos de 192 píxeles, sin diferencias de cobertura. Error RGB6 máximo 11 en prueba 8 y 1 en las restantes; PPM solo indica presencia, no magnitud del error alfa. Falta la referencia 0 entre los 157 mapas: contraste con la referencia previa y el conteo del log.

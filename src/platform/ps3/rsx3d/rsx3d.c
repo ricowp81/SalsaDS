@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Reproductor 1x. Listas y VRAM inmutables; una barrera al acabar el cuadro. */
+/* Render 1x: dos exportaciones pendientes, retiradas antes de consumir el 3D. */
 #include <malloc.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -24,18 +24,26 @@
 
 #define ARENA (24u * 1024u * 1024u)
 #define TEX_BYTES (16u * 1024u * 1024u)
-#define VERT_OFF TEX_BYTES
-#define OUT_OFF (18u * 1024u * 1024u)
+#define VERT_OFF(slot) ((slot) ? 21u * 1024u * 1024u : TEX_BYTES)
+#define OUT_OFF(slot) (18u * 1024u * 1024u + (slot) * 256u * 1024u)
 #define SNAP_OFF (19u * 1024u * 1024u)
-#define TOON_OFF (20u * 1024u * 1024u)
+#define TOON_OFF(slot) (20u * 1024u * 1024u + (slot) * 128u)
 #define CACHE_N 256u
+_Static_assert(GX_MAX_POLYS * (GX_POLY_MAXV - 2u) * 3u * sizeof(rsxkit_vertex) <= 2u * 1024u * 1024u, "vértices por ranura");
 #define PAGE_SIZE 1024u
 #define PAGE_WORDS ((R3D_VRAM_ZERO_OFF / PAGE_SIZE + 31u) / 32u)
 static uint8_t *mem;
 static uint32_t offset, used, nc;
 static rsxkit_target *target;
 static rsxkit_depth *depth;
-static rsxkit_surface *output;
+static rsxkit_surface *output[2];
+static struct {
+    uint32_t fence;
+    uint64_t out_ea;
+    rsx3d_stats stats;
+    int pending;
+} flight[2];
+static uint32_t texture_fence;
 static rsxkit_program *shade, *shade_w, *pack, *toon, *toon_w;
 static int toon_spe, shadow_spe, fog_spe;
 static rsxkit_program *fog, *fog_w;
@@ -158,18 +166,20 @@ int rsx3d_init(void)
     shadow_spe = stat("/dev_hdd0/salsads/3d-rsx-sombra-spe", &flag) == 0;
     toon_spe = stat("/dev_hdd0/salsads/3d-rsx-toon-spe", &flag) == 0;
     tick_hz = sysGetTimebaseFrequency();
-    memset(mem + OUT_OFF + R3D_W * R3D_H * 4u, 31, 512);
+    for (unsigned slot = 0; slot < 2; slot++)
+        memset(mem + OUT_OFF(slot) + R3D_W * R3D_H * 4u, 31, 512);
     if (rsxkit_map_main(mem, ARENA, &offset)) return -1;
     target = rsxkit_target_create_rgba(R3D_W, R3D_H);
     depth = rsxkit_depth_create(R3D_W, R3D_H);
-    output = rsxkit_surface_wrap_main(R3D_W, R3D_H, RSXKIT_POST_RGBA8, mem + OUT_OFF, offset + OUT_OFF, R3D_W * 4);
+    for (unsigned slot = 0; slot < 2; slot++)
+        output[slot] = rsxkit_surface_wrap_main(R3D_W, R3D_H, RSXKIT_POST_RGBA8, mem + OUT_OFF(slot), offset + OUT_OFF(slot), R3D_W * 4);
     shade_w = rsxkit_program_create(shade_w_fpo);
     shade = rsxkit_program_create(shade_fpo); pack = rsxkit_program_create(pack_fpo);
     fog = rsxkit_program_create(fog_fpo); fog_w = rsxkit_program_create(fog_w_fpo);
     shadow = rsxkit_program_create(shadow_fpo); shadow_w = rsxkit_program_create(shadow_w_fpo);
     mask = rsxkit_program_create(mask_fpo); mask_w = rsxkit_program_create(mask_w_fpo);
     toon = rsxkit_program_create(toon_fpo); toon_w = rsxkit_program_create(toon_w_fpo);
-    if (!target || !depth || !output || !shade || !shade_w || !pack || !toon || !toon_w || !shadow || !shadow_w || !mask || !mask_w || !fog || !fog_w) return -1;
+    if (!target || !depth || !output[0] || !output[1] || !shade || !shade_w || !pack || !toon || !toon_w || !shadow || !shadow_w || !mask || !mask_w || !fog || !fog_w) return -1;
     reason = "Z nativa; W por fragmento";
     ready = 1;
     return 0;
@@ -182,7 +192,7 @@ void rsx3d_shutdown(void)
     rsxkit_program_destroy(mask); rsxkit_program_destroy(mask_w);
     rsxkit_program_destroy(toon); rsxkit_program_destroy(toon_w);
     rsxkit_program_destroy(shade_w); rsxkit_program_destroy(shade); rsxkit_program_destroy(pack);
-    rsxkit_surface_destroy(output); rsxkit_target_destroy(target); rsxkit_depth_destroy(depth);
+    rsxkit_surface_destroy(output[0]); rsxkit_surface_destroy(output[1]); rsxkit_target_destroy(target); rsxkit_depth_destroy(depth);
     ready = 0;
     /* La memoria mapeada se conserva hasta cerrar rsxkit; no reutilizar un mapeo vivo. */
 }
@@ -225,7 +235,7 @@ static int prepare_poly(r3d_poly *p, const gx_poly *gp, const gx_vertex *const *
     }
     return 1;
 }
-static int render_frame(const r3d_job *j, rsx3d_stats *st)
+static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
 {
     const uint64_t start = sysGetSystemTime();
     const uint64_t *versions = !full_identity && version_ea == j->vram_ea ? next_versions : NULL;
@@ -332,9 +342,16 @@ static int render_frame(const r3d_job *j, rsx3d_stats *st)
         }
         if (no > 4 || nt > 8) { reason = "sombras: capacidad de IDs excedida"; return 0; }
     }
+    /* La caché es compartida: no invalidar ni sobrescribir texeles que el
+     * trabajo anterior aún pueda leer. Normalmente acabó durante la emulación.
+     * Su exportación sigue pendiente en la otra ranura. */
+    uint64_t reuse_start = sysGetSystemTime();
+    if (texture_fence) rsxkit_fence_wait(texture_fence);
+    st->reuse_us = sysGetSystemTime() - reuse_start;
+    if (rsxkit_lost()) return -1;
     if (modes & ((1u << RSX_TOON) | (1u << RSX_HIGHLIGHT))) {
         for (unsigned i = 0; i < 32; i++) {
-            uint8_t *b = mem + TOON_OFF + 4*i;
+            uint8_t *b = mem + TOON_OFF(slot) + 4*i;
             b[0] = R3D_PX_R(rs.toon[i]); b[1] = R3D_PX_G(rs.toon[i]);
             b[2] = R3D_PX_B(rs.toon[i]); b[3] = 0;
         }
@@ -384,7 +401,7 @@ static int render_frame(const r3d_job *j, rsx3d_stats *st)
     if (versions) memcpy(old_versions, versions, sizeof old_versions);
     st->identity_us = ticks() - t0;
     cur = j;
-    rsxkit_vertex *v = (rsxkit_vertex *)(void *)(mem + VERT_OFF);
+    rsxkit_vertex *v = (rsxkit_vertex *)(void *)(mem + VERT_OFF(slot));
     for (uint32_t i = 0; i < f->npolys; i++) {
         t0 = ticks();
         const gx_poly *gp = &f->poly[order[i]];
@@ -400,7 +417,7 @@ static int render_frame(const r3d_job *j, rsx3d_stats *st)
         d->k[1][0][0] = (rs.d3 & D3_ALPHATEST) ? rs.alpha_ref : 0;
         if (p.mode == 3) d->program = rs.wbuf ? shadow_w : shadow;
         if (p.mode == 2) {
-            d->tex[1].offset = offset + TOON_OFF; d->tex[1].pitch = 128;
+            d->tex[1].offset = offset + TOON_OFF(slot); d->tex[1].pitch = 128;
             d->tex[1].width = 32; d->tex[1].height = 1;
             d->tex[1].format = RSXKIT_RGBA8888; d->tex[1].location = RSXKIT_MEM_MAIN;
             d->tex[1].filter = RSXKIT_FILTER_NEAREST;
@@ -427,8 +444,8 @@ static int render_frame(const r3d_job *j, rsx3d_stats *st)
         if (p.textured) {
             if (!texture(&p.tex, &d->tex[0], st)) { reason = "arena de texturas llena"; used = nc = 0; return 0; }
         } else {
-            if (old_prepare) memset(mem + OUT_OFF + R3D_W * R3D_H * 4u, 31, 512);
-            d->tex[0].offset = offset + OUT_OFF + R3D_W * R3D_H * 4u;
+            if (old_prepare) memset(mem + OUT_OFF(slot) + R3D_W * R3D_H * 4u, 31, 512);
+            d->tex[0].offset = offset + OUT_OFF(slot) + R3D_W * R3D_H * 4u;
             d->tex[0].pitch = 64; d->tex[0].width = d->tex[0].height = 8;
             d->tex[0].location = RSXKIT_MEM_MAIN; d->tex[0].format = RSXKIT_RGBA8888;
             d->tex[0].filter = RSXKIT_FILTER_NEAREST;
@@ -478,7 +495,7 @@ static int render_frame(const r3d_job *j, rsx3d_stats *st)
     st->decode_us = st->decode_us * 1000000u / tick_hz;
     st->vertex_us = st->vertex_us * 1000000u / tick_hz;
     st->upload_us = st->upload_us * 1000000u / tick_hz;
-    st->prepare_us = sysGetSystemTime() - start;
+    st->prepare_us = sysGetSystemTime() - start - st->reuse_us;
     if (rsxkit_bind(target, depth, R3D_W, R3D_H)) return -1;
     uint32_t clear = rs.clear_px;
     if ((rs.d3 & D3_FOG) && (rs.clear_attr & AT_FOG)) {
@@ -494,10 +511,10 @@ static int render_frame(const r3d_job *j, rsx3d_stats *st)
     uint32_t ca = R3D_PX_A(clear), encoded_a = ca ? ((ca + 1u) * 255u + 16u) / 32u : 0;
     uint32_t encoded = (encoded_a << 24) | ((R3D_PX_R(clear) + 16u) << 16) |
         ((R3D_PX_G(clear) + 16u) << 8) | (R3D_PX_B(clear) + 16u);
-    rsxkit_stamp(56);
+    rsxkit_stamp(56 + slot * 3);
     rsxkit_clear(RSXKIT_CLEAR_COLOR | RSXKIT_CLEAR_DEPTH | RSXKIT_CLEAR_ALPHA, encoded, rs.clear_depth / 16777215.0f, NULL);
     rsxkit_clear_stencil(shadows ? ((ca ? 128 : 0) | oid[AT_OID(rs.clear_attr)]) : (ca ? 64 : 255));
-    rsxkit_vertices(offset + VERT_OFF, RSXKIT_MEM_MAIN);
+    rsxkit_vertices(offset + VERT_OFF(slot), RSXKIT_MEM_MAIN);
     for (uint32_t i = 0; i < ncmd; i++) {
         struct command *c = &command[i];
         uint8_t z = RSXKIT_DEPTH_TEST | RSXKIT_DEPTH_LESS;
@@ -577,28 +594,29 @@ static int render_frame(const r3d_job *j, rsx3d_stats *st)
         draw(c, 2, c->id, 127, 255, 0, RSXKIT_BLEND_OFF, z | (c->tdepth ? RSXKIT_DEPTH_WRITE : 0), 2, st);
         draw(c, 3, c->id, 127, 128, 0, RSXKIT_BLEND_NONE, 0, 2, st);
     }
-    rsxkit_stamp(57);
+    rsxkit_stamp(57 + slot * 3);
     rsxkit_texture tx; rsxkit_target_texture(target, 0, R3D_H, &tx);
     rsxkit_post_pass pass; memset(&pass, 0, sizeof pass);
-    pass.program = pack; pass.out = output; pass.inputs = 1;
+    pass.program = pack; pass.out = output[slot]; pass.inputs = 1;
     pass.in[0] = rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
     if (rsxkit_post_run(&pass)) return -1;
-    rsxkit_stamp(58); rsxkit_fence_wait(rsxkit_fence());
-    if (rsxkit_lost()) return -1;
-    uint64_t copy_start = sysGetSystemTime();
-    memcpy((void *)(uintptr_t)j->out_ea, mem + OUT_OFF, R3D_W * R3D_H * 4u);
-    st->copy_us = sysGetSystemTime() - copy_start;
+    rsxkit_stamp(58 + slot * 3);
+    flight[slot].fence = texture_fence = rsxkit_fence();
+    flight[slot].out_ea = j->out_ea;
+    flight[slot].pending = 1;
     st->total_us = sysGetSystemTime() - start;
-    st->raster_ns = rsxkit_stamp_ns(57) - rsxkit_stamp_ns(56);
-    st->export_ns = rsxkit_stamp_ns(58) - rsxkit_stamp_ns(57);
+    flight[slot].stats = *st;
     reason = rs.wbuf ? "W por fragmento; interpolación triangular" : "Z nativa; cobertura e interpolación triangular";
     return 1;
 }
 
-int rsx3d_render(const r3d_job *j, rsx3d_stats *st)
+int rsx3d_submit(const r3d_job *j, unsigned slot, rsx3d_stats *st)
 {
     static unsigned frames, rendered, counts[RSX_MODE_COUNT];
-    int result = render_frame(j, st);
+    if (slot > 1 || flight[slot].pending) return -1;
+    int result = render_frame(j, slot, st);
+    /* Un error tras emitir órdenes también debe proteger la caché. */
+    if (result < 0) { texture_fence = rsxkit_fence(); rsxkit_fence_wait(texture_fence); }
     const gx_frame *f = (const gx_frame *)(uintptr_t)j->frame_ea;
     uint32_t modes = rsx_modes(f, j->flags);
     rendered += result > 0;
@@ -610,4 +628,28 @@ int rsx3d_render(const r3d_job *j, rsx3d_stats *st)
         frames = rendered = 0; memset(counts, 0, sizeof counts);
     }
     return result;
+}
+
+int rsx3d_wait(unsigned slot, rsx3d_stats *st)
+{
+    if (slot > 1 || !flight[slot].pending) return -1;
+    *st = flight[slot].stats;
+    uint64_t t = sysGetSystemTime();
+    rsxkit_fence_wait(flight[slot].fence);
+    st->wait_us = sysGetSystemTime() - t;
+    if (rsxkit_lost()) return -1;
+    t = sysGetSystemTime();
+    memcpy((void *)(uintptr_t)flight[slot].out_ea, mem + OUT_OFF(slot), R3D_W * R3D_H * 4u);
+    st->copy_us = sysGetSystemTime() - t;
+    st->total_us += st->wait_us + st->copy_us;
+    st->raster_ns = rsxkit_stamp_ns(57 + slot * 3) - rsxkit_stamp_ns(56 + slot * 3);
+    st->export_ns = rsxkit_stamp_ns(58 + slot * 3) - rsxkit_stamp_ns(57 + slot * 3);
+    flight[slot].pending = 0;
+    return 1;
+}
+
+int rsx3d_render(const r3d_job *j, rsx3d_stats *st)
+{
+    int result = rsx3d_submit(j, 0, st);
+    return result > 0 ? rsx3d_wait(0, st) : result;
 }

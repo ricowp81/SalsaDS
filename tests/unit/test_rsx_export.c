@@ -82,8 +82,54 @@ static void snapshot_identity(void)
     CHECK(n->vid.set[n->vid.cur].vram_version[1] != changed);
     free(n);
 }
+/* El backend aplazado publica la capa únicamente al recibir wait3d. */
+struct delayed_3d { struct nds *n; unsigned waits, submits; int set; };
+static void delayed_wait(void *ctx, int set)
+{
+    struct delayed_3d *d = ctx;
+    d->waits++; d->set = set;
+    for (unsigned i = 0; i < R3D_W * R3D_H; i++)
+        d->n->vid.set[set].img3d[i] = R3D_PX(63, 0, 0, 31);
+}
+static void delayed_compose(void *ctx, int set, gpu2d_frame *f)
+{
+    struct delayed_3d *d = ctx;
+    (void)f;
+    CHECK(d->waits > 0); CHECK_EQ(set, d->set);
+    CHECK_EQ(d->n->vid.set[set].img3d[0], R3D_PX(63, 0, 0, 31));
+    d->submits++;
+}
+static void delayed_consumers(void)
+{
+    struct nds *n = calloc(1, sizeof *n);
+    CHECK(n != NULL); if (!n) return;
+    struct delayed_3d d = {n, 0, 0, -1};
+    n->vid.ops.ctx = &d; n->vid.ops.wait3d = delayed_wait;
+    n->vid.ops.submit = delayed_compose;
+    n->vid.r3d_defer_line = 160;
+    n->vid.last = 1; n->vid.submit_pending = 1;
+    nds_video_submit_pending(n, 262); nds_video_submit_pending(n, 159);
+    CHECK_EQ(d.waits, 0); CHECK_EQ(d.submits, 0);
+    nds_video_submit_pending(n, 160);
+    CHECK_EQ(d.waits, 1); CHECK_EQ(d.submits, 1); CHECK_EQ(d.set, 1);
+    /* DISPCAPCNT no espera al siguiente cuadro: leer VRAM ve el resultado. */
+    n->vid.cur = 0; n->vid.recording = 1;
+    struct nds_vset *v = &n->vid.set[0];
+    v->has3d = 1; v->frame.eng[0].img3d_ea = (uint64_t)(uintptr_t)v->img3d;
+    v->frame.eng[0].regs[G2D_R_DISPCAP + 1] = 0x8130;
+    n->io[0].gen[G2D_R_DISPCAP + 1] = 0x8130;
+    nds_vramcnt_write(n, 0, 0x80);
+    nds_video_frame_end(n);
+    CHECK_EQ(d.waits, 2); CHECK_EQ(d.set, 0);
+    CHECK_EQ(n->vram[0], 0x1f); CHECK_EQ(n->vram[1], 0x80);
+    CHECK_EQ(n->vram[256 * 192 * 2 - 2], 0x1f);
+    CHECK_EQ(n->vram[256 * 192 * 2 - 1], 0x80);
+    CHECK_EQ(n->io[0].gen[G2D_R_DISPCAP + 1] & 0x8000, 0);
+    free(n);
+}
 void test_rsx_export(void)
 {
+    delayed_consumers();
     snapshot_identity();
     replay_roundtrip();
     mode_census();

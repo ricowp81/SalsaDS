@@ -506,6 +506,50 @@ static unsigned cache_tests(r3d_job *j)
     }
     return fail;
 }
+/* Dos envíos antes de retirar: cambiar lista, textura y destino no puede
+ * alterar el cuadro anterior. Retirar también en orden inverso prueba etiquetas. */
+static unsigned overlap_tests(r3d_job *j)
+{
+    static uint32_t want[2][R3D_W * R3D_H], got[2][R3D_W * R3D_H];
+    unsigned fail = 0;
+    uint64_t saved_out = j->out_ea;
+    for (unsigned round = 0; round < 8; round++) {
+        int posted[2] = {0, 0};
+        for (unsigned slot = 0; slot < 2; slot++) {
+            memset(&frame, 0, sizeof frame);
+            frame.npolys = 1; frame.nverts = 4; frame.swap_params = round & 1 ? 3 : 1;
+            frame.regs.clear_depth = 0x7fff; frame.regs.disp3dcnt = D3_TEXTURE;
+            quad(0, 1, 31, 63, 63, 63, 1);
+            uint16_t color = (uint16_t)(0x8000u | ((round * 7 + slot * 13) & 31u) |
+                                        (((round + slot * 9) & 31u) << 5));
+            for (unsigned i = 0; i < 64; i++) { vram[2*i] = color; vram[2*i+1] = color >> 8; }
+            j->texslot[0] = 0;
+            r3d_render_ref(&frame, vram, j->texslot, j->palslot, 0, want[slot]);
+            memset(got[slot], 0xcd, sizeof got[slot]);
+            j->out_ea = (uint64_t)(uintptr_t)got[slot];
+            rsx3d_stats st;
+            posted[slot] = rsx3d_submit(j, slot, &st) == 1;
+            fail += !posted[slot];
+            if (posted[slot]) fail += rsx3d_submit(j, slot, &st) != -1;
+            /* El destino del consumidor solo se publica al retirar. */
+            fail += got[slot][0] != 0xcdcdcdcdu;
+        }
+        memset(&frame, 0, sizeof frame); memset(vram, 0, 128);
+        for (unsigned k = 0; k < 2; k++) {
+            unsigned slot = k ^ (round & 1u);
+            rsx3d_stats st;
+            if (posted[slot]) {
+                fail += rsx3d_wait(slot, &st) != 1;
+                fail += memcmp(got[slot], want[slot], sizeof got[slot]) != 0;
+                fail += rsx3d_wait(slot, &st) != -1;
+            }
+        }
+    }
+    j->out_ea = saved_out;
+    salsads_log("rsx3d solapamiento: 16 cuadros, %u fallos", fail);
+    return fail;
+}
+
 int rsx3d_selftest(void)
 {
     unsigned fail = 0;
@@ -548,6 +592,7 @@ int rsx3d_selftest(void)
     fail += w_tests(&j);
     blend_probe(&j);
     fail += cache_tests(&j);
+    fail += overlap_tests(&j);
     fail += replay_tests(1);
     salsads_log("rsx3d autoprueba dirigida: %s, %u fallos (la comparación de juegos y la mezcla RGBA8 son diagnósticos)", fail ? "FALLO" : "OK", fail);
     return fail ? -1 : 0;
