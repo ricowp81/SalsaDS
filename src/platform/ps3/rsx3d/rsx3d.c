@@ -270,10 +270,10 @@ static int render_frame(const r3d_job *j, rsx3d_stats *st)
             unsigned fmt = (p->texparam >> 26) & 7u;
             if (rs.wbuf || (p->attr & PA_FOG)) {
                 if (p->nverts < 3 || p->nverts > GX_POLY_MAXV || p->wshift > 28 || p->vidx[0] >= f->nverts) return -1;
-                int32_t w = rs.wbuf ? f->vtx[p->vidx[0]].w : f->vtx[p->vidx[0]].z;
+                uint32_t w = rs.wbuf ? (uint32_t)f->vtx[p->vidx[0]].w : f->vtx[p->vidx[0]].z;
                 for (unsigned k = 1; k < p->nverts; k++) {
                     if (p->vidx[k] >= f->nverts) return -1;
-                    if ((rs.wbuf ? f->vtx[p->vidx[k]].w : f->vtx[p->vidx[k]].z) != w) {
+                    if ((rs.wbuf ? (uint32_t)f->vtx[p->vidx[k]].w : f->vtx[p->vidx[k]].z) != w) {
                         reason = "niebla Z/W interpolada: cuantización sin validar"; return 0;
                     }
                 }
