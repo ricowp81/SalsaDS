@@ -115,7 +115,8 @@ typedef struct rsxkit_post_input {
 	uint8_t wrap;                   /* RSXKIT_POST_* */
 	uint8_t texels;                 /* 1: coordenadas en texeles, sin normalizar
 	                                   (el centro del texel i está en i + 0,5) */
-	uint8_t pad;
+	uint8_t refresh;                /* 1: desligar/religar tras escrituras externas;
+	                                   también fuerza su renovación en RPCS3 */
 } rsxkit_post_input;
 
 #define RSXKIT_POST_INPUTS 8

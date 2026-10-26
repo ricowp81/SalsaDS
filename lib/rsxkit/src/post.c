@@ -394,6 +394,8 @@ static void set_input(gcmContextData *ctx, u8 unit, const rsxkit_post_input *in)
 	u8 wrap = in->wrap == RSXKIT_POST_BORDER   ? GCM_TEXTURE_BORDER
 		  : in->wrap == RSXKIT_POST_REPEAT ? GCM_TEXTURE_REPEAT
 						   : GCM_TEXTURE_CLAMP_TO_EDGE;
+	if (in->refresh)
+		rsxTextureControl(ctx, unit, GCM_FALSE, 0, 12 << 8, GCM_TEXTURE_MAX_ANISO_1);
 	rsxLoadTexture(ctx, unit, &tex);
 	rsxTextureControl(ctx, unit, GCM_TRUE, 0 << 8, 12 << 8, GCM_TEXTURE_MAX_ANISO_1);
 	rsxTextureFilter(ctx, unit, 0, filt, filt, GCM_TEXTURE_CONVOLUTION_QUINCUNX);

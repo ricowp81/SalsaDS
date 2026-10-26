@@ -189,6 +189,7 @@ static int replay_tests(int enabled)
                             (unsigned long long)st.identity_us, (unsigned long long)st.vertex_us,
                             (unsigned long long)st.lookup_us, (unsigned long long)st.decode_us, (unsigned long long)st.upload_us);
                     }
+                    if (rsx3d_scale()>1) fail += rsx3d_hd_bench(j.out_ea,names[scene],&st);
                 }
             }
         }

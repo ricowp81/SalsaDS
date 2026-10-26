@@ -21,6 +21,7 @@ unsigned rsx3d_scale(void);
 int rsx3d_hd_contract_test(uint64_t ea, uint32_t sample);
 int rsx3d_hd_line_test(uint64_t ea, uint32_t sample);
 int rsx3d_hd_native_test(const uint16_t *native);
+int rsx3d_hd_bench(uint64_t ea, const char *name, const rsx3d_stats *stats);
 /* Capturar la imagen correcta antes de reutilizar una ranura de raster.
  * El consumidor espera su compositor SPE antes de llamar a present. */
 uint64_t rsx3d_hd_acquire(uint64_t native_ea, unsigned set);

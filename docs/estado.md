@@ -5,6 +5,15 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-26 — RSX ronda 7: metadatos HD renovados
+- RPCS3 retenía el sampler con descriptor idéntico: invalidación/etiqueta, vaciado XDR y escritura PPE directa no bastan; cambiar el offset sí actualiza. Mapeos y emparejamiento correctos.
+- Recarga optativa del sampler en `rsxkit` (MIT), activada solo para metadatos HD; se conserva la invalidación previa. Sin cambios al shader, texturas DS, identidad ni vértices.
+- A/B `3d-rsx-hd-sin-recarga`: desactivada reproduce 473 fallos en la línea; activa: 1024 píxeles/20 sondas en ranuras 0,0,1,0, 32 contratos y seis escenas SPE exactos a 2×/3×/4×.
+- 1× intacto: autoprueba y 16 cuadros solapados exactos; 177 mapas nativos iguales a la ronda 6 en las cuatro escalas.
+- Banco aislado con composición a resolución completa, 2D sintético, sin SPE/flip; cifras RPCS3 en perf-log.md, sin extrapolarlas a PS3. HD sigue limitado al reproductor.
+- LE/SAN y ROMs/hashes/lockstep correctos; unitarias BE mantienen los 34 fallos conocidos del anillo, fuera de alcance.
+- Paquete «SalsaDS RSX»/SLDS00030: `build/salsads-rsx3d-hd-3.pkg`; evidencia, SHA-256 y guion en `build/rsx3d-hd-3/`. Sin envío; pendiente confirmar en PS3 real.
+
 ## 2026-10-26 — RSX ronda 6: composición HD, parada tras dos hipótesis
 - Línea mínima sin SPE: 722/768 píxeles difieren; tres publicaciones conservan el patrón inicial. Sonda independiente de las cuatro palabras de metadatos y del RGBA 3D, por canal.
 - Desligar el destino antes de leer corrige la retención de la primera lectura; la muestra 3D es exacta, pero 9/12 sondas de metadatos siguen antiguas. Se conserva este cierre solo en autopruebas HD.

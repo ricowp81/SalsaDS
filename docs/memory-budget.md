@@ -101,4 +101,5 @@ permanecen reservadas hasta que captura o compositor retiren cada trabajo.
 - GDDR3 adicional: cuatro colores RGBA8 (dos de raster, dos de presentación) y una profundidad Z24S8: 3,75 MiB a 2×, 8,4375 MiB a 3× y 15 MiB a 4×; pitch alineado a 64 B, sin relleno adicional en estas dimensiones.
 - Se conservan color/profundidad nativos (0,375 MiB). A 720p, reservar profundidad para 4× añade 0,234375 MiB; a 1080p ya cabe. Total incremental inferior a 64 MiB, sin texturas residentes nuevas.
 - SPE 2D de esta variante: bloques DMA de 64 cambios, misma capacidad del registro y mismos mapas; reutiliza la línea temporal para exportar. Holgura enlazada 8720 B; mínimo global 8432 B, ambos ≥8192.
+- Banco aislado HD: una superficie RGBA8 temporal adicional, 0,75/1,6875/3 MiB a 2×/3×/4×; se libera tras cada escena. No se reserva en juego.
 - Autopruebas HD: aproximadamente 324 KiB temporales adicionales para escenas 2D, liberados al terminar; reutilizan las imágenes y VRAM del reproductor.

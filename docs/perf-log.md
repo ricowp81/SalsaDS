@@ -1,5 +1,15 @@
 # Registro de rendimiento
 
+## 2026-10-26 — Composición HD renovada (RPCS3, no PS3)
+- Misma instantánea 3D; destino completo 512×384/768×576/1024×768. Metadatos 2D sintéticos prearmados; excluye emulación, generación SPE y flip.
+- Copia/composición: media de ocho pasadas tras dos de calentamiento. Total GPU suma esas medias al último raster nativo+HD+exportación caliente; no es tiempo de cuadro de un juego.
+- Orden MKDS/SM64DS/NSMB/pesado, ms composición / total GPU:
+- 2×: 0,076/1,455 · 0,086/0,974 · 0,073/1,701 · 0,071/2,805.
+- 3×: 0,082/1,642 · 0,072/1,039 · 0,080/1,952 · 0,072/2,845.
+- 4×: 0,095/1,783 · 0,096/1,208 · 0,085/1,993 · 0,082/3,001.
+- Publicación PPE 0,155–0,207 ms; 177 mapas nativos sin cambios por escala. Recarga activa: contratos y seis escenas SPE exactos; apagada retiene datos.
+- No acredita 60 fps ni el presupuesto de PS3; consola pendiente. Logs y contraste de las cuatro hipótesis en `build/rsx3d-hd-3/`.
+
 ## 2026-10-26 — RSX ronda 6, diagnóstico de composición (RPCS3, no PS3)
 - Hipótesis 1, entrada retenida: línea cambiante sin SPE, 722/768 píxeles distintos; patrón idéntico tras tres publicaciones.
 - Hipótesis 2, lectura de destino ligado: desligado y borrado en otro destino permiten distinguir la sonda; 3/3 muestras RGBA del 3D exactas, 9/12 palabras de metadatos incorrectas.

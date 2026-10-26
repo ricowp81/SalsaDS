@@ -46,6 +46,7 @@ static uint8_t *mem;
 static uint32_t offset, used, nc;
 static rsxkit_target *target;
 static unsigned hd_scale = 1;
+static int hd_refresh = 1;
 static rsxkit_target *hd_target[2], *hd_saved[2];
 static rsxkit_depth *hd_depth;
 static uint8_t *hd_mem;
@@ -104,6 +105,7 @@ static uint64_t hd_compose_pass(rsxkit_post_pass *out, unsigned set, int x, int 
     tx.width=1024; tx.height=192; tx.pitch=4096;
     tx.format=RSXKIT_ARGB8888; tx.location=RSXKIT_MEM_MAIN;
     pass.in[1]=rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
+    pass.in[1].refresh = hd_refresh;
     *out = pass;
     return sysGetSystemTime()-start;
 }
@@ -429,10 +431,12 @@ int rsx3d_init(void)
     if (stat("/dev_hdd0/salsads/3d-rsx-3x", &flag) == 0) hd_scale=3;
     if (stat("/dev_hdd0/salsads/3d-rsx-4x", &flag) == 0) hd_scale=4;
     if (hd_scale > 1 && !decode_verify) {
-        salsads_log("rsx3d escala solicitada %ux: presentación nativa 1x; composición HD SPE/RSX sin paridad",hd_scale);
+        salsads_log("rsx3d escala solicitada %ux: presentación nativa 1x; HD limitado al reproductor; pendiente validar en consola",hd_scale);
         hd_scale = 1;
     }
     if (hd_scale > 1) {
+        hd_refresh = stat("/dev_hdd0/salsads/3d-rsx-hd-sin-recarga", &flag) != 0;
+        salsads_log("rsx3d HD recarga de metadatos: %s",hd_refresh ? "activa" : "desactivada");
         hd_mem=memalign(HD_STRIDE,4*HD_STRIDE);
         if (!hd_mem || rsxkit_map_main(hd_mem,4*HD_STRIDE,&hd_offset)) return -1;
         memset(hd_mem,0,4*HD_STRIDE);
@@ -1020,19 +1024,20 @@ int rsx3d_hd_contract_test(uint64_t ea, uint32_t sample)
 int rsx3d_hd_line_test(uint64_t ea, uint32_t sample)
 {
     if (hd_scale == 1) return 0;
-    if (!rsx3d_hd_acquire(ea,0)) return 1;
-    g2d_hd_pixel *p=(g2d_hd_pixel *)(void *)hd_mem;
     unsigned bad=0;
     rsxkit_program *probe=rsxkit_program_create(probe_hd_fpo);
     if (!probe) return 1;
-    for (unsigned round=0;round<3;round++) {
+    for (unsigned round=0;round<4;round++) {
+        unsigned set=round==2;
+        if (!rsx3d_hd_acquire(ea,set)) { bad++; goto done; }
+        g2d_hd_pixel *p=(g2d_hd_pixel *)(void *)(hd_mem+set*HD_STRIDE);
         for (unsigned x=0;x<256;x++) {
             uint8_t *b=p[x].b; memset(b,0,16);
             b[0]=(x+3+round*7)&31; b[1]=(x*3+11+round*5)&31; b[2]=(x*7+19+round*3)&31;
             b[3]=x%5; b[4]=(x+23+round)&31; b[5]=(x*5+17+round)&31; b[6]=(x*3+7+round)&31;
-            b[7]=9; b[8]=7; b[9]=round*32+5; b[10]=0;
+            b[7]=9; b[8]=7; b[9]=(round%3)*32+5; b[10]=0;
         }
-        rsxkit_post_pass pass; hd_compose_pass(&pass,0,0,0,256,192);
+        rsxkit_post_pass pass; hd_compose_pass(&pass,set,0,0,256,192);
         pass.out=output[1]; pass.rect.h=1;
         for (unsigned input=0;input<5;input++) {
             pass.program=probe; pass.k[0][1]=input;
@@ -1062,7 +1067,7 @@ int rsx3d_hd_line_test(uint64_t ea, uint32_t sample)
     }
 done:
     rsxkit_program_destroy(probe);
-    salsads_log("rsx3d HD línea cambiante: 768 píxeles y 15 sondas, %u fallos",bad);
+    salsads_log("rsx3d HD línea cambiante: 1024 píxeles y 20 sondas; ranuras 0,0,1,0, %u fallos",bad);
     return bad!=0;
 }
 
@@ -1082,4 +1087,47 @@ int rsx3d_hd_native_test(const uint16_t *native)
             salsads_log("rsx3d HD SPE diferencia %u: nativo %04x shader %04x bytes %02x %02x %02x %02x",i,native[i],actual,b[0],b[1],b[2],b[3]);
     }
     return (int)bad;
+}
+
+/* Banco aislado: imagen 3D grabada y mezcla 2D sintética prearmada.
+ * No incluye emulación, producción SPE de metadatos ni espera de flip. */
+int rsx3d_hd_bench(uint64_t ea, const char *name, const rsx3d_stats *st)
+{
+    if (hd_scale == 1) return 0;
+    unsigned w=256*hd_scale, h=192*hd_scale;
+    rsxkit_surface *dst=rsxkit_surface_create(w,h,RSXKIT_POST_RGBA8);
+    if (!dst) return 1;
+    uint64_t copy=0, compose=0, publish=0;
+    unsigned bad=0;
+    for (unsigned round=0;round<10;round++) {
+        unsigned set=round&1;
+        uint64_t meta=rsx3d_hd_acquire(ea,set);
+        if (!meta) { bad=1; break; }
+        if (round<2) {
+            g2d_hd_pixel *p=(g2d_hd_pixel *)(uintptr_t)meta;
+            for (unsigned i=0;i<256*192;i++) {
+                uint8_t *b=p[i].b; memset(b,0,16);
+                b[0]=i&31; b[1]=(i>>5)&31; b[2]=(i>>10)&31;
+                b[3]=i%5; b[4]=17; b[5]=9; b[6]=23;
+                b[7]=9; b[8]=7; b[9]=37;
+            }
+        }
+        rsxkit_post_pass pass;
+        uint64_t cpu=hd_compose_pass(&pass,set,0,0,w,h);
+        pass.out=dst;
+        rsxkit_stamp(62);
+        if (rsxkit_post_run(&pass)) { bad=1; break; }
+        rsxkit_stamp(63);
+        rsxkit_fence_wait(rsxkit_fence());
+        if (round>=2) {
+            copy += rsxkit_stamp_ns(53+set*2)-rsxkit_stamp_ns(52+set*2);
+            compose += rsxkit_stamp_ns(63)-rsxkit_stamp_ns(62);
+            publish += cpu;
+        }
+    }
+    if (!bad) salsads_log("DATO rsx3d HD banco %s: %ux %ux%u; 8 muestras; raster nativo %.3f HD %.3f exportación %.3f copia local %.3f composición %.3f total GPU %.3f ms; publicación PPE %.3f ms; 2D sintético, sin SPE/flip",
+        name,hd_scale,w,h,st->raster_ns/1e6,st->hd_raster_ns/1e6,st->export_ns/1e6,
+        copy/8e6,compose/8e6,(st->raster_ns+st->hd_raster_ns+st->export_ns)/1e6+(copy+compose)/8e6,publish/8000.0);
+    rsxkit_surface_destroy(dst);
+    return bad;
 }
