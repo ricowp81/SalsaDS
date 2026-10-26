@@ -30,6 +30,11 @@ struct audio_out_stats {
 	uint32_t level;      /* muestras en el anillo ahora */
 	uint32_t peak;       /* pico absoluto (0-32768) desde la última lectura */
 	uint64_t busy_us;    /* tiempo del hilo de audio trabajando */
+	uint64_t lim_total;  /* muestras (por canal) que pasaron por el limitador desde la última lectura con reinicio */
+	uint64_t lim_n;      /* de ellas, las que superaron la rodilla (el limitador actuó) */
+	double lim_sum_db;   /* suma de la reducción en dB en esas muestras */
+	float lim_max_db;    /* mayor reducción en dB */
+	float gain_db;       /* ganancia de salida aplicada antes del limitador (audio-ganancia) */
 };
 
 /* 0 = abierto; otro valor = sin audio (el resto de las funciones se pueden llamar igual y no hacen nada). */
@@ -42,5 +47,11 @@ int audio_out_is_open(void);
 void audio_out_shutdown(void);
 /* Llamar al cerrar tras esperar al productor; confirma el vaciado antes del próximo juego. */
 void audio_out_set_active(int enabled);
+
+/* Grabación digital (archivo vacío audio-grabar): `nat` es la mezcla nativa de la DS (16 bits, 32 728 Hz, estéreo) que devuelve
+ * el SPE; llamar con cada trabajo recogido. audio_out_record_service() escribe los archivos a trozos desde el hilo de
+ * emulación (una vez por cuadro); el cierre del juego termina lo pendiente. */
+void audio_out_record_mix(const int16_t *nat, uint32_t nticks);
+void audio_out_record_service(void);
 
 #endif

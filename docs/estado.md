@@ -5,6 +5,14 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-26 — Grabación digital del audio, ganancia y métricas del limitador
+- Para el ruido de la PS3 que el micrófono no permite aislar: con el archivo vacío `/dev_hdd0/salsads/audio-grabar` al abrir un juego se graban 20 s a partir de los 5 s de juego en dos puntos.
+  `grab-mezcla.wav`: la mezcla nativa que devuelve el SPE (`nat`: enteros de 16 bits, 2 canales, 32 728 Hz), antes del FIR/Hermite, el estiramiento, el remuestreo, la ganancia y el limitador; 2,6 MB.
+  `grab-salida.wav`: lo último que se escribe en los bloques del puerto (flotante de 32 bits, 2 canales, 48 kHz; el puerto es `AUDIO_PORT_2CH`), después de estiramiento, ganancia y limitador; 7,7 MB.
+- Memoria reservada al abrir el juego (10,3 MB, liberada al terminar); el hilo de audio solo copia bloques; los archivos los escribe el hilo de emulación a trozos de 32 KB por cuadro (o de golpe al cerrar el juego). Los WAV se codifican en little-endian aunque la PS3 sea big-endian (`src/audio/wavrec.c`, prueba en `tests/unit/test_wavrec.c`). Una línea en `nucleo.log` da rutas, segundos, muestras perdidas (anillo), de silencio, faltas y bloques tarde.
+- `/dev_hdd0/salsads/audio-ganancia`: un número en dB (por ejemplo `-6`), aplicado antes del limitador; sin archivo, 0 dB. La línea `DATO audio` suma ganancia, porcentaje de muestras donde el limitador actúa (sobre la rodilla de −3,01 dBFS) y su reducción máxima y media en dB.
+- Nivel de la mezcla contra la DS (GBATEK, leído en el código de `snd_mix.c`): cada canal sale como PCM de 16 bits × volumen/128 ÷ divisor (1, 2, 4, 16), con balance L×(128−pan)/128 y R×pan/128 (centrado, −6 dB por lado); el mezclador suma y limita a 16 bits, el volumen maestro multiplica por mv/128 y el DAC toma 10 bits: (L>>6) + 0x200 recortado a 0–0x3FF. Un 16 bits a escala completa es ±512 sobre el sesgo, o sea exactamente ±1,0 (0 dBFS): por diseño la DS tiene 0 dB de margen y recorta en el DAC; un canal centrado a todo volumen queda en −6 dBFS. La mezcla nativa nunca pasa de 0 dBFS, así que los +2/+3 dBFS de v0.0.4 (sin limitador) vendrían del FIR/remuestreo sobre una mezcla recortada o de la ruta HD, que no recorta; hipótesis a confirmar con `grab-mezcla.wav` contra `grab-salida.wav`.
+
 ## 2026-10-26 — Audio HD opcional (audio-estirar)
 - `9948780`: Hermite causal por voz PCM/ADPCM a 48 kHz, reloj racional, mezcla flotante y rampas de 32 pares; PSG/ruido sin interpolar, limitador existente al final. `audio-hd` apagado por omisión; SOUNDCAP y lectura del juego siguen fieles.
 - PCM16, Fs 8/16/22 kHz: SINAD 19,65/22,59/18,90 → 62,76/62,75/62,76 dB; espurio superior −23,51/−29,53/−23,47 → ≈−64 dBc; THD2–10 0,033/0,214/0,497 → 0,00216 %. Silencio cero exacto; método, SNR y cuantización en `perf-log.md`.

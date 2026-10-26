@@ -1007,8 +1007,7 @@ static void snd_wait(void *ctx, int set)
 static void snd_sink(void *ctx, const float *out, uint32_t n, const int16_t *nat, uint32_t nticks)
 {
 	(void)ctx;
-	(void)nat;
-	(void)nticks;
+	audio_out_record_mix(nat, nticks);
 	audio_out_push(out, n);
 }
 
@@ -1423,14 +1422,17 @@ static void log_stats(void)
 			salsads_log("DATO audio: mezcla en el SPE por cuadro (decrementador): trabajo %u.%02u ms (máx %u.%02u), de eso snd_run "
 				    "%u.%02u ms (máx %u.%02u); el PPE esperando %u.%02u ms por cuadro; %u muestras de 48 kHz por cuadro; "
 				    "errores %u; salida: %s, anillo %u muestras, %u faltas (%u muestras de silencio en este lapso), %u bloques "
-				    "tarde, pico %.2f dBFS",
+				    "tarde, pico %.2f dBFS, ganancia %.1f dB, limitador actúa en %.2f%% de las muestras (reducción máx %.2f dB, "
+				    "media %.2f dB)",
 				    MS(snd_acc.ticks * 1000000ull / snd_acc.jobs / spukit_tick_hz()),
 				    MS((uint64_t)snd_acc.ticks_max * 1000000ull / spukit_tick_hz()),
 				    MS(snd_acc.mix_ticks * 1000000ull / snd_acc.jobs / spukit_tick_hz()),
 				    MS((uint64_t)snd_acc.mix_max * 1000000ull / spukit_tick_hz()),
 				    MS(snd_acc.wait_us / snd_acc.jobs), (unsigned)(snd_acc.out_n / snd_acc.jobs),
 				    (unsigned)snd_acc.errors, audio_out_is_open() ? "abierta" : "sin audio", as.level, as.underruns,
-				    (unsigned)(as.silent - prev_silent), as.late, as.peak ? 20.0 * log10(as.peak / 32768.0) : -99.0);
+				    (unsigned)(as.silent - prev_silent), as.late, as.peak ? 20.0 * log10(as.peak / 32768.0) : -99.0,
+				    (double)as.gain_db, as.lim_total ? 100.0 * (double)as.lim_n / (double)as.lim_total : 0.0,
+				    (double)as.lim_max_db, as.lim_n ? as.lim_sum_db / (double)as.lim_n : 0.0);
 		salsads_log("DATO audio-estirar: versión %d, limitador %d; acumulado %llu muestras añadidas, %u%% tiempo estirando; %u faltas; costo %llu us (máx %u us/grano), hilo %llu us; uniones %u, producción %u/1000, grano %u ms",
 		    as.stretch_enabled, as.limiter_enabled, (unsigned long long)as.inserted,
 		    as.played ? (unsigned)(as.active * 100 / as.played) : 0, as.underruns,
@@ -2103,6 +2105,7 @@ static void render_frame(void)
 	nds_set_input(nds, k, tx, ty);
 	if (snd_on)
 		nds_snd_set_ratio_adj(nds, audio_out_ratio_adj());
+	audio_out_record_service();
 	i9a = nds->a9.icount;
 	i7a = nds->a7.icount;
 	{
