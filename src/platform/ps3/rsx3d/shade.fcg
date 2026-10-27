@@ -52,7 +52,8 @@ void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
      * w niebla activa en el polígono. La tabla va en TEXUNIT1 (R = densidad). */
     /* Sin ramas: el corrector de shaders solo admite un END. fp.y ya es 2^(bits de fracción). */
 #ifdef RSX3D_W
-    float fogdepth = min(floor(1.0 / pos.w) * floor(q.w + 0.5), 16777215.0);
+    /* Redondeo: 1/pos.w llega como w-ε en polígonos planos; la DS trunca su interpolación entera (±1 unidad). */
+    float fogdepth = min(floor(1.0 / pos.w + 0.5) * floor(q.w + 0.5), 16777215.0);
 #else
     float fogdepth = floor(pos.z * 16777215.0 + 0.5);
 #endif

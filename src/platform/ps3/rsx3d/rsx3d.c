@@ -268,7 +268,7 @@ static uint8_t oid[64], tid[64], oid_test[64];
 static int shadows, single_shadow, shadow_general, shadow_unbatched;
 static uint8_t trans_mask, opaque_mask;
 static rsxkit_program *range_z, *range_w;
-static int equal_spe, textures_no_wait, fog_constant, textures_rescue;
+static int equal_spe, textures_no_wait, fog_constant, textures_rescue, fog_translucent;
 static unsigned rescue_left, rescue_textures;
 #define RESCUE_PIXELS 16384u /* texeles por cuadro que el PPE decodifica en lugar de caer al SPE */
 static uint64_t texture_wait_us;
@@ -540,6 +540,9 @@ int rsx3d_init(void)
               stat("/dev_hdd0/salsads/3d-rsx-perfil", &flag) == 0;
     fog_spe = stat("/dev_hdd0/salsads/3d-rsx-niebla-spe", &flag) == 0;
     fog_constant = stat("/dev_hdd0/salsads/3d-rsx-niebla-constante", &flag) == 0; /* A/B: solo densidad constante por polígono */
+    /* Aproximación opcional: niebla por polígono también en translúcidos (a su propia profundidad y sin la regla AND de la
+     * DS sobre el píxel de abajo); la DS la aplica en una pasada final sobre la profundidad final. Sin paridad. */
+    fog_translucent = stat("/dev_hdd0/salsads/3d-rsx-niebla-translucidos", &flag) == 0;
     shadow_unbatched = stat("/dev_hdd0/salsads/3d-rsx-sombra-sin-lotes", &flag) == 0;
     shadow_general = stat("/dev_hdd0/salsads/3d-rsx-sombra-general", &flag) == 0;
     textures_no_wait = stat("/dev_hdd0/salsads/3d-rsx-texturas-sin-espera", &flag) == 0;
@@ -807,7 +810,7 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
                     }
                 }
             }
-            if (PA_ALPHA(p->attr) != 31 || (PA_MODE(p->attr) != 1 && (rs.d3 & D3_TEXTURE) && (fmt == 1 || fmt == 6))) {
+            if (!fog_translucent && (PA_ALPHA(p->attr) != 31 || (PA_MODE(p->attr) != 1 && (rs.d3 & D3_TEXTURE) && (fmt == 1 || fmt == 6)))) {
                 reason = "niebla con translúcidos: requiere pasada final"; return 0;
             }
         }
