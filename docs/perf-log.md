@@ -1,5 +1,11 @@
 # Registro de rendimiento
 
+## 2026-10-27 — Audio PPE/SPE y estiramiento fuerte (host/RPCS3)
+- Autoprueba aislada en RPCS3, cuatro trabajos fiel/HD: antes, `hd_last` difería una ULP en voz 1/trabajo 2 y voz 0/trabajo 3; después, muestras 0, estado 0, memoria 0 y salida 0. Holgura del SPE de audio: 171 072 B (mínimo 8192).
+- Banco host reproducible, producción 0,5: variante normal/larga, 664/332 uniones; flujo en empalmes 0,0102641→0,0079671 (×0,7762), CV medio de envolvente ×0,8455, nitidez de ataques ×0,9393. A producción 1,0: salida binariamente idéntica y 0 uniones en ambas.
+- Costo host del estirador por bloque de 10 ms: 11,825→19,266 µs a producción 0,5; solo indica orden relativo. El tono sintético queda en 997±3 Hz y no se remuestrea dentro de WSOLA.
+- Guion local `build/audio7/guion-ps3.txt`: PPE/SPE de NSMB y cinco aislamientos, más MKDS normal/largo. La identificación del ruido y todo costo del Cell quedan pendientes de esas capturas y mediciones reales.
+
 ## 2026-10-26 — Mezcla rota de NSMB y verificación SPE/PPE
 - `grab-mezcla.wav` de PS3, 32728 Hz y 20 s: pico/media de segunda diferencia L/R 2,785/2,583, fase 330; H6 y H9 de 59,826 Hz sobresalen +15,72 y +13,40 dB. En el WAV host completo a 48 kHz: 1,845/1,649, fase 400; los puntos de captura y tasas son distintos.
 - Alineación por la derivada de la envolvente RMS: el host queda 2,1764 s después; PS3 2–8 s contra host 4,1764–10,1764 s, remuestreado linealmente a 32728,498 Hz, da correlación mono 0,98748.

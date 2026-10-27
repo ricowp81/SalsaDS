@@ -143,8 +143,8 @@ de la PS3 dan lo mismo (la ROM da igual en little-endian, big-endian, y con sani
 - `src/platform/ps3/audio_out.c`: el puerto de audio de la PS3 (2 canales, 48 kHz, bloques de 256 muestras, hilo de prioridad 100),
   un anillo de 16 384 muestras (340 ms), antes de empezar a sonar se juntan 2048 (43 ms); si faltan datos se completa con silencio y
   se cuenta; el hilo de la emulación consulta `audio_out_ratio_adj()` antes de cada cuadro (control proporcional de la razón de
-  remuestreo, ±2 %, para mantener ≈ 64 ms en el anillo). Si el puerto no se abre, el núcleo sigue sin sonido.
-- Autoprueba al arrancar (en RPCS3 y en la PS3): el mismo trabajo en el SPE y en el PPE sobre una memoria de prueba propia, dos
+  remuestreo, ±0,25 %, para mantener ≈ 64 ms en el anillo). Si el puerto no se abre, el núcleo sigue sin sonido.
+- Autoprueba al arrancar (en RPCS3 y en la PS3): el mismo trabajo en el SPE y en el PPE sobre una memoria de prueba propia, cuatro
   trabajos seguidos, con las muestras de 16 bits, el estado y lo capturado idénticos y la salida flotante con tolerancia (el
   SPU redondea distinto): RPCS3 da 0 diferencias. Si falla, mezcla el PPE.
 
@@ -191,7 +191,7 @@ polifásico** (`snd_resample` en `src/audio/snd_mix.c`; tabla en `src/audio/snd_
 sinc con ventana de Kaiser (β = 7), 32 coeficientes, corte (-6 dB) a 15 kHz, 64 fases con interpolación lineal entre filas
 (filas normalizadas a suma 1: una continua sale intacta). Mira 15 muestras antes y 16 después de cada posición: la salida va
 retrasada 16 muestras nativas (~0,5 ms) y el estado que arrastra entre trabajos son las últimas 32 muestras nativas por canal
-(`snd_state.hist`) y `frac`. En el SPE el producto es vectorial (4 coeficientes por vector, desplazamiento con `spu_shuffle`;
+(`snd_state.hist`) y `resample_phase` en Q0.32. En el SPE el producto es vectorial (4 coeficientes por vector, desplazamiento con `spu_shuffle`;
 suma por carriles junta como (0+1)+(2+3), igual que el C); pila de `snd_run` 8,9 KB, holgura 178 KB. Medido en el host con un
 tono PCM16 (95 % de la banda nativa, nivel respecto del tono ideal; imagen = 32,73 kHz − f, plegada a 48 kHz):
 
@@ -307,6 +307,13 @@ Documentos relacionados: `docs/memory-budget.md`, `docs/perf-log.md`, `docs/esta
 - Se comparan enteros de la mezcla exactamente, las 16 voces (incluida línea de caché), ambas capturas y el estado global; fase e historia flotantes admiten hasta 0,0005. La primera diferencia y cada 120 trabajos distintos dejan una línea detallada.
 - Cada ventana registra trabajos, diferencias por clase, lecturas y líneas de RAM que cambiaron, desbordes del registro de capturas y microsegundos por trabajo de copia, segunda mezcla y comparación/aplicación. El costo real solo puede medirse en la consola.
 - Lecturas cambiantes con dos resultados iguales y sonido limpio apuntan a RAM viva; diferencias con entrada congelada apuntan a aritmética o estado del SPE; cero diferencias con ruido obliga a buscar fuera de la mezcla.
+
+## Audio: paridad de estado y aislamiento de la salida (2026-10-27)
+- El diagnóstico de los cuatro trabajos localizó las dos diferencias en la última salida HD de las voces 1 y 0, en trabajos consecutivos: un ULP por la contracción FMA distinta. `hd_last`, que solo será ancla de una rampa, se persiste como muestra entera; la señal actual conserva toda su precisión.
+- La fase del remuestreador se acumula en Q0.32 y se compara exactamente; su razón nominal y el control de deriva de ±0,25 % se conservan. La autoprueba aislada PPE/SPE da 0 diferencias en mezcla nativa, estado, SOUNDCAP/memoria y salida flotante.
+- `audio-mezcla-ppe` fuerza solo el ejecutor después de una autoprueba correcta. Los archivos `audio-sin-hd`, `audio-sin-remuestrear` (sustituye FIR por lineal), `audio-sin-estirar`, `audio-sin-limitador` y `audio-sin-ganancia` permiten comparar una etapa por pasada.
+- `tools/audio-stage-compare.py` alinea los WAV PS3/host por correlación y entrega SNR, saltos agrupados por fase de cuadro, modulación de envolvente y energía por cinco bandas. La etapa responsable del residuo requiere las nuevas grabaciones de consola; no se deduce de capturas con puntos o tramos distintos.
+- El estimador WSOLA usa 50 ms y, a producción ≥0,98 con un anillo sano, entrega copia exacta sin unión. Para producción ≈0,5, `audio-estirar-largo` usa grano de 80 ms, solape de 20 ms y búsqueda de 40 ms; el modo normal no cambia y ambos preservan el tono.
 
 ## Audio: extensión temporal y margen de salida (2026-10-26)
 - El hilo de audio ejecuta WSOLA por inserción: grano de 720 pares (15 ms), salto de 480 (10 ms), solape de 240 (5 ms), historia de 1920 (40 ms). Con menos de 720 disponibles busca un grano anterior; no consume entrada al repetirlo. La recuperación consume entrada a razón normal, sin acelerar ni bajar el tono.

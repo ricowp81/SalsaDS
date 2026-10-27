@@ -4,6 +4,14 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-27 — Paridad del audio y diagnóstico de la salida (audio-estirar)
+- Las dos diferencias de la autoprueba eran `hd_last`: voz 1 en el trabajo 2 y voz 0 en el 3, separadas por una ULP debido a la contracción FMA PPE/SPU. El ancla persistente del antichasquido se guarda como muestra entera sin cuantizar la salida; la prueba aislada queda en 0 diferencias de muestras, estado, memoria y salida.
+- La fase del FIR pasa a Q0.32 y el ajuste de deriva sigue limitado a ±0,25 %. La autoprueba registra, si falla, voz, posición/fracción, ADPCM, ruido, línea, SOUNDCAP, fases, historia y envolvente; `audio-mezcla-ppe` permite la pasada A/B sin desactivar la comprobación.
+- `audio-sin-hd`, `audio-sin-remuestrear` (lineal), `audio-sin-estirar`, `audio-sin-limitador` y `audio-sin-ganancia` aíslan la cadena. `tools/audio-stage-compare.py` alinea WAV por correlación y mide saltos por fase, modulación y espectro; falta la captura PS3 homogénea para atribuir el ruido restante.
+- A velocidad nominal y con al menos 20 ms sanos, WSOLA copia exactamente y no une. `audio-estirar-largo` ofrece para producción ≈0,5 grano de 80 ms, salto de 60 ms y búsqueda de 40 ms; queda apagado por omisión.
+- Banco host a producción 0,5: 664→332 uniones, flujo espectral ×0,7762, modulación de envolvente ×0,8455 y nitidez ×0,9393; al 100 %, salida idéntica y 0 uniones. Son comparaciones relativas del host, no tiempos de la PS3.
+- `test-host`: LE 22 816 259 (0 fallos); BE 22 819 989 (solo los 34 conocidos); SAN, ROMs, escenas, hashes y lockstep correctos. Holgura del SPE de audio 171 072 B; medición PS3 y atribución de la etapa ruidosa pendientes.
+
 
 ## 2026-10-26 — Verificación en juego de la mezcla SPE/PPE (audio-estirar)
 - `audio-verificar` hace que cada trabajo mezcle en el SPE y en el PPE la misma instantánea de RAM y el mismo estado inicial; compara muestras nativas, salida flotante, las 16 voces, las dos capturas y la memoria escrita por SOUNDCAP.
