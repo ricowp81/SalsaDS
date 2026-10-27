@@ -1,5 +1,8 @@
 # Registro de rendimiento
 
+## 2026-10-26 — RSX ronda 14 [PS3 hd-8 analizada]
+- MKDS 2× con hd-8: compositor A «(final)» 6,0–7,0 ms en carrera (antes 13,2; meta ≤3 no alcanzada), compositor A 8,7 ms; la espera del 3D se aplaza (líneas 88–160) y la pantalla A se congela: A/B en `build/rsx3d-hd-9/guion-ps3.txt` con `DATO rsx3d HD cambio`.
+
 ## 2026-10-26 — RSX ronda 13 [PS3 ronda 12 analizada; RPCS3 solo corrección]
 - MKDS 2× (hd-7): cuadros >20 ms 26,7/120; RSX preparación 0,5–1,5 envío 0,6–1,0 etiqueta 0,004 raster 2–3 ms; compositor A 15,0 (carrera) y 30,0 ms (escena previa, 254 polígonos) con «(final)» 13,2/28,2 ms = exportación de metadatos HD; Metroid menú 40,9 ms. Nuevo exportador vectorial, meta ≤3 ms: medir en PS3 (`DATO spe-etapas` A «(final)»).
 
