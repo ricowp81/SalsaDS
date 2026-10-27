@@ -1,5 +1,8 @@
 # Registro de rendimiento
 
+## 2026-10-26 — RSX ronda 13 [PS3 ronda 12 analizada; RPCS3 solo corrección]
+- MKDS 2× (hd-7): cuadros >20 ms 26,7/120; RSX preparación 0,5–1,5 envío 0,6–1,0 etiqueta 0,004 raster 2–3 ms; compositor A 15,0 (carrera) y 30,0 ms (escena previa, 254 polígonos) con «(final)» 13,2/28,2 ms = exportación de metadatos HD; Metroid menú 40,9 ms. Nuevo exportador vectorial, meta ≤3 ms: medir en PS3 (`DATO spe-etapas` A «(final)»).
+
 ## 2026-10-26 — RSX ronda 12 parcial [RPCS3, no PS3]
 - Sombras Z dirigidas: 24–25 dibujos/escena, mediana raster 0,096 ms (12 muestras); cuatro escenas con muchos OID Z/W: 61–62 dibujos, mediana 1,115 ms, incluido primer uso de W de 11,751 ms. Son pasadas adicionales, no una ganancia de tiempo acreditada.
 - Igualdad: 8 dibujos opacos o 12 con mezcla; mediana raster 0,064 ms en 76 muestras tras excluir los primeros usos de cada grupo. A 2× se dibuja además el destino HD; tiempos de RPCS3 no extrapolables.
