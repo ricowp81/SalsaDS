@@ -61,6 +61,7 @@
 
 #include "core/nds.h"
 #include "core/nds_priv.h"
+#include "gpu2d/gpu2d_hd.h"
 #include "frontend/dspad.h"
 #include "spu/gpu2d/job.h"
 #include "spu/snd/job.h"
@@ -874,16 +875,15 @@ static int hd_capture_keep; /* 3d-rsx-hd-captura: HD en A aunque B muestre su ca
  * a 30 Hz y parpadea: se presenta A en nativo mientras dure. */
 static int hd_capture_pair(const gpu2d_frame *f, int vset)
 {
-	const gpu2d_engine *a = &f->eng[0], *b = &f->eng[1];
-	const uint32_t cap = (uint32_t)a->regs[G2D_R_DISPCAP] | ((uint32_t)a->regs[G2D_R_DISPCAP + 1] << 16);
-	const gpu2d_engine *pa = &nds->vid.set[vset ^ 1].frame.eng[0];
-	const uint32_t pcap = (uint32_t)pa->regs[G2D_R_DISPCAP] | ((uint32_t)pa->regs[G2D_R_DISPCAP + 1] << 16);
+	const gpu2d_engine *b = &f->eng[1];
+	/* Solo las capturas que la DS realizó (banco en modo LCDC): MKDS deja el bit 31 puesto sin capturar. */
+	const uint32_t cap = nds->vid.set[vset].captured, pcap = nds->vid.set[vset ^ 1].captured;
 	const uint32_t dcb = g2d_dispcnt(b);
 	unsigned pbank;
 
-	if (!(cap & 0x80000000u) || ((cap >> 29) & 3u) == 1u || ((cap >> 20) & 3u) != 3u || ((cap >> 24) & 1u))
-		return 0; /* no captura la imagen entera de A */
-	pbank = (pcap & 0x80000000u) ? (pcap >> 16) & 3u : ((cap >> 16) & 3u) ^ 1u;
+	if (!cap || !pcap || ((cap >> 29) & 3u) == 1u || ((cap >> 20) & 3u) != 3u || ((cap >> 24) & 1u))
+		return 0; /* no captura la imagen entera de A en dos cuadros seguidos */
+	pbank = (pcap >> 16) & 3u;
 	if (G2D_DC_DISPMODE(dcb) != 1u)
 		return 0;
 	/* B muestra el banco capturado en el cuadro anterior como fondo (BG de mapa de bits) o como OBJ de mapa de bits */
@@ -893,6 +893,44 @@ static int hd_capture_pair(const gpu2d_frame *f, int vset)
 	return 0;
 }
 #endif
+
+static int hd_verify_on; /* 3d-rsx-hd-verificar-metadatos: el exportador escalar del PPE contra el del SPE */
+static int hd_meta_ppe;  /* 3d-rsx-hd-metadatos-ppe: presentar con los metadatos escalares del PPE en lugar de los del SPE */
+static g2d_hd_pixel *hd_verify_meta;
+static uint16_t *hd_verify_out;
+
+/* Tras recoger la composición de A: vuelve a exportar los metadatos en el PPE (ruta escalar, ~15 ms) y cuenta las
+ * diferencias con lo que dejó el SPE. Diagnóstico para la consola: decide si el exportador vectorial es el culpable. */
+static void hd_verify_metadata(const typeof(sub) *q)
+{
+	static unsigned frames, bad_frames; static uint64_t bad_pixels;
+	const g2d_hd_pixel *spe = rsx3d_hd_metadata(q->set);
+	gpu2d_engine e;
+
+	if (!spe) return;
+	if (!hd_verify_meta) {
+		hd_verify_meta = memalign(128, G2D_HD_BYTES + 128);
+		hd_verify_out = memalign(128, GPU2D_W * GPU2D_H * 2);
+		if (!hd_verify_meta || !hd_verify_out) { hd_verify_on = 0; return; }
+	}
+	e = nds->vid.set[q->vset].frame.eng[0];
+	e.hd_ea = (uint64_t)(uintptr_t)hd_verify_meta;
+	e.out_ea = (uint64_t)(uintptr_t)hd_verify_out;
+	e.flags |= G2D_F_HD_SCALAR;
+	if (gpu2d_compose_engine(&nds->vid.comp, &e) != 0) return;
+	{
+		unsigned bad = 0;
+		for (unsigned i = 0; i < GPU2D_W * GPU2D_H; i++)
+			bad += memcmp(&spe[i], &hd_verify_meta[i], sizeof spe[i]) != 0;
+		bad_frames += bad != 0; bad_pixels += bad;
+	}
+	if (hd_meta_ppe) /* A/B del exportador vectorial: la presentación usa los metadatos del PPE */
+		memcpy((void *)(uintptr_t)spe, hd_verify_meta, G2D_HD_BYTES);
+	if (++frames == 120) {
+		salsads_log("DATO rsx3d HD verificación: 120 cuadros, con metadatos distintos %u, píxeles distintos %llu", bad_frames, (unsigned long long)bad_pixels);
+		frames = bad_frames = 0; bad_pixels = 0;
+	}
+}
 
 static void vid_post_engine(int e, gpu2d_frame *f)
 {
@@ -2313,6 +2351,10 @@ static void render_frame(void)
 				put(M_WAIT, prev.wait_us);
 				if (autotest_verify && frame_no % 30u == 20u)
 					vid_verify(&prev);
+#ifdef NUCLEO_RSX
+				if (hd_verify_on && rsx3d_on && nds->vid.set[prev.vset].frame.eng[0].hd_ea)
+					hd_verify_metadata(&prev);
+#endif
 			}
 			prev = sub;
 			sub.valid = 0;
@@ -2969,6 +3011,9 @@ int main(void)
 		if (stat(SALSADS_DATA_DIR "/3d-rsx", &st) == 0 && stat(SALSADS_DATA_DIR "/3d-spe", &st) != 0) {
 			rsx3d_on = rsx3d_init() == 0;
 			hd_capture_keep = stat(SALSADS_DATA_DIR "/3d-rsx-hd-captura", &st) == 0;
+			hd_meta_ppe = stat(SALSADS_DATA_DIR "/3d-rsx-hd-metadatos-ppe", &st) == 0;
+			hd_verify_on = hd_meta_ppe || stat(SALSADS_DATA_DIR "/3d-rsx-hd-verificar-metadatos", &st) == 0;
+			if (rsx3d_on && hd_verify_on) salsads_log("rsx3d HD metadatos escalares en el PPE: %s (cuesta ~15 ms por cuadro)", hd_meta_ppe ? "se presentan en lugar de los del SPE" : "solo se comparan con los del SPE");
 			if (rsx3d_on && rsx3d_scale() > 1)
 				salsads_log("rsx3d HD con captura a doble pantalla: %s", hd_capture_keep ? "HD en A" : "nativo en A");
 			rsx3d_sync = stat(SALSADS_DATA_DIR "/3d-rsx-sin-solapar", &st) == 0;

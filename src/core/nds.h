@@ -259,6 +259,7 @@ struct nds_vset {
 	uint32_t img3d[R3D_W * R3D_H] __attribute__((aligned(128))); /* capa 3D del cuadro (Fase 3.2): BG0 del motor A */
 	r3d_job r3d;      /* el trabajo del render 3D de este cuadro (lo arma la línea 0) */
 	int has3d;        /* el motor A muestra la capa 3D y hay que rasterizar */
+	uint32_t captured; /* DISPCAPCNT de la captura que este cuadro realizó de verdad (0 si no capturó) */
 	uint16_t powcnt1; /* al final del cuadro */
 	uint32_t dropped; /* cambios que no cupieron */
 };

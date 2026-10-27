@@ -34,6 +34,8 @@ int rsx3d_hd_bench(uint64_t ea, const char *name, const rsx3d_stats *stats);
 uint64_t rsx3d_hd_acquire(uint64_t native_ea, unsigned set);
 /* El consumidor decide presentar nativo: present lo cuenta con `why`. */
 void rsx3d_hd_skip(unsigned set, const char *why);
+/* Metadatos que el SPE dejó para `set` (NULL sin HD). */
+const void *rsx3d_hd_metadata(unsigned set);
 void rsx3d_hd_invalidate(uint64_t native_ea);
 int rsx3d_hd_present(unsigned set, int x, int y, int w, int h);
 void rsx3d_presentation_begin(unsigned set);

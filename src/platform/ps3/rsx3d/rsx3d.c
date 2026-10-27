@@ -107,6 +107,18 @@ static uint64_t hd_raster_collect(unsigned slot)
     }
     return ns;
 }
+/* Diagnóstico de cambio: ¿los metadatos y la imagen HD que se presentan
+ * cambian de un cuadro al siguiente? El bloque central de 8×8 de hd_saved se
+ * lee a memoria principal tras la copia y se compara al reutilizar el juego. */
+#define HD_PROBE_OFF 0xC8000u
+static uint64_t hd_meta_hash_last, hd_probe_hash_last;
+static unsigned hd_change_frames, hd_meta_same, hd_probe_same, hd_probe_pending[2];
+static uint64_t hd_hash(const void *p, size_t n, size_t stride)
+{
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0; i < n; i += stride) h = (h ^ ((const uint8_t *)p)[i]) * 1099511628211ull;
+    return h;
+}
 void rsx3d_hd_invalidate(uint64_t ea)
 {
     for (unsigned i=0;i<2;i++) if (hd_native[i]==ea) hd_native[i]=0;
@@ -127,6 +139,10 @@ uint64_t rsx3d_hd_acquire(uint64_t ea, unsigned set)
             hd_samples=0; hd_present_ns=hd_compose_ns=hd_copy_ns=hd_metadata_us=0;
         }
     }
+    if (hd_probe_pending[set]) { /* la lectura del bloque quedó detrás de la etiqueta de presentación ya esperada */
+        uint64_t q = hd_hash(hd_mem + set*HD_STRIDE + HD_PROBE_OFF, 8*64, 1);
+        hd_probe_same += q == hd_probe_hash_last; hd_probe_hash_last = q; hd_probe_pending[set] = 0;
+    }
     hd_valid[set] = hd_copied[set] = 0;
     hd_missing[set]="error de copia local";
     for (unsigned i=0;i<2;i++) if (ea && hd_native[i]==ea) {
@@ -134,6 +150,10 @@ uint64_t rsx3d_hd_acquire(uint64_t ea, unsigned set)
         rsxkit_stamp(52+set*2);
         if (rsxkit_target_copy(hd_saved[set], hd_target[i])) return 0;
         rsxkit_stamp(53+set*2); hd_copied[set]=1;
+        {
+            rsxkit_rect probe = { (int)(128*hd_scale - 4), (int)(96*hd_scale - 4), 8, 8 };
+            hd_probe_pending[set] = rsxkit_target_read(hd_saved[set], &probe, hd_offset + set*HD_STRIDE + HD_PROBE_OFF, 64, 8, 8, RSXKIT_XRGB8888) == 0;
+        }
         hd_copy_issue_us += sysGetSystemTime()-t;
         hd_valid[set] = 1;
         return (uint64_t)(uintptr_t)(hd_mem + set*HD_STRIDE);
@@ -145,6 +165,19 @@ uint64_t rsx3d_hd_acquire(uint64_t ea, unsigned set)
     }
     hd_missing[set]=why;
     return 0;
+}
+const void *rsx3d_hd_metadata(unsigned set)
+{
+    return hd_scale > 1 && set < 2 ? hd_mem + set*HD_STRIDE : NULL;
+}
+static void hd_change_note(unsigned set)
+{
+    uint64_t m = hd_hash(hd_mem + set*HD_STRIDE, G2D_HD_BYTES, 61);
+    hd_meta_same += m == hd_meta_hash_last; hd_meta_hash_last = m;
+    if (++hd_change_frames == 120) {
+        salsads_log("DATO rsx3d HD cambio: 120 presentaciones HD; metadatos iguales al anterior %u, bloque 8x8 de la imagen HD igual al anterior %u", hd_meta_same, hd_probe_same);
+        hd_change_frames = hd_meta_same = hd_probe_same = 0;
+    }
 }
 void rsx3d_hd_skip(unsigned set, const char *why)
 {
@@ -184,6 +217,7 @@ int rsx3d_hd_present(unsigned set, int x, int y, int w, int h)
         else modes++;
     }
     else {
+        hd_change_note(set);
         rsxkit_post_pass pass; hd_metadata_us += hd_compose_pass(&pass,set,x,y,w,h);
         rsxkit_stamp(44+set*2);
         uint64_t t=sysGetSystemTime();

@@ -402,6 +402,7 @@ static void capture_frame(struct nds *n, struct nds_vset *s)
 		return;
 	}
 
+	s->captured = cap;
 	v->cap.frames++;
 	v->cap.srcsel[srcsel]++;
 	v->cap.fifo += usefifo != 0;
@@ -525,6 +526,7 @@ void nds_video_frame_end(struct nds *n)
 	if (!v->recording)
 		return;
 	v->recording = 0;
+	s->captured = 0;
 	if (s->frame.eng[0].regs[G2D_R_DISPCAP + 1] & 0x8000u) {
 		if (s->has3d && v->ops.wait3d) {
 			const int timed = v->clock != NULL;
