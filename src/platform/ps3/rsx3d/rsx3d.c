@@ -990,7 +990,7 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
             d->tex[1].filter = RSXKIT_FILTER_NEAREST;
             d->tex[1].wrap_s = d->tex[1].wrap_t = RSXKIT_WRAP_CLAMP;
             d->k[3][0][0] = (float)rs.fog_offset;
-            d->k[3][0][1] = (float)(rs.fog_shift > 10 ? 0u : 10u - rs.fog_shift);
+            d->k[3][0][1] = (float)(1u << (rs.fog_shift > 10 ? 0u : 10u - rs.fog_shift));
             d->k[3][0][3] = (p.attr & PA_FOG) ? 1.0f : 0.0f;
             d->k[1][0][3] = (float)(1u << p.wshift);
             uint32_t fc = rs.fog_px;

@@ -50,24 +50,23 @@ void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
      * desplazamiento, índice de la tabla de 32 entradas con la fracción
      * interpolada. fp: x desplazamiento, y bits de fracción, z solo alfa,
      * w niebla activa en el polígono. La tabla va en TEXUNIT1 (R = densidad). */
-    float density = 0.0;
-    if (fp.w > 0.5) {
+    /* Sin ramas: el corrector de shaders solo admite un END. fp.y ya es 2^(bits de fracción). */
 #ifdef RSX3D_W
-        float fogdepth = min(floor(1.0 / pos.w) * floor(q.w + 0.5), 16777215.0);
+    float fogdepth = min(floor(1.0 / pos.w) * floor(q.w + 0.5), 16777215.0);
 #else
-        float fogdepth = floor(pos.z * 16777215.0 + 0.5);
+    float fogdepth = floor(pos.z * 16777215.0 + 0.5);
 #endif
-        float kk = floor(fogdepth / 512.0) - floor(fp.x + 0.5);
-        float sh = exp2(floor(fp.y + 0.5));
-        float i = clamp(floor(kk / sh), 0.0, 31.0);
-        float t0 = floor(tex2D(table, float2((i + 0.5) / 32.0, 0.5)).r * 255.0 + 0.5);
-        float t1 = floor(tex2D(table, float2((min(i + 1.0, 31.0) + 0.5) / 32.0, 0.5)).r * 255.0 + 0.5);
-        float fr = kk - i * sh;
-        density = t0 + floor((t1 - t0) * fr / sh);
-        if (kk < 0.0) density = t0;
-        if (i >= 31.0) density = t1;
-        if (density == 127.0) density = 128.0;
-    }
+    float kk = floor(fogdepth / 512.0) - floor(fp.x + 0.5);
+    float sh = floor(fp.y + 0.5);
+    float i = clamp(floor(kk / sh), 0.0, 31.0);
+    float t0 = floor(tex2D(table, float2((i + 0.5) / 32.0, 0.5)).r * 255.0 + 0.5);
+    float t1 = floor(tex2D(table, float2((min(i + 1.0, 31.0) + 0.5) / 32.0, 0.5)).r * 255.0 + 0.5);
+    float fr = kk - i * sh;
+    float density = t0 + floor((t1 - t0) * fr / sh);
+    density = density + (t0 - density) * step(kk, -0.5);
+    density = density + (t1 - density) * step(31.0, i);
+    density = density + step(126.5, density) * step(density, 127.5);
+    density = density * step(0.5, fp.w);
     float4 fogcolor = floor(fc + 0.5);
     c = floor(c + 0.5);
     a = floor(a + 0.5);
