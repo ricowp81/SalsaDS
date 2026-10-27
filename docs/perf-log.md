@@ -1,5 +1,8 @@
 # Registro de rendimiento
 
+## 2026-10-27 — RSX ronda 15 [PS3 hd-9 sin aplazar; RPCS3 solo corrección]
+- MKDS 2× sin aplazamiento (hd-9 + r3d-sin-aplazar): 869/7080 cuadros >20 ms (12 %), emulación mediana 13,6 ms; con aplazamiento la imagen HD no se renovaba (0/120). Niebla por fragmento y rescate PPE de texturas: medir en consola el censo RSX/SPE de Metroid y «RGBA8» por cuadro.
+
 ## 2026-10-26 — RSX ronda 14 [PS3 hd-8 analizada]
 - MKDS 2× con hd-8: compositor A «(final)» 6,0–7,0 ms en carrera (antes 13,2; meta ≤3 no alcanzada), compositor A 8,7 ms; la espera del 3D se aplaza (líneas 88–160) y la pantalla A se congela: A/B en `build/rsx3d-hd-9/guion-ps3.txt` con `DATO rsx3d HD cambio`.
 
