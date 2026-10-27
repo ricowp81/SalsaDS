@@ -5,6 +5,15 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-26 — Verificación en juego de la mezcla SPE/PPE (audio-estirar)
+- `audio-verificar` hace que cada trabajo mezcle en el SPE y en el PPE la misma instantánea de RAM y el mismo estado inicial; compara muestras nativas, salida flotante, las 16 voces, las dos capturas y la memoria escrita por SOUNDCAP.
+- El SPE contrasta además cada línea de 128 B que lee con la RAM viva y cuenta las que cambiaron durante el trabajo. La captura se hace en memoria privada y se aplica al recoger el trabajo, solo en sus bytes modificados; así se separan la carrera de lectura y el RMW alineado de SOUNDCAP.
+- La primera diferencia y después una cada 120 trabajos distintos registra cuadro, voz/formato, muestra SPE/PPE, estado antes/después, capturas y cambio de RAM. Cada ventana da diferencias, lecturas, desbordes y costo de copia/PPE/comparación; apagado no añade copias ni trabajo de mezcla.
+- Captura PS3 nativa: pico/media de segunda diferencia L/R 2,785/2,583, con H6/H9 a +15,72/+13,40 dB sobre vecinos. Alineada por envolvente, PS3 2–8 s contra host 4,1764–10,1764 s: correlación 0,98748; pico/media 19,990/30,620 frente a 2,601/3,333. No hay paridad directa porque el host está después del FIR a 48 kHz.
+- `test-host`: LE 22 430 253 (0 fallos); BE 22 433 983 (solo los 34 conocidos de `test_arec.c`); SAN, ROMs, imágenes, hashes y lockstep correctos. Holgura mínima 8432 B; audio 171936 B; verificadores de publicación/SPDX en 0.
+- RPCS3 llegó una vez a la autoprueba ampliada: muestras, memoria capturada y salida iguales; la fase flotante requería tolerancia de 0,0005 muestras. Dos corridas terminaron antes en una instrucción ilegal de `r3d-1`; validación final del estado y medición de costo quedan para la PS3.
+- Paquete `build/salsads-audio-6.pkg`, «SalsaDS Audio», `SLDS00033`; SHA-256 `9e64653bbb163d6df93fe28d1fe121f46176fbfc5961e275b631ea9c5d900263`. Sin envío a consola.
+
 ## 2026-10-26 — Frontera del audio y velocidad nominal (audio-estirar)
 - `b073287`: el tic por cuadro era la línea de 128 B de las voces 1/3 que reproducen SOUNDCAP: se descartaba al acabar cada trabajo y saltaba a la instantánea de RAM siguiente. Ahora se conserva hasta cambiar SAD, arrancar o volver al bucle; `audio-frontera-antigua` restaura el fallo para A/B.
 - `--wav-native` reproduce la partición PS3 (547/548 muestras) y `tools/audio-frame-metric.py` mide segunda diferencia, fase y armónicos. En NSMB host: pico/media L/R 1,961/2,527 → 1,240/1,196; el residuo antiguo contiene H1–H12 de 59,826 Hz entre 14,0 y 20,8 dB sobre los vecinos.

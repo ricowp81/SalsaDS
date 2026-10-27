@@ -1,5 +1,12 @@
 # Registro de rendimiento
 
+## 2026-10-26 — Mezcla rota de NSMB y verificación SPE/PPE
+- `grab-mezcla.wav` de PS3, 32728 Hz y 20 s: pico/media de segunda diferencia L/R 2,785/2,583, fase 330; H6 y H9 de 59,826 Hz sobresalen +15,72 y +13,40 dB. En el WAV host completo a 48 kHz: 1,845/1,649, fase 400; los puntos de captura y tasas son distintos.
+- Alineación por la derivada de la envolvente RMS: el host queda 2,1764 s después; PS3 2–8 s contra host 4,1764–10,1764 s, remuestreado linealmente a 32728,498 Hz, da correlación mono 0,98748.
+- En ese tramo de 6 s, pico/media L/R: PS3 19,990/30,620 y host 2,601/3,333; fases PS3 520/520 y host 70/350. La captura PS3 concentra discontinuidades unas 6–9 veces más, pero el host es posterior al FIR a 48 kHz: no es una comparación binaria ni de nivel.
+- `audio-verificar` medirá en PS3, por trabajo, el costo de tres copias de unos 4,1 MiB, una mezcla PPE y la comparación/aplicación; también líneas vivas cambiadas y diferencias de muestras/estado/captura. No se extrapolan tiempos del host ni de RPCS3.
+- Guion: NSMB nivel 1 durante 60 s con `audio-verificar` y, si hace falta, `audio-grabar`; conservar `nucleo.log` y la primera diferencia. Cero diferencias y sonido limpio con líneas cambiadas confirmaría la carrera; diferencias estables aislarían el campo del SPE.
+
 ## 2026-10-26 — Tic por cuadro y régimen nominal del audio (host)
 - NSMB, 3300 cuadros, captura PCM16 previa al PPE: 3098 trabajos de 547 muestras, 200 de 548 y el primero parcial. Con la frontera antigua, pico/media de saltos L/R 1,961/2,527; conservando la línea SOUNDCAP de las voces 1/3, 1,240/1,196 (meta ≤ 1,5).
 - El residuo antigua−corregida tiene los doce primeros múltiplos de 59,826 Hz entre 14,0 y 20,8 dB sobre sus vecinos. Aislamiento por voz: conservar solo la 1 aplana L 3,03→1,30; conservar solo la 3 aplana R 3,78→1,27.

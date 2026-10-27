@@ -299,6 +299,15 @@ Documentos relacionados: `docs/memory-budget.md`, `docs/perf-log.md`, `docs/esta
   fondo de texto de 256 × 512, BGxVOFS cambiado por línea, mezcla alfa. `tools/gfx-bisect.py` y `tools/melonds-shot.py` sirven
   para aislar la capa.
 
+## Audio: verificación del mezclador SPE en juego (2026-10-26)
+- El archivo `audio-verificar` en el directorio de datos activa una ruta de diagnóstico costosa; se consulta al abrir el juego. Sin él, el reparto y la mezcla no cambian.
+- Antes de cada trabajo se copian RAM principal, WRAM compartida y WRAM del ARM7 a tres instantáneas: origen, SPE y PPE. Ambos mezcladores parten del mismo `snd_state`, registro de escrituras y bytes de muestra.
+- El SPE lee solo su instantánea, pero por cada lectura DMA de 128 B trae también la línea viva y cuenta si cambió algún byte que no haya escrito antes SOUNDCAP. El PPE ejecuta `snd_run` sobre su copia después de recoger el trabajo.
+- Las capturas escriben en las copias privadas. Tras comparar memoria, se trasladan a la RAM real únicamente los tramos cambiados por el SPE y se invalidan como escritura de código; esto evita que el RMW alineado de 16 B pise una escritura vecina del ARM7 durante el diagnóstico.
+- Se comparan enteros de la mezcla exactamente, las 16 voces (incluida línea de caché), ambas capturas y el estado global; fase e historia flotantes admiten hasta 0,0005. La primera diferencia y cada 120 trabajos distintos dejan una línea detallada.
+- Cada ventana registra trabajos, diferencias por clase, lecturas y líneas de RAM que cambiaron, desbordes del registro de capturas y microsegundos por trabajo de copia, segunda mezcla y comparación/aplicación. El costo real solo puede medirse en la consola.
+- Lecturas cambiantes con dos resultados iguales y sonido limpio apuntan a RAM viva; diferencias con entrada congelada apuntan a aritmética o estado del SPE; cero diferencias con ruido obliga a buscar fuera de la mezcla.
+
 ## Audio: extensión temporal y margen de salida (2026-10-26)
 - El hilo de audio ejecuta WSOLA por inserción: grano de 720 pares (15 ms), salto de 480 (10 ms), solape de 240 (5 ms), historia de 1920 (40 ms). Con menos de 720 disponibles busca un grano anterior; no consume entrada al repetirlo. La recuperación consume entrada a razón normal, sin acelerar ni bajar el tono.
 - Minimiza el error cuadrático estéreo (correlación con penalización de energía), con búsqueda cada cuatro muestras y refinamiento unitario; ambos canales usan el mismo desplazamiento. Ventanas complementarias `w=u²(3−2u)` tienen suma uno y derivadas nulas en los extremos: evitan escalones de amplitud y pendiente sin amplificar el solape.
