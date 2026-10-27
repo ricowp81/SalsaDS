@@ -6,6 +6,7 @@
 #include "spu/gpu2d/job.h"
 #include "gpu2d/gpu2d_scene.h"
 #include "gpu2d/gpu2d_hd.h"
+#include "gpu2d/gpu2d_compose.h"
 #include <sys/stat.h>
 #include "platform/ps3/rsx3d/rsx3d.h"
 #include "platform/ps3/log.h"
@@ -806,15 +807,18 @@ static unsigned hd_spe_tests(r3d_job *j)
     gpu2d_scene_mem m; memset(&m,0,sizeof m);
     m.vram=vram; m.mmem=memalign(128,192*512);
     uint16_t *pixels=memalign(128,256*192*2);
-    void *saved_meta=malloc(G2D_HD_BYTES);
+    void *saved_meta=memalign(128,G2D_HD_BYTES+128);
+    gpu2d_ctx *ppe_ctx=memalign(128,sizeof *ppe_ctx);
+    uint16_t *ppe_pixels=memalign(128,256*192*2);
     unsigned fail=0;
+    if (ppe_ctx) memset(ppe_ctx,0,sizeof *ppe_ctx);
     spukit_worker *worker=NULL;
     for (unsigned e=0;e<2;e++) {
         m.pal[e]=memalign(128,1024); m.oam[e]=memalign(128,1024);
         m.chg[e]=memalign(128,(GPU2D_SCENE_CHG_CAP+2)*sizeof(gpu2d_change));
         if (!m.pal[e] || !m.oam[e] || !m.chg[e]) fail=1;
     }
-    if (!m.mmem || !pixels || !saved_meta || fail) { fail=1; goto done; }
+    if (!m.mmem || !pixels || !saved_meta || !ppe_ctx || !ppe_pixels || fail) { fail=1; goto done; }
     worker=spukit_worker_start(spu_gpu2d_bin,"hd-2d",0);
     if (!worker) { fail=1; goto done; }
     for (unsigned test=0;test<6;test++) {
@@ -843,20 +847,25 @@ static unsigned hd_spe_tests(r3d_job *j)
         }
         int shader_bad=rsx3d_hd_native_test(pixels);
         uint32_t fast_ticks=res->ticks;
-        memcpy(saved_meta,meta,G2D_HD_BYTES);
-        e->flags |= G2D_F_HD_SCALAR;
-        seq=spukit_post(worker,JOB_COMPOSE,&work,sizeof work);
-        res=spukit_wait(worker,seq);
-        unsigned scalar_bad=!res || res->error || memcmp(saved_meta,meta,G2D_HD_BYTES);
-        e->flags &= ~G2D_F_HD_SCALAR;
+        /* El exportador escalar por píxel vive en el PPE: referencia byte a byte del vectorial del SPE. */
+        uint64_t spe_hd=e->hd_ea, scalar_us=0; unsigned scalar_bad=1;
+        if (ppe_ctx) {
+            memset(saved_meta,0,G2D_HD_BYTES);
+            e->flags |= G2D_F_HD_SCALAR; e->hd_ea=(uint64_t)(uintptr_t)saved_meta; e->out_ea=(uint64_t)(uintptr_t)ppe_pixels;
+            uint64_t t0=sysGetSystemTime();
+            int rc=gpu2d_compose_engine(ppe_ctx,e);
+            scalar_us=sysGetSystemTime()-t0;
+            e->flags &= ~G2D_F_HD_SCALAR; e->hd_ea=spe_hd; e->out_ea=(uint64_t)(uintptr_t)pixels;
+            scalar_bad=rc!=0 || memcmp(saved_meta,meta,G2D_HD_BYTES)!=0;
+        }
         fail += native_bad || meta_bad || shader_bad || scalar_bad;
-        salsads_log("rsx3d HD SPE caso %u: nativo %u metadatos %u shader %d diferencias; SPE %.3f ms; escalar %.3f ms, paridad bytes %u",
-            test,native_bad,meta_bad,shader_bad,fast_ticks*1000.0/spukit_tick_hz(),res ? res->ticks*1000.0/spukit_tick_hz() : 0,scalar_bad);
+        salsads_log("rsx3d HD SPE caso %u: nativo %u metadatos %u shader %d diferencias; SPE vectorial %.3f ms; escalar PPE %.3f ms, paridad bytes %u",
+            test,native_bad,meta_bad,shader_bad,fast_ticks*1000.0/spukit_tick_hz(),scalar_us/1000.0,scalar_bad);
     }
 done:
     if (worker) spukit_worker_stop(worker);
     for (unsigned e=0;e<2;e++) { free(m.pal[e]); free(m.oam[e]); free(m.chg[e]); }
-    free(m.mmem); free(pixels); free(saved_meta);
+    free(m.mmem); free(pixels); free(saved_meta); free(ppe_ctx); free(ppe_pixels);
     return fail;
 }
 
