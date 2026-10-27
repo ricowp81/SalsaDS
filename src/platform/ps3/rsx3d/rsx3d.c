@@ -146,6 +146,12 @@ uint64_t rsx3d_hd_acquire(uint64_t ea, unsigned set)
     hd_missing[set]=why;
     return 0;
 }
+void rsx3d_hd_skip(unsigned set, const char *why)
+{
+    if (hd_scale == 1 || set > 1) return;
+    hd_valid[set] = hd_copied[set] = 0;
+    hd_missing[set] = why;
+}
 static uint64_t hd_compose_pass(rsxkit_post_pass *out, unsigned set, int x, int y, int w, int h)
 {
     /* Publicar una copia nativa inmutable: el productor DMA y la textura
@@ -535,7 +541,7 @@ int rsx3d_init(void)
     if (hd_scale > 1) {
         hd_refresh = stat("/dev_hdd0/salsads/3d-rsx-hd-sin-recarga", &flag) != 0;
         salsads_log("rsx3d HD espera flip: %s",hd_early_flip ? "antes de emular" : "antes de presentar");
-        salsads_log("rsx3d HD recarga de metadatos: %s; exportador %s",hd_refresh ? "activa" : "desactivada",hd_scalar ? "escalar" : "bloques iguales de 8");
+        salsads_log("rsx3d HD recarga de metadatos: %s; exportador %s",hd_refresh ? "activa" : "desactivada",hd_scalar ? "escalar (solo PPE; el SPE siempre vectorial)" : "vectorial");
         hd_mem=memalign(HD_STRIDE,4*HD_STRIDE);
         if (!hd_mem || rsxkit_map_main(hd_mem,4*HD_STRIDE,&hd_offset)) return -1;
         memset(hd_mem,0,4*HD_STRIDE);

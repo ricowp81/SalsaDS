@@ -60,6 +60,7 @@
 #include <sysutil/video.h>
 
 #include "core/nds.h"
+#include "core/nds_priv.h"
 #include "frontend/dspad.h"
 #include "spu/gpu2d/job.h"
 #include "spu/snd/job.h"
@@ -864,6 +865,35 @@ static void save_flush(int force)
 
 static int sub_early; /* la pantalla B de `sub` ya salió (vid_submit_early): vid_submit entrega solo la A */
 
+#ifdef NUCLEO_RSX
+static int hd_capture_keep; /* 3d-rsx-hd-captura: HD en A aunque B muestre su captura */
+
+/* Captura a doble pantalla: el motor A se captura entero a un banco de VRAM que el motor B muestra (como fondo o como
+ * OBJ de mapa de bits) en el cuadro siguiente, y el juego alterna bancos y pantallas cada cuadro (la intro de Metroid
+ * Prime Hunters dibuja así las dos pantallas en 3D). Si A sale en HD y B en nativo, cada pantalla alterna resolución
+ * a 30 Hz y parpadea: se presenta A en nativo mientras dure. */
+static int hd_capture_pair(const gpu2d_frame *f, int vset)
+{
+	const gpu2d_engine *a = &f->eng[0], *b = &f->eng[1];
+	const uint32_t cap = (uint32_t)a->regs[G2D_R_DISPCAP] | ((uint32_t)a->regs[G2D_R_DISPCAP + 1] << 16);
+	const gpu2d_engine *pa = &nds->vid.set[vset ^ 1].frame.eng[0];
+	const uint32_t pcap = (uint32_t)pa->regs[G2D_R_DISPCAP] | ((uint32_t)pa->regs[G2D_R_DISPCAP + 1] << 16);
+	const uint32_t dcb = g2d_dispcnt(b);
+	unsigned pbank;
+
+	if (!(cap & 0x80000000u) || ((cap >> 29) & 3u) == 1u || ((cap >> 20) & 3u) != 3u || ((cap >> 24) & 1u))
+		return 0; /* no captura la imagen entera de A */
+	pbank = (pcap & 0x80000000u) ? (pcap >> 16) & 3u : ((cap >> 16) & 3u) ^ 1u;
+	if (G2D_DC_DISPMODE(dcb) != 1u)
+		return 0;
+	/* B muestra el banco capturado en el cuadro anterior como fondo (BG de mapa de bits) o como OBJ de mapa de bits */
+	if (((dcb & 0xF00u) && b->bgpg[0] == nds_vram_bank_offset(pbank)) ||
+	    ((dcb & G2D_DC_OBJ) && b->objpg[0] == nds_vram_bank_offset(pbank)))
+		return 1;
+	return 0;
+}
+#endif
+
 static void vid_post_engine(int e, gpu2d_frame *f)
 {
 	job_compose jc;
@@ -873,7 +903,10 @@ static void vid_post_engine(int e, gpu2d_frame *f)
 #ifdef NUCLEO_RSX
     if (!e && rsx3d_on) {
         uint64_t t=now_us();
-        f->eng[e].hd_ea = rsx3d_hd_acquire(f->eng[e].img3d_ea, sub.set);
+        if (!hd_capture_keep && hd_capture_pair(f, sub.vset))
+            rsx3d_hd_skip(sub.set, "captura a doble pantalla");
+        else
+            f->eng[e].hd_ea = rsx3d_hd_acquire(f->eng[e].img3d_ea, sub.set);
         rsx_pipe.hd_acquire += now_us()-t;
         if (rsx3d_hd_scalar()) f->eng[e].flags |= G2D_F_HD_SCALAR;
     }
@@ -2935,6 +2968,9 @@ int main(void)
 		struct stat st;
 		if (stat(SALSADS_DATA_DIR "/3d-rsx", &st) == 0 && stat(SALSADS_DATA_DIR "/3d-spe", &st) != 0) {
 			rsx3d_on = rsx3d_init() == 0;
+			hd_capture_keep = stat(SALSADS_DATA_DIR "/3d-rsx-hd-captura", &st) == 0;
+			if (rsx3d_on && rsx3d_scale() > 1)
+				salsads_log("rsx3d HD con captura a doble pantalla: %s", hd_capture_keep ? "HD en A" : "nativo en A");
 			rsx3d_sync = stat(SALSADS_DATA_DIR "/3d-rsx-sin-solapar", &st) == 0;
 			if (rsx3d_on && (salsads_autotest() || stat(SALSADS_DATA_DIR "/3d-rsx-prueba", &st) == 0) && rsx3d_selftest() != 0) rsx3d_on = 0;
 			salsads_log("3d-rsx: %s; Z nativa y W por fragmento, respaldo SPE por modo no soportado", rsx3d_on ? "activo" : "sin recursos");

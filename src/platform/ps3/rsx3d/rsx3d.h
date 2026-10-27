@@ -32,6 +32,8 @@ int rsx3d_hd_bench(uint64_t ea, const char *name, const rsx3d_stats *stats);
 /* Capturar la imagen correcta antes de reutilizar una ranura de raster.
  * El consumidor espera su compositor SPE antes de llamar a present. */
 uint64_t rsx3d_hd_acquire(uint64_t native_ea, unsigned set);
+/* El consumidor decide presentar nativo: present lo cuenta con `why`. */
+void rsx3d_hd_skip(unsigned set, const char *why);
 void rsx3d_hd_invalidate(uint64_t native_ea);
 int rsx3d_hd_present(unsigned set, int x, int y, int w, int h);
 void rsx3d_presentation_begin(unsigned set);
