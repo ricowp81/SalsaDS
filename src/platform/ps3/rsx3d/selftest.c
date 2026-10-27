@@ -555,10 +555,11 @@ static unsigned fallback_tests(r3d_job *j)
             /* Niebla por fragmento: el RSX admite el cuadro; se exige la tolerancia documentada
              * (±1 LSB de 5 bits por canal = ±2 en RGB6, alfa exacta) contra la referencia. */
             r3d_render_ref(&frame, vram, j->texslot, j->palslot, 0, reference);
-            unsigned over = 0, differ = 0, worst = 0;
+            unsigned over = 0, differ = 0, worst = 0, first = R3D_W*R3D_H;
             for (unsigned k = 0; k < R3D_W*R3D_H; k++) {
                 uint32_t a = output[k], b = reference[k];
                 unsigned d = 0;
+                if (a != b && first == R3D_W*R3D_H) first = k;
                 for (unsigned c = 0; c < 3; c++) {
                     unsigned x = (a >> (8*c)) & 255u, y = (b >> (8*c)) & 255u, dd = x > y ? x - y : y - x;
                     if (dd > d) d = dd;
@@ -568,6 +569,9 @@ static unsigned fallback_tests(r3d_job *j)
             }
             fail += ok != 1 || over != 0;
             salsads_log("rsx3d respaldo prueba %u: estado %d (niebla por fragmento), distintos %u, fuera de tolerancia %u, peor %u/63, %s", test, ok, differ, over, worst, rsx3d_reason());
+            if (first < R3D_W*R3D_H)
+                salsads_log("rsx3d respaldo prueba %u: primer distinto en %u,%u: RSX %08x referencia %08x; z0 %u z1 %u w0 %u w1 %u", test, first % R3D_W, first / R3D_W,
+                            output[first], reference[first], frame.vtx[0].z, frame.vtx[1].z, (unsigned)frame.vtx[0].w, (unsigned)frame.vtx[1].w);
             continue;
         }
         fail += ok != 0 || modified != 0;
