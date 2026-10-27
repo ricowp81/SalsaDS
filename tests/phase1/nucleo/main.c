@@ -1022,7 +1022,9 @@ static int snd_float_close(float a, float b, float eps)
 
 static int snd_float_state_equal(const snd_state *a, const snd_state *b)
 {
-	if (!snd_float_close(a->frac, b->frac, 0.00001f) || a->hd_phase != b->hd_phase || a->hd_active != b->hd_active)
+	/* El SPU redondea cada avance de fase de forma distinta al PPE. El margen es 0,05 % de una muestra y no
+	 * oculta un salto entero ni una diferencia audible; la salida se compara aparte con el mismo límite. */
+	if (!snd_float_close(a->frac, b->frac, 0.0005f) || a->hd_phase != b->hd_phase || a->hd_active != b->hd_active)
 		return 0;
 	for (int side = 0; side < 2; side++)
 		for (int i = 0; i < SND_HIST; i++)
