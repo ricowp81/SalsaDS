@@ -39,6 +39,48 @@ static void host_store(void *ctx, uint32_t addr, const uint8_t *src, uint32_t le
 	}
 }
 
+static void commit_region(struct nds *n, uint8_t *dst, const uint8_t *before, const uint8_t *after, size_t len)
+{
+	size_t at = 0;
+
+	while (at < len) {
+		size_t end;
+
+		while (at < len && before[at] == after[at])
+			at++;
+		if (at == len)
+			break;
+		end = at + 1;
+		while (end < len && before[end] != after[end])
+			end++;
+		memcpy(dst + at, after + at, end - at);
+		nds_code_write_range(n, dst + at, end - at);
+		at = end;
+	}
+}
+
+void nds_snd_copy_memory(const struct nds *n, uint8_t *dst, size_t len)
+{
+	const size_t swram_off = (size_t)((uintptr_t)n->swram - (uintptr_t)n->ram);
+	const size_t wram7_off = (size_t)((uintptr_t)n->wram7 - (uintptr_t)n->ram);
+
+	memset(dst, 0, len);
+	memcpy(dst, n->ram, sizeof n->ram);
+	memcpy(dst + swram_off, n->swram, sizeof n->swram);
+	memcpy(dst + wram7_off, n->wram7, sizeof n->wram7);
+}
+
+void nds_snd_commit_memory(struct nds *n, const uint8_t *before, const uint8_t *after)
+{
+	const size_t ram_off = 0;
+	const size_t swram_off = (size_t)((uintptr_t)n->swram - (uintptr_t)n->ram);
+	const size_t wram7_off = (size_t)((uintptr_t)n->wram7 - (uintptr_t)n->ram);
+
+	commit_region(n, n->ram, before + ram_off, after + ram_off, sizeof n->ram);
+	commit_region(n, n->swram, before + swram_off, after + swram_off, sizeof n->swram);
+	commit_region(n, n->wram7, before + wram7_off, after + wram7_off, sizeof n->wram7);
+}
+
 void nds_snd_init(struct nds *n)
 {
 	struct nds_snd *s = &n->snd;

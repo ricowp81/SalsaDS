@@ -538,6 +538,10 @@ void nds_snd_frame(struct nds *n);
 /* Modo del mezclador (SND_MODE_*) y corrección de la razón de remuestreo (control de deriva). */
 void nds_snd_set_mode(struct nds *n, uint32_t mode);
 void nds_snd_set_ratio_adj(struct nds *n, float adj);
+/* Copia RAM principal y WRAM conservando los desplazamientos relativos que usan los descriptores del mezclador. */
+void nds_snd_copy_memory(const struct nds *n, uint8_t *dst, size_t len);
+/* Aplica a la memoria real solo los bytes que el mezclador cambió en una instantánea privada (SOUNDCAP). */
+void nds_snd_commit_memory(struct nds *n, const uint8_t *before, const uint8_t *after);
 
 /* Guardado del cartucho. El tipo por omisión sale del código de juego (nds_load_rom); `nds_save_attach` carga el
  * contenido de un archivo y fija el tipo por su tamaño (0 = bien, -1 = tamaño que no es de ningún chip,

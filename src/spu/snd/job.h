@@ -14,12 +14,15 @@ typedef struct job_snd {
 	uint64_t log_ea;     /* snd_ent[nlog] */
 	uint64_t out_ea;     /* float[2 * out_max] (salida a 48 kHz) */
 	uint64_t nat_ea;     /* int16_t[2 * nticks] (mezclador a 32,7 kHz) */
+	int64_t live_delta;  /* diagnóstico: dirección viva = rgn_ea + live_delta; 0 fuera de audio-verificar */
 	uint32_t nlog, nticks, out_max, mode;
 	float ratio_adj;
-	uint32_t pad2[3];
+	uint32_t verify;
 	uint64_t rgn_ea[4];
 	uint32_t rgn_mask[4];
 } job_snd;
+
+_Static_assert(sizeof(job_snd) == 112, "job_snd debe medir lo mismo en PPE y SPE y caber en spukit_job.data");
 
 /* Resultado (≤ 112 bytes) */
 typedef struct job_snd_result {
@@ -31,6 +34,9 @@ typedef struct job_snd_result {
 	uint32_t peak;
 	int32_t rc;
 	uint32_t state_bytes;
+	uint32_t ram_reads;
+	uint32_t ram_changed;
+	uint32_t write_overflow;
 } job_snd_result;
 
 #endif

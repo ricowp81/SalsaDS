@@ -107,6 +107,7 @@ static int geom_poly_plain, geom_read_scalar;
  * la CPU a GXFIFO y a los puertos de órdenes sin pasar por el bus (con el recompilador, tampoco por la ruta lenta general). Con este
  * archivo vuelve a la forma anterior, para comparar en la misma escena. */
 #define GX_LENTO_FLAG SALSADS_DATA_DIR "/gx-lento"
+#define AUDIO_VERIFY_FLAG SALSADS_DATA_DIR "/audio-verificar"
 
 #ifdef NUCLEO_JIT
 /* «SalsaDS JIT núcleo» (Fase 4): el ARM9 con el recompilador (src/jit/arec*); caché de código y prueba con respaldo de la
@@ -958,11 +959,117 @@ static struct {
 	uint32_t ticks_max, mix_max, errors;
 } snd_acc;
 
+static struct {
+	int on;
+	uint8_t *initial, *spe, *ppe;
+	size_t bytes;
+	struct nds_snd_job *job;
+	snd_state before, ppe_state;
+	uint64_t frame;
+	uint64_t jobs, diff_jobs, nat_diff, state_diff, cap_diff, out_diff;
+	uint64_t ram_changed, ram_reads, write_overflow, copy_us, ppe_us, compare_us;
+	uint64_t diff_total;
+} snd_verify;
+static int16_t snd_verify_nat[2 * SND_TICKS_MAX] __attribute__((aligned(128)));
+static float snd_verify_out[2 * SND_OUT_MAX] __attribute__((aligned(128)));
+
+static uint64_t snd_verify_ea(const uint8_t *snapshot, uint64_t ea)
+{
+	if (!ea)
+		return 0;
+	return (uint64_t)(uintptr_t)(snapshot + ((uintptr_t)ea - (uintptr_t)nds->ram));
+}
+
+struct snd_verify_bus {
+	uint64_t ea[4];
+	uint32_t mask[4];
+};
+
+static void snd_verify_fetch(void *ctx, uint32_t addr, uint8_t *dst)
+{
+	const struct snd_verify_bus *b = ctx;
+	const uint32_t r = (addr >> 23) & 511u;
+
+	if (r >= 4 && r < 8 && b->ea[r - 4])
+		memcpy(dst, (const void *)(uintptr_t)(b->ea[r - 4] + (addr & b->mask[r - 4])), SND_LINE);
+	else
+		memset(dst, 0, SND_LINE);
+}
+
+static void snd_verify_store(void *ctx, uint32_t addr, const uint8_t *src, uint32_t len)
+{
+	const struct snd_verify_bus *b = ctx;
+	const uint32_t r = (addr >> 23) & 511u;
+
+	if (r >= 4 && r < 8 && b->ea[r - 4])
+		memcpy((void *)(uintptr_t)(b->ea[r - 4] + (addr & b->mask[r - 4])), src, len);
+}
+
+static int snd_chan_equal(const snd_chan *a, const snd_chan *b)
+{
+	return a->cnt == b->cnt && a->sad == b->sad && a->len == b->len && a->tmr == b->tmr && a->pnt == b->pnt &&
+	       a->on == b->on && a->hdr == b->hdr && a->pos == b->pos && a->tcnt == b->tcnt && a->out == b->out &&
+	       a->adv == b->adv && a->adi == b->adi && a->alv == b->alv && a->ali == b->ali && a->lfsr == b->lfsr &&
+	       a->tag == b->tag && memcmp(a->line, b->line, SND_LINE) == 0;
+}
+
+static int snd_float_close(float a, float b, float eps)
+{
+	const float d = a - b;
+
+	return d <= eps && d >= -eps;
+}
+
+static int snd_float_state_equal(const snd_state *a, const snd_state *b)
+{
+	if (!snd_float_close(a->frac, b->frac, 0.00001f) || a->hd_phase != b->hd_phase || a->hd_active != b->hd_active)
+		return 0;
+	for (int side = 0; side < 2; side++)
+		for (int i = 0; i < SND_HIST; i++)
+			if (!snd_float_close(a->hist[side][i], b->hist[side][i], 0.0005f))
+				return 0;
+	for (int c = 0; c < SND_NCH; c++) {
+		if (a->hd_period[c] != b->hd_period[c] || a->hd_fade[c] != b->hd_fade[c] || a->hd_on[c] != b->hd_on[c])
+			return 0;
+		if (!snd_float_close(a->hd_inv[c], b->hd_inv[c], 0.00001f))
+			return 0;
+		for (int i = 0; i < 4; i++)
+			if (!snd_float_close(a->hd_hist[c][i], b->hd_hist[c][i], 0.0005f))
+				return 0;
+		for (int side = 0; side < 2; side++)
+			if (!snd_float_close(a->hd_last[c][side], b->hd_last[c][side], 0.0005f) ||
+			    !snd_float_close(a->hd_anchor[c][side], b->hd_anchor[c][side], 0.0005f))
+				return 0;
+	}
+	return 1;
+}
+
+static const char *snd_format(unsigned voice, uint32_t cnt)
+{
+	switch (cnt >> 29 & 3u) {
+	case 0: return "PCM8";
+	case 1: return "PCM16";
+	case 2: return "ADPCM";
+	default: return voice >= 14 ? "ruido" : voice >= 8 ? "PSG" : "reservado";
+	}
+}
+
 static void snd_submit(void *ctx, int set, struct nds_snd_job *job, snd_state *st)
 {
 	job_snd js;
+	uint64_t copy_t0 = 0;
 
 	(void)ctx;
+	if (snd_verify.on) {
+		copy_t0 = now_us();
+		nds_snd_copy_memory(nds, snd_verify.initial, snd_verify.bytes);
+		memcpy(snd_verify.spe, snd_verify.initial, snd_verify.bytes);
+		memcpy(snd_verify.ppe, snd_verify.initial, snd_verify.bytes);
+		snd_verify.before = *st;
+		snd_verify.job = job;
+		snd_verify.frame = nds->frames;
+		snd_verify.copy_us += now_us() - copy_t0;
+	}
 	memset(&js, 0, sizeof js);
 	js.state_ea = (uint64_t)(uintptr_t)st;
 	js.log_ea = (uint64_t)(uintptr_t)job->log;
@@ -974,10 +1081,102 @@ static void snd_submit(void *ctx, int set, struct nds_snd_job *job, snd_state *s
 	js.mode = job->mode;
 	js.ratio_adj = job->ratio_adj;
 	for (int i = 0; i < 4; i++) {
-		js.rgn_ea[i] = job->rgn[i].rd;
+		js.rgn_ea[i] = snd_verify.on ? snd_verify_ea(snd_verify.spe, job->rgn[i].rd) : job->rgn[i].rd;
 		js.rgn_mask[i] = job->rgn[i].mask;
 	}
+	if (snd_verify.on) {
+		js.live_delta = (int64_t)(uintptr_t)nds->ram - (int64_t)(uintptr_t)snd_verify.spe;
+		js.verify = 1;
+	}
 	snd_seq[set] = spukit_post(wk_snd, JOB_SND, &js, sizeof js);
+}
+
+static void snd_verify_compare(int set, const job_snd_result *jr)
+{
+	struct snd_verify_bus vb;
+	snd_bus bus = { &vb, snd_verify_fetch, snd_verify_store };
+	struct nds_snd_job *j = snd_verify.job;
+	uint32_t ppe_n = 0, applied;
+	uint64_t t0;
+	uint32_t nat_diff = 0, state_diff = 0, cap_diff = 0, out_diff = 0;
+	int first_sample = -1, first_voice = -1;
+	int16_t first_spe = 0, first_ppe = 0;
+
+	if (!j || j != &nds->snd.job[set])
+		return;
+	for (int i = 0; i < 4; i++) {
+		vb.ea[i] = snd_verify_ea(snd_verify.ppe, j->rgn[i].rd);
+		vb.mask[i] = j->rgn[i].mask;
+	}
+	snd_verify.ppe_state = snd_verify.before;
+	t0 = now_us();
+	applied = snd_run(&snd_verify.ppe_state, j->log, j->nlog, j->nticks, &bus, snd_verify_nat, snd_verify_out,
+			  SND_OUT_MAX, &ppe_n);
+	snd_verify.ppe_us += now_us() - t0;
+	t0 = now_us();
+	for (uint32_t i = 0; i < 2 * j->nticks; i++)
+		if (j->nat[i] != snd_verify_nat[i]) {
+			if (first_sample < 0) {
+				first_sample = (int)i;
+				first_spe = j->nat[i];
+				first_ppe = snd_verify_nat[i];
+			}
+			nat_diff++;
+		}
+	for (int c = 0; c < SND_NCH; c++)
+		if (!snd_chan_equal(&nds->snd.st.ch[c], &snd_verify.ppe_state.ch[c])) {
+			if (first_voice < 0)
+				first_voice = c;
+			state_diff++;
+		}
+	for (int c = 0; c < 2; c++)
+		cap_diff += memcmp(&nds->snd.st.cap[c], &snd_verify.ppe_state.cap[c], sizeof(snd_cap)) != 0;
+	state_diff += nds->snd.st.soundcnt != snd_verify.ppe_state.soundcnt || nds->snd.st.bias != snd_verify.ppe_state.bias ||
+		      nds->snd.st.tick != snd_verify.ppe_state.tick || nds->snd.st.busy != snd_verify.ppe_state.busy ||
+		      nds->snd.st.peak != snd_verify.ppe_state.peak || nds->snd.st.nout != snd_verify.ppe_state.nout ||
+		      nds->snd.st.ticks_run != snd_verify.ppe_state.ticks_run || applied != jr->applied ||
+		      !snd_float_state_equal(&nds->snd.st, &snd_verify.ppe_state);
+	if (jr->out_n != ppe_n)
+		out_diff++;
+	else
+		for (uint32_t i = 0; i < 2 * ppe_n; i++) {
+			const float d = j->out[i] - snd_verify_out[i];
+
+			out_diff += d > 0.0005f || d < -0.0005f;
+		}
+	for (size_t i = 0; i < snd_verify.bytes; i++)
+		cap_diff += snd_verify.spe[i] != snd_verify.ppe[i];
+	nds_snd_commit_memory(nds, snd_verify.initial, snd_verify.spe);
+	snd_verify.compare_us += now_us() - t0;
+	snd_verify.jobs++;
+	snd_verify.nat_diff += nat_diff;
+	snd_verify.state_diff += state_diff;
+	snd_verify.cap_diff += cap_diff;
+	snd_verify.out_diff += out_diff;
+	snd_verify.ram_reads += jr->ram_reads;
+	snd_verify.ram_changed += jr->ram_changed;
+	snd_verify.write_overflow += jr->write_overflow;
+	if (nat_diff || state_diff || cap_diff || out_diff) {
+		const int vc = first_voice >= 0 ? first_voice : 0;
+		const snd_chan *b = &snd_verify.before.ch[vc], *s = &nds->snd.st.ch[vc], *p = &snd_verify.ppe_state.ch[vc];
+
+		snd_verify.diff_jobs++;
+		snd_verify.diff_total++;
+		if (snd_verify.diff_total == 1 || snd_verify.diff_total % 120 == 0)
+			salsads_log("DATO audio-verificar: cuadro %llu, voz %d, formato %s, muestra %d (%s) SPE/PPE %d/%d; "
+				    "estado antes %u,%d,%u,%d,%d,%d,%u; después SPE %u,%d,%u,%d,%d,%d,%u PPE %u,%d,%u,%d,%d,%d,%u; "
+				    "capturas antes %u,%u/%u,%u, SPE %u,%u/%u,%u, PPE %u,%u/%u,%u; "
+				    "entrada RAM cambió %s; diferencias muestras %u, voces %u, capturas/bytes %u, salida %u",
+				    (unsigned long long)snd_verify.frame, first_voice, first_voice >= 0 ? snd_format((unsigned)first_voice, s->cnt) : "mezcla",
+				    first_sample >= 0 ? first_sample / 2 : -1, first_sample < 0 ? "?" : first_sample & 1 ? "R" : "L", first_spe, first_ppe,
+				    b->on, b->pos, b->tcnt, b->out, b->adv, b->adi, b->lfsr,
+				    s->on, s->pos, s->tcnt, s->out, s->adv, s->adi, s->lfsr,
+				    p->on, p->pos, p->tcnt, p->out, p->adv, p->adi, p->lfsr,
+				    snd_verify.before.cap[0].on, snd_verify.before.cap[0].pos, snd_verify.before.cap[1].on, snd_verify.before.cap[1].pos,
+				    nds->snd.st.cap[0].on, nds->snd.st.cap[0].pos, nds->snd.st.cap[1].on, nds->snd.st.cap[1].pos,
+				    snd_verify.ppe_state.cap[0].on, snd_verify.ppe_state.cap[0].pos, snd_verify.ppe_state.cap[1].on, snd_verify.ppe_state.cap[1].pos,
+				    jr->ram_changed ? "sí" : "no", nat_diff, state_diff, cap_diff, out_diff);
+	}
 }
 
 static void snd_wait(void *ctx, int set)
@@ -995,6 +1194,8 @@ static void snd_wait(void *ctx, int set)
 		return;
 	}
 	nds->snd.job[set].out_n = jr.out_n;
+	if (snd_verify.on)
+		snd_verify_compare(set, &jr);
 	snd_acc.jobs++;
 	snd_acc.ticks += jr.ticks;
 	snd_acc.mix_ticks += jr.mix_ticks;
@@ -1135,12 +1336,15 @@ static int snd_selftest(void)
 
 				bad_out += d > 0.0005f || d < -0.0005f;
 			}
-		if (st_spe.busy != st_ppe.busy || st_spe.tick != st_ppe.tick || st_spe.peak != st_ppe.peak)
+		if (st_spe.busy != st_ppe.busy || st_spe.tick != st_ppe.tick || st_spe.peak != st_ppe.peak ||
+		    st_spe.soundcnt != st_ppe.soundcnt || st_spe.bias != st_ppe.bias || st_spe.log_applied != st_ppe.log_applied ||
+		    st_spe.nout != st_ppe.nout || st_spe.ticks_run != st_ppe.ticks_run || !snd_float_state_equal(&st_spe, &st_ppe))
 			bad_state++;
 		for (int c = 0; c < SND_NCH; c++)
-			if (st_spe.ch[c].pos != st_ppe.ch[c].pos || st_spe.ch[c].out != st_ppe.ch[c].out ||
-			    st_spe.ch[c].tcnt != st_ppe.ch[c].tcnt || st_spe.ch[c].lfsr != st_ppe.ch[c].lfsr ||
-			    st_spe.ch[c].adv != st_ppe.ch[c].adv)
+			if (!snd_chan_equal(&st_spe.ch[c], &st_ppe.ch[c]))
+				bad_state++;
+		for (int c = 0; c < 2; c++)
+			if (memcmp(&st_spe.cap[c], &st_ppe.cap[c], sizeof(snd_cap)) != 0)
 				bad_state++;
 		bad_mem += memcmp(st_mem_spe, st_mem_ppe, sizeof st_mem_ppe) != 0;
 	}
@@ -1196,6 +1400,29 @@ static void snd_load_cfg(void)
 	FILE *f;
 	char text[256];
 	size_t len;
+
+	snd_verify.on = stat(AUDIO_VERIFY_FLAG, &fs) == 0;
+	if (snd_verify.on && !snd_verify.initial) {
+		snd_verify.bytes = (size_t)((uintptr_t)(nds->wram7 + sizeof nds->wram7) - (uintptr_t)nds->ram);
+		snd_verify.initial = memalign(128, snd_verify.bytes);
+		snd_verify.spe = memalign(128, snd_verify.bytes);
+		snd_verify.ppe = memalign(128, snd_verify.bytes);
+		if (!snd_verify.initial || !snd_verify.spe || !snd_verify.ppe) {
+			free(snd_verify.initial);
+			free(snd_verify.spe);
+			free(snd_verify.ppe);
+			snd_verify.initial = snd_verify.spe = snd_verify.ppe = NULL;
+			snd_verify.on = 0;
+			salsads_log("audio-verificar: sin memoria para tres instantáneas de %u KB", (unsigned)(snd_verify.bytes >> 10));
+		} else {
+			salsads_log("audio-verificar: activo; SPE y PPE mezclan la misma instantánea de %u KB; capturas privadas",
+				    (unsigned)(snd_verify.bytes >> 10));
+		}
+	} else if (snd_verify.on) {
+		salsads_log("audio-verificar: activo; se reutilizan tres instantáneas de %u KB", (unsigned)(snd_verify.bytes >> 10));
+	} else {
+		salsads_log("audio-verificar: apagado (crear %s para comparar cada trabajo SPE/PPE)", AUDIO_VERIFY_FLAG);
+	}
 
 	if (stat(AUDIO_FRAME_CACHE_OLD_FLAG, &fs) == 0) {
 		mode |= SND_MODE_FRAME_CACHE_OLD;
@@ -1451,6 +1678,23 @@ static void log_stats(void)
 		    (unsigned long long)as.stretch_us, as.stretch_max_us, (unsigned long long)as.busy_us, as.joins, as.rate_permil, as.grain_ms);
 		prev_silent = as.silent;
 		memset(&snd_acc, 0, sizeof snd_acc);
+	}
+	if (snd_verify.on && snd_verify.jobs) {
+		const uint64_t nj = snd_verify.jobs;
+
+		salsads_log("DATO audio-verificar: ventana %llu trabajos; con diferencias %llu; muestras %llu, estado de voces %llu, "
+			    "capturas/bytes %llu, salida flotante %llu; lecturas RAM %llu, líneas cambiadas durante la mezcla %llu, desbordes %llu; "
+			    "costo por trabajo: copia %llu us, PPE %llu us, comparación/aplicación %llu us",
+			    (unsigned long long)nj, (unsigned long long)snd_verify.diff_jobs,
+			    (unsigned long long)snd_verify.nat_diff, (unsigned long long)snd_verify.state_diff,
+			    (unsigned long long)snd_verify.cap_diff, (unsigned long long)snd_verify.out_diff,
+			    (unsigned long long)snd_verify.ram_reads, (unsigned long long)snd_verify.ram_changed,
+			    (unsigned long long)snd_verify.write_overflow,
+			    (unsigned long long)(snd_verify.copy_us / nj), (unsigned long long)(snd_verify.ppe_us / nj),
+			    (unsigned long long)(snd_verify.compare_us / nj));
+		snd_verify.jobs = snd_verify.diff_jobs = snd_verify.nat_diff = snd_verify.state_diff = 0;
+		snd_verify.cap_diff = snd_verify.out_diff = snd_verify.ram_changed = snd_verify.ram_reads = snd_verify.write_overflow = 0;
+		snd_verify.copy_us = snd_verify.ppe_us = snd_verify.compare_us = 0;
 	}
 	if (secs_a9 > 0)
 		mips9_cpu = (double)acc_i9p / secs_a9 / 1e6;
@@ -2325,6 +2569,11 @@ static void stats_reset(void)
 	r3d_fail = 0;
 	memset(&geom_acc, 0, sizeof geom_acc);
 	memset(&snd_acc, 0, sizeof snd_acc);
+	snd_verify.job = NULL;
+	snd_verify.jobs = snd_verify.diff_jobs = snd_verify.nat_diff = snd_verify.state_diff = 0;
+	snd_verify.cap_diff = snd_verify.out_diff = snd_verify.ram_changed = snd_verify.ram_reads = snd_verify.write_overflow = 0;
+	snd_verify.copy_us = snd_verify.ppe_us = snd_verify.compare_us = 0;
+	snd_verify.diff_total = 0;
 	memset(prof_buf, 0, sizeof prof_buf);
 	prof_n = 0;
 	prev_i9 = prev_i7 = 0;
