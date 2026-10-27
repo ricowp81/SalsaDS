@@ -915,6 +915,15 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
             b[0] = (uint8_t)rs.fog_table[i]; b[1] = b[2] = b[3] = 0;
         }
     }
+    if ((modes & ((1u << RSX_TOON) | (1u << RSX_HIGHLIGHT))) || (rs.d3 & D3_FOG)) {
+        /* Los 128 bytes de la tabla caben en una línea de caché del PPE: con pocos vértices nada la desaloja y el RSX
+         * leía la tabla del cuadro anterior (prueba de respaldo 6/7). Escribirla a memoria antes de encolar. */
+#ifdef __powerpc__
+        __asm__ volatile("dcbf 0,%0; sync" : : "r"(mem + TOON_OFF(slot)) : "memory");
+#else
+        __sync_synchronize();
+#endif
+    }
     for (uint32_t i = 0; i < f->npolys; i++) {
         const gx_poly *p = &f->poly[i];
         if (p->nverts < 3 || p->nverts > GX_POLY_MAXV || p->wshift > 28) return -1;
