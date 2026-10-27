@@ -268,7 +268,9 @@ static uint8_t oid[64], tid[64], oid_test[64];
 static int shadows, single_shadow, shadow_general, shadow_unbatched;
 static uint8_t trans_mask, opaque_mask;
 static rsxkit_program *range_z, *range_w;
-static int equal_spe, textures_no_wait;
+static int equal_spe, textures_no_wait, fog_constant, textures_rescue;
+static unsigned rescue_left, rescue_textures;
+#define RESCUE_PIXELS 16384u /* texeles por cuadro que el PPE decodifica en lugar de caer al SPE */
 static uint64_t texture_wait_us;
 static unsigned texture_wait_count, texture_wait_ready, texture_wait_timeout, texture_wait_frames;
 static int shadow_extended, shadow_back_spe, shadow_ids_spe;
@@ -498,16 +500,19 @@ static int texture(const r3d_tex *t, rsxkit_texture *out, rsx3d_stats *st)
     out->width = w; out->height = h; out->format = RSXKIT_RGBA8888;
     out->location = RSXKIT_MEM_MAIN; out->filter = RSXKIT_FILTER_NEAREST;
     out->xf[0] = 1.0f / w; out->xf[1] = 1.0f / h;
-    if (decode_worker && !decode_ppe) {
+    if (decode_worker && !decode_ppe && (!textures_rescue || (h - entry->rows) * w > rescue_left)) {
         entry->key = t->key; entry->pal = t->pkey; entry->tx = *out; cache_source[entry-cache] = *t;
         decode_missing = 1; goto wrap;
     }
-    for (uint32_t y = 0; y < h; y++) for (uint32_t x = 0; x < w; x++) {
+    /* Rescate en el PPE: una textura fría (o el resto de una a medias) se decodifica ahora, dentro del presupuesto
+     * por cuadro, para que el cuadro no caiga al SPE; el costo sale en «RGBA8» de las etapas. */
+    if (decode_worker && !decode_ppe) { rescue_left -= (h - entry->rows) * w; rescue_textures++; }
+    for (uint32_t y = entry->rows; y < h; y++) for (uint32_t x = 0; x < w; x++) {
         uint32_t p = r3d_decode(t, x, y, tex_read, pal_read, NULL);
         uint8_t *b = mem + dest + y * pitch + x * 4u;
         b[0] = R3D_PX_R(p); b[1] = R3D_PX_G(p); b[2] = R3D_PX_B(p); b[3] = R3D_PX_A(p);
     }
-    entry->key = t->key; entry->pal = t->pkey; entry->tx = *out; entry->valid = 1;
+    entry->key = t->key; entry->pal = t->pkey; entry->tx = *out; entry->valid = 1; entry->rows = h;
     st->decode_us += ticks() - t0;
     st->textures++; st->uploaded += pitch * h;
 wrap:
@@ -534,9 +539,11 @@ int rsx3d_init(void)
     profile = stat("/dev_hdd0/salsads/3d-rsx-prueba", &flag) == 0 ||
               stat("/dev_hdd0/salsads/3d-rsx-perfil", &flag) == 0;
     fog_spe = stat("/dev_hdd0/salsads/3d-rsx-niebla-spe", &flag) == 0;
+    fog_constant = stat("/dev_hdd0/salsads/3d-rsx-niebla-constante", &flag) == 0; /* A/B: solo densidad constante por polígono */
     shadow_unbatched = stat("/dev_hdd0/salsads/3d-rsx-sombra-sin-lotes", &flag) == 0;
     shadow_general = stat("/dev_hdd0/salsads/3d-rsx-sombra-general", &flag) == 0;
     textures_no_wait = stat("/dev_hdd0/salsads/3d-rsx-texturas-sin-espera", &flag) == 0;
+    textures_rescue = stat("/dev_hdd0/salsads/3d-rsx-texturas-sin-rescate", &flag) != 0; /* A/B: sin rescate en el PPE */
     equal_spe = stat("/dev_hdd0/salsads/3d-rsx-igualdad-spe", &flag) == 0;
     shadow_back_spe = stat("/dev_hdd0/salsads/3d-rsx-sombra-trasera-spe", &flag) == 0;
     shadow_ids_spe = stat("/dev_hdd0/salsads/3d-rsx-sombra-ids-spe", &flag) == 0;
@@ -544,7 +551,7 @@ int rsx3d_init(void)
     toon_spe = stat("/dev_hdd0/salsads/3d-rsx-toon-spe", &flag) == 0;
     salsads_log("rsx3d preparación: vértices %s, RGBA8 %s, envío %s; presupuesto %u texeles",
                 scalar_vertices || old_prepare ? "escalar PPE" : "VMX PPE",
-                decode_ppe ? "PPE" : "SPE por lotes", incremental_issue ? "incremental" : "anterior", RSX_DECODE_PIXELS);
+                decode_ppe ? "PPE" : textures_rescue ? "SPE por lotes con rescate PPE" : "SPE por lotes", incremental_issue ? "incremental" : "anterior", RSX_DECODE_PIXELS);
     tick_hz = sysGetTimebaseFrequency();
     for (unsigned slot = 0; slot < 2; slot++)
         memset(mem + OUT_OFF(slot) + R3D_W * R3D_H * 4u, 31, 512);
@@ -745,7 +752,7 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
         texture_wait_frames=texture_wait_count=texture_wait_ready=texture_wait_timeout=0; texture_wait_us=0;
     }
     if (!decode_collect()) { reason = "texturas SPE pendientes"; return decode_error ? -1 : 0; }
-    decode_count = 0; decode_missing = 0;
+    decode_count = 0; decode_missing = 0; rescue_left = RESCUE_PIXELS;
     for (unsigned k = 0; k < nc; k++) cache[k].wanted = 0;
     if (!f || (j->flags & R3D_F_BLANK)) { reason = "cuadro vacío"; return 0; }
     if (f->npolys > GX_MAX_POLYS || f->nverts > GX_MAX_VERTS) return -1;
@@ -790,7 +797,7 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
         for (unsigned i = 0; i < f->npolys; i++) {
             const gx_poly *p = &f->poly[i];
             unsigned fmt = (p->texparam >> 26) & 7u;
-            if (rs.wbuf || (p->attr & PA_FOG)) {
+            if (fog_constant && (rs.wbuf || (p->attr & PA_FOG))) {
                 if (p->nverts < 3 || p->nverts > GX_POLY_MAXV || p->wshift > 28 || p->vidx[0] >= f->nverts) return -1;
                 uint32_t w = rs.wbuf ? (uint32_t)f->vtx[p->vidx[0]].w : f->vtx[p->vidx[0]].z;
                 for (unsigned k = 1; k < p->nverts; k++) {
@@ -897,6 +904,12 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
             b[0] = R3D_PX_R(rs.toon[i]); b[1] = R3D_PX_G(rs.toon[i]);
             b[2] = R3D_PX_B(rs.toon[i]); b[3] = 0;
         }
+    } else if (rs.d3 & D3_FOG) {
+        /* La tabla de niebla ocupa la ranura de toon (excluyentes): R = densidad 0..127. */
+        for (unsigned i = 0; i < 32; i++) {
+            uint8_t *b = mem + TOON_OFF(slot) + 4*i;
+            b[0] = (uint8_t)rs.fog_table[i]; b[1] = b[2] = b[3] = 0;
+        }
     }
     for (uint32_t i = 0; i < f->npolys; i++) {
         const gx_poly *p = &f->poly[i];
@@ -968,11 +981,18 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
         }
         if (rs.d3 & D3_FOG) {
             d->program = rs.wbuf ? fog_w : fog;
-            /* Densidad entera antes del interpolador: ni Z normalizada ni
-             * constantes grandes deben decidir un borde de la tabla. */
-            uint32_t fog_depth = rs.wbuf ? p.v[0].w << p.wshift : vv[0]->z;
-            if (fog_depth > 0xffffffu) fog_depth = 0xffffffu;
-            d->k[3][0][3] = (p.attr & PA_FOG) ? r3d_fog_density(&rs, fog_depth) : 0;
+            /* Densidad por fragmento en el shader con la tabla en TEXUNIT1:
+             * desplazamiento, bits de fracción (10 - FOG_SHIFT) y 2^wshift. */
+            d->ntex = 2;
+            d->tex[1].offset = offset + TOON_OFF(slot); d->tex[1].pitch = 128;
+            d->tex[1].width = 32; d->tex[1].height = 1;
+            d->tex[1].format = RSXKIT_RGBA8888; d->tex[1].location = RSXKIT_MEM_MAIN;
+            d->tex[1].filter = RSXKIT_FILTER_NEAREST;
+            d->tex[1].wrap_s = d->tex[1].wrap_t = RSXKIT_WRAP_CLAMP;
+            d->k[3][0][0] = (float)rs.fog_offset;
+            d->k[3][0][1] = (float)(rs.fog_shift > 10 ? 0u : 10u - rs.fog_shift);
+            d->k[3][0][3] = (p.attr & PA_FOG) ? 1.0f : 0.0f;
+            d->k[1][0][3] = (float)(1u << p.wshift);
             uint32_t fc = rs.fog_px;
             d->k[2][0][0] = R3D_PX_R(fc); d->k[2][0][1] = R3D_PX_G(fc);
             d->k[2][0][2] = R3D_PX_B(fc); d->k[2][0][3] = R3D_PX_A(fc);
@@ -1194,10 +1214,10 @@ int rsx3d_submit(const r3d_job *j, unsigned slot, rsx3d_stats *st)
         salsads_log("DATO rsx3d censo: cuadros %u modo RSX %u SPE %u; imagen-borrado %u niebla %u bordes %u toon %u resaltado %u mascara-sombra %u sombra %u igualdad %u alambre %u",
                     frames, rendered, frames-rendered, counts[0], counts[1], counts[2], counts[3],
                     counts[4], counts[5], counts[6], counts[7], counts[8]);
-        salsads_log("DATO rsx3d frio: cuadros pendientes %u ocupado %u lotes %u; presupuesto %u texeles, espera PPE 0; SPE %.3f ms, texeles %llu",
+        salsads_log("DATO rsx3d frio: cuadros pendientes %u ocupado %u lotes %u; presupuesto %u texeles, espera PPE 0; SPE %.3f ms, texeles %llu; rescate PPE %u texturas (tope %u texeles por cuadro)",
                     cold_frames, busy_frames, decode_batches, RSX_DECODE_PIXELS,
-                    decode_ticks * 1000.0 / spukit_tick_hz(), (unsigned long long)decode_pixels);
-        cold_frames = busy_frames = decode_batches = 0; decode_ticks = decode_pixels = 0;
+                    decode_ticks * 1000.0 / spukit_tick_hz(), (unsigned long long)decode_pixels, rescue_textures, textures_rescue ? RESCUE_PIXELS : 0u);
+        cold_frames = busy_frames = decode_batches = 0; decode_ticks = decode_pixels = 0; rescue_textures = 0;
         frames = rendered = 0; memset(counts, 0, sizeof counts);
     }
     return result;

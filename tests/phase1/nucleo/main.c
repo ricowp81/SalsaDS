@@ -868,6 +868,7 @@ static int sub_early; /* la pantalla B de `sub` ya salió (vid_submit_early): vi
 
 #ifdef NUCLEO_RSX
 static int hd_capture_keep; /* 3d-rsx-hd-captura: HD en A aunque B muestre su captura */
+static int hd_defer_keep;    /* 3d-rsx-hd-aplazar: conserva el aplazamiento de la espera del 3D con HD */
 
 /* Captura a doble pantalla: el motor A se captura entero a un banco de VRAM que el motor B muestra (como fondo o como
  * OBJ de mapa de bits) en el cuadro siguiente, y el juego alterna bancos y pantallas cada cuadro (la intro de Metroid
@@ -2273,6 +2274,12 @@ static void render_frame(void)
 			const uint32_t c_lines = (compA_us_ema * 6u / 5u) / 55u + 4u;
 
 			nds->vid.r3d_defer_line = c_lines + 48u > 263u ? 0u : (263u - c_lines > 160u ? 160u : 263u - c_lines);
+#ifdef NUCLEO_RSX
+			/* Con HD en juego el aplazamiento presenta una imagen HD vieja (medido en consola: bloque 8×8 igual 120/120);
+			 * hasta entender la causa, la HD lo apaga salvo 3d-rsx-hd-aplazar. */
+			if (rsx3d_on && rsx3d_hd_experimental() && !hd_defer_keep)
+				nds->vid.r3d_defer_line = 0;
+#endif
 		} else {
 			nds->vid.r3d_defer_line = 0;
 		}
@@ -3012,6 +3019,9 @@ int main(void)
 			rsx3d_on = rsx3d_init() == 0;
 			hd_capture_keep = stat(SALSADS_DATA_DIR "/3d-rsx-hd-captura", &st) == 0;
 			hd_meta_ppe = stat(SALSADS_DATA_DIR "/3d-rsx-hd-metadatos-ppe", &st) == 0;
+			hd_defer_keep = stat(SALSADS_DATA_DIR "/3d-rsx-hd-aplazar", &st) == 0;
+			if (rsx3d_on && rsx3d_hd_experimental())
+				salsads_log("rsx3d HD y aplazamiento de la espera del 3D: %s", hd_defer_keep ? "se conserva (3d-rsx-hd-aplazar)" : "apagado con HD");
 			hd_verify_on = hd_meta_ppe || stat(SALSADS_DATA_DIR "/3d-rsx-hd-verificar-metadatos", &st) == 0;
 			if (rsx3d_on && hd_verify_on) salsads_log("rsx3d HD metadatos escalares en el PPE: %s (cuesta ~15 ms por cuadro)", hd_meta_ppe ? "se presentan en lugar de los del SPE" : "solo se comparan con los del SPE");
 			if (rsx3d_on && rsx3d_scale() > 1)

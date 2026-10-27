@@ -3,13 +3,13 @@
  * q.x: referencia alfa. Pasadas: 0 opacos, 1 mezcla, 2 reemplazo translúcido. */
 void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
           float4 color : COLOR0, uniform sampler2D image : TEXUNIT0,
-#ifdef RSX3D_TOON
+#if defined(RSX3D_TOON) || defined(RSX3D_FOG)
           uniform sampler2D table : TEXUNIT1,
 #endif
 #ifdef RSX3D_FOG
           float4 fc : TEXCOORD3, float4 fp : TEXCOORD4,
 #endif
-#ifdef RSX3D_W
+#if defined(RSX3D_W) || defined(RSX3D_FOG)
           float4 pos : WPOS,
 #endif
 #ifdef RSX3D_W
@@ -45,9 +45,29 @@ void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
     float want = step(0.5, k.w);
     clip(0.5 - abs(translucent - want));
 #ifdef RSX3D_FOG
-    /* Entradas constantes pequeñas, recuperadas como enteros antes de
-     * multiplicar. El interpolador puede entregar 31 como 30.999998. */
-    float density = floor(fp.w + 0.5);
+    /* Densidad por fragmento como la DS: profundidad entera de 24 bits
+     * (Z del fragmento o W por fragmento desplazado), >>9, menos el
+     * desplazamiento, índice de la tabla de 32 entradas con la fracción
+     * interpolada. fp: x desplazamiento, y bits de fracción, z solo alfa,
+     * w niebla activa en el polígono. La tabla va en TEXUNIT1 (R = densidad). */
+    float density = 0.0;
+    if (fp.w > 0.5) {
+#ifdef RSX3D_W
+        float fogdepth = min(floor(1.0 / pos.w) * floor(q.w + 0.5), 16777215.0);
+#else
+        float fogdepth = floor(pos.z * 16777215.0 + 0.5);
+#endif
+        float kk = floor(fogdepth / 512.0) - floor(fp.x + 0.5);
+        float sh = exp2(floor(fp.y + 0.5));
+        float i = clamp(floor(kk / sh), 0.0, 31.0);
+        float t0 = floor(tex2D(table, float2((i + 0.5) / 32.0, 0.5)).r * 255.0 + 0.5);
+        float t1 = floor(tex2D(table, float2((min(i + 1.0, 31.0) + 0.5) / 32.0, 0.5)).r * 255.0 + 0.5);
+        float fr = kk - i * sh;
+        density = t0 + floor((t1 - t0) * fr / sh);
+        if (kk < 0.0) density = t0;
+        if (i >= 31.0) density = t1;
+        if (density == 127.0) density = 128.0;
+    }
     float4 fogcolor = floor(fc + 0.5);
     c = floor(c + 0.5);
     a = floor(a + 0.5);
