@@ -394,6 +394,7 @@ static rsxkit_draw last_draw;
 static int last_valid;
 
 const char *rsx3d_reason(void) { return reason; }
+int rsx3d_fog_constant(void) { return fog_constant; }
 static uint32_t tex_read(void *unused, uint32_t a)
 {
     (void)unused;
