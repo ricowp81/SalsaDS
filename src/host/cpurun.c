@@ -617,8 +617,8 @@ int main(int argc, char **argv)
 	uint64_t fdump_frame = 0;
 	const char *rsx_max_path = NULL;
 	uint32_t rsx_max_polys = 0;
-	const char *rsx_census_path = NULL;
-	FILE *rsx_census = NULL;
+	const char *rsx_census_path = NULL, *video_trace_path = NULL;
+	FILE *rsx_census = NULL, *video_trace = NULL;
 	const char *img3d_path = NULL;
 	struct { uint64_t frame; uint32_t keys, x, y; } press[512];
 	struct { uint64_t frame; const char *file; } shot[32];
@@ -695,6 +695,8 @@ int main(int argc, char **argv)
 			img3d_path = argv[++i];
 		else if (!strcmp(argv[i], "--rsx-censo") && i + 1 < argc)
 			rsx_census_path = argv[++i];
+		else if (!strcmp(argv[i], "--video-trace") && i + 1 < argc)
+			video_trace_path = argv[++i]; /* por cuadro: DISPCNT, DISPCAPCNT, captura, VRAMCNT, 3D e intercambio */
 		else if (!strcmp(argv[i], "--rsx-max") && i + 1 < argc)
 			rsx_max_path = argv[++i]; /* cuadro con más polígonos dentro de --r3d-win */
 		else if (!strcmp(argv[i], "--gx-dump") && i + 1 < argc)
@@ -1084,6 +1086,11 @@ int main(int argc, char **argv)
 		for (unsigned k = 0; k < RSX_MODE_COUNT; k++) fprintf(rsx_census, ",%s", rsx_mode_names[k]);
 		fputc('\n', rsx_census);
 	}
+	if (video_trace_path) {
+		video_trace = fopen(video_trace_path, "w");
+		if (!video_trace) { perror("traza de video"); return 1; }
+		fprintf(video_trace, "cuadro,set,has3d,polys,dispcntA,dispcapcnt,capturas,dispcntB,powcnt1,vramcnt,bgcntA,bldcntA,bldalphaA,mbrightA\n");
+	}
 	t0 = now();
 	if (frames) {
 		const char *who;
@@ -1103,6 +1110,18 @@ int main(int argc, char **argv)
 				gx_dump(path);
 			}
 			run_frame();
+			if (video_trace && M.vid.last >= 0) {
+				const struct nds_vset *s = &M.vid.set[M.vid.last];
+				const gpu2d_engine *ea = &s->frame.eng[0], *eb = &s->frame.eng[1];
+				const gx_frame *gf = (const gx_frame *)(uintptr_t)s->r3d.frame_ea;
+				fprintf(video_trace, "%llu,%d,%d,%u,%08x,%04x%04x,%llu,%08x,%04x,", (unsigned long long)f, M.vid.last, s->has3d,
+					s->has3d && gf ? gf->npolys : 0u, g2d_dispcnt(ea), ea->regs[G2D_R_DISPCAP + 1], ea->regs[G2D_R_DISPCAP],
+					(unsigned long long)M.vid.cap.frames, g2d_dispcnt(eb), s->powcnt1);
+				for (int k = 0; k < 9; k++) fprintf(video_trace, "%02x", M.vramcnt[k]);
+				fprintf(video_trace, ",%04x/%04x/%04x/%04x,%04x,%04x,%04x\n", ea->regs[G2D_R_BGCNT], ea->regs[G2D_R_BGCNT + 1],
+					ea->regs[G2D_R_BGCNT + 2], ea->regs[G2D_R_BGCNT + 3], ea->regs[G2D_R_BLDCNT], ea->regs[G2D_R_BLDCNT + 1],
+					ea->regs[G2D_R_MASTER_BRIGHT]);
+			}
 			if (rsx_census && M.vid.last >= 0 && f >= M.vid.r3d_win0 &&
 			    (!M.vid.r3d_win1 || f < M.vid.r3d_win1)) {
 				struct nds_vset *s = &M.vid.set[M.vid.last];
