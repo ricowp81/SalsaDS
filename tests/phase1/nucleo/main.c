@@ -108,6 +108,7 @@ static int geom_poly_plain, geom_read_scalar;
  * archivo vuelve a la forma anterior, para comparar en la misma escena. */
 #define GX_LENTO_FLAG SALSADS_DATA_DIR "/gx-lento"
 #define AUDIO_VERIFY_FLAG SALSADS_DATA_DIR "/audio-verificar"
+#define AUDIO_PPE_FLAG SALSADS_DATA_DIR "/audio-mezcla-ppe"
 
 #ifdef NUCLEO_JIT
 /* «SalsaDS JIT núcleo» (Fase 4): el ARM9 con el recompilador (src/jit/arec*); caché de código y prueba con respaldo de la
@@ -972,6 +973,8 @@ static struct {
 } snd_verify;
 static int16_t snd_verify_nat[2 * SND_TICKS_MAX] __attribute__((aligned(128)));
 static float snd_verify_out[2 * SND_OUT_MAX] __attribute__((aligned(128)));
+static snd_state st_spe __attribute__((aligned(128))), st_ppe __attribute__((aligned(128)));
+static int snd_float_close(float a, float b, float eps);
 
 static uint64_t snd_verify_ea(const uint8_t *snapshot, uint64_t ea)
 {
@@ -1013,6 +1016,72 @@ static int snd_chan_equal(const snd_chan *a, const snd_chan *b)
 	       a->tag == b->tag && memcmp(a->line, b->line, SND_LINE) == 0;
 }
 
+static void snd_selftest_diagnose(int pass)
+{
+	for (int c = 0; c < SND_NCH; c++) {
+		const snd_chan *s = &st_spe.ch[c], *p = &st_ppe.ch[c];
+		int line = -1;
+
+		if (snd_chan_equal(s, p))
+			continue;
+		for (int i = 0; i < SND_LINE && line < 0; i++)
+			if (s->line[i] != p->line[i]) line = i;
+		salsads_log("FALLO autoprueba audio estado: trabajo %d voz %d: CNT %08x/%08x SAD %08x/%08x LEN %u/%u "
+			    "TMR %u/%u PNT %u/%u encendida %u/%u cabecera %u/%u posición %d/%d fracción-temporizador %u/%u salida %d/%d",
+			    pass, c, s->cnt, p->cnt, s->sad, p->sad, s->len, p->len, s->tmr, p->tmr, s->pnt, p->pnt,
+			    s->on, p->on, s->hdr, p->hdr, s->pos, p->pos, s->tcnt, p->tcnt, s->out, p->out);
+		salsads_log("FALLO autoprueba audio estado: trabajo %d voz %d: ADPCM valor %d/%d índice %d/%d bucle %d,%d/%d,%d; "
+			    "ruido %u/%u línea %08x/%08x primer byte distinto %d",
+			    pass, c, s->adv, p->adv, s->adi, p->adi, s->alv, s->ali, p->alv, p->ali,
+			    s->lfsr, p->lfsr, s->tag, p->tag, line);
+	}
+	for (int c = 0; c < 2; c++)
+		if (memcmp(&st_spe.cap[c], &st_ppe.cap[c], sizeof(snd_cap)) != 0)
+			salsads_log("FALLO autoprueba audio estado: trabajo %d SOUNDCAP%d: CNT %u/%u encendida %u/%u destino %08x/%08x "
+				    "longitud %u/%u posición %u/%u base %08x/%08x bytes %u/%u", pass, c,
+				    st_spe.cap[c].cnt, st_ppe.cap[c].cnt, st_spe.cap[c].on, st_ppe.cap[c].on,
+				    st_spe.cap[c].dad, st_ppe.cap[c].dad, st_spe.cap[c].len, st_ppe.cap[c].len,
+				    st_spe.cap[c].pos, st_ppe.cap[c].pos, st_spe.cap[c].base, st_ppe.cap[c].base,
+				    st_spe.cap[c].bytes, st_ppe.cap[c].bytes);
+	if (st_spe.resample_phase != st_ppe.resample_phase || st_spe.hd_phase != st_ppe.hd_phase ||
+	    st_spe.hd_active != st_ppe.hd_active)
+		salsads_log("FALLO autoprueba audio estado: trabajo %d: fase remuestreo %08x/%08x, fase HD %u/%u, activa %u/%u",
+			    pass, st_spe.resample_phase, st_ppe.resample_phase, st_spe.hd_phase, st_ppe.hd_phase,
+			    st_spe.hd_active, st_ppe.hd_active);
+	if (st_spe.soundcnt != st_ppe.soundcnt || st_spe.bias != st_ppe.bias || st_spe.tick != st_ppe.tick ||
+	    st_spe.busy != st_ppe.busy || st_spe.peak != st_ppe.peak || st_spe.nout != st_ppe.nout ||
+	    st_spe.ticks_run != st_ppe.ticks_run || st_spe.log_applied != st_ppe.log_applied)
+		salsads_log("FALLO autoprueba audio estado: trabajo %d mezcla: SOUNDCNT %04x/%04x BIAS %u/%u tick %llu/%llu "
+			    "ocupadas %05x/%05x pico %u/%u salida %u/%u ticks %u/%u escrituras %u/%u", pass,
+			    st_spe.soundcnt, st_ppe.soundcnt, st_spe.bias, st_ppe.bias,
+			    (unsigned long long)st_spe.tick, (unsigned long long)st_ppe.tick, st_spe.busy, st_ppe.busy,
+			    st_spe.peak, st_ppe.peak, st_spe.nout, st_ppe.nout, st_spe.ticks_run, st_ppe.ticks_run,
+			    st_spe.log_applied, st_ppe.log_applied);
+	{
+		uint32_t hist = 0;
+
+		for (int side = 0; side < 2; side++)
+			for (int i = 0; i < SND_HIST; i++)
+				hist += !snd_float_close(st_spe.hist[side][i], st_ppe.hist[side][i], 0.0005f);
+		if (hist)
+			salsads_log("FALLO autoprueba audio estado: trabajo %d: %u muestras distintas en la historia del remuestreador", pass, hist);
+	}
+	for (int c = 0; c < SND_NCH; c++) {
+		uint32_t hist = 0, lr = 0;
+
+		for (int i = 0; i < 4; i++) hist += !snd_float_close(st_spe.hd_hist[c][i], st_ppe.hd_hist[c][i], 0.0005f);
+		for (int side = 0; side < 2; side++)
+			lr += !snd_float_close(st_spe.hd_last[c][side], st_ppe.hd_last[c][side], 0.0005f) ||
+			      !snd_float_close(st_spe.hd_anchor[c][side], st_ppe.hd_anchor[c][side], 0.0005f);
+		if (hist || lr || st_spe.hd_period[c] != st_ppe.hd_period[c] || st_spe.hd_fade[c] != st_ppe.hd_fade[c] ||
+		    st_spe.hd_on[c] != st_ppe.hd_on[c] || !snd_float_close(st_spe.hd_inv[c], st_ppe.hd_inv[c], 0.00001f))
+			salsads_log("FALLO autoprueba audio estado: trabajo %d voz %d HD: historia %u, salida/ancla %u, período %u/%u, "
+				    "envolvente %u/%u, encendida %u/%u, inversa %.9g/%.9g", pass, c, hist, lr,
+				    st_spe.hd_period[c], st_ppe.hd_period[c], st_spe.hd_fade[c], st_ppe.hd_fade[c],
+				    st_spe.hd_on[c], st_ppe.hd_on[c], st_spe.hd_inv[c], st_ppe.hd_inv[c]);
+	}
+}
+
 static int snd_float_close(float a, float b, float eps)
 {
 	const float d = a - b;
@@ -1022,9 +1091,7 @@ static int snd_float_close(float a, float b, float eps)
 
 static int snd_float_state_equal(const snd_state *a, const snd_state *b)
 {
-	/* El SPU redondea cada avance de fase de forma distinta al PPE. El margen es 0,05 % de una muestra y no
-	 * oculta un salto entero ni una diferencia audible; la salida se compara aparte con el mismo límite. */
-	if (!snd_float_close(a->frac, b->frac, 0.0005f) || a->hd_phase != b->hd_phase || a->hd_active != b->hd_active)
+	if (a->resample_phase != b->resample_phase || a->hd_phase != b->hd_phase || a->hd_active != b->hd_active)
 		return 0;
 	for (int side = 0; side < 2; side++)
 		for (int i = 0; i < SND_HIST; i++)
@@ -1223,7 +1290,6 @@ static uint8_t st_mem_spe[ST_MEM] __attribute__((aligned(128))), st_mem_ppe[ST_M
 static snd_ent st_log[SND_LOG_MAX] __attribute__((aligned(128)));
 static int16_t st_nat_spe[2 * SND_TICKS_MAX] __attribute__((aligned(128))), st_nat_ppe[2 * SND_TICKS_MAX];
 static float st_out_spe[2 * SND_OUT_MAX] __attribute__((aligned(128))), st_out_ppe[2 * SND_OUT_MAX];
-static snd_state st_spe __attribute__((aligned(128))), st_ppe __attribute__((aligned(128)));
 
 static void st_bus_fetch(void *ctx, uint32_t addr, uint8_t *dst)
 {
@@ -1271,7 +1337,7 @@ static int snd_selftest(void)
 	snd_reset(&st_ppe);
 	for (int pass = 0; pass < 4; pass++) {
 		const uint32_t nt = 300u + 77u * (uint32_t)(pass & 1);
-		uint32_t n_ppe = 0, applied;
+		uint32_t n_ppe = 0, applied, state0 = bad_state;
 		snd_bus bus = { NULL, st_bus_fetch, st_bus_store };
 
 		st_n = 0;
@@ -1348,6 +1414,8 @@ static int snd_selftest(void)
 		for (int c = 0; c < 2; c++)
 			if (memcmp(&st_spe.cap[c], &st_ppe.cap[c], sizeof(snd_cap)) != 0)
 				bad_state++;
+		if (bad_state != state0)
+			snd_selftest_diagnose(pass);
 		bad_mem += memcmp(st_mem_spe, st_mem_ppe, sizeof st_mem_ppe) != 0;
 	}
 	salsads_log("autoprueba del audio: SPE contra PPE, 4 trabajos (fiel y HD): %u muestras distintas, %u del estado, %u de la memoria "
@@ -1433,8 +1501,17 @@ static void snd_load_cfg(void)
 		salsads_log("audio: las voces 1 y 3 conservan la línea de SOUNDCAP entre trabajos");
 	}
 	if (stat(SALSADS_DATA_DIR "/audio-hd", &fs) == 0) {
-		nds_snd_set_mode(nds, mode | SND_MODE_HD);
-		salsads_log("audio: HD, Hermite por voz a 48 kHz; captura nativa, limitador al final");
+		if (stat(SALSADS_DATA_DIR "/audio-sin-hd", &fs) != 0) {
+			mode |= SND_MODE_HD;
+			salsads_log("audio: HD, Hermite por voz a 48 kHz; captura nativa, limitador al final");
+		} else {
+			salsads_log("audio: HD desactivado por audio-sin-hd");
+		}
+		if (stat(SALSADS_DATA_DIR "/audio-sin-remuestrear", &fs) == 0) {
+			mode |= SND_MODE_RESAMPLE_SIMPLE;
+			salsads_log("audio: FIR desactivado; conversión lineal a 48 kHz");
+		}
+		nds_snd_set_mode(nds, mode);
 		return;
 	}
 	f = fopen(AUDIO_CFG_PATH, "r");
@@ -1449,6 +1526,10 @@ static void snd_load_cfg(void)
 	if (strstr(text, "original = si") || strstr(text, "original=si")) {
 		mode |= SND_MODE_ORIGINAL;
 		salsads_log("audio: salida «como el original» (10 bits con SOUNDBIAS) por %s", AUDIO_CFG_PATH);
+	}
+	if (stat(SALSADS_DATA_DIR "/audio-sin-remuestrear", &fs) == 0) {
+		mode |= SND_MODE_RESAMPLE_SIMPLE;
+		salsads_log("audio: FIR desactivado; conversión lineal a 48 kHz");
 	}
 	nds_snd_set_mode(nds, mode);
 }
@@ -3198,12 +3279,19 @@ int main(void)
 	}
 	nds->snd.ops.sink = snd_sink;
 	if (wk_snd) {
-		if (snd_selftest() == 0) {
+		struct stat ast;
+		const int force_ppe = stat(AUDIO_PPE_FLAG, &ast) == 0;
+		const int selftest_ok = snd_selftest() == 0;
+
+		if (selftest_ok && !force_ppe) {
 			nds->snd.ops.submit = snd_submit;
 			nds->snd.ops.wait = snd_wait;
 			snd_on = 1;
 			salsads_log("sonido: mezclador en un SPE (autoprueba contra el PPE: igual)");
 			snd_hd_bench();
+		} else if (selftest_ok) {
+			snd_on = 0;
+			salsads_log("sonido: mezcla el PPE por audio-mezcla-ppe (la autoprueba SPE/PPE fue igual)");
 		} else {
 			failures++;
 			salsads_log("sonido: la autoprueba del SPE falló: mezcla el PPE");

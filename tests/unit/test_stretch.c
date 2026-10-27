@@ -132,6 +132,41 @@ static void stereo2(void)
 	CHECK(!s.missing);
 }
 
+static void simulation_long(void)
+{
+	for (unsigned speed = 50; speed <= 100; speed += 50) {
+		audio_stretch2 s = {0};
+		float fifo[2*16384], out[2*STRETCH_HOP];
+		unsigned have = 7680, index = have, crossings = 0;
+		float previous = 0;
+
+		for (unsigned i = 0; i < have; i++)
+			fifo[2*i] = fifo[2*i+1] = signal_at(i, 0);
+		for (unsigned h = 0; h < 400; h++) {
+			const unsigned add = h % 5 ? 0 : 2400 * speed / 100;
+
+			CHECK(have + add <= 16384);
+			for (unsigned i = 0; i < add; i++)
+				fifo[2*(have+i)] = fifo[2*(have+i)+1] = signal_at(index++, 0);
+			have += add;
+			unsigned used = audio_stretch2_run_long(&s, fifo, have, out);
+			CHECK(used <= have);
+			if (speed == 100) CHECK(memcmp(out, fifo, sizeof out) == 0);
+			memmove(fifo, fifo + 2*used, 2*(have-used)*sizeof(float));
+			have -= used;
+			for (unsigned i = 0; i < STRETCH_HOP; i++) {
+				CHECK(isfinite(out[2*i]) && out[2*i] == out[2*i+1]);
+				if (previous <= 0 && out[2*i] > 0) crossings++;
+				previous = out[2*i];
+			}
+		}
+		CHECK(s.missing == 0);
+		CHECK(fabs(crossings / 4.0 - 997.0) < 3.0);
+		if (speed == 100) CHECK(s.joins == 0 && s.inserted == 0 && !s.valid);
+		else CHECK(s.joins && s.inserted);
+	}
+}
+
 static double harmonics(float amplitude, int soft)
 {
 	double power = 0, fundamental = 0;
@@ -181,6 +216,7 @@ void test_stretch(void)
 		CHECK(nominal.joins == 0 && nominal.inserted == 0 && nominal.active == 0);
 	}
 	stereo2();
+	simulation_long();
 	for (int kind = 0; kind < 4; kind++)
 		for (unsigned speed = 0; speed <= 100; speed += 25)
 			simulation2(kind, speed);

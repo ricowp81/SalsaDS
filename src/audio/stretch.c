@@ -136,18 +136,22 @@ static int has_attack(const float *in, uint32_t n)
 	return total > 0.002f*signal && peak > total * (480.0f/n);
 }
 
-uint32_t audio_stretch2_run(audio_stretch2 *s, const float *in, uint32_t n, float *out)
+static uint32_t stretch2_run(audio_stretch2 *s, const float *in, uint32_t n, float *out, int long_grain)
 {
+	const uint32_t hop = long_grain ? STRETCH2_LONG_HOP : STRETCH2_HOP;
+	const uint32_t overlap = long_grain ? STRETCH2_LONG_OVERLAP : STRETCH2_OVERLAP;
+	const uint32_t grain = hop + overlap;
+	const uint32_t search = long_grain ? 1920u : 960u;
 	uint32_t used = 0;
 	uint32_t available = n;
 	if (n > STRETCH2_INPUT) n = STRETCH2_INPUT;
 	if (!s->initialized) { s->rate = 1; s->initialized = 1; }
 	else {
 		s->arrivals += (float)available - s->previous + s->consumed;
-		/* Ventana de 100 ms y polo de 200 ms: las entregas por cuadro no
+		/* Ventana de 50 ms y polo suave: las entregas por cuadro no
    * modulan directamente el salto. La reserva cubre cambios rápidos. */
-		if (++s->ticks == 10) {
-			s->rate += 0.4f * (s->arrivals / (10*STRETCH_HOP) - s->rate);
+		if (++s->ticks == 5) {
+			s->rate += 0.4f * (s->arrivals / (5*STRETCH_HOP) - s->rate);
 			if (s->rate < 0) s->rate = 0;
 			if (s->rate > 1.05f) s->rate = 1.05f;
 			s->arrivals = 0; s->ticks = 0;
@@ -157,19 +161,20 @@ uint32_t audio_stretch2_run(audio_stretch2 *s, const float *in, uint32_t n, floa
 		memcpy(out, s->output + 2*s->position, 2*STRETCH_HOP*sizeof(float));
 		s->position += STRETCH_HOP;
 		s->queued -= STRETCH_HOP;
-		s->credit = s->grain_used*s->queued/STRETCH2_HOP;
+		s->credit = s->grain_used*s->queued/hop;
 		s->active += STRETCH_HOP;
-	} else if (!s->valid && n >= STRETCH2_GRAIN + STRETCH_HOP) {
+	} else if (!s->valid && (n >= grain + hop || (s->rate >= 0.98f && n >= 2 * STRETCH_HOP))) {
 		/* La entrega por cuadros hace oscilar la estimación de llegadas aunque
-		 * sobren 50 ms. Mientras exista esa reserva no hay déficit: identidad. */
+		 * sobren muestras. Con producción nominal y anillo sano la ruta es
+		 * identidad aunque una entrega puntual llegue tarde. */
 		memcpy(out, in, 2*STRETCH_HOP*sizeof(float));
 		used = STRETCH_HOP;
 	} else {
-		uint32_t pos = 0, hop = STRETCH2_HOP;
-		int leave = s->rate >= 0.98f && n >= 3400;
-		int attack = n >= STRETCH2_GRAIN && has_attack(in, n < STRETCH2_GRAIN+960 ? n : STRETCH2_GRAIN+960);
+		uint32_t pos = 0;
+		int leave = s->rate >= 0.98f && n >= grain + hop;
+		int attack = n >= grain && has_attack(in, n < grain + search ? n : grain + search);
 		const float *source = in;
-		if (n < STRETCH2_GRAIN) {
+		if (n < grain) {
 			if (!s->valid) {
 				uint32_t got = n < STRETCH_HOP ? n : STRETCH_HOP;
 				memset(out, 0, 2*STRETCH_HOP*sizeof(float));
@@ -190,21 +195,21 @@ uint32_t audio_stretch2_run(audio_stretch2 *s, const float *in, uint32_t n, floa
 			s->fraction -= used;
 			/* Reserva de un grano más 20 ms de búsqueda: también al arrancar
 			 * con entregas espaciadas debe caber un período de los graves. */
-			uint32_t room = n > STRETCH2_GRAIN+960 ? n-STRETCH2_GRAIN-960 : 0;
+			uint32_t room = n > grain + search ? n - grain - search : 0;
 			if (used > room) used = room;
 		}
 		if (leave || attack) used = hop;
 		if (s->valid && !leave && !attack) {
-			uint32_t max = source == in ? n - STRETCH2_GRAIN : 0;
-			if (max > 960) max = 960;
-			alignment_lowpass(source, s->filtered, max + STRETCH2_OVERLAP);
-			alignment_lowpass(s->grain + 2*hop, s->reference, STRETCH2_OVERLAP);
+			uint32_t max = source == in ? n - grain : 0;
+			if (max > search) max = search;
+			alignment_lowpass(source, s->filtered, max + overlap);
+			alignment_lowpass(s->grain + 2*hop, s->reference, overlap);
 			float best = 1e30f;
 			/* Decimación tras el pasabajos; refinamiento de posición a una muestra.
     * Se omiten 64 muestras de asentamiento de los polos. */
 			for (uint32_t p = 0; p <= max; p += 4) {
 				float error = 0;
-				for (uint32_t j = 64; j < STRETCH2_OVERLAP; j += 8)
+				for (uint32_t j = 64; j < overlap; j += 8)
 					for (uint32_t c = 0; c < 2; c++) {
 						float d = s->reference[2*j+c] - s->filtered[2*(p+j)+c];
 						float wide = s->grain[2*(hop+j)+c] - source[2*(p+j)+c];
@@ -215,7 +220,7 @@ uint32_t audio_stretch2_run(audio_stretch2 *s, const float *in, uint32_t n, floa
 			uint32_t lo = pos > 3 ? pos-3 : 0, hi = pos+3 < max ? pos+3 : max;
 			for (uint32_t p = lo; p <= hi; p++) {
 				float error = 0;
-				for (uint32_t j = 64; j < STRETCH2_OVERLAP; j += 8)
+				for (uint32_t j = 64; j < overlap; j += 8)
 					for (uint32_t c = 0; c < 2; c++) {
 						float d = s->reference[2*j+c] - s->filtered[2*(p+j)+c];
 						float wide = s->grain[2*(hop+j)+c] - source[2*(p+j)+c];
@@ -226,8 +231,8 @@ uint32_t audio_stretch2_run(audio_stretch2 *s, const float *in, uint32_t n, floa
 		}
 		memcpy(s->output, source + 2*pos, 2*hop*sizeof(float));
 		if (s->valid) {
-			for (uint32_t i = 0; i < STRETCH2_OVERLAP; i++) {
-				float w = (float)i / (STRETCH2_OVERLAP-1);
+			for (uint32_t i = 0; i < overlap; i++) {
+				float w = (float)i / (float)(overlap-1);
 				w = w*w*(3-2*w);
 				for (uint32_t c = 0; c < 2; c++) {
 					float old = s->grain[2*(hop+i)+c];
@@ -236,7 +241,7 @@ uint32_t audio_stretch2_run(audio_stretch2 *s, const float *in, uint32_t n, floa
 			}
 			s->joins++;
 		}
-		memmove(s->grain, source + 2*pos, sizeof s->grain);
+		memmove(s->grain, source + 2*pos, 2*grain*sizeof(float));
 		s->valid = !leave;
 		s->position = STRETCH_HOP; s->queued = hop-STRETCH_HOP;
 		s->grain_used = used; s->credit = used*s->queued/hop;
@@ -247,4 +252,14 @@ uint32_t audio_stretch2_run(audio_stretch2 *s, const float *in, uint32_t n, floa
 finish:
 	s->previous = available; s->consumed = used;
 	return used;
+}
+
+uint32_t audio_stretch2_run(audio_stretch2 *s, const float *in, uint32_t n, float *out)
+{
+	return stretch2_run(s, in, n, out, 0);
+}
+
+uint32_t audio_stretch2_run_long(audio_stretch2 *s, const float *in, uint32_t n, float *out)
+{
+	return stretch2_run(s, in, n, out, 1);
 }

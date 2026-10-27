@@ -409,35 +409,44 @@ static inline float fir_dot(const float *c, const float *x)
 
 static uint32_t snd_resample(snd_state *st, const float *wl, const float *wr, uint32_t n, float *out, uint32_t out_max)
 {
-	const float ratio = (SND_RATE_NATIVE / SND_RATE_OUT) * (1.0f + st->ratio_adj);
+	/* 33 513 982 / 1024 / 48 000 en Q0.32. La fase entera evita que el
+	 * PPE y el SPU acumulen redondeos distintos entre trabajos. */
+	const uint64_t base = 0xAE8D4F30u;
+	const int32_t adj = (int32_t)(st->ratio_adj * 65536.0f);
+	const uint32_t step = (uint32_t)(base + (int64_t)base * adj / 65536);
 	const uint32_t last = SND_HIST + n - SND_AFTER_MAX; /* se puede sacar mientras k < last (k + 16 < SND_HIST + n) */
-	float f = st->frac;
+	uint32_t phase = st->resample_phase;
 	uint32_t k = FIR_K0, produced = 0;
 	float c[SND_FIR_TAPS] __attribute__((aligned(16)));
 
 	while (produced < out_max) {
-		float pf, a;
+		float a;
 		uint32_t ph;
+		uint64_t next;
 
-		while (f >= 1.0f) {
-			f -= 1.0f;
-			k++;
-		}
 		if (k >= last)
 			break;
-		pf = f * (float)SND_FIR_PHASES;
-		ph = (uint32_t)pf;
-		a = pf - (float)ph;
-		fir_coefs(c, snd_fir[ph], snd_fir[ph + 1], a);
-		out[2 * produced] = fir_dot(c, wl + (k - SND_FIR_BEFORE));
-		out[2 * produced + 1] = fir_dot(c, wr + (k - SND_FIR_BEFORE));
+		ph = phase >> 26;
+		a = (float)(phase & 0x03FFFFFFu) * (1.0f / 67108864.0f);
+		if (st->mode & SND_MODE_RESAMPLE_SIMPLE) {
+			const float f = (float)phase * (1.0f / 4294967296.0f);
+
+			out[2 * produced] = wl[k] + f * (wl[k + 1] - wl[k]);
+			out[2 * produced + 1] = wr[k] + f * (wr[k + 1] - wr[k]);
+		} else {
+			fir_coefs(c, snd_fir[ph], snd_fir[ph + 1], a);
+			out[2 * produced] = fir_dot(c, wl + (k - SND_FIR_BEFORE));
+			out[2 * produced + 1] = fir_dot(c, wr + (k - SND_FIR_BEFORE));
+		}
 		produced++;
-		f += ratio;
+		next = (uint64_t)phase + step;
+		phase = (uint32_t)next;
+		k += (uint32_t)(next >> 32);
 	}
 	/* si faltó sitio en `out` lo pendiente se descarta: la ventana siguiente empieza en n + 16 */
 	if (k < last)
-		f = 0.0f;
-	st->frac = f;
+		phase = 0;
+	st->resample_phase = phase;
 	return produced;
 }
 
@@ -473,6 +482,14 @@ static float hd_sample(snd_state *st, int ci, float subcycle)
 	return x;
 }
 
+static float hd_state_sample(float x)
+{
+	/* La envolvente solo conserva el ancla de una rampa posterior. Una muestra
+	 * entera evita que la contracción FMA distinta del PPE y el SPU cambie el
+	 * estado persistente, sin cuantizar la salida actual. */
+	return (float)(int32_t)(x + (x < 0 ? -0.5f : 0.5f));
+}
+
 /* Compensación posterior al volumen/balance: apagar escribiendo CNT=0 también
  * conserva la cola. Rampa finita de 32 pares (0,67 ms), sin continua residual. */
 static void hd_declick(snd_state *st, int ci, float *l, float *r)
@@ -489,7 +506,7 @@ static void hd_declick(snd_state *st, int ci, float *l, float *r)
 			const float a = (float)st->hd_fade[ci] / 32.0f;
 			x[side] = x[side] * (1.0f - a) + st->hd_anchor[ci][side] * a;
 		}
-		st->hd_last[ci][side] = x[side];
+		st->hd_last[ci][side] = hd_state_sample(x[side]);
 	}
 	if (st->hd_fade[ci]) st->hd_fade[ci]--;
 	*l = x[0]; *r = x[1];

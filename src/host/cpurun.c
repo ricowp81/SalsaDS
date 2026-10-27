@@ -3,7 +3,7 @@
  * SalsaDS — corre una ROM de prueba (tests/roms) en la máquina de src/core y lee su veredicto del bloque de
  * resultados (tests/roms/src/common/sds.h), como hace tools/melonds-run.py con melonDS.
  *
- *   salsads-cpurun [--wav FILE.wav] [--wav-native FILE.wav] [--snd-original] [--audio-frontera-antigua]
+ *   salsads-cpurun [--wav FILE.wav] [--wav-native FILE.wav] [--snd-original] [--audio-hd] [--audio-lineal]
  *                  [--cycles N] [--frames N] [--quantum N] [--stats] [--arm7] [--keys HEX] [--touch X,Y]
  *                  [--screens FILE.ppm] [--ref] [--vs-ref] [--expect] [--same-ab] [--unmapped] [--peek ADDR]... [--trace N [--trace7]] ROM.nds
  *
@@ -652,7 +652,7 @@ int main(int argc, char **argv)
 	int dump_cpu = 0;
 	uint32_t trace_from = 0;
 	const char *wav_path = NULL;
-	int snd_original = 0, snd_hd = 0, g2d_stats = 0;
+	int snd_original = 0, snd_hd = 0, snd_linear = 0, g2d_stats = 0;
 	int snd_frame_cache_old = 0;
 	const char *gxdump_path = NULL;
 	int gx_clock = 0, r3d_stats_on = 0, holes_on = 0, gx_defer = 0, gx_lento = 0, geom_plain = 0, geom_scalar = 0;
@@ -738,6 +738,8 @@ int main(int argc, char **argv)
 			gxdump_path = argv[++i];
 		else if (!strcmp(argv[i], "--audio-hd"))
 			snd_hd = 1;
+		else if (!strcmp(argv[i], "--audio-lineal"))
+			snd_linear = 1;
 		else if (!strcmp(argv[i], "--snd-original"))
 			snd_original = 1;
 		else if (!strcmp(argv[i], "--audio-frontera-antigua"))
@@ -911,16 +913,18 @@ int main(int argc, char **argv)
 		M.vid.clock = clock_ns;
 	if (wav_path || wav_native_path)
 		M.snd.ops.sink = wav_sink;
-	if (snd_original || snd_hd || snd_frame_cache_old)
+	if (snd_original || snd_hd || snd_linear || snd_frame_cache_old)
 		nds_snd_set_mode(&M, (snd_hd ? SND_MODE_HD : snd_original ? SND_MODE_ORIGINAL : 0u) |
+				       (snd_linear ? SND_MODE_RESAMPLE_SIMPLE : 0u) |
 					 (snd_frame_cache_old ? SND_MODE_FRAME_CACHE_OLD : 0u));
 	if (lockstep) {
 		R.quantum = quantum;
 		R.vid.use_ref = use_ref;
 		R.gx_lento = (uint8_t)gx_lento;
 		nds_init(&R);
-		if (snd_original || snd_hd || snd_frame_cache_old)
+		if (snd_original || snd_hd || snd_linear || snd_frame_cache_old)
 			nds_snd_set_mode(&R, (snd_hd ? SND_MODE_HD : snd_original ? SND_MODE_ORIGINAL : 0u) |
+					       (snd_linear ? SND_MODE_RESAMPLE_SIMPLE : 0u) |
 					 (snd_frame_cache_old ? SND_MODE_FRAME_CACHE_OLD : 0u));
 		if (hj_lockstep_attach(&M, &R, jit_arm7, jit_arm9))
 			return 2;

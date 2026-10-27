@@ -31,7 +31,7 @@ static audio_stretch2 stretch2;
 static float pending[2 * STRETCH_HOP], input[2 * STRETCH2_INPUT], last_sample[2];
 static uint32_t pending_pos = STRETCH_HOP, pending_used, pending_active;
 static uint32_t control_tail;
-static int no_stretch, no_limiter, stretch_v1;
+static int no_stretch, no_limiter, no_gain, stretch_v1, stretch_long;
 static int active, paused = 1;
 static volatile uint64_t c_inserted, c_active, c_stretch_us, c_played;
 static volatile uint32_t c_stretch_max, c_joins, c_rate;
@@ -178,7 +178,7 @@ static void fill_block(float *dst)
 	} else {
 		uint32_t done = 0;
 		if (!port.started) {
-			if (level() < (stretch_v1 ? PREBUF : 4096u)) {
+			if (level() < (stretch_v1 ? PREBUF : stretch_long ? 7680u : 4096u)) {
 				memset(dst, 0, 2 * AUDIO_BLOCK_SAMPLES * sizeof(float));
 				return;
 			}
@@ -201,6 +201,7 @@ static void fill_block(float *dst)
 				}
 				t0 = sysGetSystemTime();
 				uint32_t used = stretch_v1 ? audio_stretch_run(&stretch, input, n, pending) :
+					stretch_long ? audio_stretch2_run_long(&stretch2, input, avail, pending) :
 					audio_stretch2_run(&stretch2, input, avail, pending);
 				uint32_t elapsed = (uint32_t)(sysGetSystemTime() - t0);
 				c_stretch_us += elapsed;
@@ -481,20 +482,26 @@ int audio_out_init(void)
 	stretch_v1 = stat("/dev_hdd0/salsads/audio-estirar-v1", &fs) == 0;
 	no_stretch = stat("/dev_hdd0/salsads/audio-sin-estirar", &fs) == 0;
 	no_limiter = stat("/dev_hdd0/salsads/audio-sin-limitador", &fs) == 0;
+	no_gain = stat("/dev_hdd0/salsads/audio-sin-ganancia", &fs) == 0;
+	stretch_long = stat("/dev_hdd0/salsads/audio-estirar-largo", &fs) == 0;
 	active = 0; paused = 1;
 	out_gain = 1.0f; gain_db = 0;
 	{
 		FILE *g = fopen("/dev_hdd0/salsads/audio-ganancia", "r");
 		float db;
 
-		if (g) {
+		if (g && !no_gain) {
 			if (fscanf(g, "%f", &db) == 1 && db > -60.0f && db < 20.0f) {
 				gain_db = db;
 				out_gain = powf(10.0f, db / 20.0f);
 			}
-			fclose(g);
 		}
+		if (g) fclose(g);
 	}
+	if (no_gain)
+		salsads_log("audio: ganancia desactivada por audio-sin-ganancia");
+	if (stretch_long)
+		salsads_log("audio: estirador largo activo (grano 80 ms, búsqueda 40 ms)");
 	c_lim_total = c_lim_n = 0; c_lim_sum_db = 0; c_lim_max_db = 0;
 	pending_pos = STRETCH_HOP;
 	memset(&stretch, 0, sizeof stretch);
@@ -550,13 +557,13 @@ void audio_out_stats(struct audio_out_stats *s, int reset_peak)
 {
 	s->joins = c_joins;
 	s->rate_permil = c_rate;
-	s->grain_ms = stretch_v1 ? 15 : STRETCH2_GRAIN / 48;
+	s->grain_ms = stretch_v1 ? 15 : stretch_long ? STRETCH2_LONG_GRAIN / 48 : STRETCH2_GRAIN / 48;
 	s->played = c_played;
 	s->stretch_max_us = c_stretch_max;
 	s->inserted = c_inserted;
 	s->active = c_active;
 	s->stretch_us = c_stretch_us;
-	s->stretch_enabled = no_stretch ? 0 : stretch_v1 ? 1 : 2;
+	s->stretch_enabled = no_stretch ? 0 : stretch_v1 ? 1 : stretch_long ? 3 : 2;
 	s->limiter_enabled = !no_limiter;
 	s->pushed = c_pushed;
 	s->dropped = c_dropped;

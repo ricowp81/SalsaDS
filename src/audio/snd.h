@@ -47,6 +47,7 @@
 #define SND_MODE_HD 2u               /* escucha a 48 kHz; captura y estado nativos intactos */
 #define SND_MODE_ORIGINAL 1u         /* cuantizar a 10 bits con SOUNDBIAS, como la salida de la DS */
 #define SND_MODE_FRAME_CACHE_OLD 4u   /* diagnóstico: descartar todas las líneas de voz entre trabajos */
+#define SND_MODE_RESAMPLE_SIMPLE 8u    /* diagnóstico: conversión 48 kHz lineal, sin el FIR */
 
 /* Una escritura a un registro de sonido (media palabra): `off` es el desplazamiento desde 0x04000400. */
 typedef struct snd_ent {
@@ -84,7 +85,7 @@ typedef struct snd_state {
 	uint64_t tick;                   /* ticks ya generados */
 	/* remuestreo */
 	float hist[2][SND_HIST];         /* últimas SND_HIST muestras nativas de cada canal (la ventana del FIR) */
-	float frac;                      /* fase dentro de la muestra nativa, [0, 1) */
+	uint32_t resample_phase;         /* fase Q0.32 dentro de la muestra nativa */
 	float ratio_adj;                 /* corrección de la razón de remuestreo (control de deriva), 0 = ninguna */
 	uint32_t mode;
 	/* Historia causal por voz: Hermite entre las dos muestras centrales, sin anticipar RAM. */

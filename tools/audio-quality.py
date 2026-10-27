@@ -61,16 +61,19 @@ def measure(path):
 
 
 if __name__ == '__main__':
-    for speed in (80, 67, 100):
-        results = [measure(Path(sys.argv[1])/f'v{v}-{speed}.f32') for v in (1, 2)]
+    for speed in (80, 67, 50, 100):
+        results = [measure(Path(sys.argv[1])/f'v{v}-{speed}.f32') for v in (1, 2, 3)]
         rate = 2/3 if speed == 67 else speed/100
         print(f'Producción {100*rate:.3f}% (extensión {100/rate-100:.2f}%):')
         for v, m in enumerate(results, 1):
             print(f'  v{v}: {m}')
-        a, b = results
+        a, b, c = results
         print(f"  v2/v1 flujo {b['flux']/a['flux']:.4f}, modulación "
               f"{np.mean(b['bands'])/np.mean(a['bands']):.4f}, "
               f"nitidez {b['sharpness']/a['sharpness']:.4f}")
+        print(f"  v3/v2 flujo {c['flux']/b['flux']:.4f}, modulación "
+              f"{np.mean(c['bands'])/np.mean(b['bands']):.4f}, "
+              f"nitidez {c['sharpness']/b['sharpness']:.4f}")
 
         if speed != 100:
             # Guardas de regresión: mejora musical >=10%, ancho de ataque
@@ -79,6 +82,11 @@ if __name__ == '__main__':
             assert np.mean(b['bands']) < 0.9*np.mean(a['bands'])
             assert b['width_ms'] <= 1.1*a['width_ms']
             assert b['sharpness'] >= 0.9*a['sharpness']
+            if speed == 50:
+                assert c['flux'] < 0.85*b['flux']
+                assert np.mean(c['bands']) < 0.9*np.mean(b['bands'])
+                assert c['sharpness'] >= 0.9*b['sharpness']
         else:
             assert (Path(sys.argv[1])/'v1-100.f32').read_bytes() == (Path(sys.argv[1])/'v2-100.f32').read_bytes()
+            assert (Path(sys.argv[1])/'v1-100.f32').read_bytes() == (Path(sys.argv[1])/'v3-100.f32').read_bytes()
     print('Calidad: guardas e identidad nominal correctas')
