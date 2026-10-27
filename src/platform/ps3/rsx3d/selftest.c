@@ -548,6 +548,9 @@ static unsigned fallback_tests(r3d_job *j)
             }
         }
         memset(output, 0xa5, sizeof output);
+        /* Como en las pruebas de niebla: RPCS3 solo renueva una textura de memoria principal reescrita por el PPE
+         * (la tabla de 128 bytes) tras un flip; sin él leía la tabla de la última prueba de niebla. */
+        if (test >= 6 && test < 8) { rsxkit_frame_begin(0); rsxkit_frame_end(); rsxkit_frame_begin(0); }
         rsx3d_stats st; int ok = rsx3d_render(j, &st);
         unsigned modified = 0;
         for (unsigned k = 0; k < R3D_W*R3D_H; k++) modified += output[k] != 0xa5a5a5a5u;
