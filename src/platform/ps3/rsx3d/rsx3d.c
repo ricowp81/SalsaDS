@@ -68,25 +68,52 @@ static struct {
     int native_done, hd_done, valid;
     uint64_t gpu_ns, prepare_us;
 } cost_pending[2];
+static unsigned cost_frame_submits;
+static int cost_frame_valid;
+static unsigned cost_reasons[5];
 static unsigned cost_frames, cost_sent, cost_calibration, native_reduced, native_exact_frames;
 static const char *cost_phase_name(void)
 {
     static const char *const names[]={"calibración SPE","sondeo RSX","SPE por costo","RSX"};
     return names[cost.phase];
 }
+static const char *cost_reason_name(void)
+{
+    static const char *const names[]={"sin presupuesto medido", "cabe HD", "margen de histéresis",
+                                      "no cabe HD y SPE mejora", "no cabe; SPE sin mejora suficiente"};
+    return names[cost.reason];
+}
+static void cost_change(void)
+{
+    salsads_log("DATO rsx3d costo cambio: %s; RSX %.3f SPE %.3f ms; carga RSX %.3f SPE %.3f ms; presupuesto %.3f retorno %.3f ms; motivo %s; ventana %u, permanencia %u",
+                cost_phase_name(),cost.rsx_us/1000.0,cost.spe_us/1000.0,
+                cost.rsx_frame_us/1000.0,cost.spe_frame_us/1000.0,
+                RSX_COST_BUDGET/1000.0,RSX_COST_RETURN/1000.0,cost_reason_name(),RSX_COST_WINDOW,RSX_COST_HOLD);
+}
 static void cost_sample(uint32_t ticket, int spe, uint64_t us)
 {
     if (!ticket || cost_disabled) return;
-    if (rsx_cost_sample(&cost,ticket-1,spe,us))
-        salsads_log("DATO rsx3d costo cambio: %s; RSX %.3f SPE %.3f ms; ventana %u, permanencia %u",
-                    cost_phase_name(),cost.rsx_us/1000.0,cost.spe_us/1000.0,RSX_COST_WINDOW,RSX_COST_HOLD);
+    if (rsx_cost_sample(&cost,ticket-1,spe,us)) cost_change();
 }
 void rsx3d_cost_spe_done(uint32_t ticket, uint64_t us) { cost_sample(ticket,1,us); }
+uint32_t rsx3d_cost_frame_begin(void)
+{
+    cost_frame_submits=0; cost_frame_valid=1;
+    return cost.epoch+1;
+}
+void rsx3d_cost_frame_done(uint32_t ticket, uint64_t us)
+{
+    /* Solo cuadros con un envío admitido y sin cambios de generación.
+     * No atribuir a RSX un respaldo de paridad ni mezclar ambas rutas. */
+    if (cost_disabled || hd_scale==1 || cost_frame_submits!=1 || !cost_frame_valid || !ticket) return;
+    if (rsx_cost_frame(&cost,ticket-1,rsx_cost_spe(&cost),us)) cost_change();
+}
 void rsx3d_cost_reset(void)
 {
     uint32_t epoch=cost.epoch+1;
     memset(&cost,0,sizeof cost); cost.epoch=epoch;
     memset(cost_pending,0,sizeof cost_pending);
+    memset(cost_reasons,0,sizeof cost_reasons); cost_frame_submits=0;
     cost_frames=cost_sent=cost_calibration=native_reduced=native_exact_frames=0;
 }
 static void cost_publish(unsigned slot)
@@ -719,7 +746,7 @@ int rsx3d_init(void)
     }
     salsads_log("rsx3d escala: %ux; captura nativa exacta; presentación %s",hd_scale,
                 native_previous ? "nativa independiente ronda 4" : "reducida de HD sin captura");
-    salsads_log("rsx3d costo: %s; 8 muestras, salida RSX tras 2 ventanas +10%% y 0,5 ms; retorno tras 2 ventanas -15%% y 0,5 ms; permanencia/renovación 120",
+    salsads_log("rsx3d costo: %s; HD hasta 16,667 ms, retorno con 16 ms; 8 muestras, salida tras 2 ventanas con mejora 3D +10%%/0,5 ms y cuadro +5%%/0,5 ms; permanencia/renovación 120",
                 cost_disabled ? "desactivado" : "activo solo en juego HD");
     salsads_log("rsx3d niebla: %s", fog_previous ? "por fragmento anterior" : "pasada final con profundidad y bandera por píxel");
     salsads_log("rsx3d pasadas: %s", passes_previous ? "ronda 3" : "opacos directos y atributos compactos");
@@ -1086,7 +1113,7 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
         if (rsx_cost_spe(&cost)) {
             cost_sent++;
             cost_calibration+=cost.phase==RSX_COST_BASE;
-            reason=cost.phase==RSX_COST_BASE ? "calibración de costo SPE" : "SPE por costo RSX";
+            reason=cost.phase==RSX_COST_BASE ? "calibración de costo SPE" : "SPE: no cabe HD y mejora el cuadro";
             return 0;
         }
     }
@@ -1496,12 +1523,21 @@ int rsx3d_submit_view(const r3d_job *j, unsigned slot, int exact, int adaptive, 
         frames = rendered = 0; memset(counts, 0, sizeof counts);
     }
     if (adaptive) {
+        cost_frame_submits++;
+        if (st->cost_ticket && st->cost_ticket==cost.epoch+1 && (result>0 || rsx_cost_spe(&cost))) {
+            cost_reasons[cost.reason]++;
+        } else cost_frame_valid=0;
         native_reduced+=result>0 && st->reduced;
         native_exact_frames+=result>0 && !st->reduced;
         if (++cost_frames==120) {
-            salsads_log("DATO rsx3d rutas: 120 cuadros; nativa reducida %u exacta %u; SPE por costo %u (calibración %u); estado %s; RSX %.3f SPE %.3f ms",
+            salsads_log("DATO rsx3d rutas: 120 cuadros; nativa reducida %u exacta %u; SPE por costo %u (calibración %u); estado %s; RSX %.3f SPE %.3f ms; carga RSX %.3f SPE %.3f ms; presupuesto %.3f retorno %.3f ms; motivo %s; decisiones cabe %u margen %u no-cabe %u sin-mejora %u sin-datos %u",
                         native_reduced,native_exact_frames,cost_sent,cost_calibration,
-                        cost_disabled || hd_scale==1 ? "desactivado" : cost_phase_name(),cost.rsx_us/1000.0,cost.spe_us/1000.0);
+                        cost_disabled || hd_scale==1 ? "desactivado" : cost_phase_name(),cost.rsx_us/1000.0,cost.spe_us/1000.0,
+                        cost.rsx_frame_us/1000.0,cost.spe_frame_us/1000.0,
+                        RSX_COST_BUDGET/1000.0,RSX_COST_RETURN/1000.0,cost_reason_name(),
+                        cost_reasons[RSX_COST_FITS],cost_reasons[RSX_COST_MARGIN],cost_reasons[RSX_COST_OVER],
+                        cost_reasons[RSX_COST_NO_GAIN],cost_reasons[RSX_COST_UNKNOWN]);
+            memset(cost_reasons,0,sizeof cost_reasons);
             cost_frames=cost_sent=cost_calibration=native_reduced=native_exact_frames=0;
         }
     }

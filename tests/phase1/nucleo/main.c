@@ -2240,6 +2240,7 @@ static void render_frame(void)
 	uint64_t i9a, i7a, tb0, tb1, tb2, tb3, tb4, tb5, tb6, tb7, flip_ticks;
 #ifdef NUCLEO_RSX
     const int late_flip=rsx3d_on && rsx3d_hd_late_flip();
+    const uint32_t cost_frame_ticket=rsx3d_cost_frame_begin();
 #else
     const int late_flip=0;
 #endif
@@ -2423,6 +2424,9 @@ static void render_frame(void)
 	tb7 = tb_clock();
 	rsxkit_frame_end();
 #ifdef NUCLEO_RSX
+    /* Incluye emulación, espera del raster y recogida/presentación. La espera
+     * del flip anterior solo rellena el VSync y no consume presupuesto PPE. */
+    if (rsx3d_on) rsx3d_cost_frame_done(cost_frame_ticket,tb_us(tb_clock()-tb0-flip_ticks));
 	rsx_pipe.interval += cur_stats.frame_us;
 	rsx_pipe.over20 += cur_stats.frame_us > 20000;
 	rsx_pipe.emu += tb_us(tb3 - tb2);

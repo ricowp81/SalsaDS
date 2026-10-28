@@ -1,5 +1,53 @@
 # Registro de rendimiento
 
+## 2026-10-28 — Presupuesto para preferir HD [PS3 rondas 4/5 recibidas; política en host]
+
+Análisis reproducible en `build/niebla-final/diag-6/logs.py` y `logs.txt`.
+`nsmb-niebla4.log` contiene `juegos-niebla4.log`: se analizan por separado,
+sin sumar sus cuadros. Se separa cada juego al abrir su ROM.
+
+| Consola / selección de ventanas | Ventanas | Servicio aproximado p25 / mediana / p75 (ms) |
+|---|---:|---:|
+| Ronda 4, NSMB, 120/120 RSX | 55 | 12,838 / 13,631 / 14,242 |
+| Ronda 4, Metroid, 120/120 RSX | 18 | 13,914 / 22,466 / 27,405 |
+| Ronda 5, NSMB, con 3D | 37 | 6,948 / 9,341 / 10,455 |
+| Ronda 5, Metroid, con 3D | 63 | 7,901 / 14,966 / 19,044 |
+
+Servicio aproximado = media del intervalo menos media de la espera del flip;
+las medias pertenecen a la misma ventana, pero no a una captura emparejada
+por cuadro. Las ventanas completas RSX de Metroid incluyen escenas ligeras
+y pesadas: para el tramo desde 120 s siguen siendo válidas las 13 ventanas
+del análisis anterior. No comparar sus medianas con las de otros tramos
+como un A/B estricto.
+
+NSMB ronda 5: 368 cuadros RSX y 3414 SPE (90,3 % SPE) en las ventanas con 3D.
+El costo crudo menor del SPE pierde HD aun cuando ambos caben. Metroid:
+1912 RSX y 4882 SPE (71,9 % SPE) en esas ventanas; conservar la posibilidad
+de bajar en los tramos pesados. Los umbrales 16,0/16,667 ms dejan a NSMB
+margen respecto de su p75 de 14,242 ms con la ruta anterior y distinguen
+las ventanas RSX pesadas de Metroid. El margen de retorno es 0,667 ms;
+la mejora mínima del cuadro es 5 % + 0,5 ms para filtrar diferencias pequeñas.
+Son decisiones de política, pendientes de ajuste mediante A/B en consola.
+
+La ronda 6 mide trabajo PPE por cuadro sin flip y usa como carga el máximo
+de su media y el costo 3D de la ruta. HD se conserva si cabe; sobre 16,667 ms
+solo se baja cuando el costo 3D RSX supera SPE ×1,10 + 0,5 ms **y** su carga
+supera SPE ×1,05 + 0,5 ms. El retorno con margen y la ausencia de ganancia SPE
+exigen dos ventanas de confirmación; la banda 16,0–16,667 ms conserva HD o
+prolonga el sondeo. No se ejecutan ambas rutas en un mismo cuadro.
+
+Síntesis en host con el código real (`diag-6/politica.c`), 10 000 decisiones:
+NSMB 9440 HD / 560 SPE; Metroid pesado 632 HD / 9368 SPE; CPU saturada sin
+mejora del cuadro 9440 HD / 560 SPE; raster GPU lento oculto al PPE 632 HD /
+9368 SPE. Incluyen calibración y sondeos. No son tiempos ni fps de PS3.
+
+Límites: las dos rutas se miden en momentos distintos; cambios de escena,
+composición/presentación GPU y esperas retiradas junto al flip pueden alterar
+el intervalo real respecto de la carga. El costo 3D evita esconder un raster
+lento, pero no constituye una medición del plazo GPU completo. Validar con
+`rutas`, `costo cambio`, `cuadro` y `HD costos` en Metroid y NSMB; el paquete 6
+no tiene mediciones nuevas de consola.
+
 ## 2026-10-28 — Nativa desde HD y costo adaptativo [PS3 ronda 4; host corrección de ronda 5]
 
 Datos recibidos de consola, sin sumarlos dos veces: `nsmb-niebla4.log` contiene

@@ -3,14 +3,17 @@
 #define SALSADS_RSX_COST_H
 #include <stdint.h>
 
-/* Ventanas consecutivas, nunca alternancia por cuadro. Costos en us:
+/* Ventanas de costo 3D y trabajo del cuadro, sin la espera del flip.
  * GPU completa + preparación PPE frente al mayor tiempo de los dos SPE.
  * Las muestras tardías llevan generación y no contaminan la ruta siguiente. */
 enum { RSX_COST_BASE, RSX_COST_PROBE, RSX_COST_SPE, RSX_COST_RSX };
-enum { RSX_COST_WINDOW = 8, RSX_COST_HOLD = 120 };
+enum { RSX_COST_WINDOW = 8, RSX_COST_HOLD = 120,
+       RSX_COST_BUDGET = 16667, RSX_COST_RETURN = 16000 };
+enum { RSX_COST_UNKNOWN, RSX_COST_FITS, RSX_COST_MARGIN,
+       RSX_COST_OVER, RSX_COST_NO_GAIN };
 typedef struct rsx_cost {
-    uint32_t epoch, phase, samples, age, streak;
-    uint64_t sum, rsx_us, spe_us;
+    uint32_t epoch, phase, samples, frame_samples, age, streak, reason;
+    uint64_t sum, frame_sum, rsx_us, spe_us, rsx_frame_us, spe_frame_us;
 } rsx_cost;
 
 static inline int rsx_cost_spe(const rsx_cost *c)
@@ -19,34 +22,59 @@ static inline int rsx_cost_spe(const rsx_cost *c)
 }
 static inline void rsx_cost_phase(rsx_cost *c, unsigned phase)
 {
-    c->phase=phase; c->epoch++; c->samples=c->age=c->streak=0; c->sum=0;
+    c->phase=phase; c->epoch++; c->samples=c->frame_samples=c->age=c->streak=0;
+    c->sum=c->frame_sum=0;
 }
-/* 1 solo cuando cambia la fase; cero us o >1 s son marcas inválidas/pausa.
- * La entrada al RSX exige dos ventanas con 15 % + 0,5 ms de margen;
- * la salida exige dos ventanas 10 % + 0,5 ms más caras. */
-static inline int rsx_cost_sample(rsx_cost *c, uint32_t epoch, int spe, uint64_t us)
+/* HD tiene prioridad si cabe. Para bajar, tanto el costo 3D como el trabajo
+ * total deben favorecer al SPE: +10 %/0,5 ms y +5 %/0,5 ms respectivamente.
+ * El máximo del trabajo PPE y del costo 3D impide declarar que cabe una GPU
+ * lenta solo porque su espera quedó oculta en el flip. Es una cota de carga,
+ * no una suma: el raster se solapa con la emulación. */
+static inline int rsx_cost_update(rsx_cost *c)
 {
-    if (epoch != c->epoch || spe != rsx_cost_spe(c) || !us || us > 1000000) return 0;
-    c->sum+=us; c->age++;
-    if (++c->samples != RSX_COST_WINDOW) return 0;
-    uint64_t mean=c->sum/RSX_COST_WINDOW;
-    c->sum=0; c->samples=0;
-    if (spe) c->spe_us=mean; else c->rsx_us=mean;
+    if (c->samples < RSX_COST_WINDOW || c->frame_samples < RSX_COST_WINDOW) return 0;
+    uint64_t mean=c->sum/c->samples, frame=c->frame_sum/c->frame_samples;
+    if (frame < mean) frame=mean;
+    c->sum=c->frame_sum=0; c->samples=c->frame_samples=0;
+    if (rsx_cost_spe(c)) { c->spe_us=mean; c->spe_frame_us=frame; }
+    else { c->rsx_us=mean; c->rsx_frame_us=frame; }
     unsigned next=c->phase;
     if (c->phase == RSX_COST_BASE) next=RSX_COST_PROBE;
-    else if (c->phase == RSX_COST_PROBE) {
-        if ((mean+500)*100 > c->spe_us*85) next=RSX_COST_SPE;
-        else if (++c->streak == 2) next=RSX_COST_RSX;
-    } else if (c->phase == RSX_COST_SPE) {
+    else if (c->phase == RSX_COST_SPE) {
         if (c->age >= RSX_COST_HOLD) next=RSX_COST_PROBE;
     } else {
-        c->streak = mean*100 > c->spe_us*110+50000 ? c->streak+1 : 0;
-        if (c->streak == 2) next=RSX_COST_SPE;
-        else if (c->age >= RSX_COST_HOLD) next=RSX_COST_BASE;
+        int over=frame > RSX_COST_BUDGET;
+        int gain=mean*100 > c->spe_us*110+50000 &&
+                 frame*100 > c->spe_frame_us*105+50000;
+        c->reason=frame <= RSX_COST_RETURN ? RSX_COST_FITS :
+                  !over ? RSX_COST_MARGIN : gain ? RSX_COST_OVER : RSX_COST_NO_GAIN;
+        if (c->phase == RSX_COST_PROBE) {
+            if (over && gain) next=RSX_COST_SPE;
+            else if (c->reason == RSX_COST_MARGIN) c->streak=0;
+            else if (++c->streak == 2) next=RSX_COST_RSX;
+        } else {
+            c->streak=over && gain ? c->streak+1 : 0;
+            if (c->streak == 2) next=RSX_COST_SPE;
+            else if (c->age >= RSX_COST_HOLD) next=RSX_COST_BASE;
+        }
     }
     if (next == c->phase) return 0;
     rsx_cost_phase(c,next);
     return 1;
+}
+/* 1 solo cuando cambia la fase; cero us o >1 s son marcas inválidas/pausa.
+ * Ambas ventanas deben pertenecer a la ruta y generación actuales. */
+static inline int rsx_cost_sample(rsx_cost *c, uint32_t epoch, int spe, uint64_t us)
+{
+    if (epoch != c->epoch || spe != rsx_cost_spe(c) || !us || us > 1000000) return 0;
+    c->sum+=us; c->samples++;
+    return rsx_cost_update(c);
+}
+static inline int rsx_cost_frame(rsx_cost *c, uint32_t epoch, int spe, uint64_t us)
+{
+    if (epoch != c->epoch || spe != rsx_cost_spe(c) || !us || us > 1000000) return 0;
+    c->frame_sum+=us; c->frame_samples++; c->age++;
+    return rsx_cost_update(c);
 }
 
 /* La captura del núcleo consulta esta instantánea, no escrituras posteriores.

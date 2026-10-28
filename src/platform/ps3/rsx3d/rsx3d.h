@@ -57,6 +57,9 @@ int rsx3d_submit(const r3d_job *job, unsigned slot, rsx3d_stats *stats);
  * permite probar la reducción sin que el selector de costo oculte fallos. */
 int rsx3d_submit_view(const r3d_job *job, unsigned slot, int exact, int adaptive, rsx3d_stats *stats);
 void rsx3d_cost_spe_done(uint32_t ticket, uint64_t us);
+/* Medir el trabajo del cuadro sin frame_begin/flip, sin esperar etiquetas. */
+uint32_t rsx3d_cost_frame_begin(void);
+void rsx3d_cost_frame_done(uint32_t ticket, uint64_t us);
 void rsx3d_cost_reset(void); /* tras retirar todos los trabajos del juego */
 int rsx3d_wait(unsigned slot, rsx3d_stats *stats);
 int rsx3d_render(const r3d_job *job, rsx3d_stats *stats);
