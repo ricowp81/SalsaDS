@@ -32,6 +32,7 @@
 #include "gpu3d/rsx_modes.h"
 #include "gpu3d/rsx_vertex.h"
 #include "gpu3d/rsx_passes.h"
+#include "gpu3d/rsx_cost.h"
 #include "spu/rsxprep/job.h"
 #include "spu/raster3d/job.h"
 #include <spukit/spukit.h>
@@ -60,6 +61,41 @@ static rsxkit_target *target;
 static unsigned hd_scale = 1;
 static int hd_refresh = 1;
 static int hd_game, hd_distinct, hd_scalar, hd_early_flip;
+static int native_previous, cost_disabled;
+static rsx_cost cost;
+static struct {
+    uint32_t ticket;
+    int native_done, hd_done, valid;
+    uint64_t gpu_ns, prepare_us;
+} cost_pending[2];
+static unsigned cost_frames, cost_sent, cost_calibration, native_reduced, native_exact_frames;
+static const char *cost_phase_name(void)
+{
+    static const char *const names[]={"calibración SPE","sondeo RSX","SPE por costo","RSX"};
+    return names[cost.phase];
+}
+static void cost_sample(uint32_t ticket, int spe, uint64_t us)
+{
+    if (!ticket || cost_disabled) return;
+    if (rsx_cost_sample(&cost,ticket-1,spe,us))
+        salsads_log("DATO rsx3d costo cambio: %s; RSX %.3f SPE %.3f ms; ventana %u, permanencia %u",
+                    cost_phase_name(),cost.rsx_us/1000.0,cost.spe_us/1000.0,RSX_COST_WINDOW,RSX_COST_HOLD);
+}
+void rsx3d_cost_spe_done(uint32_t ticket, uint64_t us) { cost_sample(ticket,1,us); }
+void rsx3d_cost_reset(void)
+{
+    uint32_t epoch=cost.epoch+1;
+    memset(&cost,0,sizeof cost); cost.epoch=epoch;
+    memset(cost_pending,0,sizeof cost_pending);
+    cost_frames=cost_sent=cost_calibration=native_reduced=native_exact_frames=0;
+}
+static void cost_publish(unsigned slot)
+{
+    if (!cost_pending[slot].native_done || !cost_pending[slot].hd_done) return;
+    if (cost_pending[slot].valid)
+        cost_sample(cost_pending[slot].ticket,0,cost_pending[slot].gpu_ns/1000+cost_pending[slot].prepare_us);
+    cost_pending[slot].ticket=0;
+}
 int rsx3d_hd_scalar(void) { return hd_scalar; }
 int rsx3d_hd_late_flip(void) { return hd_game && hd_scale>1 && !hd_early_flip; }
 static rsxkit_target *hd_diag_target, *hd_diag_scratch;
@@ -151,6 +187,10 @@ static uint64_t hd_raster_collect(unsigned slot)
     if (!hd_raster_fence[slot] || !rsxkit_fence_done(hd_raster_fence[slot])) return 0;
     uint64_t ns=hd_duration(48+slot*2,49+slot*2);
     pass_collect(slot,1);
+    cost_pending[slot].gpu_ns+=ns;
+    cost_pending[slot].hd_done=1;
+    cost_pending[slot].valid &= ns!=0;
+    cost_publish(slot);
     hd_raster_fence[slot]=0;
     hd_raster_ns += ns;
     if (++hd_raster_samples==120) {
@@ -602,6 +642,9 @@ int rsx3d_init(void)
     fog_constant = stat("/dev_hdd0/salsads/3d-rsx-niebla-constante", &flag) == 0; /* A/B: solo densidad constante por polígono */
     fog_previous = stat("/dev_hdd0/salsads/3d-rsx-niebla-anterior", &flag) == 0;
     passes_previous = fog_previous || stat("/dev_hdd0/salsads/3d-rsx-pasadas-ronda3", &flag) == 0;
+    native_previous = stat("/dev_hdd0/salsads/3d-rsx-nativa-ronda4", &flag) == 0;
+    cost_disabled = stat("/dev_hdd0/salsads/3d-rsx-sin-costo", &flag) == 0;
+    rsx3d_cost_reset();
     /* Solo con niebla-anterior: aproximación opcional por polígono en
      * translúcidos, sin profundidad final ni AND de bandera. Sin paridad. */
     fog_translucent = stat("/dev_hdd0/salsads/3d-rsx-niebla-translucidos", &flag) == 0;
@@ -674,7 +717,10 @@ int rsx3d_init(void)
         }
         if (!hd_depth || !hd_program) return -1;
     }
-    salsads_log("rsx3d escala: %ux; captura nativa independiente; HD solo GDDR3",hd_scale);
+    salsads_log("rsx3d escala: %ux; captura nativa exacta; presentación %s",hd_scale,
+                native_previous ? "nativa independiente ronda 4" : "reducida de HD sin captura");
+    salsads_log("rsx3d costo: %s; 8 muestras, salida RSX tras 2 ventanas +10%% y 0,5 ms; retorno tras 2 ventanas -15%% y 0,5 ms; permanencia/renovación 120",
+                cost_disabled ? "desactivado" : "activo solo en juego HD");
     salsads_log("rsx3d niebla: %s", fog_previous ? "por fragmento anterior" : "pasada final con profundidad y bandera por píxel");
     salsads_log("rsx3d pasadas: %s", passes_previous ? "ronda 3" : "opacos directos y atributos compactos");
     salsads_log("rsx3d recursos listos: niebla auxiliar GDDR3 %u KiB; programas y destinos reservados",
@@ -868,7 +914,7 @@ static int prepare_poly(r3d_poly *p, const gx_poly *gp, const gx_vertex *const *
     }
     return 1;
 }
-static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
+static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive, rsx3d_stats *st)
 {
     const uint64_t start = sysGetSystemTime();
     const uint64_t *versions = !full_identity && version_ea == j->vram_ea ? next_versions : NULL;
@@ -1031,6 +1077,17 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
             }
             if (nt>(16u>>bits)) { reason = "sombras: capacidad de IDs excedida"; return 0; }
             shadow_extended=1;
+        }
+    }
+    /* Decidir después de la admisión: los respaldos de paridad conservan su
+     * motivo. No preparar texturas ni vértices de un cuadro elegido para SPE. */
+    if (adaptive && hd_scale>1 && !cost_disabled) {
+        st->cost_ticket=cost.epoch+1;
+        if (rsx_cost_spe(&cost)) {
+            cost_sent++;
+            cost_calibration+=cost.phase==RSX_COST_BASE;
+            reason=cost.phase==RSX_COST_BASE ? "calibración de costo SPE" : "SPE por costo RSX";
+            return 0;
         }
     }
     /* La caché es compartida: no invalidar ni sobrescribir texeles que el
@@ -1227,8 +1284,10 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     /* Solo el experimento publica nativo antes de HD, con etiquetas separadas.
      * Sin él se conserva el orden de la ruta validada del reproductor. */
     rsxkit_target *native_target = hd_distinct && slot ? hd_diag_target : target;
-    for (unsigned render_pass=0;render_pass<(hd_scale>1?2u:1u);render_pass++) {
-    const unsigned hd_pass = hd_scale>1 && render_pass==(hd_game ? 1u : 0u);
+    const int reduced=rsx_native_reduce(hd_scale,native_previous,exact);
+    st->reduced=reduced;
+    for (unsigned render_pass=0;render_pass<(hd_scale>1 && !reduced ? 2u : 1u);render_pass++) {
+    const unsigned hd_pass = reduced || (hd_scale>1 && render_pass==(hd_game ? 1u : 0u));
     const int final_fog = (rs.d3 & D3_FOG) && !fog_previous;
     struct pass_sample *sample=&pass_samples[hd_pass][slot];
     memset(sample,0,sizeof *sample); sample->fog=final_fog;
@@ -1364,13 +1423,24 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
         if (rsxkit_post_run(&p)) return -1;
         sample->issue_us[2]=sysGetSystemTime()-issue_begin;
     }
-    if (hd_pass) { rsxkit_stamp(49+slot*2); hd_native[slot]=j->out_ea; continue; }
+    if (hd_pass) {
+        rsxkit_stamp(49+slot*2); hd_native[slot]=j->out_ea;
+        if (!reduced) continue;
+        /* Una muestra central, sin filtrar alfa ni cuantizar dos veces.
+         * El pack existente convierte directamente HD a R3D_PX en XDR. */
+        native_target=hd_target[slot];
+        rsxkit_stamp(56+slot*3);
+    }
     rsxkit_stamp(57 + slot * 3);
-    rsxkit_texture tx; rsxkit_target_texture(native_target, 0, R3D_H, &tx);
+    rsxkit_texture tx; rsxkit_target_texture(native_target, 0, R3D_H*(reduced ? hd_scale : 1), &tx);
     rsxkit_post_pass pass; memset(&pass, 0, sizeof pass);
     pass.program = pack; pass.out = output[slot]; pass.inputs = 1;
     pass.in[0] = rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
-    pass.in[0].refresh = hd_game && hd_scale > 1;
+    pass.in[0].refresh = reduced || (hd_game && hd_scale > 1);
+    if (reduced) {
+        pass.step[0]=pass.step[1]=(float)hd_scale;
+        pass.origin[0]=pass.origin[1]=(hd_scale&1) ? 0.0f : 0.5f;
+    }
     if (rsxkit_post_run(&pass)) return -1;
     rsxkit_stamp(58 + slot * 3);
     if (hd_game && hd_scale > 1) flight[slot].fence = rsxkit_fence();
@@ -1380,6 +1450,11 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     if (!hd_game || hd_scale == 1) flight[slot].fence = texture_fence;
     flight[slot].out_ea = j->out_ea;
     flight[slot].pending = 1;
+    memset(&cost_pending[slot],0,sizeof cost_pending[slot]);
+    cost_pending[slot].ticket=st->cost_ticket;
+    cost_pending[slot].hd_done=hd_scale==1;
+    cost_pending[slot].valid=1;
+    cost_pending[slot].prepare_us=st->prepare_us;
     st->total_us = sysGetSystemTime() - start;
     flight[slot].stats = *st;
     reason = (rs.d3 & D3_FOG) && !fog_previous ? "niebla final; profundidad y bandera por píxel" :
@@ -1387,14 +1462,16 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     return 1;
 }
 
-int rsx3d_submit(const r3d_job *j, unsigned slot, rsx3d_stats *st)
+int rsx3d_submit_view(const r3d_job *j, unsigned slot, int exact, int adaptive, rsx3d_stats *st)
 {
     static unsigned frames, rendered, counts[RSX_MODE_COUNT];
-    if (slot > 1 || flight[slot].pending) return -1;
+    if (slot > 1 || flight[slot].pending) { memset(st,0,sizeof *st); return -1; }
     uint64_t start = sysGetSystemTime();
+    /* Sondear ambas etiquetas antes de elegir ruta; jamás esperar por medir. */
+    hd_raster_collect(0); hd_raster_collect(1);
     hd_native[slot] = 0;
     rsx3d_hd_invalidate(j->out_ea);
-    int result = render_frame(j, slot, st);
+    int result = render_frame(j, slot, exact, adaptive, st);
     hd_requested[slot]=j->out_ea;
     hd_request_seq[slot]=++hd_request_serial;
     hd_rejected[slot]=result>0 ? NULL : reason;
@@ -1418,7 +1495,21 @@ int rsx3d_submit(const r3d_job *j, unsigned slot, rsx3d_stats *st)
         cold_frames = busy_frames = decode_batches = 0; decode_ticks = decode_pixels = 0; rescue_textures = 0;
         frames = rendered = 0; memset(counts, 0, sizeof counts);
     }
+    if (adaptive) {
+        native_reduced+=result>0 && st->reduced;
+        native_exact_frames+=result>0 && !st->reduced;
+        if (++cost_frames==120) {
+            salsads_log("DATO rsx3d rutas: 120 cuadros; nativa reducida %u exacta %u; SPE por costo %u (calibración %u); estado %s; RSX %.3f SPE %.3f ms",
+                        native_reduced,native_exact_frames,cost_sent,cost_calibration,
+                        cost_disabled || hd_scale==1 ? "desactivado" : cost_phase_name(),cost.rsx_us/1000.0,cost.spe_us/1000.0);
+            cost_frames=cost_sent=cost_calibration=native_reduced=native_exact_frames=0;
+        }
+    }
     return result;
+}
+int rsx3d_submit(const r3d_job *j, unsigned slot, rsx3d_stats *st)
+{
+    return rsx3d_submit_view(j,slot,1,0,st);
 }
 
 int rsx3d_wait(unsigned slot, rsx3d_stats *st)
@@ -1433,9 +1524,13 @@ int rsx3d_wait(unsigned slot, rsx3d_stats *st)
     memcpy((void *)(uintptr_t)flight[slot].out_ea, mem + OUT_OFF(slot), R3D_W * R3D_H * 4u);
     st->copy_us = sysGetSystemTime() - t;
     st->total_us += st->wait_us + st->copy_us;
-    st->raster_ns = rsxkit_stamp_ns(57 + slot * 3) - rsxkit_stamp_ns(56 + slot * 3);
-    st->export_ns = rsxkit_stamp_ns(58 + slot * 3) - rsxkit_stamp_ns(57 + slot * 3);
-    pass_collect(slot,0);
+    st->raster_ns = st->reduced ? 0 : hd_duration(56+slot*3,57+slot*3);
+    st->export_ns = hd_duration(57+slot*3,58+slot*3);
+    if (!st->reduced) pass_collect(slot,0);
+    cost_pending[slot].native_done=1;
+    cost_pending[slot].gpu_ns+=st->raster_ns+st->export_ns;
+    cost_pending[slot].valid &= st->export_ns!=0 && (st->reduced || st->raster_ns!=0);
+    cost_publish(slot);
     st->hd_raster_ns = hd_raster_collect(slot);
     flight[slot].pending = 0;
     return 1;
@@ -1454,6 +1549,34 @@ int rsx3d_render(const r3d_job *j, rsx3d_stats *st)
     }
     if (result > 0 && hd_game && hd_scale > 1 && decode_verify) rsxkit_fence_wait(texture_fence);
     return result > 0 ? rsx3d_wait(0, st) : result;
+}
+
+int rsx3d_reduce_check(unsigned slot, const uint32_t *native)
+{
+    if (slot>1 || hd_scale==1 || !native) return -1;
+    unsigned w=R3D_W*hd_scale, h=R3D_H*hd_scale;
+    rsxkit_surface *full=rsxkit_surface_create(w,h,RSXKIT_POST_RGBA8);
+    if (!full) return -1;
+    rsxkit_texture tx; rsxkit_target_texture(hd_target[slot],0,h,&tx);
+    rsxkit_post_pass p; memset(&p,0,sizeof p);
+    p.program=pack; p.out=full; p.inputs=1;
+    p.in[0]=rsxkit_post_texture_input(&tx,RSXKIT_FILTER_NEAREST,RSXKIT_POST_CLAMP);
+    p.in[0].refresh=1;
+    int bad=rsxkit_post_run(&p);
+    if (!bad) {
+        rsxkit_fence_wait(rsxkit_fence());
+        uint32_t pitch;
+        const uint8_t *data=rsxkit_surface_data(full,&pitch);
+        if (!data || rsxkit_lost()) bad=-1;
+        else for (unsigned y=0;y<R3D_H;y++) for (unsigned x=0;x<R3D_W;x++) {
+            unsigned sx=x*hd_scale+hd_scale/2, sy=y*hd_scale+hd_scale/2;
+            const uint8_t *b=data+sy*pitch+sx*4;
+            uint32_t expected=(uint32_t)b[0]<<24 | (uint32_t)b[1]<<16 | (uint32_t)b[2]<<8 | b[3];
+            bad+=native[y*R3D_W+x]!=expected;
+        }
+    }
+    rsxkit_surface_destroy(full);
+    return bad;
 }
 
 void rsx3d_fog_diagnose(const r3d_job *j, unsigned x, unsigned y)

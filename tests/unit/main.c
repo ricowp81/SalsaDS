@@ -40,6 +40,7 @@ void test_vram7(void);
 
 void test_rsx_export(void);
 void test_rsx_passes(void);
+void test_rsx_cost(void);
 
 int main(int argc, char **argv)
 {
@@ -55,6 +56,7 @@ int main(int argc, char **argv)
 	if (argc > 1 && !strcmp(argv[1], "rsx")) {
 		test_rsx_export();
 		test_rsx_passes();
+		test_rsx_cost();
 		printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);
 		return check_failed ? 1 : 0;
 	}
@@ -75,6 +77,7 @@ int main(int argc, char **argv)
 	test_endian();
 	test_rsx_export();
 	test_rsx_passes();
+	test_rsx_cost();
 	test_ppe_bench();
 	test_gpu2d();
 	test_dspad();

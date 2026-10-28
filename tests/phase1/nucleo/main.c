@@ -82,6 +82,7 @@
 #include "rsxkit/rsxkit.h"
 #ifdef NUCLEO_RSX
 #include "platform/ps3/rsx3d/rsx3d.h"
+#include "gpu3d/rsx_cost.h"
 #include "spu_rsxprep_bin.h"
 static int rsx3d_on, rsx3d_sync;
 static struct {
@@ -1905,6 +1906,7 @@ static int r3d_on;
 /* Trabajos en vuelo: con el aplazamiento (nds->vid.r3d_defer_line) el del cuadro anterior sigue corriendo cuando sale el del actual */
 struct r3d_inflight {
 	int rsx;
+	uint32_t cost_ticket;
 	const char *rsx_reason;
 	int set;
 	uint32_t slot;
@@ -1939,8 +1941,11 @@ static void r3d_spe_submit(void *ctx, int set, r3d_job *j)
 #ifdef NUCLEO_RSX
 	if (rsx3d_on) {
 		rsx3d_stats st;
+		const gpu2d_engine *ga=&nds->vid.set[set].frame.eng[0];
+		const uint32_t capture=(uint32_t)ga->regs[G2D_R_DISPCAP] | ((uint32_t)ga->regs[G2D_R_DISPCAP+1]<<16);
 		rsx3d_identity_versions(j->vram_ea, nds->vid.set[set].vram_version);
-		int ok = rsx3d_submit(j, e->slot, &st);
+		int ok = rsx3d_submit_view(j, e->slot, rsx_native_exact(capture,autotest_verify || hd_verify_on), 1, &st);
+		e->cost_ticket=st.cost_ticket;
 		if (ok > 0) {
 			e->rsx = 1;
 			e->rsx_reason = rsx3d_reason();
@@ -2002,6 +2007,10 @@ static void r3d_wait_one(void)
 	const uint64_t t0 = now_us();
 	struct r3d_inflight *e = &r3q.e[r3q.head];
 	r3d_stats fs;
+#ifdef NUCLEO_RSX
+	uint64_t spe_cost_us=0;
+	int spe_cost_valid=1;
+#endif
 
 #ifdef NUCLEO_RSX
 	if (e->rsx) {
@@ -2048,11 +2057,18 @@ static void r3d_wait_one(void)
 
 		memcpy(&res, r->data, sizeof res);
 		if (r->error != 0 || res.rc != 0) {
+#ifdef NUCLEO_RSX
+			spe_cost_valid=0;
+#endif
 			if (r3d_fail++ < 4)
 				salsads_log("FALLO el SPE %u del render 3D devolvió error %d / %d", u, r->error, res.rc);
 			continue;
 		}
 		put(u ? M_R3D1 : M_R3D0, (uint32_t)((uint64_t)r->ticks * 1000000ull / spukit_tick_hz()));
+#ifdef NUCLEO_RSX
+		uint64_t us=(uint64_t)r->ticks*1000000ull/spukit_tick_hz();
+		if (us>spe_cost_us) spe_cost_us=us;
+#endif
 		{
 			uint32_t *dst = (uint32_t *)(void *)&acc_r3d, *dst2 = (uint32_t *)(void *)&fs;
 			const uint32_t *src = (const uint32_t *)(const void *)&res.st;
@@ -2071,6 +2087,9 @@ static void r3d_wait_one(void)
 		nds_video_r3d_hist(nds, e->set, hist);
 	}
 	put(M_R3DW, (uint32_t)(now_us() - t0));
+#ifdef NUCLEO_RSX
+	if (spe_cost_valid) rsx3d_cost_spe_done(e->cost_ticket,spe_cost_us);
+#endif
 	acc_r3d_frames++;
 	nds_video_r3d_feedback(nds, &fs); /* caché de texturas automática */
 	if (autotest_verify && frame_no % 30u == 12u)
@@ -2489,6 +2508,7 @@ static void stats_reset(void)
 {
 #ifdef NUCLEO_RSX
 	memset(&rsx_pipe, 0, sizeof rsx_pipe);
+	rsx3d_cost_reset();
 #endif
 	memset(buf, 0, sizeof buf);
 	memset(nbuf, 0, sizeof nbuf);

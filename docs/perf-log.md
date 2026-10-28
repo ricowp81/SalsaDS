@@ -1,5 +1,72 @@
 # Registro de rendimiento
 
+## 2026-10-28 — Nativa desde HD y costo adaptativo [PS3 ronda 4; host corrección de ronda 5]
+
+Datos recibidos de consola, sin sumarlos dos veces: `nsmb-niebla4.log` contiene
+`juegos-niebla4.log`. Separar en la apertura de cada juego; para Metroid en
+juego tomar las ventanas a partir de 120 s. Script y resumen reproducibles:
+`build/niebla-final/diag-5/logs.py` y `logs.txt`.
+
+- Metroid en juego, 13 ventanas completas RSX: p25/mediana/p75 del intervalo
+  23,318 / 25,807 / 42,190 ms. No se incluyen los menús de 16,7 ms en esa cifra.
+- NSMB: 67 ventanas con 3D, 55 con intervalo ≤17,5 ms, cuatro entre 17,5–20,
+  ocho entre 20–25 y ninguna >25; 7383 cuadros RSX y cuatro SPE.
+- Grupos de Metroid con niebla final ampliada (20 por escala, 1882 cuadros):
+  medianas GPU nativa color 6,113 / auxiliar 5,099 / final 0,186 ms;
+  HD 9,304 / 8,083 / 0,704 ms. Mediana del total de cada resolución:
+  11,399 y 17,976 ms; máximos 23,245 y 33,187. Los grupos tienen su propia
+  media y tamaño, no son muestras individuales ni un A/B nuevo. La reducción
+  elimina el grupo nativo solo cuando no hay captura; no se deduce una ganancia
+  de fps sumando medianas de ventanas distintas.
+- NSMB, niebla sin ruta ampliada (58 grupos, 6862 cuadros): medianas del total
+  nativo 1,950 y HD 2,823 ms. Se conserva el detalle de otros modos en el resumen.
+- Se detectaron 947 presentaciones omitidas por captura a doble pantalla en
+  Metroid. Eso no cuenta todas las capturas: el bit DISPCAPCNT de la instantánea
+  decide la necesidad exacta, de forma conservadora incluso con banco no LCDC.
+
+**Ronda 5, conteos previstos, sin tiempos nuevos de PS3:**
+
+- Sin captura: dos resoluciones → una rasterización de escena. Con niebla,
+  cuatro pasadas de geometría → dos (color/atributos HD); dos quads de niebla
+  → uno. Sigue un único quad de exportación, ahora leyendo HD directamente.
+  Banco de 256 placas: 514 → 257 dibujos a 2×; con `3d-rsx-pasadas-ronda3`,
+  1024 → 512. La ruta exacta conserva los conteos de la ronda 4.
+- Reducción por muestra `(x*s+s/2, y*s+s/2)` entera, filtro nearest,
+  RGB6/A5 en una sola conversión. Para escalas pares se añade medio texel a
+  las coordenadas del quad, evitando seleccionar por redondeo entre dos texeles.
+  No es paridad universal con el raster 1×: la cobertura y la interpolación
+  pueden cambiar. Por eso nunca alimenta una captura ni una comparación exacta.
+- Selector: ventanas de ocho muestras. SPE empieza midiendo ocho trabajos;
+  RSX entra tras dos ventanas con `RSX + 500 us <= SPE * 0,85`. Una ventana
+  que no cumple durante el sondeo vuelve al SPE. En RSX, dos ventanas con
+  `RSX > SPE * 1,10 + 500 us` fuerzan el SPE. SPE permanece 120 muestras y
+  vuelve a sondear; RSX renueva su base SPE tras 120 muestras. Generaciones
+  descartan hasta dos trabajos anteriores todavía en vuelo; marcas cero,
+  invertidas o muestras >1 s no se utilizan.
+- Tramo estable caro: 120 muestras SPE por ocho de sondeo RSX (93,75 % SPE).
+  Tramo estable barato: 136 RSX por ocho SPE de renovación (94,44 % RSX).
+  Son cuentas de la política, sin respaldos por funciones no admitidas y sin
+  las muestras tardías del cambio. El sondeo no dibuja la escena por ambas rutas.
+- Métrica RSX: suma de color/auxiliar/final en ambas resoluciones realmente
+  emitidas, exportación y preparación PPE. Métrica SPE: mayor duración de
+  ambos trabajos, leída del decrementador al retirarlos. No suma espera del
+  PPE o emisión que pueda solaparse con GPU. No mide el costo total del cuadro
+  ni garantiza tiempos de PS3; comprobar intervalo, composición y cambios HD/nativo.
+
+Validación **host**, sin mediciones de velocidad de consola: 882 231
+comprobaciones dirigidas finales por orden LE/SAN y BE/qemu, cero fallos;
+entre ellas 32 comprobaciones del contrato de captura y secuencias de
+10 000 muestras sintéticas para comprobar permanencia y recuperación.
+La suite completa conserva únicamente los 34 fallos BE conocidos del anillo
+JIT; ROMs, gráficos, sonido, 32 hashes y 16 lockstep correctos. Los 19 shaders
+son idénticos a ronda 4. La ejecución gráfica nueva queda pendiente: RPCS3
+aborta antes de arrancar incluso con `--help`.
+
+Sin nuevas reservas GDDR3/XDR, shaders ni cambios de stencil en juego. Solo
+la autoprueba reserva una superficie temporal para leer HD completa. A/B:
+`3d-rsx-nativa-ronda4`, `3d-rsx-sin-costo`; ambos restauran las decisiones de
+la ronda 4. La secuencia anterior de dibujos sigue en `3d-rsx-pasadas-ronda3`.
+
 ## 2026-10-28 — Pasadas de niebla [PS3 ronda 3; host solo corrección de ronda 4]
 
 Log acumulado `build/niebla-final/ps3/mkds-niebla3.log`: Metroid antes de 290 s,

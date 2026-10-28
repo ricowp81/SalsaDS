@@ -285,7 +285,16 @@ static void fog_diagnose(const r3d_job *j)
         rsx3d_fog_diagnose(j,128,96);
     }
 }
-static unsigned fog_tests(r3d_job *j)
+static int render_view_test(r3d_job *j, int reduced, rsx3d_stats *st)
+{
+    if (!reduced) return rsx3d_render(j,st);
+    int ok=rsx3d_submit_view(j,0,0,0,st);
+    for (unsigned retry=0; !ok && !strcmp(rsx3d_reason(),"texturas SPE pendientes") && retry<512; retry++) {
+        rsx3d_decode_drain(); ok=rsx3d_submit_view(j,0,0,0,st);
+    }
+    return ok>0 ? rsx3d_wait(0,st) : ok;
+}
+static unsigned fog_tests(r3d_job *j, int reduced)
 {
     if (forced_spe("niebla")) return 0;
     unsigned fail = 0;
@@ -327,20 +336,20 @@ static unsigned fog_tests(r3d_job *j)
         }
         r3d_render_ref(&frame, vram, j->texslot, j->palslot, 0, reference);
         rsxkit_frame_begin(0); rsxkit_frame_end(); rsxkit_frame_begin(0);
-        rsx3d_stats st; int ok = rsx3d_render(j, &st);
+        rsx3d_stats st; int ok = render_view_test(j,reduced,&st);
         unsigned different = 0;
         for (unsigned k = 0; k < R3D_W*R3D_H; k++) different += output[k] != reference[k];
         fail += ok != 1 || different != 0;
-        salsads_log("rsx3d niebla prueba %u: estado %d, distintos %u, dibujos %u", test, ok, different, st.draws);
-        if (ok==1 && (different || test==0 || test==5 || test==16)) fog_diagnose(j);
+        salsads_log("rsx3d niebla prueba %u: estado %d, distintos %u, dibujos %u, reducida %u", test, ok, different, st.draws,st.reduced);
+        if (!reduced && ok==1 && (different || test==0 || test==5 || test==16)) fog_diagnose(j);
         char name[80];
-        snprintf(name, sizeof name, "rsx3d-niebla-%u-rsx", test); save_pixels(name, output);
-        snprintf(name, sizeof name, "rsx3d-niebla-%u-ref", test); save_pixels(name, reference);
-        snprintf(name, sizeof name, "rsx3d-niebla-%u-diff", test); save_difference(name);
+        snprintf(name, sizeof name, "rsx3d-niebla-%u%s-rsx", test,reduced ? "-reducida" : ""); save_pixels(name, output);
+        snprintf(name, sizeof name, "rsx3d-niebla-%u%s-ref", test,reduced ? "-reducida" : ""); save_pixels(name, reference);
+        snprintf(name, sizeof name, "rsx3d-niebla-%u%s-diff", test,reduced ? "-reducida" : ""); save_difference(name);
     }
     return fail;
 }
-static unsigned fog_translucent_tests(r3d_job *j)
+static unsigned fog_translucent_tests(r3d_job *j, int reduced)
 {
     if (forced_spe("niebla") || !rsx3d_fog_final()) return 0;
     unsigned fail=0, different=0, over=0, worst=0;
@@ -348,7 +357,7 @@ static unsigned fog_translucent_tests(r3d_job *j)
         rsx_fog_test_scene(&frame,test);
         r3d_render_ref(&frame,vram,j->texslot,j->palslot,0,reference);
         rsxkit_frame_begin(0); rsxkit_frame_end(); rsxkit_frame_begin(0);
-        rsx3d_stats st; int ok=rsx3d_render(j,&st);
+        rsx3d_stats st; int ok=render_view_test(j,reduced,&st);
         unsigned bad=0, diff=0;
         for (unsigned k=0;k<R3D_W*R3D_H;k++) {
             uint32_t a=output[k], b=reference[k];
@@ -362,17 +371,55 @@ static unsigned fog_translucent_tests(r3d_job *j)
         }
         fail+=ok!=1 || bad!=0; different+=diff; over+=bad;
         if (ok!=1 || bad) {
-            salsads_log("rsx3d niebla final prueba %u: estado %d, distintos %u, fuera de tolerancia %u, %s",test,ok,diff,bad,rsx3d_reason());
+            salsads_log("rsx3d niebla final prueba %u: estado %d, distintos %u, fuera de tolerancia %u, reducida %u, %s",test,ok,diff,bad,st.reduced,rsx3d_reason());
             if (fail<=2) {
                 char name[80]; snprintf(name,sizeof name,"rsx3d-niebla-final-%u-diff",test); save_difference(name);
                 snprintf(name,sizeof name,"rsx3d-niebla-final-%u-rsx",test); save_pixels(name,output);
                 snprintf(name,sizeof name,"rsx3d-niebla-final-%u-ref",test); save_pixels(name,reference);
-                if (ok==1) fog_diagnose(j);
+                if (!reduced && ok==1) fog_diagnose(j);
             }
         }
-        if (ok==1 && !bad && (test==0 || test==16 || test==31)) fog_diagnose(j);
+        if (!reduced && ok==1 && !bad && (test==0 || test==16 || test==31)) fog_diagnose(j);
     }
-    salsads_log("rsx3d niebla final: %u escenas Z/W, profundidad independiente, AND, solo alfa e ID repetido; distintos %u, fuera de tolerancia %u, peor %u/63; %u fallos",RSX_FOG_TESTS,different,over,worst,fail);
+    salsads_log("rsx3d niebla final: %u escenas Z/W, profundidad independiente, AND, solo alfa e ID repetido; distintos %u, fuera de tolerancia %u, peor %u/63; %u fallos; solicitud reducida %u",RSX_FOG_TESTS,different,over,worst,fail,reduced);
+    return fail;
+}
+/* Pendientes y texturas no tienen por qué coincidir con el centro de 1x.
+ * El contrato de presentación es una muestra de HD, incluida alfa exacta.
+ * Contrastar contra HD exportada completa, con paso uno, detecta desfase,
+ * dimensiones equivocadas, filtrado y descriptor de otra ranura. */
+static unsigned reduced_sampling_tests(r3d_job *j)
+{
+    if (rsx3d_scale()==1 || forced_spe("niebla") || !rsx3d_fog_final()) return 0;
+    unsigned fail=0, checked=0;
+    for (unsigned test=0;test<8;test++) {
+        rsx_fog_test_scene(&frame,test*17);
+        frame.regs.disp3dcnt|=D3_TEXTURE;
+        for (unsigned n=0;n<3;n++) {
+            if (test&2) frame.poly[n].texparam=(7u<<26);
+            for (unsigned k=0;k<4;k++) {
+                gx_vertex *v=&frame.vtx[n*4+k];
+                v->sx+=(k==1 ? 7 : k==2 ? -13 : 0);
+                v->z+=k*0x20000; v->w+=k*0x10000;
+                v->s=(k&1)*127; v->t=(k>>1)*127;
+                if (test&4) { v->r=k*19; v->g=63-k*17; }
+            }
+        }
+        for (unsigned i=0;i<64;i++) {
+            uint16_t c=0x8000u | ((i*7)&31) | (((i*13)&31)<<5) | (((i*3)&31)<<10);
+            if (!(i%5)) c=0;
+            vram[2*i]=c; vram[2*i+1]=c>>8;
+        }
+        rsxkit_frame_begin(0); rsxkit_frame_end(); rsxkit_frame_begin(0);
+        rsx3d_stats st;
+        int ok=render_view_test(j,1,&st), bad=ok!=1;
+        if (ok==1 && st.reduced) {
+            bad=rsx3d_reduce_check(0,output); checked++;
+        }
+        fail+=bad!=0;
+        salsads_log("rsx3d reducción muestra %u: estado %d, reducida %u, diferencias HD %d",test,ok,st.reduced,bad);
+    }
+    salsads_log("rsx3d reducción: %u imágenes completas contrastadas, %u fallos",checked,fail);
     return fail;
 }
 /* Máscara por fallo Z, exclusión OID, consumo incluso con fallo y TID repetido.
@@ -788,7 +835,7 @@ static unsigned cold_sampling_probe(r3d_job *j)
 }
 /* Dos envíos antes de retirar: cambiar lista, textura y destino no puede
  * alterar el cuadro anterior. Retirar también en orden inverso prueba etiquetas. */
-static unsigned overlap_tests(r3d_job *j, int diagnostic, int distinct)
+static unsigned overlap_tests(r3d_job *j, int diagnostic, int distinct, int reduced)
 {
     static uint32_t want[2][R3D_W * R3D_H], got[2][R3D_W * R3D_H];
     static uint32_t previous[R3D_W * R3D_H];
@@ -812,10 +859,10 @@ static unsigned overlap_tests(r3d_job *j, int diagnostic, int distinct)
             memset(got[slot], 0xcd, sizeof got[slot]);
             j->out_ea = (uint64_t)(uintptr_t)got[slot];
             rsx3d_stats st;
-            int result = rsx3d_submit(j, slot, &st);
+            int result = rsx3d_submit_view(j, slot, !reduced, 0, &st);
             for (unsigned retry = 0; !result && !strcmp(rsx3d_reason(), "texturas SPE pendientes") && retry < 512; retry++) {
                 fail += got[slot][0] != 0xcdcdcdcdu;
-                rsx3d_decode_drain(); result = rsx3d_submit(j, slot, &st);
+                rsx3d_decode_drain(); result = rsx3d_submit_view(j, slot, !reduced, 0, &st);
             }
             posted[slot] = result == 1;
             fail += !posted[slot];
@@ -857,7 +904,7 @@ static unsigned overlap_tests(r3d_job *j, int diagnostic, int distinct)
     if (diagnostic==2) salsads_log("rsx3d HD composición resumen: descriptores %s; exacto %u anterior %u otro %u error %u; lectura entre parejas",
         distinct ? "distintos" : "originales",hd[0],hd[1],hd[2],hd[3]);
     j->out_ea = saved_out;
-    salsads_log("rsx3d solapamiento: 16 cuadros, %u fallos de %s", fail,diagnostic ? "protocolo" : "paridad");
+    salsads_log("rsx3d solapamiento: 16 cuadros, %u fallos de %s, solicitud reducida %u", fail,diagnostic ? "protocolo" : "paridad",reduced);
     return fail;
 }
 
@@ -1016,8 +1063,14 @@ int rsx3d_selftest(void)
     fail += shade_tests(&j);
     fail += shadow_tests(&j);
     fail += equality_tests(&j);
-    fail += fog_tests(&j);
-    fail += fog_translucent_tests(&j);
+    fail += fog_tests(&j,0);
+    fail += fog_translucent_tests(&j,0);
+    if (rsx3d_scale()>1) {
+        fail += fog_tests(&j,1);
+        fail += fog_translucent_tests(&j,1);
+        fail += overlap_tests(&j,0,0,1);
+        fail += reduced_sampling_tests(&j);
+    }
     fail += fallback_tests(&j);
     fail += w_tests(&j);
     blend_probe(&j);
@@ -1026,16 +1079,16 @@ int rsx3d_selftest(void)
     fail += cold_sampling_probe(&j);
     if (rsx3d_hd_experimental()) {
         /* Diagnóstico informativo: no abortar aunque aparezca atraso. */
-        overlap_tests(&j,1,0);
-        if (!rsx3d_hd_descriptors(1)) overlap_tests(&j,1,1);
+        overlap_tests(&j,1,0,0);
+        if (!rsx3d_hd_descriptors(1)) overlap_tests(&j,1,1,0);
         else salsads_log("rsx3d HD diagnóstico: sin memoria para descriptores distintos");
         rsx3d_hd_descriptors(0);
         /* Leer la composición introduce espera entre parejas: banco separado,
          * nunca sustituye el diagnóstico nativo sin esa espera. */
-        overlap_tests(&j,2,0);
-        if (!rsx3d_hd_descriptors(1)) overlap_tests(&j,2,1);
+        overlap_tests(&j,2,0,0);
+        if (!rsx3d_hd_descriptors(1)) overlap_tests(&j,2,1,0);
         rsx3d_hd_descriptors(0);
-    } else fail += overlap_tests(&j,0,0);
+    } else fail += overlap_tests(&j,0,0,0);
     if (rsx3d_scale()>1) for (unsigned a=0;a<32;a++) {
         memset(&frame,0,sizeof frame); frame.regs.clear_depth=0x7fff;
         frame.regs.clear_color=(a<<16)|((a*13u)&31)|(((a*7u)&31)<<5)|(((a*3u)&31)<<10);

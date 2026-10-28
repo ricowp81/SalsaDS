@@ -8,6 +8,7 @@ typedef struct rsx3d_stats {
     uint64_t identity_us, vertex_us, state_us, lookup_us, decode_us, upload_us;
     uint64_t raster_ns, export_ns, hd_raster_ns;
     uint64_t prepare_us, copy_us, total_us, wait_us, reuse_us;
+    uint32_t reduced, cost_ticket;
 } rsx3d_stats;
 struct spukit_worker;
 void rsx3d_decode_worker(struct spukit_worker *worker);
@@ -29,6 +30,9 @@ int rsx3d_hd_contract_test(uint64_t ea, uint32_t sample);
 int rsx3d_hd_line_test(uint64_t ea, uint32_t sample);
 int rsx3d_hd_native_test(const uint16_t *native);
 int rsx3d_hd_bench(uint64_t ea, const char *name, const rsx3d_stats *stats);
+/* Solo autoprueba: exportar HD completa y contrastar su muestra central con
+ * el resultado reducido. Lee GDDR3 y no se usa durante el juego. */
+int rsx3d_reduce_check(unsigned slot, const uint32_t *native);
 /* Capturar la imagen correcta antes de reutilizar una ranura de raster.
  * El consumidor espera su compositor SPE antes de llamar a present. */
 uint64_t rsx3d_hd_acquire(uint64_t native_ea, unsigned set);
@@ -49,6 +53,11 @@ void rsx3d_identity_versions(uint64_t vram_ea, const uint64_t *versions);
 /* Ranuras 0/1: retirar antes de reutilizar. No retiene listas ni VRAM del juego.
  * wait publica out_ea; debe preceder captura, composición y reciclado del set. */
 int rsx3d_submit(const r3d_job *job, unsigned slot, rsx3d_stats *stats);
+/* Solo presentación: exact conserva 1x para captura/verificación. adaptive=0
+ * permite probar la reducción sin que el selector de costo oculte fallos. */
+int rsx3d_submit_view(const r3d_job *job, unsigned slot, int exact, int adaptive, rsx3d_stats *stats);
+void rsx3d_cost_spe_done(uint32_t ticket, uint64_t us);
+void rsx3d_cost_reset(void); /* tras retirar todos los trabajos del juego */
 int rsx3d_wait(unsigned slot, rsx3d_stats *stats);
 int rsx3d_render(const r3d_job *job, rsx3d_stats *stats);
 const char *rsx3d_reason(void);
