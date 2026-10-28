@@ -125,6 +125,8 @@ typedef struct rsxkit_post_input {
 typedef struct rsxkit_post_pass {
 	rsxkit_program *program;
 	rsxkit_surface *out;     /* NULL: la pantalla del cuadro en curso */
+	/* Destino alternativo; no combinar con out. NULL en ambos: pantalla. */
+	rsxkit_target *out_target;
 	rsxkit_rect rect;        /* píxeles de la salida que se dibujan (w o h en 0: toda) */
 	/* TEXCOORD0 en el centro del píxel (i, j) del rectángulo:
 	 *   xy = origin + (i + 0,5, j + 0,5)·step   (step en 0 vale 1)

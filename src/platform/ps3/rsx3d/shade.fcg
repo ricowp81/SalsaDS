@@ -6,10 +6,10 @@ void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
 #if defined(RSX3D_TOON) || defined(RSX3D_FOG)
           uniform sampler2D table : TEXUNIT1,
 #endif
-#ifdef RSX3D_FOG
+#if defined(RSX3D_FOG) || defined(RSX3D_FOG_ATTR)
           float4 fc : TEXCOORD3, float4 fp : TEXCOORD4,
 #endif
-#if defined(RSX3D_W) || defined(RSX3D_FOG)
+#if defined(RSX3D_W) || defined(RSX3D_FOG) || defined(RSX3D_FOG_ATTR)
           float4 pos : WPOS,
 #endif
 #ifdef RSX3D_W
@@ -44,6 +44,19 @@ void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
 #endif
     float want = step(0.5, k.w);
     clip(0.5 - abs(translucent - want));
+#ifdef RSX3D_FOG_ATTR
+    /* Dos bytes de profundidad >>9 y un alfa booleano. Se repiten las
+     * pruebas de color/ID/Z; la mezcla de atributos conserva profundidad
+     * si no hay PA_TDEPTH y hace AND de niebla en los translúcidos. */
+#ifdef RSX3D_W
+    float fogdepth = min(floor(1.0 / pos.w + 0.5) * floor(q.w + 0.5), 16777215.0);
+#else
+    float fogdepth = floor(pos.z * 16777215.0 + 0.5);
+#endif
+    float z15 = floor(fogdepth / 512.0);
+    float hi = floor(z15 / 256.0);
+    result = float4(hi / 255.0, (z15 - hi * 256.0) / 255.0, 0.0, fp.w);
+#else
 #ifdef RSX3D_FOG
     /* Densidad por fragmento como la DS: profundidad entera de 24 bits
      * (Z del fragmento o W por fragmento desplazado), >>9, menos el
@@ -77,4 +90,5 @@ void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
     float weight = (a + 1.0) / 32.0;
     float bias = step(0.5, k.w) * (1.0 - step(1.5, k.w));
     result = float4((c + 16.0 - bias * 0.501 / weight) / 255.0, weight);
+#endif
 }

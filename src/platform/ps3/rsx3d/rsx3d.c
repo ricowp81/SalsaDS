@@ -17,6 +17,9 @@
 #include "gpu2d/gpu2d_hd.h"
 #include "fog_fpo.h"
 #include "fog_w_fpo.h"
+#include "fog_attr_fpo.h"
+#include "fog_attr_w_fpo.h"
+#include "fog_final_fpo.h"
 #include "range_fpo.h"
 #include "range_w_fpo.h"
 #include "mask_fpo.h"
@@ -263,6 +266,11 @@ static uint32_t texture_fence;
 static rsxkit_program *shade, *shade_w, *pack, *toon, *toon_w;
 static int toon_spe, shadow_spe, fog_spe;
 static rsxkit_program *fog, *fog_w;
+static rsxkit_program *fog_attr, *fog_attr_w, *fog_final;
+/* Índice 0 nativo, 1 HD: imágenes transitorias compartidas por las ranuras.
+ * El FIFO termina su posproceso antes de borrar las del siguiente cuadro. */
+static rsxkit_target *fog_color[2], *fog_attributes[2];
+static int fog_previous, fog_attribute_pass;
 static rsxkit_program *shadow, *shadow_w, *mask, *mask_w;
 static uint8_t oid[64], tid[64], oid_test[64];
 static int shadows, single_shadow, shadow_general, shadow_unbatched;
@@ -395,6 +403,7 @@ static int last_valid;
 
 const char *rsx3d_reason(void) { return reason; }
 int rsx3d_fog_constant(void) { return fog_constant; }
+int rsx3d_fog_final(void) { return !fog_previous; }
 static uint32_t tex_read(void *unused, uint32_t a)
 {
     (void)unused;
@@ -541,8 +550,9 @@ int rsx3d_init(void)
               stat("/dev_hdd0/salsads/3d-rsx-perfil", &flag) == 0;
     fog_spe = stat("/dev_hdd0/salsads/3d-rsx-niebla-spe", &flag) == 0;
     fog_constant = stat("/dev_hdd0/salsads/3d-rsx-niebla-constante", &flag) == 0; /* A/B: solo densidad constante por polígono */
-    /* Aproximación opcional: niebla por polígono también en translúcidos (a su propia profundidad y sin la regla AND de la
-     * DS sobre el píxel de abajo); la DS la aplica en una pasada final sobre la profundidad final. Sin paridad. */
+    fog_previous = stat("/dev_hdd0/salsads/3d-rsx-niebla-anterior", &flag) == 0;
+    /* Solo con niebla-anterior: aproximación opcional por polígono en
+     * translúcidos, sin profundidad final ni AND de bandera. Sin paridad. */
     fog_translucent = stat("/dev_hdd0/salsads/3d-rsx-niebla-translucidos", &flag) == 0;
     shadow_unbatched = stat("/dev_hdd0/salsads/3d-rsx-sombra-sin-lotes", &flag) == 0;
     shadow_general = stat("/dev_hdd0/salsads/3d-rsx-sombra-general", &flag) == 0;
@@ -567,11 +577,18 @@ int rsx3d_init(void)
     shade_w = rsxkit_program_create(shade_w_fpo);
     shade = rsxkit_program_create(shade_fpo); pack = rsxkit_program_create(pack_fpo);
     fog = rsxkit_program_create(fog_fpo); fog_w = rsxkit_program_create(fog_w_fpo);
+    fog_attr = rsxkit_program_create(fog_attr_fpo); fog_attr_w = rsxkit_program_create(fog_attr_w_fpo);
+    fog_final = rsxkit_program_create(fog_final_fpo);
+    if (!fog_previous) {
+        fog_color[0] = rsxkit_target_create_rgba(R3D_W, R3D_H);
+        fog_attributes[0] = rsxkit_target_create_rgba(R3D_W, R3D_H);
+    }
     range_z = rsxkit_program_create(range_fpo); range_w = rsxkit_program_create(range_w_fpo);
     shadow = rsxkit_program_create(shadow_fpo); shadow_w = rsxkit_program_create(shadow_w_fpo);
     mask = rsxkit_program_create(mask_fpo); mask_w = rsxkit_program_create(mask_w_fpo);
     toon = rsxkit_program_create(toon_fpo); toon_w = rsxkit_program_create(toon_w_fpo);
-    if (!range_z || !range_w || !target || !depth || !output[0] || !output[1] || !shade || !shade_w || !pack || !toon || !toon_w || !shadow || !shadow_w || !mask || !mask_w || !fog || !fog_w) return -1;
+    if (!range_z || !range_w || !target || !depth || !output[0] || !output[1] || !shade || !shade_w || !pack || !toon || !toon_w || !shadow || !shadow_w || !mask || !mask_w || !fog || !fog_w || !fog_attr || !fog_attr_w || !fog_final) return -1;
+    if (!fog_previous && (!fog_color[0] || !fog_attributes[0])) return -1;
     if (stat("/dev_hdd0/salsads/3d-rsx-2x", &flag) == 0) hd_scale=2;
     if (stat("/dev_hdd0/salsads/3d-rsx-3x", &flag) == 0) hd_scale=3;
     if (stat("/dev_hdd0/salsads/3d-rsx-4x", &flag) == 0) hd_scale=4;
@@ -594,6 +611,11 @@ int rsx3d_init(void)
         if (rsxkit_depth_reserve(w,h)) return -1;
         hd_depth=rsxkit_depth_create(w,h);
         hd_program=rsxkit_program_create(compose_hd_fpo);
+        if (!fog_previous) {
+            fog_color[1] = rsxkit_target_create_rgba(w,h);
+            fog_attributes[1] = rsxkit_target_create_rgba(w,h);
+            if (!fog_color[1] || !fog_attributes[1]) return -1;
+        }
         for (unsigned i=0;i<2;i++) {
             hd_target[i]=rsxkit_target_create_rgba(w,h);
             hd_saved[i]=rsxkit_target_create_rgba(w,h);
@@ -602,6 +624,7 @@ int rsx3d_init(void)
         if (!hd_depth || !hd_program) return -1;
     }
     salsads_log("rsx3d escala: %ux; captura nativa independiente; HD solo GDDR3",hd_scale);
+    salsads_log("rsx3d niebla: %s", fog_previous ? "por fragmento anterior" : "pasada final con profundidad y bandera por píxel");
     reason = "Z nativa; W por fragmento";
     ready = 1;
     if (!decode_ppe && (stat("/dev_hdd0/salsads/3d-rsx-prueba", &flag) == 0 ||
@@ -618,6 +641,8 @@ void rsx3d_shutdown(void)
     rsx3d_decode_worker(NULL);
     rsxkit_finish();
     rsxkit_program_destroy(fog); rsxkit_program_destroy(fog_w);
+    rsxkit_program_destroy(fog_attr); rsxkit_program_destroy(fog_attr_w); rsxkit_program_destroy(fog_final);
+    for (unsigned i=0;i<2;i++) { rsxkit_target_destroy(fog_color[i]); rsxkit_target_destroy(fog_attributes[i]); }
     rsxkit_program_destroy(range_z); rsxkit_program_destroy(range_w);
     rsxkit_program_destroy(shadow); rsxkit_program_destroy(shadow_w);
     rsxkit_program_destroy(mask); rsxkit_program_destroy(mask_w);
@@ -637,9 +662,16 @@ static void draw(struct command *c, uint8_t test, uint8_t ref, uint8_t compare, 
     d->stencil = test; d->stencil_ref = ref; d->stencil_compare_mask = compare;
     d->stencil_write_mask = write; d->stencil_op = op;
     d->blend = blend; d->depth = z; d->k[0][0][3] = pass;
+    rsxkit_program *program = d->program;
+    if (fog_attribute_pass && (program == shade || program == shade_w)) {
+        d->program = program == shade_w ? fog_attr_w : fog_attr;
+        if (blend != RSXKIT_BLEND_NONE && pass != 0)
+            d->blend = c->tdepth ? RSXKIT_BLEND_REPLACE_MIN_ALPHA : RSXKIT_BLEND_KEEP_MIN_ALPHA;
+    }
     if (!last_valid || memcmp(&last_draw, d, sizeof *d)) st->state_changes++;
     last_draw = *d; last_valid = 1;
     rsxkit_draw_triangles(d, c->first, c->count); st->draws++;
+    d->program = program;
 }
 /* Puerta por polígono: conserva Z y su cara mientras se consultan los IDs.
  * El bit alto guarda el resultado temporal sin perder la ocupación. */
@@ -811,7 +843,7 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
                     }
                 }
             }
-            if (!fog_translucent && (PA_ALPHA(p->attr) != 31 || (PA_MODE(p->attr) != 1 && (rs.d3 & D3_TEXTURE) && (fmt == 1 || fmt == 6)))) {
+            if (fog_previous && !fog_translucent && (PA_ALPHA(p->attr) != 31 || (PA_MODE(p->attr) != 1 && (rs.d3 & D3_TEXTURE) && (fmt == 1 || fmt == 6)))) {
                 reason = "niebla con translúcidos: requiere pasada final"; return 0;
             }
         }
@@ -993,10 +1025,10 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
             d->tex[1].wrap_s = d->tex[1].wrap_t = RSXKIT_WRAP_CLAMP;
         }
         if (rs.d3 & D3_FOG) {
-            d->program = rs.wbuf ? fog_w : fog;
-            /* Densidad por fragmento en el shader con la tabla en TEXUNIT1:
-             * desplazamiento, bits de fracción (10 - FOG_SHIFT) y 2^wshift. */
-            d->ntex = 2;
+            if (fog_previous) d->program = rs.wbuf ? fog_w : fog;
+            /* Constantes comunes a niebla anterior y atributos finales.
+             * Solo la ruta anterior lee la tabla durante el dibujo. */
+            if (fog_previous) d->ntex = 2;
             d->tex[1].offset = offset + TOON_OFF(slot); d->tex[1].pitch = 128;
             d->tex[1].width = 32; d->tex[1].height = 1;
             d->tex[1].format = RSXKIT_RGBA8888; d->tex[1].location = RSXKIT_MEM_MAIN;
@@ -1081,9 +1113,15 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     rsxkit_target *native_target = hd_distinct && slot ? hd_diag_target : target;
     for (unsigned render_pass=0;render_pass<(hd_scale>1?2u:1u);render_pass++) {
     const unsigned hd_pass = hd_scale>1 && render_pass==(hd_game ? 1u : 0u);
-    if (rsxkit_bind(hd_pass ? hd_target[slot] : native_target, hd_pass ? hd_depth : depth, R3D_W, R3D_H)) return -1;
+    const int final_fog = (rs.d3 & D3_FOG) && !fog_previous;
+    rsxkit_target *destination = hd_pass ? hd_target[slot] : native_target;
+    rsxkit_stamp(hd_pass ? 48 + slot*2 : 56 + slot * 3);
+    for (unsigned attribute_pass=0;attribute_pass<(final_fog ? 2u : 1u);attribute_pass++) {
+    fog_attribute_pass = attribute_pass;
+    rsxkit_target *intermediate = !final_fog ? destination : attribute_pass ? fog_attributes[hd_pass] : fog_color[hd_pass];
+    if (rsxkit_bind(intermediate, hd_pass ? hd_depth : depth, R3D_W, R3D_H)) return -1;
     uint32_t clear = rs.clear_px;
-    if ((rs.d3 & D3_FOG) && (rs.clear_attr & AT_FOG)) {
+    if (!final_fog && (rs.d3 & D3_FOG) && (rs.clear_attr & AT_FOG)) {
         uint32_t d = r3d_fog_density(&rs, rs.clear_depth), inv = 128-d, fc = rs.fog_px;
         uint32_t r = R3D_PX_R(clear), g = R3D_PX_G(clear), b = R3D_PX_B(clear);
         if (!(rs.d3 & D3_FOG_ALPHA)) {
@@ -1096,7 +1134,8 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     uint32_t ca = R3D_PX_A(clear), encoded_a = ca ? ((ca + 1u) * 255u + 16u) / 32u : 0;
     uint32_t encoded = (encoded_a << 24) | ((R3D_PX_R(clear) + 16u) << 16) |
         ((R3D_PX_G(clear) + 16u) << 8) | (R3D_PX_B(clear) + 16u);
-    rsxkit_stamp(hd_pass ? 48 + slot*2 : 56 + slot * 3);
+    if (attribute_pass) encoded = ((rs.clear_attr & AT_FOG) ? 0xff000000u : 0u) |
+        ((rs.clear_depth >> 17) << 16) | (((rs.clear_depth >> 9) & 255u) << 8);
     rsxkit_clear(RSXKIT_CLEAR_COLOR | RSXKIT_CLEAR_DEPTH | RSXKIT_CLEAR_ALPHA, encoded, rs.clear_depth / 16777215.0f, NULL);
     rsxkit_clear_stencil((shadows || shadow_extended) ? ((ca ? (shadow_extended ? 16 : 128) : 0) | oid[AT_OID(rs.clear_attr)]) : (ca ? 64 : 255));
     rsxkit_vertices(offset + VERT_OFF(slot), RSXKIT_MEM_MAIN);
@@ -1180,6 +1219,27 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
         draw(c, 2, c->id, 127, 255, 0, RSXKIT_BLEND_OFF, z | (c->tdepth ? RSXKIT_DEPTH_WRITE : 0), 2, st);
         draw(c, 3, c->id, 127, 128, 0, RSXKIT_BLEND_NONE, 0, 2, st);
     }
+    }
+    fog_attribute_pass = 0;
+    if (final_fog) {
+        rsxkit_post_pass p; memset(&p, 0, sizeof p);
+        p.program = fog_final; p.out_target = destination; p.inputs = 3;
+        rsxkit_texture tx;
+        rsxkit_target_texture(fog_color[hd_pass], 0, R3D_H*(hd_pass ? hd_scale : 1), &tx);
+        p.in[0] = rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
+        rsxkit_target_texture(fog_attributes[hd_pass], 0, R3D_H*(hd_pass ? hd_scale : 1), &tx);
+        p.in[1] = rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
+        memset(&tx, 0, sizeof tx);
+        tx.offset = offset + TOON_OFF(slot); tx.pitch = 128; tx.width = 32; tx.height = 1;
+        tx.format = RSXKIT_RGBA8888; tx.location = RSXKIT_MEM_MAIN;
+        p.in[2] = rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
+        p.k[0][0] = R3D_PX_R(rs.fog_px); p.k[0][1] = R3D_PX_G(rs.fog_px);
+        p.k[0][2] = R3D_PX_B(rs.fog_px); p.k[0][3] = R3D_PX_A(rs.fog_px);
+        p.k[1][0] = rs.fog_offset;
+        p.k[1][1] = 1u << (rs.fog_shift > 10 ? 0u : 10u - rs.fog_shift);
+        p.k[1][2] = !!(rs.d3 & D3_FOG_ALPHA);
+        if (rsxkit_post_run(&p)) return -1;
+    }
     if (hd_pass) { rsxkit_stamp(49+slot*2); hd_native[slot]=j->out_ea; continue; }
     rsxkit_stamp(57 + slot * 3);
     rsxkit_texture tx; rsxkit_target_texture(native_target, 0, R3D_H, &tx);
@@ -1198,7 +1258,8 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     flight[slot].pending = 1;
     st->total_us = sysGetSystemTime() - start;
     flight[slot].stats = *st;
-    reason = rs.wbuf ? "W por fragmento; interpolación triangular" : "Z nativa; cobertura e interpolación triangular";
+    reason = (rs.d3 & D3_FOG) && !fog_previous ? "niebla final; profundidad y bandera por píxel" :
+        rs.wbuf ? "W por fragmento; interpolación triangular" : "Z nativa; cobertura e interpolación triangular";
     return 1;
 }
 

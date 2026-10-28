@@ -246,9 +246,16 @@ static void set_blend(uint8_t blend)
 	if (blend == d3.blend)
 		return;
 	d3.blend = blend;
-	rsxSetBlendEquation(ctx, GCM_FUNC_ADD, blend == RSXKIT_BLEND_ALPHA_MAX ? GCM_FUNC_MAX : GCM_FUNC_ADD);
+	rsxSetBlendEquation(ctx, GCM_FUNC_ADD, blend == RSXKIT_BLEND_ALPHA_MAX ? GCM_FUNC_MAX :
+		(blend == RSXKIT_BLEND_REPLACE_MIN_ALPHA || blend == RSXKIT_BLEND_KEEP_MIN_ALPHA) ? GCM_FUNC_MIN : GCM_FUNC_ADD);
 	u32 mask = GCM_COLOR_MASK_B | GCM_COLOR_MASK_G | GCM_COLOR_MASK_R | GCM_COLOR_MASK_A;
 	switch (blend) {
+	case RSXKIT_BLEND_REPLACE_MIN_ALPHA:
+	case RSXKIT_BLEND_KEEP_MIN_ALPHA:
+		rsxSetBlendEnable(ctx, GCM_TRUE);
+		rsxSetBlendFunc(ctx, blend == RSXKIT_BLEND_KEEP_MIN_ALPHA ? GCM_ZERO : GCM_ONE,
+			blend == RSXKIT_BLEND_KEEP_MIN_ALPHA ? GCM_ONE : GCM_ZERO, GCM_ONE, GCM_ONE);
+		break;
 	case RSXKIT_BLEND_ALPHA_MAX:
 	case RSXKIT_BLEND_ALPHA:
 		rsxSetBlendEnable(ctx, GCM_TRUE);

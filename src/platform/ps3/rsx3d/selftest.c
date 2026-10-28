@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include <string.h>
+#include "gpu3d/rsx_fog_test.h"
 #include <malloc.h>
 #include <spukit/spukit.h>
 #include "spu_gpu2d_bin.h"
@@ -313,6 +314,35 @@ static unsigned fog_tests(r3d_job *j)
     }
     return fail;
 }
+static unsigned fog_translucent_tests(r3d_job *j)
+{
+    if (forced_spe("niebla") || !rsx3d_fog_final()) return 0;
+    unsigned fail=0, different=0, over=0, worst=0;
+    for (unsigned test=0;test<RSX_FOG_TESTS;test++) {
+        rsx_fog_test_scene(&frame,test);
+        r3d_render_ref(&frame,vram,j->texslot,j->palslot,0,reference);
+        rsxkit_frame_begin(0); rsxkit_frame_end(); rsxkit_frame_begin(0);
+        rsx3d_stats st; int ok=rsx3d_render(j,&st);
+        unsigned bad=0, diff=0;
+        for (unsigned k=0;k<R3D_W*R3D_H;k++) {
+            uint32_t a=output[k], b=reference[k];
+            unsigned d=0;
+            for (unsigned c=0;c<3;c++) {
+                unsigned x=(a>>(8*c))&255u, y=(b>>(8*c))&255u, dd=x>y ? x-y : y-x;
+                if (dd>d) d=dd;
+            }
+            if (R3D_PX_A(a)!=R3D_PX_A(b)) d=255;
+            diff+=a!=b; bad+=d>2; if (d>worst) worst=d;
+        }
+        fail+=ok!=1 || bad!=0; different+=diff; over+=bad;
+        if (ok!=1 || bad) {
+            salsads_log("rsx3d niebla final prueba %u: estado %d, distintos %u, fuera de tolerancia %u, %s",test,ok,diff,bad,rsx3d_reason());
+            if (fail<=2) { char name[80]; snprintf(name,sizeof name,"rsx3d-niebla-final-%u-diff",test); save_difference(name); }
+        }
+    }
+    salsads_log("rsx3d niebla final: %u escenas Z/W, profundidad independiente, AND, solo alfa e ID repetido; distintos %u, fuera de tolerancia %u, peor %u/63; %u fallos",RSX_FOG_TESTS,different,over,worst,fail);
+    return fail;
+}
 /* Máscara por fallo Z, exclusión OID, consumo incluso con fallo y TID repetido.
  * Geometría rectangular constante para aislar el stencil de la interpolación. */
 static unsigned shadow_tests(r3d_job *j)
@@ -571,7 +601,8 @@ static unsigned fallback_tests(r3d_job *j)
                 differ += d != 0; over += d > 2; if (d > worst) worst = d;
             }
             fail += ok != 1 || over != 0;
-            salsads_log("rsx3d respaldo prueba %u: estado %d (niebla por fragmento), distintos %u, fuera de tolerancia %u, peor %u/63, %s", test, ok, differ, over, worst, rsx3d_reason());
+            salsads_log("rsx3d respaldo prueba %u: estado %d (niebla %s), distintos %u, fuera de tolerancia %u, peor %u/63, %s", test, ok,
+                        rsx3d_fog_final() ? "final" : "por fragmento", differ, over, worst, rsx3d_reason());
             if (first < R3D_W*R3D_H)
                 salsads_log("rsx3d respaldo prueba %u: primer distinto en %u,%u: RSX %08x referencia %08x; z0 %u z1 %u w0 %u w1 %u", test, first % R3D_W, first / R3D_W,
                             output[first], reference[first], frame.vtx[0].z, frame.vtx[1].z, (unsigned)frame.vtx[0].w, (unsigned)frame.vtx[1].w);
@@ -953,6 +984,7 @@ int rsx3d_selftest(void)
     fail += shadow_tests(&j);
     fail += equality_tests(&j);
     fail += fog_tests(&j);
+    fail += fog_translucent_tests(&j);
     fail += fallback_tests(&j);
     fail += w_tests(&j);
     blend_probe(&j);

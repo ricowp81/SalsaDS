@@ -462,7 +462,8 @@ int rsxkit_post_run(const rsxkit_post_pass *p)
 {
 	struct rsxkit_state *g = &rsxkit_g;
 	gcmContextData *ctx = g->ctx;
-	if (!p || !p->program || !p->program->used || p->inputs > RSXKIT_POST_INPUTS || (p->out && !p->out->used))
+	if (!p || !p->program || !p->program->used || p->inputs > RSXKIT_POST_INPUTS || (p->out && !p->out->used) ||
+	    (p->out && p->out_target))
 		return RSXKIT_EARG;
 	for (uint32_t i = 0; i < p->inputs; i++)
 		if (p->in[i].surface && !p->in[i].surface->used)
@@ -471,7 +472,13 @@ int rsxkit_post_run(const rsxkit_post_pass *p)
 	rsxkit_reserve(RSXKIT_RESERVE_DRAW);
 	rsxkit_leave_3d();
 	uint32_t sw, sh;
-	int rc = bind_output(p->out, &sw, &sh);
+	int rc;
+	if (p->out_target) {
+		rsxkit_target_size(p->out_target, &sw, &sh);
+		rc = rsxkit_bind(p->out_target, NULL, (float)sw, (float)sh);
+		if (rc == RSXKIT_OK)
+			rsxkit_set_2d_state_size(sw, sh);
+	} else rc = bind_output(p->out, &sw, &sh);
 	if (rc != RSXKIT_OK)
 		return rc;
 	rsxkit_rect r = p->rect;

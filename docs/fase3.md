@@ -958,3 +958,33 @@ llegue a la línea 262, la espera del evento de línea baja a casi nada (la part
 Paquete `salsads-r3dreparto.pkg`: MKDS carrera pesada (`DATO raster3d`: SPE0/SPE1, «texturas», «bloques o celdas decodificados», líneas de VRAM; `DATO raster3d-latencia`: línea
 aplazada, modo de texturas, composición de la A; `DATO desglose` y `DATO eventos`: «línea»), NSMB en un nivel y SM64DS (que no empeoren: modo de bloques); comparar con `texturas-bloques`,
 `r3d-sin-aplazar` y `reparto-sin-historia` en la misma escena. Si en NSMB o SM64DS las celdas ganan, bajar el umbral de 0,3 de `r3d_texpol_feed`.
+
+# Niebla final en el RSX (2026-10-28)
+
+Implementación nueva, pendiente de comparar gráficamente en consola. El color
+se mezcla primero sin niebla. Se repite la lista y sus pruebas de alfa,
+profundidad e ID para producir una textura de atributos: R:G contienen los
+15 bits de profundidad usados por la niebla; alfa contiene la bandera.
+Los opacos reemplazan los atributos. Los translúcidos toman el mínimo de
+las banderas booleanas (AND) y conservan profundidad salvo con `PA_TDEPTH`,
+incluso con mezcla de color desactivada o destino transparente.
+
+La pasada final lee color, atributos y LUT; conserva el cálculo entero de
+`r3d_fog_density` (offset, shift, interpolación y 127→128), RGB6/alfa5 y
+solo alfa. El borrado pasa por la misma operación final. Se hace de forma
+independiente a 1× y a la escala HD; no se lee el resultado desde el PPE.
+Las dos imágenes auxiliares se reservan al iniciar y se reutilizan en orden
+de FIFO. El stencil conserva su reparto anterior.
+
+`3d-rsx-niebla-anterior` restaura la ruta por fragmento de hd-10 y su caída
+al SPE con translúcidos. Con él, `3d-rsx-niebla-translucidos` sigue siendo
+una aproximación sin paridad. Se mantienen los respaldos por combinación
+con toon/sombra, imagen de borrado, bordes y capacidad de IDs; resolver la
+niebla no elimina esos límites.
+
+Las 512 escenas dirigidas se comparten entre host y autoprueba RSX. Prueban
+Z/W, profundidad independiente en dos translúcidos, todas las banderas,
+solo alfa, rechazo de ID repetido y un fondo con/sin opaco. El host calcula aparte los colores del
+centro y comprueba paridad completa referencia/bandas, LE y BE. La consola
+debe aceptar RGB6 ±2 y alfa exacta, además de conservar las 18 pruebas de
+LUT y las pruebas de respaldo 6/7. Compilar no acredita esa paridad gráfica.

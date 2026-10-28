@@ -107,3 +107,5 @@ permanecen reservadas hasta que captura o compositor retiren cada trabajo.
 - Autopruebas HD: aproximadamente 1092 KiB temporales adicionales para escenas 2D, liberados al terminar; reutilizan las imágenes y VRAM del reproductor; 768 KiB comparan los metadatos por bloques contra los escalares.
 
 - Diagnóstico HD de solapamiento: 192 KiB XDR extra para el cuadro previo; dos destinos RGBA8 nativos (384 KiB GDDR3), solo en autoprueba experimental. Uno cambia el descriptor de exportación de la ranura 1; otro evita borrar el destino nativo durante la lectura de composición.
+
+- Niebla final RSX: dos destinos RGBA8 transitorios por resolución (color sin niebla y atributos), compartidos por las dos ranuras y protegidos por el orden del FIFO. 384 KiB GDDR3 a 1×; con HD, `384 × (1 + escala²)` KiB en total (1920 KiB a 2×, 6528 KiB a 4×). Sin nuevo búfer XDR ni profundidad adicional; la tabla reutiliza 128 B por ranura, excluyente con toon. Se reservan al iniciar; `3d-rsx-niebla-anterior` omite los destinos auxiliares.

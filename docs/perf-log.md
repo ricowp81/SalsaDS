@@ -1,5 +1,12 @@
 # Registro de rendimiento
 
+## 2026-10-28 — Niebla final y diagnóstico del compositor [PS3 hd-10; host solo corrección]
+
+- Niebla final nueva sin medir en PS3. Repite el raster para producir profundidad/bandera y añade una pasada de pantalla completa; ese costo está incluido en las marcas existentes de raster nativo/HD. Comparación con `3d-rsx-niebla-anterior`, misma escena y escala. No se deduce una ganancia con los tiempos del host.
+- Relectura de logs hd-10, ventanas de 120 cuadros, medianas de etapas de A agrupadas por censo previo: NSMB con ≥100 RSX (40 ventanas), compone 10,33, capas 2,34, final 7,93 ms; con >60 SPE (6), 4,835 / 2,335 / 2,425 ms. MKDS con ≥100 RSX (46), 7,05 / 0,98 / 6,02 ms; con >60 SPE (9), 2,78 / 0,98 / 1,75 ms. Son grupos de escenas distintas, no una medición A/B por cuadro.
+- NSMB, tramo 77–83 s: 77,454 s: 112 RSX/9 SPE, final 7,93; 79,456 s: 54/66, final 2,43; 81,459 s: 36/83, final 2,42; 83,461 s: 120/0, final 7,92. Capas 2,33–2,34 y espera 0,00. La mediana cambia de ruta al cambiar la mayoría de cuadros. B permanece en ~2,40 ms de final. `compose_graphics` llama a `hd_export` solo con `hd_ea`: la exportación adicional es la explicación compatible con estos datos, no una espera del raster dentro de «final». No se aísla todavía selección de capas, transposición o DMA del exportador; no se aplica arreglo al compositor.
+- Host LE con ASan/UBSan: 512 escenas dirigidas, color calculado aparte y paridad referencia/bandas. No sustituye la comparación RSX de consola, pendiente por falta de acceso a RPCS3.
+
 ## 2026-10-27 — RSX ronda 15 [PS3 hd-9 sin aplazar; RPCS3 solo corrección]
 - MKDS 2× sin aplazamiento (hd-9 + r3d-sin-aplazar): 869/7080 cuadros >20 ms (12 %), emulación mediana 13,6 ms; con aplazamiento la imagen HD no se renovaba (0/120). Niebla por fragmento y rescate PPE de texturas: medir en consola el censo RSX/SPE de Metroid y «RGBA8» por cuadro.
 
