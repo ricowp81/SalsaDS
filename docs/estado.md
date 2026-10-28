@@ -4,6 +4,16 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-28 — Corrección de las salidas parciales de niebla RSX
+
+- Los PPM de consola aíslan dos colisiones de `COLOR` con el temporal `R0` de cgcomp. En `niebla-5`, verde y azul son exactos en 49 152 píxeles y rojo satura en toda la imagen (46 080 distintos). La pasada final escribe RGB y después pisa rojo al calcular alfa. En atributos Z, escribir G pisa el byte alto de profundidad antes de escribir R: `niebla-16` termina leyendo LUT[0] en vez del tramo con offset 7000. El intérprete del ensamblado anterior reproduce exactamente los PPM 5 y 16; en el 0 reproduce rojo completo, pero quedan diferencias de intensidad sin validar en consola.
+- Se aplica el corrector de salida ya existente a `fog_attr` y `fog_final`: acumula el resultado en otro registro y hace una sola escritura a `COLOR` al terminar. W ya lo usaba. La compilación interpreta el ensamblado fp40 corregido con el alias real de `COLOR`: 11 556 casos de atributos Z/W, LUT, alfa y sonda; cero fallos. Reintroducir por separado cualquiera de los dos shaders anteriores falla como se esperaba.
+- La autoprueba registra diferencias y máximos R/G/B/A, primer píxel, referencia antes/después, FOG_COLOR y LUT del PPE. Una sonda del mismo cálculo lee en la GPU color previo/final RGBA8, atributos, FOG_COLOR, offset/paso y t0/t1/densidad/índice, a 1× y HD. Solo en autoprueba síncrona; sin lecturas nuevas durante el juego.
+- «Sin recursos» al final era la desactivación por autoprueba fallida, después de inicializar y dibujar todas las escenas. Ahora se distingue del fallo de inicialización, se liberan los recursos al rechazar la autoprueba y se informa la reserva auxiliar (384 KiB a 1×). No hay evidencia de falta de GDDR3 en ese log.
+- Los logs hd-10 aportados contienen partidas, sin comparación RGB6 de reproducciones: no permiten cuantificar una regresión de sus variantes. MKDS y SM64DS se reproducen con `DISP3DCNT=001d` (sin niebla); los programas de color, W y empaquetado son idénticos byte por byte a los recompilados desde hd-10. No se atribuyen sus errores de 49–63 a esta corrección.
+- `test-host` termina con salida 1 solo por los 34 fallos BE conocidos de `test_arec.c:149/152`: LE 8 963 840 comprobaciones sin fallos; BE 8 967 570 con esos 34. ROMs LE/BE/SAN, gráficos, 32 hashes y 16 comparaciones lockstep correctos. Sin fallos nuevos.
+- Paquete de revisión «SalsaDS niebla»/SLDS00030: `salsads-niebla-final-2`. Compilación y validación del ensamblado correctas; pendiente repetir las autopruebas 1×/2× y medir en PS3. Informe y evidencias en `build/niebla-final/informe-2.md`. Sin commit por denegación de escritura del índice; parche completo y mensaje en esa carpeta.
+
 
 ## 2026-10-28 — Niebla final del RSX (validación gráfica pendiente)
 

@@ -20,6 +20,7 @@
 #include "fog_attr_fpo.h"
 #include "fog_attr_w_fpo.h"
 #include "fog_final_fpo.h"
+#include "fog_probe_fpo.h"
 #include "range_fpo.h"
 #include "range_w_fpo.h"
 #include "mask_fpo.h"
@@ -267,6 +268,7 @@ static rsxkit_program *shade, *shade_w, *pack, *toon, *toon_w;
 static int toon_spe, shadow_spe, fog_spe;
 static rsxkit_program *fog, *fog_w;
 static rsxkit_program *fog_attr, *fog_attr_w, *fog_final;
+static rsxkit_program *fog_probe;
 /* Índice 0 nativo, 1 HD: imágenes transitorias compartidas por las ranuras.
  * El FIFO termina su posproceso antes de borrar las del siguiente cuadro. */
 static rsxkit_target *fog_color[2], *fog_attributes[2];
@@ -625,6 +627,8 @@ int rsx3d_init(void)
     }
     salsads_log("rsx3d escala: %ux; captura nativa independiente; HD solo GDDR3",hd_scale);
     salsads_log("rsx3d niebla: %s", fog_previous ? "por fragmento anterior" : "pasada final con profundidad y bandera por píxel");
+    salsads_log("rsx3d recursos listos: niebla auxiliar GDDR3 %u KiB; programas y destinos reservados",
+                fog_previous ? 0 : (384u * (1u + (hd_scale > 1 ? hd_scale * hd_scale : 0u))));
     reason = "Z nativa; W por fragmento";
     ready = 1;
     if (!decode_ppe && (stat("/dev_hdd0/salsads/3d-rsx-prueba", &flag) == 0 ||
@@ -642,6 +646,7 @@ void rsx3d_shutdown(void)
     rsxkit_finish();
     rsxkit_program_destroy(fog); rsxkit_program_destroy(fog_w);
     rsxkit_program_destroy(fog_attr); rsxkit_program_destroy(fog_attr_w); rsxkit_program_destroy(fog_final);
+    rsxkit_program_destroy(fog_probe);
     for (unsigned i=0;i<2;i++) { rsxkit_target_destroy(fog_color[i]); rsxkit_target_destroy(fog_attributes[i]); }
     rsxkit_program_destroy(range_z); rsxkit_program_destroy(range_w);
     rsxkit_program_destroy(shadow); rsxkit_program_destroy(shadow_w);
@@ -733,6 +738,27 @@ static void draw_shadow_extended(struct command *c, const r3d_rstate *rs, rsx3d_
     }
     c->d.program = color;
 }
+/* Entradas y constantes compartidas por la pasada final y su sonda. */
+static void fog_pass(rsxkit_post_pass *p, const r3d_rstate *rs, unsigned slot, unsigned hd_pass, rsxkit_target *destination)
+{
+    memset(p, 0, sizeof *p);
+    p->program = fog_final; p->out_target = destination; p->inputs = 3;
+    rsxkit_texture tx;
+    rsxkit_target_texture(fog_color[hd_pass], 0, R3D_H*(hd_pass ? hd_scale : 1), &tx);
+    p->in[0] = rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
+    rsxkit_target_texture(fog_attributes[hd_pass], 0, R3D_H*(hd_pass ? hd_scale : 1), &tx);
+    p->in[1] = rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
+    memset(&tx, 0, sizeof tx);
+    tx.offset = offset + TOON_OFF(slot); tx.pitch = 128; tx.width = 32; tx.height = 1;
+    tx.format = RSXKIT_RGBA8888; tx.location = RSXKIT_MEM_MAIN;
+    p->in[2] = rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
+    p->k[0][0] = R3D_PX_R(rs->fog_px); p->k[0][1] = R3D_PX_G(rs->fog_px);
+    p->k[0][2] = R3D_PX_B(rs->fog_px); p->k[0][3] = R3D_PX_A(rs->fog_px);
+    p->k[1][0] = rs->fog_offset;
+    p->k[1][1] = 1u << (rs->fog_shift > 10 ? 0u : 10u - rs->fog_shift);
+    p->k[1][2] = !!(rs->d3 & D3_FOG_ALPHA);
+}
+
 /* El RSX no necesita pendientes, área ni atributos de aristas del raster por líneas. */
 static int prepare_poly(r3d_poly *p, const gx_poly *gp, const gx_vertex *const *vv, const r3d_rstate *rs)
 {
@@ -1222,22 +1248,7 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     }
     fog_attribute_pass = 0;
     if (final_fog) {
-        rsxkit_post_pass p; memset(&p, 0, sizeof p);
-        p.program = fog_final; p.out_target = destination; p.inputs = 3;
-        rsxkit_texture tx;
-        rsxkit_target_texture(fog_color[hd_pass], 0, R3D_H*(hd_pass ? hd_scale : 1), &tx);
-        p.in[0] = rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
-        rsxkit_target_texture(fog_attributes[hd_pass], 0, R3D_H*(hd_pass ? hd_scale : 1), &tx);
-        p.in[1] = rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
-        memset(&tx, 0, sizeof tx);
-        tx.offset = offset + TOON_OFF(slot); tx.pitch = 128; tx.width = 32; tx.height = 1;
-        tx.format = RSXKIT_RGBA8888; tx.location = RSXKIT_MEM_MAIN;
-        p.in[2] = rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
-        p.k[0][0] = R3D_PX_R(rs.fog_px); p.k[0][1] = R3D_PX_G(rs.fog_px);
-        p.k[0][2] = R3D_PX_B(rs.fog_px); p.k[0][3] = R3D_PX_A(rs.fog_px);
-        p.k[1][0] = rs.fog_offset;
-        p.k[1][1] = 1u << (rs.fog_shift > 10 ? 0u : 10u - rs.fog_shift);
-        p.k[1][2] = !!(rs.d3 & D3_FOG_ALPHA);
+        rsxkit_post_pass p; fog_pass(&p, &rs, slot, hd_pass, destination);
         if (rsxkit_post_run(&p)) return -1;
     }
     if (hd_pass) { rsxkit_stamp(49+slot*2); hd_native[slot]=j->out_ea; continue; }
@@ -1329,6 +1340,48 @@ int rsx3d_render(const r3d_job *j, rsx3d_stats *st)
     }
     if (result > 0 && hd_game && hd_scale > 1 && decode_verify) rsxkit_fence_wait(texture_fence);
     return result > 0 ? rsx3d_wait(0, st) : result;
+}
+
+void rsx3d_fog_diagnose(const r3d_job *j, unsigned x, unsigned y)
+{
+    if (!ready || fog_previous || x >= R3D_W || y >= R3D_H) return;
+    const gx_frame *f = (const gx_frame *)(uintptr_t)j->frame_ea;
+    r3d_rstate rs; r3d_rstate_init(&rs, f, j->flags);
+    if (!(rs.d3 & D3_FOG)) return;
+    rsx3d_stats st; rsx3d_wait(0, &st); rsx3d_wait(1, &st);
+    if (!fog_probe) fog_probe = rsxkit_program_create(fog_probe_fpo);
+    if (!fog_probe) { salsads_log("rsx3d niebla diagnóstico: sin programa de sonda"); return; }
+    salsads_log("rsx3d niebla PPE: FOG_COLOR %08x RGB6/A5 %u,%u,%u,%u offset %u shift %u solo alfa %u; píxel %u,%u",
+                f->regs.fog_color, R3D_PX_R(rs.fog_px), R3D_PX_G(rs.fog_px), R3D_PX_B(rs.fog_px), R3D_PX_A(rs.fog_px),
+                rs.fog_offset, rs.fog_shift, !!(rs.d3 & D3_FOG_ALPHA), x, y);
+    for (unsigned i=0;i<32;i+=8)
+        salsads_log("rsx3d niebla LUT PPE %u: %u %u %u %u %u %u %u %u", i,
+                    rs.fog_table[i],rs.fog_table[i+1],rs.fog_table[i+2],rs.fog_table[i+3],
+                    rs.fog_table[i+4],rs.fog_table[i+5],rs.fog_table[i+6],rs.fog_table[i+7]);
+    static const char *stage[] = {"color previo RGBA8", "atributos RGBA8", "FOG_COLOR RGB6/A5", "LUT t0,t1,densidad,índice", "offset bajo,alto,solo alfa,0", "color final RGBA8", "paso bajo,alto,solo alfa,0"};
+    for (unsigned hd=0;hd<(hd_scale>1 ? 2u : 1u);hd++) {
+        unsigned scale=hd ? hd_scale : 1;
+        unsigned sx=x*scale+scale/2, sy=y*scale+scale/2;
+        rsxkit_rect sample={sx,sy,1,1};
+        if (!rsxkit_target_read(hd ? hd_target[0] : target, &sample, offset+OUT_OFF(1), R3D_W*4, 1, 1, RSXKIT_XRGB8888)) {
+            rsxkit_fence_wait(rsxkit_fence());
+            const volatile uint8_t *b=mem+OUT_OFF(1);
+            salsads_log("rsx3d niebla GPU %ux: destino final RGB8 %u,%u,%u", scale,b[1],b[2],b[3]);
+        } else salsads_log("rsx3d niebla GPU %ux: fallo de lectura del destino",scale);
+        for (unsigned mode=1;mode<=7;mode++) {
+            rsxkit_post_pass p; fog_pass(&p,&rs,0,hd,NULL);
+            p.program=fog_probe; p.out=output[1]; p.rect=(rsxkit_rect){0,0,2,1};
+            p.k[2][0]=sx+0.5f; p.k[2][1]=sy+0.5f; p.k[2][2]=mode;
+            if (rsxkit_post_run(&p)) { salsads_log("rsx3d niebla GPU: fallo de sonda %u",mode); break; }
+            rsxkit_fence_wait(rsxkit_fence());
+            const volatile uint8_t *b=mem+OUT_OFF(1);
+            salsads_log("rsx3d niebla GPU %ux %s: %u,%u,%u,%u",scale,stage[mode-1],b[1],b[2],b[3],b[5]);
+            if (mode==2) {
+                unsigned z15=b[1]*256u+b[2];
+                salsads_log("rsx3d niebla atributos leídos: z>>9 %u bandera %u densidad PPE %u",z15,b[5],b[5] ? r3d_fog_density(&rs,z15<<9) : 0);
+            }
+        }
+    }
 }
 
 /* Solo autopruebas: cambiar de destino y emitir un borrado antes de leer

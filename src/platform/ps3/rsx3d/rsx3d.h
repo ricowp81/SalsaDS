@@ -54,5 +54,7 @@ int rsx3d_render(const r3d_job *job, rsx3d_stats *stats);
 const char *rsx3d_reason(void);
 int rsx3d_fog_constant(void); /* 1: solo niebla de densidad constante por polígono (3d-rsx-niebla-constante) */
 int rsx3d_fog_final(void); /* 0: comparación con la ruta anterior */
+/* Solo autoprueba síncrona, tras render: lee etapas nativa y HD del píxel. */
+void rsx3d_fog_diagnose(const r3d_job *job, unsigned x, unsigned y);
 void rsx3d_shutdown(void);
 #endif

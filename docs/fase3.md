@@ -988,3 +988,12 @@ solo alfa, rechazo de ID repetido y un fondo con/sin opaco. El host calcula apar
 centro y comprueba paridad completa referencia/bandas, LE y BE. La consola
 debe aceptar RGB6 ±2 y alfa exacta, además de conservar las 18 pruebas de
 LUT y las pruebas de respaldo 6/7. Compilar no acredita esa paridad gráfica.
+
+Corrección tras la primera prueba de consola: cgcomp asigna `COLOR` a R0
+sin proteger temporales. `fog_final` escribía RGB antes de calcular alfa
+en R0.x; `fog_attr` escribía G en R0.y antes de usarlo como byte alto de Z.
+Ambos pasan ahora por el corrector de salida, igual que la variante W.
+El build interpreta el ensamblado fp40 con este alias y prueba también
+la sonda de etapas. La autoprueba gráfica añade muestras de color previo,
+atributos, constantes/LUT leídas por la GPU y destino final, con desglose
+de error por canal. Pendiente validar la corrección en la PS3 real.

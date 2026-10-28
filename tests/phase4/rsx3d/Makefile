@@ -54,16 +54,21 @@ SHADERS := ../../../src/platform/ps3/rsx3d/shade.fcg ../../../src/platform/ps3/r
 SHADERS += ../../../src/platform/ps3/rsx3d/toon.fcg ../../../src/platform/ps3/rsx3d/toon_w.fcg
 SHADERS += ../../../src/platform/ps3/rsx3d/mask.fcg ../../../src/platform/ps3/rsx3d/mask_w.fcg ../../../src/platform/ps3/rsx3d/shadow.fcg ../../../src/platform/ps3/rsx3d/shadow_w.fcg
 SHADERS += ../../../src/platform/ps3/rsx3d/fog.fcg ../../../src/platform/ps3/rsx3d/fog_w.fcg
-SHADERS += ../../../src/platform/ps3/rsx3d/fog_attr.fcg ../../../src/platform/ps3/rsx3d/fog_attr_w.fcg ../../../src/platform/ps3/rsx3d/fog_final.fcg
+SHADERS += ../../../src/platform/ps3/rsx3d/fog_attr.fcg ../../../src/platform/ps3/rsx3d/fog_attr_w.fcg ../../../src/platform/ps3/rsx3d/fog_final.fcg ../../../src/platform/ps3/rsx3d/fog_probe.fcg
 SHADERS += ../../../src/platform/ps3/rsx3d/range.fcg ../../../src/platform/ps3/rsx3d/range_w.fcg
 SHADERS += ../../../src/platform/ps3/rsx3d/compose_hd.fcg ../../../src/platform/ps3/rsx3d/probe_hd.fcg
 CGCFLAGS := -Wcg,-nofastprecision
 
 include ../../../mk/ps3.mk
 
+.PHONY: check-fog-shaders
+all pkg: check-fog-shaders
+check-fog-shaders: $(OBJ)/fog_attr.fpo $(OBJ)/fog_attr_w.fpo $(OBJ)/fog_final.fpo $(OBJ)/fog_probe.fpo
+	python3 $(ROOT)/tools/rsx3d-fog-check.py $(addsuffix .fixed,$^)
+
 $(OBJ)/src/platform/ps3/rsx3d/rsx3d.c.o $(OBJ)/src/platform/ps3/rsx3d/selftest.c.o: PPU_CFLAGS += -maltivec
 
-# cgcomp identifica COLOR con R0: preservar su valor hasta terminar DEPTH.
+# cgcomp identifica COLOR con R0: aislar también las escrituras parciales.
 $(OBJ)/shade_w.fpo: $(ROOT)/src/platform/ps3/rsx3d/shade_w.fcg $(ROOT)/src/platform/ps3/rsx3d/shade.fcg $(ROOT)/tools/rsx3d-shader.py
 	@mkdir -p $(dir $@)
 	cgcomp -f -d $(CGCFLAGS) $< $@
@@ -100,7 +105,17 @@ $(OBJ)/fog_w.fpo: $(ROOT)/src/platform/ps3/rsx3d/fog_w.fcg $(ROOT)/src/platform/
 
 $(OBJ)/fog.fpo: $(ROOT)/src/platform/ps3/rsx3d/shade.fcg
 
-$(OBJ)/fog_attr.fpo: $(ROOT)/src/platform/ps3/rsx3d/shade.fcg
+$(OBJ)/fog_attr.fpo: $(ROOT)/src/platform/ps3/rsx3d/fog_attr.fcg $(ROOT)/src/platform/ps3/rsx3d/shade.fcg $(ROOT)/tools/rsx3d-shader.py
+	@mkdir -p $(dir $@)
+	cgcomp -f -d $(CGCFLAGS) $< $@
+	python3 $(ROOT)/tools/rsx3d-shader.py $@.dump $@.fixed
+	cgcomp -f -a $@.fixed $@
+
+$(OBJ)/fog_final.fpo $(OBJ)/fog_probe.fpo: $(OBJ)/%.fpo: $(ROOT)/src/platform/ps3/rsx3d/%.fcg $(ROOT)/src/platform/ps3/rsx3d/fog_final.fcg $(ROOT)/tools/rsx3d-shader.py
+	@mkdir -p $(dir $@)
+	cgcomp -f -d $(CGCFLAGS) $< $@
+	python3 $(ROOT)/tools/rsx3d-shader.py $@.dump $@.fixed
+	cgcomp -f -a $@.fixed $@
 
 $(OBJ)/fog_attr_w.fpo: $(ROOT)/src/platform/ps3/rsx3d/fog_attr_w.fcg $(ROOT)/src/platform/ps3/rsx3d/shade.fcg $(ROOT)/tools/rsx3d-shader.py
 	@mkdir -p $(dir $@)

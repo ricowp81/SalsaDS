@@ -260,6 +260,31 @@ static unsigned shade_tests(r3d_job *j)
     return fail;
 }
 /* Tabla no monótona, límites de offset/shift, solo alfa y bandera por polígono. */
+static void fog_diagnose(const r3d_job *j)
+{
+    unsigned count[4]={0}, worst[4]={0}, first=R3D_W*R3D_H;
+    for (unsigned k=0;k<R3D_W*R3D_H;k++) {
+        if (output[k]!=reference[k] && first==R3D_W*R3D_H) first=k;
+        for (unsigned c=0;c<4;c++) {
+            unsigned a=(output[k]>>(8*c))&255u, b=(reference[k]>>(8*c))&255u, d=a>b ? a-b : b-a;
+            count[c]+=d!=0; if (d>worst[c]) worst[c]=d;
+        }
+    }
+    if (first==R3D_W*R3D_H) first=96*R3D_W+128;
+    salsads_log("rsx3d niebla canales R/G/B/A: distintos %u/%u/%u/%u máximo %u/%u/%u/%u; píxel %u,%u RSX %08x ref %08x",
+                count[0],count[1],count[2],count[3],worst[0],worst[1],worst[2],worst[3],first%R3D_W,first/R3D_W,output[first],reference[first]);
+    static uint32_t before[R3D_W*R3D_H];
+    uint16_t saved=frame.regs.disp3dcnt; frame.regs.disp3dcnt &= ~D3_FOG;
+    r3d_render_ref(&frame,vram,j->texslot,j->palslot,j->flags,before);
+    frame.regs.disp3dcnt=saved;
+    salsads_log("rsx3d niebla referencia: antes %08x después %08x",before[first],reference[first]);
+    rsx3d_fog_diagnose(j,first%R3D_W,first/R3D_W);
+    if (first!=96*R3D_W+128) {
+        unsigned center=96*R3D_W+128;
+        salsads_log("rsx3d niebla centro: antes %08x después %08x RSX %08x",before[center],reference[center],output[center]);
+        rsx3d_fog_diagnose(j,128,96);
+    }
+}
 static unsigned fog_tests(r3d_job *j)
 {
     if (forced_spe("niebla")) return 0;
@@ -307,6 +332,7 @@ static unsigned fog_tests(r3d_job *j)
         for (unsigned k = 0; k < R3D_W*R3D_H; k++) different += output[k] != reference[k];
         fail += ok != 1 || different != 0;
         salsads_log("rsx3d niebla prueba %u: estado %d, distintos %u", test, ok, different);
+        if (ok==1 && (test==0 || test==5 || test==16)) fog_diagnose(j);
         char name[80];
         snprintf(name, sizeof name, "rsx3d-niebla-%u-rsx", test); save_pixels(name, output);
         snprintf(name, sizeof name, "rsx3d-niebla-%u-ref", test); save_pixels(name, reference);
@@ -337,8 +363,14 @@ static unsigned fog_translucent_tests(r3d_job *j)
         fail+=ok!=1 || bad!=0; different+=diff; over+=bad;
         if (ok!=1 || bad) {
             salsads_log("rsx3d niebla final prueba %u: estado %d, distintos %u, fuera de tolerancia %u, %s",test,ok,diff,bad,rsx3d_reason());
-            if (fail<=2) { char name[80]; snprintf(name,sizeof name,"rsx3d-niebla-final-%u-diff",test); save_difference(name); }
+            if (fail<=2) {
+                char name[80]; snprintf(name,sizeof name,"rsx3d-niebla-final-%u-diff",test); save_difference(name);
+                snprintf(name,sizeof name,"rsx3d-niebla-final-%u-rsx",test); save_pixels(name,output);
+                snprintf(name,sizeof name,"rsx3d-niebla-final-%u-ref",test); save_pixels(name,reference);
+                if (ok==1) fog_diagnose(j);
+            }
         }
+        if (ok==1 && !bad && (test==0 || test==16 || test==31)) fog_diagnose(j);
     }
     salsads_log("rsx3d niebla final: %u escenas Z/W, profundidad independiente, AND, solo alfa e ID repetido; distintos %u, fuera de tolerancia %u, peor %u/63; %u fallos",RSX_FOG_TESTS,different,over,worst,fail);
     return fail;
@@ -606,6 +638,7 @@ static unsigned fallback_tests(r3d_job *j)
             if (first < R3D_W*R3D_H)
                 salsads_log("rsx3d respaldo prueba %u: primer distinto en %u,%u: RSX %08x referencia %08x; z0 %u z1 %u w0 %u w1 %u", test, first % R3D_W, first / R3D_W,
                             output[first], reference[first], frame.vtx[0].z, frame.vtx[1].z, (unsigned)frame.vtx[0].w, (unsigned)frame.vtx[1].w);
+            if (ok==1 && over) fog_diagnose(j);
             continue;
         }
         fail += ok != 0 || modified != 0;

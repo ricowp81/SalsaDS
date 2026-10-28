@@ -1,5 +1,10 @@
 # Registro de rendimiento
 
+## 2026-10-28 — Salidas parciales de niebla [PS3: diagnóstico anterior; host: ensamblado]
+
+- Consola, paquete de niebla final anterior, autoprueba aislada 1×: 512/512 escenas rechazadas, 18 874 368 píxeles fuera de tolerancia. Las 18 pruebas anteriores también fallan. PPM 5: distintos R/G/B = 46 080/0/0; PPM 16 = 47 424/46 464/42 816. Dos colisiones de salida con R0 explican rojo sobrescrito y profundidad Z mutilada. La comprobación del ensamblado corregido da 11 556 casos sin fallos en host; no mide rendimiento RSX.
+- Sin nuevas mediciones de PS3 para el arreglo. La sonda y sus lecturas están limitadas a autoprueba y no sirven para medir tiempos de juego. Repetir 1×/2× antes de medir Metroid, NSMB y MKDS; comparar `3d-rsx-niebla-anterior` en la misma escena. Sin cambios de reservas GDDR3 ni de pasadas durante el juego.
+
 ## 2026-10-28 — Niebla final y diagnóstico del compositor [PS3 hd-10; host solo corrección]
 
 - Niebla final nueva sin medir en PS3. Repite el raster para producir profundidad/bandera y añade una pasada de pantalla completa; ese costo está incluido en las marcas existentes de raster nativo/HD. Comparación con `3d-rsx-niebla-anterior`, misma escena y escala. No se deduce una ganancia con los tiempos del host.

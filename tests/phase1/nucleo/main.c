@@ -3017,6 +3017,7 @@ int main(void)
 		struct stat st;
 		if (stat(SALSADS_DATA_DIR "/3d-rsx", &st) == 0 && stat(SALSADS_DATA_DIR "/3d-spe", &st) != 0) {
 			rsx3d_on = rsx3d_init() == 0;
+			const char *rsx3d_status = rsx3d_on ? "activo" : "sin recursos al inicializar";
 			hd_capture_keep = stat(SALSADS_DATA_DIR "/3d-rsx-hd-captura", &st) == 0;
 			hd_meta_ppe = stat(SALSADS_DATA_DIR "/3d-rsx-hd-metadatos-ppe", &st) == 0;
 			hd_defer_keep = stat(SALSADS_DATA_DIR "/3d-rsx-hd-aplazar", &st) == 0;
@@ -3027,8 +3028,12 @@ int main(void)
 			if (rsx3d_on && rsx3d_scale() > 1)
 				salsads_log("rsx3d HD con captura a doble pantalla: %s", hd_capture_keep ? "HD en A" : "nativo en A");
 			rsx3d_sync = stat(SALSADS_DATA_DIR "/3d-rsx-sin-solapar", &st) == 0;
-			if (rsx3d_on && (salsads_autotest() || stat(SALSADS_DATA_DIR "/3d-rsx-prueba", &st) == 0) && rsx3d_selftest() != 0) rsx3d_on = 0;
-			salsads_log("3d-rsx: %s; Z nativa y W por fragmento, respaldo SPE por modo no soportado", rsx3d_on ? "activo" : "sin recursos");
+			if (rsx3d_on && (salsads_autotest() || stat(SALSADS_DATA_DIR "/3d-rsx-prueba", &st) == 0) && rsx3d_selftest() != 0) {
+				rsx3d_on = 0;
+				rsx3d_status = "desactivado por fallo de autoprueba";
+				rsx3d_shutdown();
+			}
+			salsads_log("3d-rsx: %s; Z nativa y W por fragmento, respaldo SPE por modo no soportado", rsx3d_status);
 		}
 		/* Reproductor aislado: sin CPUs emuladas; prueba el SPE de RGBA8 y su respaldo raster. */
 		if (stat(SALSADS_DATA_DIR "/3d-rsx-prueba", &st) == 0) {
