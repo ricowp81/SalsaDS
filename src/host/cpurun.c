@@ -637,7 +637,7 @@ int main(int argc, char **argv)
 	int dump_cpu = 0;
 	uint32_t trace_from = 0;
 	const char *wav_path = NULL;
-	int snd_original = 0, g2d_stats = 0;
+	int snd_original = 0, g2d_stats = 0, wifi_off = 0;
 	const char *gxdump_path = NULL;
 	int gx_clock = 0, r3d_stats_on = 0, holes_on = 0, gx_defer = 0, gx_lento = 0, geom_plain = 0, geom_scalar = 0;
 	const char *holes_dump = NULL, *fdump_prefix = NULL;
@@ -674,6 +674,8 @@ int main(int argc, char **argv)
 			geom_plain = 1;
 		else if (!strcmp(argv[i], "--gx-lento"))
 			gx_lento = 1; /* sin las rutas cortas de la FIFO de geometría (ráfagas de la DMA y escrituras de la CPU): la forma anterior */
+		else if (!strcmp(argv[i], "--wifi-sin-inicio"))
+			wifi_off = 1;
 		else if (!strcmp(argv[i], "--gx-defer"))
 			gx_defer = 1; /* motor de geometría en modo diferido con el ejecutor de prueba (mismos bits que el directo) */
 		else if (!strcmp(argv[i], "--gx-hash"))
@@ -900,6 +902,7 @@ int main(int argc, char **argv)
 	M.quantum = quantum;
 	M.dbg = dbg;
 	M.gx_lento = (uint8_t)gx_lento;
+	M.wifi_off = (uint8_t)wifi_off;
 	M.vid.use_ref = use_ref;
 	nds_init(&M);
 	if (gx_defer) {
@@ -921,6 +924,7 @@ int main(int argc, char **argv)
 		R.quantum = quantum;
 		R.vid.use_ref = use_ref;
 		R.gx_lento = (uint8_t)gx_lento;
+		R.wifi_off = (uint8_t)wifi_off;
 		nds_init(&R);
 		if (snd_original)
 			nds_snd_set_mode(&R, SND_MODE_ORIGINAL);

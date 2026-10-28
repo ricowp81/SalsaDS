@@ -151,6 +151,8 @@ uint32_t nds_io_read(struct nds *n, int cpu, uint32_t a, int sz)
 {
 	const uint32_t o = a & 0xFFFFFFu;
 
+	if (cpu == NDS_CPU7 && a - 0x04800000u < 0x10000u)
+		return nds_wifi_read(n, a, sz);
 	if (cpu == NDS_CPU9 && o >= 0x600u && o < 0x700u)
 		NDS_TRACE(n, NDS_DBG_GX, "ARM9 lee E/S GX 0x%08x (%d)", a, sz);
 	if (o >= 0x100000u) { /* 0x04100000: FIFO de recepción del IPC; 0x04100010: datos del cartucho */
@@ -304,6 +306,10 @@ void nds_io_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v)
 	const uint32_t o = a & 0xFFFFFFu;
 
 	NDS_TRACE(n, NDS_DBG_IO, "ARM%d escribe E/S 0x%08x (%d) = 0x%08x", cpu ? 7 : 9, a, sz, v);
+	if (cpu == NDS_CPU7 && a - 0x04800000u < 0x10000u) {
+		nds_wifi_write(n, a, sz, v);
+		return;
+	}
 	if (o >= 0x100000u)
 		return;
 	if (cpu == NDS_CPU9 && o >= 0x400u && o < 0x600u) { /* GXFIFO (0x400-0x43F) y puertos de órdenes (0x440-0x5CC) */

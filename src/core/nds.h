@@ -217,6 +217,12 @@ struct nds_spi {
 	uint8_t cur_dev, cur_hold, data_next;
 };
 
+/* Estado local del dispositivo Wi-Fi; sin transmisión ni recepción de paquetes. */
+struct nds_wifi {
+	uint8_t regs[0x300], ram[0x2000], bb[0x100];
+	uint16_t random;
+};
+
 struct nds_rtc {
 	uint16_t pins;       /* registro 0x04000138 */
 	uint8_t state;       /* 0 = esperando comando, 1 = datos */
@@ -437,6 +443,7 @@ struct nds {
 	uint64_t gx_irq_t;  /* instante de la última petición de la IRQ 21 (se repite cada NDS_GX_PERIOD mientras dure el nivel) */
 	uint8_t gx_lento;   /* 1: sin las rutas cortas de la FIFO de geometría (ráfagas de la DMA y escrituras de la CPU): la forma anterior,
 			     * para medir A/B en la PS3 (/dev_hdd0/salsads/gx-lento). Lo conserva nds_init */
+	uint8_t wifi_off; /* diagnóstico: sin configuración ni registros locales Wi-Fi; lo conserva nds_init */
 	uint8_t dma9_gxw;   /* caché (sched.c): hay un canal de DMA del ARM9 armado esperando el aviso de la FIFO de geometría */
 	uint32_t ipcsync_out[2]; /* bits 8-11 de cada CPU */
 	uint8_t ipcsync_irqen[2];
@@ -446,6 +453,7 @@ struct nds {
 	struct nds_save save;
 	uint8_t savemem[NDS_SAVE_MAX];
 	struct nds_spi spi;
+	struct nds_wifi wifi;
 	struct nds_rtc rtc;
 
 	/* tiempo y eventos */
@@ -498,6 +506,7 @@ struct nds {
 
 #define NDS_DBG_VRAM7 64u /* bancos C/D, capturas rechazadas y captación ARM7 (host) */
 #define NDS_DBG_SPI 1u
+#define NDS_DBG_WIFI 128u /* diagnóstico de los registros locales Wi-Fi; sin radio */
 #define NDS_DBG_IPC 2u
 #define NDS_DBG_IRQ 4u
 #define NDS_DBG_CART 8u

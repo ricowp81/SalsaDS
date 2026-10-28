@@ -158,4 +158,9 @@ int nds_swi_hook(struct acore *c, uint32_t comment);
 void nds_softreset(struct nds *n, int cpu);
 uint32_t nds_crc16(uint32_t crc, const uint8_t *p, size_t len);
 
+/* wifi.c: inicialización local sin radio. */
+void nds_wifi_init(struct nds *n);
+uint32_t nds_wifi_read(struct nds *n, uint32_t a, int sz);
+void nds_wifi_write(struct nds *n, uint32_t a, int sz, uint32_t v);
+
 #endif

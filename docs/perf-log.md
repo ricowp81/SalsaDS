@@ -101,3 +101,23 @@ La caché incluye el VIEWPORT como clave; conserva las coordenadas enteras y fra
 | 2026-10-17 | fase2 | **Compositor 2D de la 2.2 con New Super Mario Bros. (menú)**: pantalla A / B por cuadro | RPCS3 (cuenta instrucciones: no mide ni saltos ni rutinas de software); el viejo en la PS3 real | PS3 real con el compositor de la 2.1: **A 28,1–28,9 ms, B 7,8–9,1** | RPCS3 2.1: A 14,8, B 1,3; RPCS3 2.2: **A 4,7** (plan 1,4: afines 0,9; compone 3,4: capas 1,6, color final 1,8), **B 1,2** | Estimación PS3 2.2 (cómputo ÷ 3 + ≈ 2 ms de DMA): A 2,5–4, B 1,5–2,5 **[est]**; falta medir. Causa: fondos afines con `%` y productos de 64 bits por píxel, y un color final escalar con saltos por píxel (el SPE no tiene unidad escalar ni predice saltos) |
 | 2026-10-17 | fase2 | **Mezclador de sonido en un SPE** (547 muestras de 32,7 kHz y 813 de 48 kHz por cuadro) | RPCS3 (SPE; sin valor de rendimiento) | — | NSMB: 0,27–0,57 ms por cuadro de trabajo | Sin medir en la PS3 |
 | 2026-10-18 | fase34 | **Render 3D en el SPE: línea vectorial, texturas por tramos y aristas en 32 bits** (SM64DS, NSMB nivel, MKDS) | antes: PS3 real (paquete 9ce969d, logs de la Fase 3.3); después: host (Mac, clang -O2, una unidad) y RPCS3 (no mide) | meta ≤ 8 ms por SPE en SM64DS y NSMB; estimación [est] 3,5–6 ms | PS3 antes: SM64DS **36,3 / 37,0** (SPE0 / SPE1; 575 polígonos, 180 000 píxeles, 483 bloques), NSMB nivel **26,7 / 27,2** (137 000 píxeles), MKDS 6,6–15; ajuste: 210 ns por píxel, 73 µs por bloque, 3,7 µs por polígono·banda. Host antes → después: SM64DS 1,63 → 0,83 ms, MKDS 2,44 → 1,94, NSMB 0,40 → 0,40 | **Sin medir en la PS3 con el código nuevo.** El `DATO raster3d` trae ahora `polígonos / aristas / píxeles`. Mismos bits que la referencia (392 000 líneas al azar, 40 escenas × 4 repartos LE y BE, los tres juegos) |
+
+## 2026-10-28 — HeartGold: diagnóstico funcional del guardado (host)
+
+Sin medición de rendimiento PS3 ni optimización del camino caliente. Comparación con la misma copia de 512 KiB,
+3300 cuadros con `--wifi-sin-inicio` y 5500 activos (estos últimos incluyen CONTINUE y llegada al mapa):
+
+| Caso (host nativo, intérprete) | Lecturas AUXSPI | Bytes leídos | Distintos del archivo | RDSR |
+|---|---:|---:|---:|---|
+| Inicialización local desactivada | 1660 | 424249 | 0 | 3320 respuestas 00h |
+| Activa, hasta el mapa | 2199 | 561777 | 0 | 4398 respuestas 00h |
+
+Las primeras 4980 conversaciones son idénticas byte a byte entre ambas rutas. El aviso ocurre después: SPI del firmware
+03h 00h 00h 2Ch devuelve longitud 0000h con la ruta antigua y 0138h con la nueva. Al corregirla se alcanza el diagnóstico de
+registros/RAM Wi-Fi; antes no existía estado local que leyera de vuelta los patrones. Con el dispositivo local pasa a CONTINUE.
+No hay RDID ni escrituras al guardado durante estas corridas; después de continuar aparecen dos consultas IR 08h 00h que
+siguen devolviendo FFh FFh. No impiden cargar el mapa; IR/Pokéwalker no están implementados y no se cambian aquí.
+
+Evidencia local en `build/hg/`: trazas completas, conversaciones resumidas, capturas y comprobación de todos los bytes.
+Carga de la partida original, guardado desde el menú del juego y reapertura en otro proceso comprobados. Pendiente medir
+en la consola el paquete exacto, repetir partida nueva y verificar otros juegos que inicialicen el dispositivo local.

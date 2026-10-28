@@ -35,6 +35,7 @@ void test_r3d_texmode(void);
 void test_r3d_balance_hist(void);
 void test_r3d_vrow(void);
 void test_save(void);
+void test_wifi(void);
 void test_video_capture(void);
 void test_vram7(void);
 
@@ -80,6 +81,7 @@ int main(int argc, char **argv)
 	test_r3d_balance_hist();
 	test_r3d_vrow();
 	test_save();
+	test_wifi();
 	test_video_capture();
 	test_vram7();
 	printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);

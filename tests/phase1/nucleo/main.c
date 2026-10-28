@@ -111,6 +111,7 @@ static int geom_poly_plain, geom_read_scalar;
  * dibuja también su píxel; cierra los huecos de un píxel entre polígonos vecinos del mapa de HeartGold (docs/fase3.md). Con este archivo vuelve
  * la regla anterior (borde derecho exclusivo siempre), para comparar en la misma escena. */
 #define R3D_SIN_COMPLETO_FLAG SALSADS_DATA_DIR "/r3d-sin-completo"
+#define WIFI_OFF_FLAG SALSADS_DATA_DIR "/wifi-sin-inicio"
 
 #ifdef NUCLEO_JIT
 /* «SalsaDS JIT núcleo» (Fase 4): el ARM9 con el recompilador (src/jit/arec*); caché de código y prueba con respaldo de la
@@ -2757,6 +2758,8 @@ int main(void)
 		struct stat gst;
 
 		nds->gx_lento = stat(GX_LENTO_FLAG, &gst) == 0; /* (nds_init lo conserva) */
+		nds->wifi_off = stat(WIFI_OFF_FLAG, &gst) == 0;
+		salsads_log("Wi-Fi: inicialización local %s; sin conexión inalámbrica", nds->wifi_off ? "desactivada (wifi-sin-inicio)" : "activa");
 		salsads_log("gx: FIFO de geometría por %s (%s)", nds->gx_lento ? "la ruta anterior (gx-lento)" : "las rutas cortas",
 			    GX_LENTO_FLAG);
 	}

@@ -51,6 +51,7 @@ void nds_init(struct nds *n)
 	const uint32_t quantum = n->quantum;
 	const uint32_t dbg = n->dbg;
 	const uint8_t gx_lento = n->gx_lento;
+	const uint8_t wifi_off = n->wifi_off;
 	const struct nds_snd_ops sops = n->snd.ops;
 	const uint32_t smode = n->snd.mode;
 	struct arec *const jit9 = n->jit9, *const jit7 = n->jit7;
@@ -63,6 +64,7 @@ void nds_init(struct nds *n)
 	n->quantum = quantum;
 	n->dbg = dbg;
 	n->gx_lento = gx_lento;
+	n->wifi_off = wifi_off;
 	n->vid.ops = vops;
 	n->vid.use_ref = use_ref;
 	n->vid.capture_classic = capture_classic;
@@ -91,6 +93,7 @@ void nds_init(struct nds *n)
 	nds_mem_init(n);
 	nds_ipc_init(n);
 	nds_spi_init(n);
+	nds_wifi_init(n);
 	nds_bios_init(n);
 	nds_sched_init(n);
 	nds_video_init(n);

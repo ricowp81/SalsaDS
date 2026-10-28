@@ -42,6 +42,20 @@ Consulta del 2026-10-26: [GBATEK, comandos SPI del cartucho infrarrojo](https://
 | `src/core/save.c` (`AMH`, Metroid Prime Hunters) | Conversaciones AUXSPI observadas del respaldo propio europeo: dirección de tres bytes, escritura 0Ah y lectura 03h hasta 03DF00h; [bitácora de desarrollo de Prime Hunters](https://github.com/mstan/MetroidPrimeHuntersRecomp/blob/main/docs/BRINGUP.md), apartado 6, consultado el 2026-10-21 | Hechos de compatibilidad, no código | La bitácora declara Flash de 256 KiB para AMHE; las conversaciones de AMHP concuerdan. Solo se consulta ese documento; no se toma código, datos de ROM ni implementaciones de otros emuladores |
 | `src/core/save.c` (escritura parcial Flash 0Ah) | [Micron M45PE20, revisión B, marzo de 2014](https://www.alliancememory.com/wp-content/uploads/M45PE20_rev_b.pdf), página 24, PAGE WRITE; consultada el 2026-10-21 | Hechos de hardware | Los bytes no dirigidos de una página se conservan aunque haya un borrado interno. 0Ah permite cambiar bits en ambos sentidos; 02h solo de 1 a 0. Implementación propia, sin copiar texto ni código |
 
+## Inicialización local Wi-Fi
+
+Consulta del 2026-10-28: [GBATEK, calibración del firmware](https://problemkaputt.de/gbatek-ds-firmware-wifi-calibration-data.htm),
+[mapa de E/S](https://problemkaputt.de/gbatek.htm#dswifiiomap), control, apagado, baseband y registros no usados.
+`src/core/wifi.c` y el bloque de configuración de `src/core/spi.c` son implementaciones propias de esa descripción:
+longitud, CRC, máscaras, memoria local y acceso BB. Las tablas de calibración BB/RF son ceros sintéticos; no se tomó firmware,
+BIOS, claves ni calibración de una consola. No hay transmisión ni recepción.
+
+También se consultaron [DeSmuME, mc.cpp](https://github.com/TASEmulators/desmume/blob/master/desmume/src/mc.cpp)
+(00h, RDSR y versión IR 08h/AAh) y
+[firmware.cpp](https://github.com/TASEmulators/desmume/blob/master/desmume/src/firmware.cpp)
+(longitud y CRC del bloque Wi-Fi), ambos GPL-2.0-o-posterior. Sin copiar código ni tablas; la traza de HeartGold
+anterior al aviso no solicita RDID ni 08h, por lo que no se cambia AUXSPI ni su identificador Flash.
+
 ## Toolchain (no se distribuye con el repositorio)
 
 | Herramienta | Uso | Licencia | Notas |
@@ -56,7 +70,7 @@ Consulta del 2026-10-26: [GBATEK, comandos SPI del cartucho infrarrojo](https://
 |---|---|---|---|
 | BlocksDS v1.24.0 (github.com/blocksds/sdk; imagen `skylyrac/blocksds` fijada por digest) | construir `tests/roms` | libnds y crt0 zlib; picolibc MIT/BSD; libgcc GPL-3.0 + excepción de runtime; ndstool GPL-3.0/MIT | Lo que acaba dentro de las ROMs y sus avisos: `tests/roms/homebrew/AVISOS.md` y `docs/fase0.md` (0.2) |
 | melonDS 1.1 (github.com/melonDS-emu/melonDS) | emulador de referencia, solo para comparar | GPL-3.0 | Instalado fuera del repositorio; `tools/melonds-run.py` solo lo lanza y lee su memoria por GDB. **No se copia código suyo** |
-| DeSmuME, NooDS | referencia posible | GPL-2.0, GPL-3.0 | Ni instalados ni consultados; no se copia código |
+| DeSmuME, NooDS | referencia posible | GPL-2.0-o-posterior, GPL-3.0 | DeSmuME consultado según las entradas anteriores, sin copiar código; NooDS no consultado |
 | gba-suite (jsmolka) | modelo para pruebas de ARMv4T | MIT | No se copió nada |
 | RockWrestler, armwrestler-gba-fixed | — | sin licencia visible | **No se copian ni redistribuyen** |
 

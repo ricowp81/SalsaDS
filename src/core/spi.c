@@ -83,6 +83,18 @@ void nds_fw_make(struct nds *n)
 	wr16le(f + 0x20, 0x3FE00 / 8); /* datos de usuario */
 	f[0x36] = 0x02;               /* MAC de administración local: 02:00:00:00:00:01 */
 	f[0x3B] = 0x01;
+	/* GBATEK, DS Firmware Wifi Calibration Data. Perfil sintético: tablas BB/RF
+	 * a cero, ninguna calibración extraída de firmware de una consola. */
+	if (!n->wifi_off) {
+		wr16le(f + 0x2C, 0x138);
+		wr16le(f + 0x3C, 0x3FFE);
+		wr16le(f + 0x3E, 0xFFFF);
+		f[0x40] = 2;
+		f[0x41] = 24;
+		f[0x42] = 12;
+		f[0x43] = 1;
+		wr16le(f + 0x2A, (uint16_t)nds_crc16(0, f + 0x2C, 0x138));
+	}
 	put_user_block(f + 0x3FE00, 0);
 	put_user_block(f + 0x3FF00, 1);
 }

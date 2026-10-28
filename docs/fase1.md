@@ -572,3 +572,23 @@ Mismo título y mismo APPID que el de la 1.2, construido desde el commit 9f2a177
 8. El intérprete en el PPE es lento (≈ 150 ns por instrucción en la PS3, del orden de 470 ciclos): el recompilador (Fase 4) sigue siendo obligatorio; mientras tanto, la ruta de memoria por llamadas a funciones es el sospechoso principal (a verificar con el perfil, no se ha tocado).
 
 La fase siguiente (motores 2D reales) está en `docs/fase2.md`.
+
+
+### HeartGold: error de comunicación al cargar una partida (2026-10-28)
+
+El guardado nuevo de 512 KiB se lee correctamente por AUXSPI con prefijo 00h; el fallo posterior es la inicialización
+local Wi-Fi antes de presentar CONTINUE. El firmware generado devolvía longitud cero en 002Ch. Al darle un bloque
+sintético de 0138h bytes con CRC16 inicial cero, el juego alcanza su diagnóstico de registros y RAM en 04800000h:
+la ruta anterior descartaba las escrituras y devolvía ceros.
+
+`src/core/wifi.c` conserva RAM local de 8 KiB, los registros de inicialización con máscaras, accesos BB, generador
+pseudoaleatorio y apagado forzado. No implementa conexión, paquetes, temporizadores MAC ni los efectos de todos los
+registros; BB/RF completan al instante y el generador avanza por lectura. La configuración del firmware es propia,
+con tablas BB/RF a cero, sin datos de una consola. Esto permite el diagnóstico local, no acredita Wi-Fi ni Pokéwalker.
+No cambia el protocolo, ID, WIP ni contenido del guardado.
+
+A/B: `/dev_hdd0/salsads/wifi-sin-inicio` desactiva tanto el bloque Wi-Fi del firmware como el dispositivo local;
+se lee al arrancar la aplicación y se conserva al cambiar de juego. Host: `--wifi-sin-inicio`; traza local: `--dbg 128`
+(combinable con 1 para SPI y 8 para AUXSPI/cartucho). La ruta desactivada reproduce el aviso; la activa permite
+CONTINUE y cargar el mapa con la misma partida. Pruebas sintéticas por el bus y SPI en `test_wifi.c`, incluyendo
+patrones de diagnóstico, orden de bytes, máscaras, aislamiento ARM9, STRB ignorado, BB y apagado.

@@ -4,6 +4,15 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+
+## 2026-10-28 — HeartGold: inicialización local Wi-Fi antes de CONTINUE (guardado-v005)
+- Reproducido el aviso de comunicación con la partida nueva de 512 KiB. Las primeras 4980 conversaciones AUXSPI son idénticas con y sin el arreglo; todas las lecturas coinciden con el archivo. RDSR=00h, sin RDID ni escrituras antes del aviso.
+- Causa: el firmware generado devuelve longitud Wi-Fi cero en 002Ch; al corregirla, el diagnóstico local encuentra que las escrituras a registros/RAM Wi-Fi no se conservan. Bloque sintético de 0138h bytes con CRC y dispositivo local de 8 KiB de RAM, registros con máscaras y BB permiten pasar a CONTINUE y al mapa.
+- Sin cambios a AUXSPI, Flash ni ID. Las tablas BB/RF son ceros propios; sin firmware de una consola ni código copiado de otro emulador. No se implementan conexión inalámbrica, temporizadores MAC ni Pokéwalker. Después de continuar hay dos sondeos IR 08h sin emular que no impiden esta carga.
+- A/B: archivo `wifi-sin-inicio` en el directorio de datos, leído al arrancar; host `--wifi-sin-inicio`. Desactiva bloque de firmware y dispositivo local, y reproduce el aviso con la misma partida. Trazas `--dbg 128` para Wi-Fi, 1 para SPI y 8 para cartucho/AUXSPI.
+- Host: partida recibida → CONTINUE → mapa → guardar desde el menú → cerrar proceso → reabrir → mapa comprobados. El original queda intacto. Evidencia local en `build/hg/`; pruebas dirigidas con ASan/UBSan y en qemu BE: 16787 comprobaciones, 0 fallos.
+- Compilación completa Docker correcta; LE completo: 8101713 comprobaciones sin fallos. Unitarias BE: 8105443, solo los 34 fallos conocidos de `test_arec.c:149/152`; `test-host` termina en 1 solo por esos 34 fallos BE: 608 veredictos OK, ROMs LE/BE/SAN, gráficos, hashes y lockstep correctos. Parche sobre `54ae2a5` (el índice Git no admite escritura); paquete `build/salsads-guardado-2/salsads-guardado-2.pkg`, «SalsaDS Guardado», `SLDS00032`, holgura mínima SPE 8400 B. SHA-256 `a996a003e40f2d5e329307839acd35f9fb640c97714730e0cc3e33458b856b2f`. Falta validar el paquete exacto en la PS3.
+
 ## 2026-10-26 — Comparación del guardado de HeartGold (pokemon-w2-guardado)
 - Host, copia de la partida: v0.0.4 y `007d384` muestran el mismo aviso de corrupción; no se reproduce una regresión exclusiva del prefijo.
 - Base: 12 sondeos `00 05 00` fallidos y acceso directo; rama: acceso con prefijo. Después, conversaciones normalizadas idénticas: 1121 lecturas, 286721 bytes, todos iguales al archivo.
