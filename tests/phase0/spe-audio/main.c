@@ -63,7 +63,7 @@ static int closef(float a, float b, float eps)
 static int chan_equal(const snd_chan *a, const snd_chan *b)
 {
 	return a->cnt==b->cnt && a->sad==b->sad && a->len==b->len && a->tmr==b->tmr && a->pnt==b->pnt &&
-	       a->on==b->on && a->hdr==b->hdr && a->pos==b->pos && a->tcnt==b->tcnt && a->out==b->out &&
+	       a->keyon==b->keyon && a->loop_valid==b->loop_valid && a->on==b->on && a->hdr==b->hdr && a->pos==b->pos && a->tcnt==b->tcnt && a->out==b->out &&
 	       a->adv==b->adv && a->adi==b->adi && a->alv==b->alv && a->ali==b->ali && a->lfsr==b->lfsr &&
 	       a->tag==b->tag && memcmp(a->line,b->line,SND_LINE)==0;
 }
@@ -128,10 +128,11 @@ int main(void)
 	if (spukit_init(1) != 0 || !(worker=spukit_worker_start(spu_snd_bin,"snd",0))) {
 		salsads_log("RESULTADO " PROGRAM ": FALLO al iniciar spukit"); salsads_log_shutdown(); return 1;
 	}
-	for (int pass=0;pass<4;pass++) {
+	for (int pass=0;pass<8;pass++) {
 		job_snd job={0}; uint32_t nt=300u+77u*(uint32_t)(pass&1), nppe=0;
 		nlog=0;
-		if (!pass) {
+		if (!(pass&3)) {
+			snd_reset(&state_spe); snd_reset(&state_ppe);
 			w(0x100,0x807f); w32(0x04,D16&0x07ffffffu); w(0x08,0x10000u-700u); w32(0x0c,128);
 			w32(0x00,0x20000000u|(1u<<27)|127u|(60u<<16)|0x80000000u);
 			w32(0x14,D8); w(0x18,0xfe00); w32(0x1c,64); w32(0x10,(1u<<27)|100u|(1u<<8)|(20u<<16)|0x80000000u);
@@ -143,7 +144,7 @@ int main(void)
 		}
 		job.state_ea=(uintptr_t)&state_spe; job.log_ea=(uintptr_t)log_buf; job.out_ea=(uintptr_t)out_spe;
 		job.nat_ea=(uintptr_t)nat_spe; job.nlog=nlog; job.nticks=nt; job.out_max=SND_OUT_MAX;
-		job.mode=(uint32_t)pass; job.ratio_adj=0.003f*(float)pass; job.rgn_ea[0]=(uintptr_t)mem_spe; job.rgn_mask[0]=ST_MEM-1;
+		job.mode=(uint32_t)(pass&3) | (pass>=4?SND_MODE_CORE_OLD:0u); job.ratio_adj=0.003f*(float)(pass&3); job.rgn_ea[0]=(uintptr_t)mem_spe; job.rgn_mask[0]=ST_MEM-1;
 		uint32_t seq=spukit_post(worker,JOB_SND,&job,sizeof job); const spukit_result *result=spukit_wait(worker,seq);
 		job_snd_result jr; memcpy(&jr,result->data,sizeof jr);
 		state_ppe.mode=job.mode; state_ppe.ratio_adj=job.ratio_adj;
@@ -159,7 +160,7 @@ int main(void)
 		bad_mem += memcmp(mem_spe,mem_ppe,sizeof mem_ppe)!=0;
 	}
 	spukit_worker_stop(worker);
-	salsads_log("autoprueba audio aislada: muestras %u, estado %u, memoria %u, salida %u",bad_nat,bad_state,bad_mem,bad_out);
+	salsads_log("autoprueba audio aislada (8 trabajos, dos núcleos): muestras %u, estado %u, memoria %u, salida %u",bad_nat,bad_state,bad_mem,bad_out);
 	salsads_log("RESULTADO " PROGRAM ": %s",bad_nat||bad_state||bad_mem||bad_out?"FALLO":"OK");
 	salsads_log_shutdown(); return bad_nat||bad_state||bad_mem||bad_out?1:0;
 }

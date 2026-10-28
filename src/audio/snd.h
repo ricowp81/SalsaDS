@@ -3,19 +3,18 @@
  * SalsaDS — mezclador de sonido de la DS (Fase 2.2): los 16 canales del ARM7, SOUNDCNT/SOUNDBIAS, la captura y el
  * remuestreo a la salida de la PS3. Código portable: corre en el host, en el PPE y en un SPE (src/spu/snd).
  *
- * Modelo (comprobado muestra a muestra contra melonDS 1.1 con la ROM `snd` y tools/snd-compare.py):
- *  - El mezclador saca una muestra cada 1024 ciclos del ARM7 (33 513 982 Hz / 1024 = 32 728,5 Hz): un «tick».
- *  - Cada canal tiene un contador de temporizador que sube 512 unidades por tick (16,757 MHz); al llegar a 0x10000
- *    pasa a TMR (y toma una muestra: PCM8/16/ADPCM, un paso de PSG o un desplazamiento del ruido). La muestra se
- *    mantiene hasta el siguiente desbordamiento.
- *  - Una escritura a un registro hecha en el intervalo del tick I se ve a partir del tick I + 1 (el inicio de un canal
- *    o de una captura se enganchan en el límite del tick); el canal empieza en la posición -3 (tres desbordamientos
- *    antes de la muestra 0; el PSG y el ruido empiezan en 0).
- *  - Volumen y balance: izquierda = (m * v * (128 - p)) >> (14 + d) y derecha = (m * v * p) >> (14 + d), con v = 128 si
- *    VOL = 127, p = 128 si PAN = 127 y d = {0, 1, 2, 4}: un solo desplazamiento al final (con redondeos intermedios
- *    cambian muestras sueltas respecto de melonDS). La suma de los canales se
- *    recorta a 16 bits: eso es lo que captura SNDCAP. El volumen general (SOUNDCNT) se aplica después, y de ahí sale
- *    el audio (la captura no lo ve).
+ * Núcleo basado en DeSmuME (origen en snd_voice.h y docs/THIRD_PARTY.md):
+ *  - Un tick nativo son 1024 ciclos ARM7, 512 del reloj de las voces.
+ *  - Temporizadores enteros con recarga TMR; se decodifica cada muestra saltada.
+ *  - PCM/ADPCM arrancan en -3; PSG/ruido en -1. Una escritura del tick I
+ *    se aplica en I+1. Se conserva el predictor ADPCM inicial durante la cabecera.
+ *  - Volumen, divisor y paneo redondean en pasos separados; 127 equivale a 128.
+ *    El volumen maestro precede a la saturación final. SOUNDBIAS se aplica a
+ *    la salida nativa; SOUNDCAP toma la señal antes del maestro y del sesgo.
+ *  - Las capturas tienen el reloj de los canales 1/3 y FIFO de 16 muestras;
+ *    las lecturas ven también las escrituras aún agrupadas para DMA.
+ * SND_MODE_CORE_OLD conserva el núcleo anterior, incluidas sus reglas de
+ * redondeo, captura y arranque, para comparación con un solo paquete.
  *
  * Salida: las muestras de 16 bits a 32,7 kHz se convierten a flotante y se remuestrean a 48 kHz. FIR polifásico
  * de 32 coeficientes (snd_fir.h, de tools/gen-snd-fir.py; pasabajos de 15 kHz): `snd_resample()` (snd_mix.c) es la única
@@ -48,6 +47,7 @@
 #define SND_MODE_ORIGINAL 1u         /* cuantizar a 10 bits con SOUNDBIAS, como la salida de la DS */
 #define SND_MODE_FRAME_CACHE_OLD 4u   /* diagnóstico: descartar todas las líneas de voz entre trabajos */
 #define SND_MODE_RESAMPLE_SIMPLE 8u    /* diagnóstico: conversión 48 kHz lineal, sin el FIR */
+#define SND_MODE_CORE_OLD 16u          /* núcleo anterior completo para A/B; se fija al abrir */
 
 /* Una escritura a un registro de sonido (media palabra): `off` es el desplazamiento desde 0x04000400. */
 typedef struct snd_ent {
@@ -60,7 +60,7 @@ typedef struct snd_chan {
 	uint32_t cnt;                    /* SOUNDxCNT sin el bit 31 */
 	uint32_t sad, len;               /* 27 y 22 bits */
 	uint16_t tmr, pnt;
-	uint8_t on, hdr, pad[2];
+	uint8_t on, hdr, keyon, loop_valid;
 	int32_t pos;                     /* posición en muestras (ADPCM: nibbles; PSG: paso 0-7) */
 	uint32_t tcnt;                   /* contador del temporizador (sube hasta 0x10000) */
 	int32_t out;                     /* muestra actual, 16 bits con signo */
@@ -76,6 +76,9 @@ typedef struct snd_cap {
 	uint32_t dad, len;               /* destino y longitud (palabras) tal como se escribieron */
 	uint32_t pos;                    /* bytes escritos */
 	uint32_t base, bytes;            /* dirección y tamaño en uso (los que valían al empezar) */
+	uint32_t phase, fifo_head, fifo_count; /* contador TMR independiente, FIFO DeSmuME */
+	int16_t fifo[16];
+	uint32_t pad2;
 } snd_cap;
 
 typedef struct snd_state {

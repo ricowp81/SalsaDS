@@ -1,5 +1,43 @@
 # Registro de rendimiento
 
+## 2026-10-28 — Sonido basado en DeSmuME: captura y voces (host)
+
+NSMB, nivel 1-1, 5000 cuadros desde el mismo guardado y con las mismas pulsaciones.
+Se comparan 655 607 pares nativos (20,032 s, desde el tick 2 079 000), antes de
+cualquier etapa de salida. Se descarta de la traza el último trabajo de 548 ticks,
+todavía no recogido por el receptor WAV. Corredor nativo del host, **no tiempos ni
+escucha de la PS3**. Evidencia local y WAV de las 16 voces en `build/sonido/`;
+extracción reproducible con `SND_TRACE` y `tools/audio-voice-report.py`.
+
+| Medida | Núcleo anterior | Solo captura corregida | Núcleo nuevo completo |
+|---|---:|---:|---:|
+| Concentración pico/media de saltos por fase del cuadro, señal mono | 2,8961 | 1,4520 | 1,5429 |
+| RMS de segunda diferencia L / R (unidades PCM16) | 737,26 / 848,48 | 708,59 / 823,15 | 707,39 / 825,69 |
+| Energía 8 kHz–Nyquist / energía total L / R | 0,12484 % / 0,29038 % | 0,11669 % / 0,27698 % | 0,12215 % / 0,27470 % |
+| RMS L / R (unidades PCM16) | 5587,31 / 4183,25 | 5546,23 / 4161,22 | 5449,95 / 4203,22 |
+
+- Aislamiento: la variante local de captura conserva el decodificador, arranque y
+  paneo anteriores; cambia FIFO, visibilidad de escrituras y reglas de captura.
+  Correlación 0,999895, desfase 0. La reducción de concentración de saltos (49,9 %)
+  identifica un defecto de realimentación dependiente de los bloques.
+- En ese tramo SOUNDCNT es `0xB97F`: L sale exclusivamente de la voz 1 y R de la 3;
+  ambas son PCM16 de SOUNDCAP, TMR `0xFE00`. Se capturan las mezclas L/R sin esas
+  voces. Las otras voces usan ADPCM y, entre la 8 y la 13, también PSG; no hay
+  ruido LFSR ni PCM8. SOUNDBIAS siempre 512. El mapa previo solo usaba ADPCM.
+- Las tablas de pasos/índices ADPCM ya coincidían; cambian el redondeo de la
+  diferencia, el extremo negativo y la recuperación del bucle. El temporizador
+  de captura nominal y el sesgo constantes descartan esos dos factores como
+  causa de este tramo. No se atribuye el ruido a todas las voces ADPCM.
+- `tools/audio-stage-compare.py` (ambos argumentos son **host**, aunque sus claves
+  se llamen `ps3`/`host`): núcleo completo, correlación 0,953850, desfase −1 muestra,
+  diferencia de espectro por banda 0,06–0,15 dB. Su `snr_db=8,04` mide el residuo
+  entre dos implementaciones, **no** una SNR contra audio limpio. No hay una
+  referencia digital independiente de este juego y no se afirma que todo el
+  siseo se haya eliminado. La banda alta cambia poco y contiene música legítima.
+- El interruptor anterior reproduce exactamente los 2 734 607 pares del WAV
+  previo. Las etapas HD/Hermite, FIR, estirado, limitador y ganancia siguen
+  disponibles. Costo del SPE y escucha A/B con audífonos: pendientes de PS3.
+
 ## 2026-10-27 — Audio PPE/SPE y estiramiento fuerte (host/RPCS3)
 - Autoprueba aislada en RPCS3, cuatro trabajos fiel/HD: antes, `hd_last` difería una ULP en voz 1/trabajo 2 y voz 0/trabajo 3; después, muestras 0, estado 0, memoria 0 y salida 0. Holgura del SPE de audio: 171 072 B (mínimo 8192).
 - Banco host reproducible, producción 0,5: variante normal/larga, 664/332 uniones; flujo en empalmes 0,0102641→0,0079671 (×0,7762), CV medio de envolvente ×0,8455, nitidez de ataques ×0,9393. A producción 1,0: salida binariamente idéntica y 0 uniones en ambas.

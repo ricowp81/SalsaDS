@@ -1011,6 +1011,7 @@ static void snd_verify_store(void *ctx, uint32_t addr, const uint8_t *src, uint3
 static int snd_chan_equal(const snd_chan *a, const snd_chan *b)
 {
 	return a->cnt == b->cnt && a->sad == b->sad && a->len == b->len && a->tmr == b->tmr && a->pnt == b->pnt &&
+	       a->keyon == b->keyon && a->loop_valid == b->loop_valid &&
 	       a->on == b->on && a->hdr == b->hdr && a->pos == b->pos && a->tcnt == b->tcnt && a->out == b->out &&
 	       a->adv == b->adv && a->adi == b->adi && a->alv == b->alv && a->ali == b->ali && a->lfsr == b->lfsr &&
 	       a->tag == b->tag && memcmp(a->line, b->line, SND_LINE) == 0;
@@ -1335,13 +1336,14 @@ static int snd_selftest(void)
 	memcpy(st_mem_ppe, st_mem_spe, sizeof st_mem_ppe);
 	snd_reset(&st_spe);
 	snd_reset(&st_ppe);
-	for (int pass = 0; pass < 4; pass++) {
+	for (int pass = 0; pass < 8; pass++) {
 		const uint32_t nt = 300u + 77u * (uint32_t)(pass & 1);
 		uint32_t n_ppe = 0, applied, state0 = bad_state;
 		snd_bus bus = { NULL, st_bus_fetch, st_bus_store };
 
 		st_n = 0;
-		if (pass == 0) {
+		if ((pass & 3) == 0) {
+			snd_reset(&st_spe); snd_reset(&st_ppe);
 			st_w(0x100, 0x807F);
 			st_w32(0x00 + 4, D16 & 0x07FFFFFFu);
 			st_w(0x08, (uint16_t)(0x10000u - 700u));
@@ -1372,8 +1374,8 @@ static int snd_selftest(void)
 		js.nlog = st_n;
 		js.nticks = nt;
 		js.out_max = SND_OUT_MAX;
-		js.mode = (uint32_t)pass;
-		js.ratio_adj = 0.003f * (float)pass;
+		js.mode = (uint32_t)(pass & 3) | (pass >= 4 ? SND_MODE_CORE_OLD : 0u);
+		js.ratio_adj = 0.003f * (float)(pass & 3);
 		js.rgn_ea[0] = (uint64_t)(uintptr_t)st_mem_spe;
 		js.rgn_mask[0] = ST_MEM - 1;
 		{
@@ -1418,7 +1420,7 @@ static int snd_selftest(void)
 			snd_selftest_diagnose(pass);
 		bad_mem += memcmp(st_mem_spe, st_mem_ppe, sizeof st_mem_ppe) != 0;
 	}
-	salsads_log("autoprueba del audio: SPE contra PPE, 4 trabajos (fiel y HD): %u muestras distintas, %u del estado, %u de la memoria "
+	salsads_log("autoprueba del audio: SPE contra PPE, 8 trabajos (dos núcleos, fiel y HD): %u muestras distintas, %u del estado, %u de la memoria "
 		    "capturada, %u de la salida flotante", (unsigned)bad_nat, (unsigned)bad_state, (unsigned)bad_mem,
 		    (unsigned)bad_out);
 	return bad_nat || bad_state || bad_mem || bad_out ? -1 : 0;
@@ -1471,6 +1473,8 @@ static void snd_load_cfg(void)
 	char text[256];
 	size_t len;
 
+	if (stat(SALSADS_DATA_DIR "/audio-nucleo-anterior", &fs) == 0) mode |= SND_MODE_CORE_OLD;
+	salsads_log("audio: núcleo %s", mode & SND_MODE_CORE_OLD ? "anterior" : "basado en DeSmuME");
 	snd_verify.on = stat(AUDIO_VERIFY_FLAG, &fs) == 0;
 	if (snd_verify.on && !snd_verify.initial) {
 		snd_verify.bytes = (size_t)((uintptr_t)(nds->wram7 + sizeof nds->wram7) - (uintptr_t)nds->ram);

@@ -46,6 +46,11 @@ int main(int argc, char **argv)
 	const char *order = *(const uint8_t *)&probe == 0x02 ? "LE" : "BE";
 
 	printf("host: %s\n", order);
+	if (getenv("UNIT_ONLY") && !strcmp(getenv("UNIT_ONLY"), "sonido")) {
+		test_snd();
+		printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);
+		return check_failed ? 1 : 0;
+	}
 	if (argc > 1 && !strcmp(argv[1], "arec")) { /* solo el recompilador (para iterar) */
 		test_arec();
 		printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);

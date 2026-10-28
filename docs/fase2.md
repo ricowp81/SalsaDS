@@ -323,3 +323,62 @@ Documentos relacionados: `docs/memory-budget.md`, `docs/perf-log.md`, `docs/esta
 - No recupera distorsión ya presente en la mezcla. Como toda no linealidad estática añade armónicos a una senoide limpia de gran amplitud; no se promete THD menor a cualquier nivel. La comparación cuantitativa está en `perf-log.md`.
 - `audio-sin-estirar` y `audio-sin-limitador`, archivos vacíos en `/dev_hdd0/salsads/`, se leen al abrir la aplicación; ambos juntos recuperan la salida anterior durante el juego. `DATO audio-estirar` registra pares añadidos, porcentaje de pares entregados con solape (incluye recuperación), faltas, µs acumulados, máximo por grano y µs del hilo completo; el costo incluye mantener la historia en la ruta exacta.
 - Sin entrada nueva puede repetir indefinidamente con solape; no inventa silencio. Con voz, ruido o transitorios puede oírse repetición/coloración. El selector/cierre pide pausa explícita, funde 256 pares y confirma el vaciado de historia; el nuevo juego vuelve al prellenado habitual. Estado y búferes añaden unos 27 KiB de memoria principal; ningún byte al local store SPE ni reserva dinámica en reproducción.
+
+
+## 2026-10-28 — Núcleo de sonido basado en DeSmuME
+
+La descripción de Fase 2.2 anterior queda como historial del modo
+`audio-nucleo-anterior`. Por omisión se usa la adaptación de `SPU.cpp`/`SPU.h`
+del commit `fc504ee0bc9ac3434cafcaae7b129c025499a609`; avisos y licencia en
+`THIRD_PARTY.md` y en los archivos de sonido.
+
+| Área | Núcleo anterior | Nuevo |
+|---|---|---|
+| Avance PCM8/PCM16 | Lee muestra 0 al tercer desbordamiento | Tres posiciones negativas; el siguiente lee 0. Se recorren todas las muestras y se conserva la última del disparo único |
+| ADPCM | Tres sumandos truncados, recorte a −32767, recuperación implícita | `paso*(2*n+1)/8`, recorte a −32768, predictor/índice explícitos del bucle; PNT=0 recupera cabecera |
+| Bucles | También repiten los modos 0/3 | Repite solo el modo 1; longitud nula y ADPCM menor de cuatro palabras no leen indefinidamente |
+| PSG/ruido | Fase inicial 0; onda PSG alta al final del período | Fase −1; secuencia PSG de DeSmuME, LFSR con los mismos 15 bits y polinomio |
+| Volumen/pan | Un solo desplazamiento al final | Multiplicación por volumen, divisor y paneo por separado, 127 como unidad; lado izquierdo con `127-pan` |
+| Saturación | Recorta suma antes del maestro | Aplica maestro y recorta después; captura sigue recortando antes del maestro |
+| SOUNDCAP | Un dato por tick; fuente directa 1/3 con volumen; sin bit ADD | Temporizador independiente con TMR de 1/3; fuente directa 0/2 o suma 0+1/2+3, con divisor, sin volumen/pan |
+| Realimentación | Datos agrupados hasta 1024 bytes y líneas de lectura antiguas | FIFO de 16 muestras y reenvío de escrituras pendientes; al vaciar se actualizan las líneas ya cargadas |
+
+La FIFO de captura adapta el procedimiento de DeSmuME para aproximar la lectura
+anticipada del hardware. No es un modelo de buses a precisión de ciclo. Se
+mantiene el reloj entero de 512 ciclos por tick nativo, con recarga tras el
+desbordamiento también en captura: escribir TMR no convierte de golpe el resto
+del período anterior en cientos de muestras. Una escritura de captura activa
+reinicia su reloj/FIFO, como `ProbeCapture`.
+
+Diferencias deliberadas respecto del código de origen: se conserva el predictor
+ADPCM de la cabecera en una variable distinta de la salida durante las posiciones
+negativas y los ocho nibbles de cabecera (no se pierde al escribir ceros en la
+historia); índice inválido limitado a 88; parada de captura de una sola pasada;
+longitudes sin cuerpo acotadas; SOUNDBIAS implementado explícitamente, mientras
+DeSmuME lo ignora. En modo nativo de 16 bits, `(bias-512)*64` se agrega tras el
+maestro y antes del recorte. El modo original añade la cuantización de 10 bits.
+HD sigue siendo una opción de escucha flotante, no un DAC físico.
+
+`tests/unit/test_snd_core.c` usa números calculados aparte: predictor ADPCM 1000,
+índice 8 y tres posiciones de bucle; saturación y cabecera inválida; PCM8/16,
+volumen/pan/maestro/sesgo; ocho duties y un registro de bits para ruido; captura
+PCM8/16 a tres períodos, ambas fuentes directas con ADD, cambio de TMR; impulso
+de 8192 con eco 4096/2048/1024 cada 67 ticks. Este último debe ser idéntico con
+bloques de 1, 17, 111 y 239 ticks. Las pruebas históricas y `snd.golden` siguen
+comprobando explícitamente el núcleo anterior. HD/fiel comparan muestras,
+memoria y estado para ambos núcleos. Las autopruebas PPE/SPE, integrada y aislada,
+ahora cubren ocho trabajos y los dos núcleos.
+
+Diagnóstico del host: `SND_TRACE=prefijo SND_TRACE_FROM=tick` escribe voces crudas,
+con volumen/pan y estado (formato, posición, timer, predictor, índice, sesgo y
+capturas); `tools/audio-voice-report.py` las separa en WAV y mide energía por
+bandas y segunda diferencia. `--save-read` carga un guardado sin escribirlo.
+La instrumentación se compila solo en el corredor del host. No hay asignaciones
+ni archivos en el bucle del mezclador PPE/SPE.
+
+Prueba de consola: crear o renombrar `/dev_hdd0/salsads/audio-nucleo-anterior`
+antes de abrir el juego. Sin él se usa el núcleo nuevo. Se conservan
+`audio-mezcla-ppe`, `audio-verificar`, `audio-grabar`, `audio-frontera-antigua`,
+`audio-hd`, `audio-sin-hd`, `audio-sin-remuestrear`, `audio-sin-estirar`,
+`audio-sin-limitador` y `audio-sin-ganancia`. El modo se fija al abrir el juego.
+La cuantificación del defecto y sus límites están en `perf-log.md`.

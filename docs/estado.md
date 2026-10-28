@@ -4,6 +4,15 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-28 — Voces y captura a partir de DeSmuME (sonido-desmume)
+- Núcleo portable nuevo, con origen y avisos GPL-2.0-or-later: avance PCM/ADPCM, predictor e índice de bucle, PSG/ruido, redondeo de volumen/paneo, maestro antes del recorte y captura con temporizador/FIFO. Las escrituras SOUNDCAP pendientes se reenvían a las voces; ya no cambian la realimentación al partir el trabajo.
+- NSMB 1-1, host, 20,032 s: concentración de saltos por cuadro 2,896→1,543; corrigiendo solo captura, 1,452 (correlación 0,999895). SOUNDCNT `0xB97F`: toda la salida pasa por las voces PCM16 1/3 de captura. Se identifica un defecto periódico; la energía en banda alta varía poco y no queda demostrado que desaparezca todo el ruido audible. Datos y límites en `perf-log.md`.
+- `/dev_hdd0/salsads/audio-nucleo-anterior` devuelve íntegro el núcleo anterior: 2 734 607 pares de NSMB idénticos al WAV previo. Se conservan HD/Hermite, FIR, estirado, limitador, ganancia y sus interruptores.
+- Pruebas dirigidas: 71 179 comprobaciones LE con sanitizadores y BE, 0 fallos; incluyen bucles ADPCM, PCM8/16, ocho duties, LFSR, captura a tres períodos, recarga durante captura, fuentes 0+1/2+3 y eco independiente de la partición. Autopruebas PPE/SPE ampliadas a ocho trabajos y ambos núcleos.
+- `test-host=1` únicamente por los 34 fallos BE conocidos de `test_arec.c:149/152`: LE 22 852 817 comprobaciones sin fallos; BE 22 856 547; ROMs LE/SAN/BE, imágenes, hashes y lockstep correctos. La recarga final de captura se comprobó después con las 71 179 dirigidas LE/SAN y BE y conserva exactamente el WAV nativo de NSMB medido. Texto publicable, SPDX y formato correctos.
+- Paquete limpio `build/salsads-sonido-final/salsads-sonido-final.pkg`, «SalsaDS sonido», `SLDS00033`; SHA-256 `9ee15eb17c614d82b1d5f213071f2b6551b536b5bb8d5a6572e345513da565b3`. Holgura SPE audio 165 600 B, mínimo del conjunto 8432 B; presupuesto actualizado. Git no permite crear `index.lock`: entrega en `build/sonido/cambios.patch`, mensaje en `commit.txt` e informe en `informe.md`.
+- La ejecución de RPCS3 queda pendiente: el entorno de pruebas no permite abrir para escritura su candado compartido. No se declara paridad SPE/PPE ejecutada en esta revisión. La consola debe registrar 0 diferencias antes de comparar escucha y costo; no se ha enviado ningún archivo.
+
 ## 2026-10-27 — Paridad del audio y diagnóstico de la salida (audio-estirar)
 - Las dos diferencias de la autoprueba eran `hd_last`: voz 1 en el trabajo 2 y voz 0 en el 3, separadas por una ULP debido a la contracción FMA PPE/SPU. El ancla persistente del antichasquido se guarda como muestra entera sin cuantizar la salida; la prueba aislada queda en 0 diferencias de muestras, estado, memoria y salida.
 - La fase del FIR pasa a Q0.32 y el ajuste de deriva sigue limitado a ±0,25 %. La autoprueba registra, si falla, voz, posición/fracción, ADPCM, ruido, línea, SOUNDCAP, fases, historia y envolvente; `audio-mezcla-ppe` permite la pasada A/B sin desactivar la comprobación.

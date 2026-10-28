@@ -77,7 +77,7 @@ static void test_model(void)
 	reset();
 	for (uint32_t i = 0; i < 128; i++)
 		wr16le(mem + 0x100 + 2 * i, 0x4000);
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	w16(0x100, 0x807F);
 	chan(0, CNT(127, 0, 64, 1, 1), 0x02000100u, P512, 0, 64);
 	run(&st, 20, nat);
@@ -92,7 +92,7 @@ static void test_model(void)
 	reset();
 	for (uint32_t i = 0; i < 128; i++)
 		wr16le(mem + 0x100 + 2 * i, (uint16_t)(int16_t)-16384);
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	w16(0x100, 0x807F);
 	chan(0, CNT(37, 1, 77, 1, 1), 0x02000100u, P512, 0, 64);
 	run(&st, 10, nat);
@@ -103,7 +103,7 @@ static void test_model(void)
 	reset();
 	for (uint32_t i = 0; i < 128; i++)
 		wr16le(mem + 0x100 + 2 * i, 0x4000);
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	w16(0x100, 0x807F);
 	chan(0, CNT(127, 0, 0, 1, 1), 0x02000100u, P512, 0, 64);
 	chan(1, CNT(127, 0, 127, 1, 1), 0x02000100u, P512, 0, 64);
@@ -115,7 +115,7 @@ static void test_model(void)
 	reset();
 	for (uint32_t i = 0; i < 128; i++)
 		wr16le(mem + 0x100 + 2 * i, 0x7FFF);
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	w16(0x100, 0x807F);
 	for (unsigned c = 0; c < 6; c++)
 		chan(c, CNT(127, 0, 0, 1, 1), 0x02000100u, P512, 0, 64);
@@ -126,7 +126,7 @@ static void test_model(void)
 	reset();
 	for (uint32_t i = 0; i < 16; i++)
 		wr16le(mem + 0x100 + 2 * i, 0x2000);
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	w16(0x100, 0x807F);
 	chan(0, CNT(127, 0, 0, 2, 1), 0x02000100u, P512, 0, 8);
 	run(&st, 8, nat);
@@ -139,7 +139,7 @@ static void test_model(void)
 	reset();
 	for (uint32_t i = 0; i < 16; i++)
 		wr16le(mem + 0x100 + 2 * i, (uint16_t)(i * 100));
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	w16(0x100, 0x807F);
 	chan(0, CNT(127, 0, 0, 1, 1), 0x02000100u, P512, 2, 4); /* 6 palabras = 12 muestras; el bucle empieza en la 4 */
 	run(&st, 40, nat);
@@ -154,7 +154,7 @@ static void test_model(void)
 
 	/* ruido: la secuencia del LFSR de 15 bits (primeros pasos con todo en uno) y PSG: ciclo de 8 pasos */
 	reset();
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	w16(0x100, 0x807F);
 	chan(14, CNT(127, 0, 0, 0, 3), 0, P512, 0, 0);
 	chan(8, CNT(127, 0, 127, 0, 3) | (3u << 24), 0, P512, 0, 0);
@@ -176,7 +176,7 @@ static void test_model(void)
 	reset();
 	for (uint32_t i = 0; i < 128; i++)
 		wr16le(mem + 0x100 + 2 * i, 0x4000);
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	w16(0x100, 0x8040);
 	chan(0, CNT(127, 0, 0, 1, 1), 0x02000100u, P512, 0, 64);
 	run(&st, 10, nat);
@@ -184,7 +184,7 @@ static void test_model(void)
 	w16(0x100, 0x0040);
 	nlog = 0;
 	w16(0x100, 0x0040);
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	run(&st, 4, nat);
 	CHECK_EQ(nat[0], 0);
 }
@@ -197,7 +197,7 @@ static void test_capture(void)
 	reset();
 	for (uint32_t i = 0; i < 128; i++)
 		wr16le(mem + 0x100 + 2 * i, 0x4000);
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	w16(0x100, 0x807F);
 	chan(0, CNT(127, 0, 64, 1, 1), 0x02000100u, P512, 0, 64);
 	w32(0x110, 0x02001000u);
@@ -215,7 +215,7 @@ static void test_capture(void)
 	reset();
 	for (uint32_t i = 0; i < 128; i++)
 		wr16le(mem + 0x100 + 2 * i, 0x4000);
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	nlog = 0;
 	w16(0x100, 0x807F);
 	chan(0, CNT(127, 0, 64, 1, 1), 0x02000100u, P512, 0, 64);
@@ -236,12 +236,12 @@ static void test_capture_playback_boundary(void)
 	reset();
 	for (uint32_t i = 0; i < 64; i++)
 		wr16le(mem + 0x100 + 2 * i, 0x2000);
-	snd_reset(&keep);
+	snd_reset(&keep); keep.mode = SND_MODE_CORE_OLD;
 	w16(0x100, 0x807F);
 	chan(1, CNT(127, 0, 0, 1, 1), 0x02000100u, P512, 0, 32);
 	run(&keep, 20, first);
 	old = keep;
-	old.mode = SND_MODE_FRAME_CACHE_OLD;
+	old.mode = SND_MODE_FRAME_CACHE_OLD | SND_MODE_CORE_OLD;
 	nlog = 0;
 	/* SOUNDCAP rellena esta línea mientras la voz 1 sigue leyéndola. La
 	 * instantánea nueva se toma al volver al bucle, no en la frontera del
@@ -346,14 +346,14 @@ static void test_resample(void)
 
 /* HD debe conservar decodificación, temporizadores y capturas incluso con paros,
  * reinicios, recargas, rutas 1/3, saturación y RAM de captura como fuente. */
-static void test_hd_native(void)
+static void test_hd_native(uint32_t mode)
 {
 	static snd_state a, b;
 	static uint8_t saved[MEM_SIZE], reference[MEM_SIZE];
 	static int16_t na[2*SND_TICKS_MAX], nb[2*SND_TICKS_MAX];
 	static float out[2*SND_OUT_MAX];
 	uint32_t seed = 4917, produced;
-	reset(); snd_reset(&a); snd_reset(&b); b.mode = SND_MODE_HD;
+	reset(); snd_reset(&a); snd_reset(&b); a.mode = mode; b.mode = mode | SND_MODE_HD;
 	for (unsigned i = 0; i < MEM_SIZE; i++) mem[i] = (uint8_t)(i*37);
 	for (unsigned frame = 0; frame < 96; frame++) {
 		nlog = 0;
@@ -404,10 +404,16 @@ static void test_hd_edges(void)
 	CHECK(fabsf(out[2*(n-1)]-2.0f)<1e-6f);
 }
 
+void test_snd_core(void);
+
 void test_snd(void)
 {
 	test_hd_edges();
-	test_hd_native();
+	test_snd_core();
+	test_hd_native(0);
+	test_hd_native(SND_MODE_CORE_OLD);
+	test_split(SND_MODE_CORE_OLD, 0);
+	test_split(SND_MODE_CORE_OLD | SND_MODE_HD, 0);
 	test_model();
 	test_capture();
 	test_capture_playback_boundary();

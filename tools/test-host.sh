@@ -82,7 +82,9 @@ check_ciclos() { # orden log
 		fail=1
 	fi
 }
-SND_ARGS="--frames 2500 --peek 0x02390834"
+# El golden histórico comprueba el núcleo anterior. El núcleo nuevo usa
+# vectores independientes de ADPCM, PCM, PSG, ruido y captura en test_snd_core.
+SND_ARGS="--audio-nucleo-anterior --frames 2500 --peek 0x02390834"
 check_gxparidad() { # orden log
 	if grep -q "^gxparidad: .* 0 fallos$" "$2"; then
 		printf '%-4s OK     %s\n' "$1" "$(grep '^gxparidad:' "$2")"

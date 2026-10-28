@@ -21,6 +21,7 @@
 #include "host/jitrun.h"
 #include "jit/arec.h"
 #include "util/endian.h"
+#include "host/snd_trace.h"
 
 #define SDS_ADDR 0x02380000u
 #define SDS_ARM7_ADDR 0x02390000u
@@ -647,13 +648,14 @@ int main(int argc, char **argv)
 	uint32_t break_pc = 0, dbg = 0, watch_addr = 0, save_size = 0;
 	const char *save_cfg = NULL;
 	const char *save_path = NULL;
+	int save_readonly = 0;
 	struct { uint32_t addr, len; const char *file; } dumps[8];
 	uint32_t ndumps = 0;
 	int dump_cpu = 0;
 	uint32_t trace_from = 0;
 	const char *wav_path = NULL;
 	int snd_original = 0, snd_hd = 0, snd_linear = 0, g2d_stats = 0;
-	int snd_frame_cache_old = 0;
+	int snd_frame_cache_old = 0, snd_core_old = 0;
 	const char *gxdump_path = NULL;
 	int gx_clock = 0, r3d_stats_on = 0, holes_on = 0, gx_defer = 0, gx_lento = 0, geom_plain = 0, geom_scalar = 0;
 	const char *holes_dump = NULL, *fdump_prefix = NULL;
@@ -742,6 +744,8 @@ int main(int argc, char **argv)
 			snd_linear = 1;
 		else if (!strcmp(argv[i], "--snd-original"))
 			snd_original = 1;
+		else if (!strcmp(argv[i], "--audio-nucleo-anterior"))
+			snd_core_old = 1;
 		else if (!strcmp(argv[i], "--audio-frontera-antigua"))
 			snd_frame_cache_old = 1;
 		else if (!strcmp(argv[i], "--cycles") && i + 1 < argc)
@@ -807,6 +811,10 @@ int main(int argc, char **argv)
 			dumps[ndumps++].file = c + 1;
 		} else if (!strcmp(argv[i], "--save") && i + 1 < argc)
 			save_path = argv[++i];
+		else if (!strcmp(argv[i], "--save-read") && i + 1 < argc) {
+			save_path = argv[++i];
+			save_readonly = 1;
+		}
 		else if (!strcmp(argv[i], "--save-cfg") && i + 1 < argc)
 			save_cfg = argv[++i];
 		else if (!strcmp(argv[i], "--save-size") && i + 1 < argc)
@@ -913,19 +921,19 @@ int main(int argc, char **argv)
 		M.vid.clock = clock_ns;
 	if (wav_path || wav_native_path)
 		M.snd.ops.sink = wav_sink;
-	if (snd_original || snd_hd || snd_linear || snd_frame_cache_old)
+	if (snd_original || snd_hd || snd_linear || snd_frame_cache_old || snd_core_old)
 		nds_snd_set_mode(&M, (snd_hd ? SND_MODE_HD : snd_original ? SND_MODE_ORIGINAL : 0u) |
 				       (snd_linear ? SND_MODE_RESAMPLE_SIMPLE : 0u) |
-					 (snd_frame_cache_old ? SND_MODE_FRAME_CACHE_OLD : 0u));
+					 (snd_frame_cache_old ? SND_MODE_FRAME_CACHE_OLD : 0u) | (snd_core_old ? SND_MODE_CORE_OLD : 0u));
 	if (lockstep) {
 		R.quantum = quantum;
 		R.vid.use_ref = use_ref;
 		R.gx_lento = (uint8_t)gx_lento;
 		nds_init(&R);
-		if (snd_original || snd_hd || snd_linear || snd_frame_cache_old)
+		if (snd_original || snd_hd || snd_linear || snd_frame_cache_old || snd_core_old)
 			nds_snd_set_mode(&R, (snd_hd ? SND_MODE_HD : snd_original ? SND_MODE_ORIGINAL : 0u) |
 					       (snd_linear ? SND_MODE_RESAMPLE_SIMPLE : 0u) |
-					 (snd_frame_cache_old ? SND_MODE_FRAME_CACHE_OLD : 0u));
+					 (snd_frame_cache_old ? SND_MODE_FRAME_CACHE_OLD : 0u) | (snd_core_old ? SND_MODE_CORE_OLD : 0u));
 		if (hj_lockstep_attach(&M, &R, jit_arm7, jit_arm9))
 			return 2;
 	} else if (jit_mode && jit_prof && arec_prof_open(jit_prof)) {
@@ -1254,7 +1262,7 @@ int main(int argc, char **argv)
 			printf("peek 0x%08x = 0x%08x\n", peek[k], nds_peek32(&M, 0, peek[k]));
 		if (show_regs)
 			print_regs();
-		save_out(save_path);
+		if (!save_readonly) save_out(save_path);
 		if (wav_path)
 			wav_write(wav_path);
 		if (wav_native_path)
@@ -1332,7 +1340,7 @@ int main(int argc, char **argv)
 		int rc;
 
 		name = name ? name + 1 : rom_path;
-		save_out(save_path);
+		if (!save_readonly) save_out(save_path);
 		for (int i = 0; i < 12; i++)
 			w[i] = nds_peek32(&M, 0, SDS_ADDR + 4 * (uint32_t)i);
 		if (stats) {

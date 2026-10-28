@@ -7,9 +7,9 @@
  * el estado, las muestras nativas de 16 bits y la salida. Los datos de los canales y los destinos de la captura se
  * leen y escriben por DMA directamente en la memoria emulada.
  *
- * Presupuesto del local store (256 KB): estado 4,5 KB + escrituras 32 KB + muestras nativas 2,6 KB + salida 8 KB +
- * pila de snd_run (muestras en flotante 5 KB, escalón de captura 2 KB) + código ≈ 30 KB: unos 85 KB. El enlace mide la
- * holgura de la pila (tools/spu-stack.py).
+ * Presupuesto del local store (256 KiB): snd_state 4560 B (incluye dos FIFO de captura de 16 muestras), escrituras
+ * 32 KiB, muestras nativas 2,6 KiB, salida 8 KiB. Código ≈34 KiB, datos/bss ≈51 KiB y cadena de pila ≈11 KiB:
+ * total <100 KiB, sin asignaciones. El enlace exige al menos 8192 B de holgura con tools/spu-stack.py.
  */
 #include <spukit/spu.h>
 #include <sys/spu_thread.h>
