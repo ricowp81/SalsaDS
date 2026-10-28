@@ -31,11 +31,17 @@
 #include "toon_w_fpo.h"
 #include "gpu3d/rsx_modes.h"
 #include "gpu3d/rsx_vertex.h"
+#include "gpu3d/rsx_passes.h"
 #include "spu/rsxprep/job.h"
 #include "spu/raster3d/job.h"
 #include <spukit/spukit.h>
 #include "spu_rsxprep_bin.h"
 _Static_assert(sizeof(rsx3d_vertex) == sizeof(rsxkit_vertex), "formato de vértices RSX");
+_Static_assert((int)RP_OFF == (int)RSXKIT_BLEND_OFF && (int)RP_NONE == (int)RSXKIT_BLEND_NONE &&
+               (int)RP_BLEND == (int)RSXKIT_BLEND_ALPHA_MAX && RP_TEST == RSXKIT_DEPTH_TEST &&
+               RP_WRITE == RSXKIT_DEPTH_WRITE && RP_LESS == RSXKIT_DEPTH_LESS &&
+               RP_GEQUAL == RSXKIT_DEPTH_GEQUAL && RP_ALWAYS == RSXKIT_DEPTH_ALWAYS,
+               "estados del plan de pasadas RSX");
 
 #define ARENA (24u * 1024u * 1024u)
 #define TEX_BYTES (16u * 1024u * 1024u)
@@ -97,12 +103,54 @@ static uint64_t hd_duration(unsigned first, unsigned last)
     uint64_t a=rsxkit_stamp_ns(first), b=rsxkit_stamp_ns(last);
     return a && b >= a ? b-a : 0;
 }
+/* Marcas 28..35: fin color / fin atributos, por escala y ranura. Se retiran
+ * con la etiqueta de su escala, nunca esperando una etiqueta HD desde 1x. */
+static struct pass_sample {
+    unsigned fog, extended, polys, draws[2];
+    uint64_t issue_us[3], prepare_us;
+} pass_samples[2][2];
+static void pass_collect(unsigned slot, unsigned hd)
+{
+    static struct pass_total {
+        unsigned frames, polys;
+        uint64_t draws[2], ns[3], issue_us[3], prepare_us;
+    } totals[2][2][2];
+    static unsigned windows[2];
+    const struct pass_sample *p=&pass_samples[hd][slot];
+    unsigned a=28+hd*4+slot*2;
+    unsigned begin=hd ? 48+slot*2 : 56+slot*3;
+    unsigned end=hd ? 49+slot*2 : 57+slot*3;
+    uint64_t ns[3]={hd_duration(begin,p->fog ? a : end),p->fog ? hd_duration(a,a+1) : 0,
+                   p->fog ? hd_duration(a+1,end) : 0};
+    unsigned f=p->fog, e=p->extended;
+    totals[hd][f][e].frames++; totals[hd][f][e].polys+=p->polys;
+    totals[hd][f][e].prepare_us+=p->prepare_us;
+    for (unsigned i=0;i<3;i++) {
+        totals[hd][f][e].ns[i]+=ns[i];
+        totals[hd][f][e].issue_us[i]+=p->issue_us[i];
+        if (i<2) totals[hd][f][e].draws[i]+=p->draws[i];
+    }
+    if (++windows[hd]==120) {
+        for (unsigned kind=0;kind<4;kind++) {
+            struct pass_total *s=&totals[hd][kind/2][kind%2];
+            double n=s->frames;
+            if (!s->frames) continue;
+            salsads_log("DATO rsx3d pasadas: %ux niebla %u ampliado %u; cuadros %u/120; polígonos %.1f; dibujos color %.1f atributos %.1f; GPU color %.3f auxiliar %.3f posproceso %.3f ms; PPE preparación %.3f envío color %.3f auxiliar %.3f posproceso %.3f ms",
+                hd ? hd_scale : 1,kind/2,kind%2,s->frames,s->polys/n,
+                s->draws[0]/n,s->draws[1]/n,s->ns[0]/(n*1e6),s->ns[1]/(n*1e6),
+                s->ns[2]/(n*1e6),s->prepare_us/(n*1e3),s->issue_us[0]/(n*1e3),
+                s->issue_us[1]/(n*1e3),s->issue_us[2]/(n*1e3));
+        }
+        memset(totals[hd],0,sizeof totals[hd]); windows[hd]=0;
+    }
+}
 /* La etiqueta nativa puede preceder al raster HD. Solo leer sus marcas tras
  * su propia etiqueta, antes de reutilizarlas; nunca esperar para medir. */
 static uint64_t hd_raster_collect(unsigned slot)
 {
     if (!hd_raster_fence[slot] || !rsxkit_fence_done(hd_raster_fence[slot])) return 0;
     uint64_t ns=hd_duration(48+slot*2,49+slot*2);
+    pass_collect(slot,1);
     hd_raster_fence[slot]=0;
     hd_raster_ns += ns;
     if (++hd_raster_samples==120) {
@@ -272,7 +320,7 @@ static rsxkit_program *fog_probe;
 /* Índice 0 nativo, 1 HD: imágenes transitorias compartidas por las ranuras.
  * El FIFO termina su posproceso antes de borrar las del siguiente cuadro. */
 static rsxkit_target *fog_color[2], *fog_attributes[2];
-static int fog_previous, fog_attribute_pass;
+static int fog_previous, fog_attribute_pass, passes_previous;
 static rsxkit_program *shadow, *shadow_w, *mask, *mask_w;
 static uint8_t oid[64], tid[64], oid_test[64];
 static int shadows, single_shadow, shadow_general, shadow_unbatched;
@@ -553,6 +601,7 @@ int rsx3d_init(void)
     fog_spe = stat("/dev_hdd0/salsads/3d-rsx-niebla-spe", &flag) == 0;
     fog_constant = stat("/dev_hdd0/salsads/3d-rsx-niebla-constante", &flag) == 0; /* A/B: solo densidad constante por polígono */
     fog_previous = stat("/dev_hdd0/salsads/3d-rsx-niebla-anterior", &flag) == 0;
+    passes_previous = fog_previous || stat("/dev_hdd0/salsads/3d-rsx-pasadas-ronda3", &flag) == 0;
     /* Solo con niebla-anterior: aproximación opcional por polígono en
      * translúcidos, sin profundidad final ni AND de bandera. Sin paridad. */
     fog_translucent = stat("/dev_hdd0/salsads/3d-rsx-niebla-translucidos", &flag) == 0;
@@ -627,6 +676,7 @@ int rsx3d_init(void)
     }
     salsads_log("rsx3d escala: %ux; captura nativa independiente; HD solo GDDR3",hd_scale);
     salsads_log("rsx3d niebla: %s", fog_previous ? "por fragmento anterior" : "pasada final con profundidad y bandera por píxel");
+    salsads_log("rsx3d pasadas: %s", passes_previous ? "ronda 3" : "opacos directos y atributos compactos");
     salsads_log("rsx3d recursos listos: niebla auxiliar GDDR3 %u KiB; programas y destinos reservados",
                 fog_previous ? 0 : (384u * (1u + (hd_scale > 1 ? hd_scale * hd_scale : 0u))));
     reason = "Z nativa; W por fragmento";
@@ -677,6 +727,37 @@ static void draw(struct command *c, uint8_t test, uint8_t ref, uint8_t compare, 
     last_draw = *d; last_valid = 1;
     rsxkit_draw_triangles(d, c->first, c->count); st->draws++;
     d->program = program;
+}
+static void draw_color_compact(struct command *c, const r3d_rstate *rs,
+                               unsigned prior_back, rsx3d_stats *st)
+{
+    rsx_pass_input in = {c->id, tid[c->id], oid[c->id], trans_mask,
+        c->front, c->trans, c->d.k[0][0][1] == 31, c->tdepth, c->equal,
+        shadow_extended, !!(rs->d3 & D3_BLEND), R3D_PX_A(rs->clear_px) != 0,
+        fog_attribute_pass, prior_back};
+    rsx_pass passes[9]; unsigned n=rsx_color_passes(&in,passes);
+    rsxkit_program *color=c->d.program;
+    float saved=c->d.k[1][0][2];
+    for (unsigned i=0;i<n;i++) {
+        const rsx_pass *p=&passes[i];
+        c->d.program=p->program == RP_COLOR ? color : p->program == RP_MASK ?
+            (rs->wbuf ? mask_w : mask) : (rs->wbuf ? range_w : range_z);
+        c->d.k[1][0][2]=p->range ? p->range * (rs->wbuf ? 255.0f : 512.0f) / 16777215.0f : saved;
+        c->d.stencil_zfail=p->zfail;
+        draw(c,p->test,p->ref,p->compare,p->write,p->op,p->blend,p->depth,p->pass,st);
+    }
+    c->d.stencil_zfail=0; c->d.k[1][0][2]=saved; c->d.program=color;
+}
+static int color_batch_equal(const struct command *a, const struct command *b)
+{
+    /* Solo shade/shade_w: leen textura 0, k.xyz y q.xy. La Z plana y la
+     * bandera de niebla pertenecen a atributos y no rompen un lote de color.
+     * Los demás estados son comunes al cuadro o los fija draw(). */
+    return !a->trans && !b->trans && a->id==b->id && a->tdepth==b->tdepth &&
+        (a->d.program==shade || a->d.program==shade_w) && a->d.program==b->d.program &&
+        !memcmp(a->d.k[0][0],b->d.k[0][0],3*sizeof(float)) &&
+        !memcmp(a->d.k[1][0],b->d.k[1][0],2*sizeof(float)) &&
+        !memcmp(&a->d.tex[0],&b->d.tex[0],sizeof a->d.tex[0]);
 }
 /* Puerta por polígono: conserva Z y su cara mientras se consultan los IDs.
  * El bit alto guarda el resultado temporal sin perder la ocupación. */
@@ -1149,9 +1230,13 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     for (unsigned render_pass=0;render_pass<(hd_scale>1?2u:1u);render_pass++) {
     const unsigned hd_pass = hd_scale>1 && render_pass==(hd_game ? 1u : 0u);
     const int final_fog = (rs.d3 & D3_FOG) && !fog_previous;
+    struct pass_sample *sample=&pass_samples[hd_pass][slot];
+    memset(sample,0,sizeof *sample); sample->fog=final_fog;
+    sample->extended=shadow_extended; sample->polys=st->polys; sample->prepare_us=st->prepare_us;
     rsxkit_target *destination = hd_pass ? hd_target[slot] : native_target;
     rsxkit_stamp(hd_pass ? 48 + slot*2 : 56 + slot * 3);
     for (unsigned attribute_pass=0;attribute_pass<(final_fog ? 2u : 1u);attribute_pass++) {
+    uint64_t issue_begin=sysGetSystemTime(); unsigned draw_begin=st->draws;
     fog_attribute_pass = attribute_pass;
     rsxkit_target *intermediate = !final_fog ? destination : attribute_pass ? fog_attributes[hd_pass] : fog_color[hd_pass];
     if (rsxkit_bind(intermediate, hd_pass ? hd_depth : depth, R3D_W, R3D_H)) return -1;
@@ -1174,9 +1259,23 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
     rsxkit_clear(RSXKIT_CLEAR_COLOR | RSXKIT_CLEAR_DEPTH | RSXKIT_CLEAR_ALPHA, encoded, rs.clear_depth / 16777215.0f, NULL);
     rsxkit_clear_stencil((shadows || shadow_extended) ? ((ca ? (shadow_extended ? 16 : 128) : 0) | oid[AT_OID(rs.clear_attr)]) : (ca ? 64 : 255));
     rsxkit_vertices(offset + VERT_OFF(slot), RSXKIT_MEM_MAIN);
+    unsigned prior_back=0;
     for (uint32_t i = 0; i < ncmd; i++) {
         struct command *c = &command[i];
+        struct command batch;
+        if (final_fog && !attribute_pass && !passes_previous && !unbatched &&
+            !shadow_extended && !shadows && i+1<ncmd && color_batch_equal(c,&command[i+1])) {
+            batch=*c;
+            while (i+1<ncmd && batch.first+batch.count==command[i+1].first &&
+                   color_batch_equal(&batch,&command[i+1])) batch.count+=command[++i].count;
+            c=&batch;
+        }
         uint8_t z = RSXKIT_DEPTH_TEST | RSXKIT_DEPTH_LESS;
+        unsigned earlier_back=prior_back;
+        prior_back |= !c->front && (c->d.k[0][0][1] == 31 || c->tdepth);
+        if (!passes_previous && c->mode != 3 && (shadow_extended || !shadows)) {
+            draw_color_compact(c,&rs,earlier_back,st); continue;
+        }
         if (shadow_extended) { draw_shadow_extended(c, &rs, st); continue; }
         if (shadows) {
             rsxkit_program *color_program = c->d.program;
@@ -1254,11 +1353,16 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
         draw(c, 2, c->id, 127, 255, 0, RSXKIT_BLEND_OFF, z | (c->tdepth ? RSXKIT_DEPTH_WRITE : 0), 2, st);
         draw(c, 3, c->id, 127, 128, 0, RSXKIT_BLEND_NONE, 0, 2, st);
     }
+    if (final_fog) rsxkit_stamp(28+hd_pass*4+slot*2+attribute_pass);
+    sample->draws[attribute_pass]=st->draws-draw_begin;
+    sample->issue_us[attribute_pass]=sysGetSystemTime()-issue_begin;
     }
     fog_attribute_pass = 0;
     if (final_fog) {
+        uint64_t issue_begin=sysGetSystemTime();
         rsxkit_post_pass p; fog_pass(&p, &rs, slot, hd_pass, destination);
         if (rsxkit_post_run(&p)) return -1;
+        sample->issue_us[2]=sysGetSystemTime()-issue_begin;
     }
     if (hd_pass) { rsxkit_stamp(49+slot*2); hd_native[slot]=j->out_ea; continue; }
     rsxkit_stamp(57 + slot * 3);
@@ -1331,6 +1435,7 @@ int rsx3d_wait(unsigned slot, rsx3d_stats *st)
     st->total_us += st->wait_us + st->copy_us;
     st->raster_ns = rsxkit_stamp_ns(57 + slot * 3) - rsxkit_stamp_ns(56 + slot * 3);
     st->export_ns = rsxkit_stamp_ns(58 + slot * 3) - rsxkit_stamp_ns(57 + slot * 3);
+    pass_collect(slot,0);
     st->hd_raster_ns = hd_raster_collect(slot);
     flight[slot].pending = 0;
     return 1;

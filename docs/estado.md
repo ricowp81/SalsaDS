@@ -4,6 +4,14 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-28 — Pasadas de niebla RSX: costo y reducción
+
+- La ronda 3 pasa en PS3 a 1×/2×: 512 escenas finales, 18 de niebla y respaldos 6/7 sin fallos. En juego, Metroid tiene mediana de 30,509 ms de intervalo en las ventanas 120/120 RSX, con 9,697 ms de raster nativo y 8,592 ms de envío PPE. La muestra de 705 polígonos llega a 12 420 dibujos: color y atributos, ambos a 1×/2×, más puerta de profundidad por cada polígono al haber igualdad. No son 17 dibujos de posproceso; los dos quads finales ni entran en ese contador.
+- Plan de pasadas portable: opacos normales sin puerta temporal (una o dos pruebas según la cara previa); translúcidos simples con rechazo directo del ID y reemplazo de vacíos antes de mezclar; atributos translúcidos sin distinguir destino ocupado/vacío, pues siempre hacen AND y solo escriben profundidad con TDEPTH. No cambia el orden de polígonos, shaders, tolerancias ni reparto de stencil. Los lotes de color ignoran Z plana y bandera de niebla, que solo consume la pasada auxiliar.
+- A/B: `/dev_hdd0/salsads/3d-rsx-pasadas-ronda3` conserva las pasadas anteriores. `3d-rsx-niebla-anterior` conserva además la ruta hd-10. `DATO rsx3d pasadas` separa dibujos, GPU y envío PPE de color/atributos/posproceso por escala y por motivo, cada 120 etiquetas completas. Sin esperas nuevas, lecturas de imagen ni reservas por cuadro.
+- Host LE/SAN y BE/qemu: 3 717 120 estados por orden contra las reglas escalares, sin diferencias; siguen pasando las 512 escenas referencia/bandas. Unitarias: LE 8 963 846 sin fallos; BE 8 967 576 con los 34 conocidos de `test_arec.c:149/152`. `test-host` termina con salida 1 solo por esos fallos; ROMs, gráficos y sonido correctos, 32 hashes y 16 comparaciones lockstep sin diferencias. Shaders sin cambios. La autoprueba gráfica y la mejora en consola quedan pendientes: RPCS3 aborta antes de arrancar en este entorno.
+- No se amplían IDs ni sombras W: Metroid conserva el respaldo de capacidad (21 ventanas/1580 cuadros en el log) y MKDS el de cara trasera W (104/12 386). Prioridad a validar las pasadas nuevas. Informe, guion y paquete de revisión de ronda 4 en `build/niebla-final/informe-4.md`.
+
 ## 2026-10-28 — Profundidad W y bordes Z de niebla RSX
 
 - La segunda autoprueba PS3 1× deja 60/512 escenas finales fuera de tolerancia: todas con W y bandera inicial de niebla. En el ensamblado, `DEPTH` escribe R1.z y el temporal elegido para COLOR vuelve a escribir R1.z=0. Se rechazan los translúcidos posteriores al primer escritor de profundidad; queda una bandera o profundidad anterior. Reproducir esa secuencia predice exactamente los 60 índices del log, incluidos los seis sin opaco y los 24 con ID repetido. La sonda de 17/19 confirma atributos 48:0 y bandera 255 donde el AND debe apagarla.

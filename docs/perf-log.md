@@ -1,5 +1,71 @@
 # Registro de rendimiento
 
+## 2026-10-28 — Pasadas de niebla [PS3 ronda 3; host solo corrección de ronda 4]
+
+Log acumulado `build/niebla-final/ps3/mkds-niebla3.log`: Metroid antes de 290 s,
+NSMB entre 290 y 900 s, MKDS después. Análisis reproducible en
+`build/niebla-final/diag-4/logs.py`. No son escenas emparejadas para A/B.
+
+| Juego / muestras PS3 | N | Mediana de polígonos | Dibujos totales | Raster nativo ms | Preparación ms |
+|---|---:|---:|---:|---:|---:|
+| Metroid, motivo niebla final | 25 | 280 | 4480 | 9,949 | 0,688 |
+| Metroid, Z sin niebla | 17 | 169 | 1656 | 7,783 | 0,470 |
+| NSMB, motivo niebla final | 28 | 316 | 1164 | 4,138 | 0,704 |
+| NSMB, W sin niebla | 7 | 757 | 818 | 5,483 | 1,468 |
+
+- Ventanas completas de Metroid 120/120 RSX (15): medianas intervalo 30,509,
+  emulación 28,276, preparación 0,699, envío 8,592 y raster nativo 9,697 ms.
+  NSMB 120/120 RSX (41): 17,922 / 14,421 / 0,739 / 1,962 / 3,938 ms.
+  Preparar datos no explica por sí solo la caída; emitir/ejecutar dibujos domina
+  en Metroid. El envío puede incluir presión del FIFO: no se suma al raster
+  como si ambos fueran trabajos independientes.
+- Metroid a 103,166 s: 705 polígonos, 12 420 dibujos, raster 25,620 ms y
+  preparación 1,660 ms. El contador «dibujos 1005 -> 12420» compara una
+  estimación simple de una sola rasterización con todos los dibujos reales;
+  no mide el costo aislado de atributos. 1005 = 705 + 4×75 translúcidos.
+  La ruta ampliada usa 3–4 dibujos por opaco y cuatro más por translúcido;
+  3105 por rasterización × color/atributos × nativo/HD = 12 420.
+  Los quads finales no se contabilizan ahí.
+- hd-10 NSMB: 49 muestras Z, medianas 313 polígonos / 56 dibujos / 0,410 ms;
+  dos muestras W, 751 / 804 / 5,406 ms. El tramo W de ~5,5 ms ya existía.
+  Los ~0,4 ms son Z sin niebla, mientras la ronda 3 admite nuevos cuadros con
+  niebla. Sin una reproducción idéntica no se atribuye toda la diferencia a
+  regresión. Sí se identifica que Z plana por polígono fragmenta los lotes
+  de color aunque ese shader no la consume.
+
+Ronda 4, **reducción de operaciones, sin tiempos nuevos de PS3**:
+
+- Opaco ampliado sin igualdad: 3–4 dibujos → 1–2. Se consulta la cara anterior
+  solo cuando pudo existir un escritor trasero. La igualdad conserva sus dos
+  límites inclusivos y la escritura posterior.
+- Translúcido simple: cinco → uno con borrado ocupado, dos con borrado vacío
+  y mezcla; añadir uno si la textura también puede producir alfa 31.
+  Atributos: una pasada translúcida (más la opaca si procede), independientemente
+  del alfa previo. En la ruta ampliada se conservan puerta y rechazo de ID;
+  las tres pasadas de atributos se reducen a una.
+- Lotes de color opaco con niebla: se comparan solo las constantes que lee
+  `shade`/`shade_w`. Atributos conserva su Z plana y bandera por polígono.
+  En el banco de 256 planos se esperan 1 dibujo de color y 256 de atributos
+  por resolución, frente a 256+256; la consola debe confirmar el contador.
+- Cifras anteriores son conteos de código. No se promete una reducción
+  proporcional de ms ni que se haya alcanzado al SPE. GPU auxiliar y
+  posproceso, envío y preparación se registran por separado en
+  `DATO rsx3d pasadas`, incluyendo motivos poco frecuentes dentro de cada
+  ventana de 120 etiquetas. Las marcas HD se leen solo tras su propia etiqueta;
+  sin niebla se aprovechan las marcas existentes.
+- Paridad host LE/SAN y BE/qemu: 3 717 120 estados por orden, sin diferencias;
+  incluye descarte alfa, destino transparente, ID repetido, caras, TDEPTH,
+  mezcla, atributos y ambos bordes de igualdad Z/W. El ensamblado de shaders
+  no cambia. Falta ejecutar autoprueba gráfica 1×/2× y A/B con
+  `3d-rsx-pasadas-ronda3`, midiendo las mismas escenas de Metroid y NSMB.
+
+Se difieren las dos ampliaciones de cobertura. El límite de IDs de Metroid
+afecta 21 ventanas/1580 cuadros; sin sombras, cuatro bits podrían representar
+hasta 15 IDs, pero hay que comprobar el remapeo y la frontera de rechazo.
+La cara trasera W de MKDS afecta 104 ventanas/12 386 cuadros; exige resolver
+los empates de máscaras ya fallidos en dos variantes anteriores. Ningún límite
+se abre sin paridad gráfica.
+
 ## 2026-10-28 — Profundidad exportada y bordes de niebla [PS3: diagnóstico; host: ensamblado]
 
 - Paquete `salsads-niebla-final-2`, PS3 aislada 1×: 452/512 escenas finales aceptadas, 60 fallos y 1 474 560 píxeles fuera de tolerancia; pruebas antiguas 0/8/10 con 384/8832/7680 diferencias. Los 60 fallos corresponden exactamente a exportar W=0 en la pasada de atributos por colisión COLOR/DEPTH con R1.z. Los tres fallos antiguos coinciden con reconstruir Z−1 en bordes de LUT.

@@ -1013,3 +1013,22 @@ para Z inclinada mantiene la reconstrucción WPOS. No modifica visibilidad
 ni ensancha tolerancias. Las comprobaciones cubren ambos lados del borde,
 el indicador apagado y W desplazada; la autoprueba diagnostica ahora
 cualquier fallo entre las 18 escenas antiguas. Pendiente repetir en PS3.
+
+La ronda 3 quedó validada después en PS3 a 1×/2×: 18 pruebas antiguas,
+512 escenas finales y respaldos 6/7 sin fallos. La ronda 4 reduce las
+pasadas de stencil conservando los mismos shaders y su orden lógico:
+opacos LESS sin puerta temporal, ID translúcido rechazado directamente,
+vacíos reemplazados antes de mezclar y atributos translúcidos escritos
+en una pasada (AND de bandera tanto en destino ocupado como vacío).
+La ruta ampliada conserva la puerta para igualdad y translúcidos; los
+opacos ordinarios consultan directamente profundidad/cara. Los lotes
+de color no se separan por las constantes exclusivas de atributos.
+
+El plan común está en `rsx_passes.h`, comprobado contra las reglas
+escalares en 3 717 120 estados LE/BE por orden. No sustituye la ejecución
+RSX: autoprueba y rendimiento de ronda 4 siguen pendientes de consola.
+`3d-rsx-pasadas-ronda3` restaura las secuencias validadas anteriores;
+`DATO rsx3d pasadas` separa costo GPU/PPE de color, atributos y posproceso,
+nativo/HD y modo simple/ampliado, en ventanas de 120 etiquetas completas.
+El muestreo no añade esperas ni marcas cuando no hay niebla. No cambia
+capacidad de IDs ni soporte de máscaras W traseras.
