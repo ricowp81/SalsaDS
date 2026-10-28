@@ -129,7 +129,7 @@ static int geom_poly_plain, geom_read_scalar;
 /* Tramo del planificador con el recompilador (ciclos del ARM9 entre los cambios de CPU; el intérprete usa 128). Cada
  * tramo es una entrada al código generado, y lo que cuesta en la PS3 es el cambio de CPU (cachés), no las instrucciones:
  * con tramos más largos hay menos. El número en JIT_QUANTUM_FILE (de 16 a 20000) lo cambia sin compilar otra vez. */
-#define JIT_QUANTUM 1024u
+#define JIT_QUANTUM 512u
 #define JIT_QUANTUM_FILE SALSADS_DATA_DIR "/nucleo-jit-tramo"
 /* Interruptores para medir A/B en la consola las mejoras del recompilador (rama arm9-perf; docs/fase4.md, «Tercera ronda»): cada
  * archivo vuelve a la forma anterior de una (AREC_OPT_*). JIT_TIMES_FLAG mide dónde se va el tiempo del ARM9 (DATO jit-tiempo). */

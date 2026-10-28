@@ -5,6 +5,11 @@ arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
 
+## 2026-10-28 — Tramo del planificador del JIT en 512 ciclos del ARM9
+- Sonic Rush Adventure parpadeaba en la pantalla de abajo con el JIT y no con el intérprete. Con tramos de 1024 ciclos el juego prepara el motor B (DISPCNT, BG2, VRAMCNT) en las primeras líneas del cuadro siguiente: 4–20 cuadros «tarde» por ventana de 120. Con 512 o 128 (el del intérprete) no queda ninguno y no parpadea.
+- PS3 real, intro de SRA (`/dev_hdd0/salsads/nucleo-jit-tramo`): 1024 ≈ 21 ms de emulación por cuadro, 512 ≈ 21,6–22,2 ms (+3 %), 128 ≈ 23,6 ms (+12 %). Metroid Prime Hunters con 512: sin parpadeo ni congelaciones, 9–13,5 ms por cuadro en juego.
+- `JIT_QUANTUM` pasa de 1024 a 512; `nucleo-jit-tramo` sigue sirviendo para cambiarlo. La retención y el remapeo de la rama `captura-doble` atacaban el síntoma y no se integran.
+
 ## 2026-10-25 — Clasificación de planos por lote en el SPE (cand-v004)
 - `0371c56`: cuatro posiciones alineadas, trasposición y planos SIMD; conserva recorte, cara, contadores y orden. A/B independiente: `geometria-lectura-escalar`; se mantiene `geometria-perfil`.
 - Listas de vértices/polígonos antes/después idénticas byte a byte en MKDS/NSMB/SM64DS; `--vs-ref3d`: 1175/2196/2299 cuadros iguales. Dirigidas con sanitizadores: 3247 comprobaciones, 0 fallos.

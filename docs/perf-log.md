@@ -1,5 +1,10 @@
 # Registro de rendimiento
 
+## 2026-10-28 — Tramo del planificador del JIT: 1024 → 512 ciclos del ARM9
+- PS3 real, Sonic Rush Adventure (intro y título, sin tocar), emulación por cuadro (mediana por ventana de 120): 1024 ≈ 21 ms con 4–20 cuadros del motor B preparados tarde y parpadeo; 512 ≈ 21,6–22,2 ms (+3 %), 0 tarde, sin parpadeo; 128 ≈ 23,6 ms (+12 %), 0 tarde.
+- Metroid Prime Hunters con 512, 2 min de menús y juego: 9–13,5 ms por cuadro, presentación a 16,7 ms casi siempre; sin parpadeo. Sin A/B estricto contra 1024 en la misma escena.
+- Interruptor: `nucleo-jit-tramo` con el número de ciclos (16–20000) en el directorio de datos.
+
 ## 2026-10-25 — Lectura local de planos por lote (cand-v004)
 - Base PS3 aportada, MKDS pesado, 159 ventanas: armado ≈ 4,6 ms/cuadro; lectura 1,92, atributos 1,29, recorte 0,80, ensamblado 0,41 y salida 0,20; DMA ≈ 0,03. Meta ≤ 2,5 y espera PPE ≤ 1 ms, aún sin acreditar.
 - El descarte fuera del volumen ya precedía a la copia de atributos; «atributos» incluye proyección/cara/profundidad. No se adelanta la cara al recorte entero: sus redondeos pueden alterar el área.
