@@ -115,10 +115,94 @@ static void test_mesh_gaps(void)
 	printf("render 3D mallas sin juntas: %u píxeles interiores de 1200 mallas, %u sin cubrir, %u cubiertos dos veces\n", total, gaps, dbl);
 }
 
+/* ---- uniones en T del mapa de HeartGold: el cuadro 29800 de la partida (Pueblo Primavera) tiene polígonos vecinos cuyas aristas no
+ * coinciden exacto (el 62, de (135,0) a (151,78), y el 43, de (149,4) a (152,89)): con edge marking y antialiasing activos
+ * (DISP3DCNT = 0x3039) la DS dibuja el píxel de la arista derecha inclinada («tamaño completo», GBATEK, Polygon Size) y no
+ * queda hueco; con la regla anterior (R3D_F_NOFULL) la columna 150 de las líneas 61 a 77 quedaba sin cubrir ---- */
+static uint32_t quad_cover_x(const int *xs, const int *ys, int n, uint32_t full, int y, int x)
+{
+	r3d_poly p;
+	r3d_row row;
+	int64_t area = 0;
+
+	memset(&p, 0, sizeof p);
+	p.n = n;
+	p.alpha = 31;
+	p.full = full;
+	p.ytop = 0x7FFFFFFF;
+	p.ybot = -0x7FFFFFFF;
+	for (int k = 0; k < n; k++) {
+		r3d_v *d = &p.v[k];
+
+		d->x = xs[k];
+		d->y = ys[k];
+		d->z = 1000;
+		d->w = 2800000;
+		d->r = d->g = d->b = 300;
+		if (d->y < p.ytop) {
+			p.ytop = d->y;
+			p.top = k;
+		}
+		if (d->y > p.ybot)
+			p.ybot = d->y;
+	}
+	for (int i = 0; i < n; i++)
+		area += (int64_t)p.v[i].x * p.v[(i + 1) % n].y - (int64_t)p.v[(i + 1) % n].x * p.v[i].y;
+	p.ldir = area < 0 ? 1 : -1;
+	if (!r3d_row_at(&p, y, &row))
+		return 0;
+	return x >= row.xl && x < row.xr;
+}
+
+static void test_tjunction_full(void)
+{
+	const int x62[4] = { 135, 135, 151, 149 }, y62[4] = { 0, 78, 78, 0 };
+	const int x43[4] = { 152, 168, 163, 149 }, y43[4] = { 89, 89, 4, 4 };
+	const int xv[4] = { 20, 20, 40, 40 }, yv[4] = { 10, 50, 50, 10 }; /* arista derecha vertical */
+	uint32_t old_gaps = 0, new_gaps = 0;
+
+	for (int y = 61; y <= 77; y++) {
+		old_gaps += !quad_cover_x(x62, y62, 4, 0, y, 150) && !quad_cover_x(x43, y43, 4, 0, y, 150);
+		new_gaps += !quad_cover_x(x62, y62, 4, 1, y, 150) && !quad_cover_x(x43, y43, 4, 1, y, 150);
+	}
+	CHECK_EQ(old_gaps, 17);
+	CHECK_EQ(new_gaps, 0);
+	/* la derecha vertical no crece, ni con el tamaño completo; la izquierda tampoco */
+	for (int y = 10; y < 50; y++) {
+		CHECK_EQ(quad_cover_x(xv, yv, 4, 1, y, 40), 0);
+		CHECK_EQ(quad_cover_x(xv, yv, 4, 1, y, 39), 1);
+		CHECK_EQ(quad_cover_x(xv, yv, 4, 1, y, 19), 0);
+	}
+	/* Torre Quemada (intro de HeartGold, cuadro 2340): el polígono 156 tiene una arista inferior x-mayor de (23,124) a (83,129); sin el tamaño
+	 * completo la línea 125 empezaba en x = 47 y dejaba 43..46 (más la fila entera con el vecino) sin cubrir */
+	{
+		const int xq[4] = { 23, 83, 83, 23 }, yq[4] = { 124, 129, 125, 121 };
+		uint32_t viejo = 0, nuevo = 0;
+
+		for (int x = 36; x <= 46; x++) {
+			viejo += quad_cover_x(xq, yq, 4, 0, 125, x);
+			nuevo += quad_cover_x(xq, yq, 4, 1, 125, x);
+		}
+		CHECK_EQ(viejo, 0);
+		CHECK_EQ(nuevo, 11);
+		/* y no se pasa del tramo: la línea 124 no gana nada a la izquierda de su arista */
+		CHECK_EQ(quad_cover_x(xq, yq, 4, 1, 125, 30), 0);
+	}
+	/* la última línea de un polígono con la izquierda x-mayor (el 31 de la misma escena, abajo de (127,147) a (158,149)) también se dibuja */
+	{
+		const int xq[4] = { 158, 158, 128, 127 }, yq[4] = { 149, 135, 133, 147 };
+
+		CHECK_EQ(quad_cover_x(xq, yq, 4, 0, 148, 150), 0);
+		CHECK_EQ(quad_cover_x(xq, yq, 4, 1, 148, 150), 1);
+	}
+	printf("render 3D unión en T de HeartGold: %u líneas con hueco con la regla anterior, %u con el tamaño completo\n", old_gaps, new_gaps);
+}
+
 void test_r3d_vrow(void);
 void test_r3d_vrow(void)
 {
 	test_mesh_gaps();
+	test_tjunction_full();
 	static uint32_t ca[R3D_W] __attribute__((aligned(16))), da[R3D_W] __attribute__((aligned(16))), aa[R3D_W] __attribute__((aligned(16)));
 	static uint32_t cb[R3D_W] __attribute__((aligned(16))), db[R3D_W] __attribute__((aligned(16))), ab[R3D_W] __attribute__((aligned(16)));
 	uint32_t bad = 0, rows = 0, lin_rows = 0, written = 0;

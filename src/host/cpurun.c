@@ -17,6 +17,8 @@
 
 #include "core/nds.h"
 #include "gpu3d/gx_loop.h"
+#include "gpu3d/r3d.h"
+#include "gpu3d/r3d_px.h"
 #include "host/jitrun.h"
 #include "jit/arec.h"
 #include "util/endian.h"
@@ -255,6 +257,42 @@ static uint32_t count_holes(void)
 	return n;
 }
 
+
+/* Diagnóstico (HOLES_COVER=1 con --frame-dump): para cada píxel de hueco del cuadro volcado, qué polígonos lo cubren por geometría
+ * (si alguno, el hueco viene de la textura o del alfa, no de la forma) */
+static void explain_holes(void)
+{
+	const gx_frame *f = nds_gx_front(&M);
+	const int set = M.vid.last;
+	r3d_rstate rs;
+
+	if (!f || set < 0)
+		return;
+	r3d_rstate_init(&rs, f, M.vid.r3d_flags);
+	for (int y = 1; y < R3D_H - 1; y++)
+		for (int x = 1; x < R3D_W - 1; x++) {
+			const uint32_t *q = &M.vid.set[set].img3d[y * R3D_W + x];
+
+			if (R3D_PX_A(*q) || !((R3D_PX_A(q[-1]) && R3D_PX_A(q[1])) || (R3D_PX_A(q[-R3D_W]) && R3D_PX_A(q[R3D_W]))))
+				continue;
+			printf("hueco (%d,%d):", x, y);
+			for (uint32_t i = 0; i < f->npolys; i++) {
+				const gx_poly *gp = &f->poly[i];
+				const gx_vertex *vv[GX_POLY_MAXV];
+				r3d_poly p;
+				r3d_row row;
+
+				for (int k = 0; k < gp->nverts && k < (int)GX_POLY_MAXV; k++)
+					vv[k] = &f->vtx[gp->vidx[k] % GX_MAX_VERTS];
+				if (!r3d_poly_setup(&p, gp, vv, &rs) || y < p.ytop || y > p.ybot || !r3d_row_at(&p, y, &row))
+					continue;
+				if (x >= row.xl && x < row.xr)
+					printf(" poly%u(attr %08x tex %08x)", i, gp->attr, gp->texparam);
+			}
+			printf("\n");
+		}
+}
+
 static void print_gx_stats(uint64_t frames)
 {
 	const gx_stats *s = gx_stats_get(&M.gx);
@@ -326,6 +364,8 @@ static void gx_dump(const char *path)
 		return;
 	}
 	fprintf(o, "cuadro %u: %u polígonos, %u vértices, swap %u\n", f->seq, f->npolys, f->nverts, f->swap_params);
+	fprintf(o, "regs: disp3dcnt=%04x clear_color=%08x clear_depth=%04x alpha_ref=%04x\n", f->regs.disp3dcnt, f->regs.clear_color,
+		f->regs.clear_depth, f->regs.alpha_test_ref);
 	for (uint32_t i = 0; i < f->npolys; i++) {
 		const gx_poly *p = &f->poly[i];
 
@@ -603,7 +643,7 @@ int main(int argc, char **argv)
 	const char *holes_dump = NULL, *fdump_prefix = NULL;
 	uint64_t fdump_frame = 0;
 	const char *img3d_path = NULL;
-	struct { uint64_t frame; uint32_t keys, x, y; } press[512];
+	struct { uint64_t frame; uint32_t keys, x, y; } press[16384];
 	struct { uint64_t frame; const char *file; } shot[32];
 	uint32_t npress = 0, nshot = 0;
 	int watch_cpu = 0;
@@ -656,7 +696,9 @@ int main(int argc, char **argv)
 			M.vid.ops.wait3d = fk_wait3d;
 			M.vid.ops.submit = fk_submit2d;
 			r3d_defer_sim = 1;
-		} else if (!strcmp(argv[i], "--r3d-celdas"))
+		} else if (!strcmp(argv[i], "--r3d-sin-completo"))
+			M.vid.r3d_flags |= R3D_F_NOFULL; /* regla anterior del borde derecho (sin el tamaño completo) */
+		else if (!strcmp(argv[i], "--r3d-celdas"))
 			M.vid.r3d_texmode = 2; /* celdas de 4×4 siempre (si no, automático: bloques hasta que se desbordan) */
 		else if (!strcmp(argv[i], "--texturas-xdr"))
 			M.vid.r3d_flags |= R3D_F_XDR;
@@ -697,7 +739,31 @@ int main(int argc, char **argv)
 			show_arm7 = 1;
 		else if (!strcmp(argv[i], "--trace") && i + 1 < argc)
 			trace_n = strtoull(argv[++i], NULL, 0);
-		else if (!strcmp(argv[i], "--press") && i + 1 < argc && npress < 512) {
+		else if (!strcmp(argv[i], "--press-file") && i + 1 < argc) {
+			/* ARCHIVO con una orden por línea, «CUADRO:TECLAS_HEX[:X,Y]» (lo mismo que --press, para guiones largos) */
+			FILE *pf = fopen(argv[++i], "r");
+			char line[128];
+
+			if (!pf) {
+				fprintf(stderr, "--press-file: no abre %s\n", argv[i]);
+				return 2;
+			}
+			while (npress < 16384 && fgets(line, sizeof line, pf)) {
+				char *e;
+
+				press[npress].frame = strtoull(line, &e, 0);
+				if (e == line)
+					continue;
+				press[npress].keys = *e == ':' ? (uint32_t)strtoul(e + 1, &e, 16) : 0;
+				press[npress].x = press[npress].y = 0;
+				if (*e == ':') {
+					sscanf(e + 1, "%u,%u", &press[npress].x, &press[npress].y);
+					press[npress].keys |= NDS_KEY_PEN;
+				}
+				npress++;
+			}
+			fclose(pf);
+		} else if (!strcmp(argv[i], "--press") && i + 1 < argc && npress < 16384) {
 			/* CUADRO:TECLAS_HEX[:X,Y] — desde ese cuadro se mantiene ese estado de botones (y del toque) */
 			char *e;
 
@@ -1083,13 +1149,25 @@ int main(int argc, char **argv)
 
 				snprintf(path, sizeof path, "%s.ppm", fdump_prefix);
 				save_img3d(path);
+				if (getenv("HOLES_COVER"))
+					explain_holes();
 			}
 			if (holes_on) {
 				const uint32_t h = count_holes();
 
+				if (getenv("HOLES_LOG") && getenv("HOLES_LOG")[0] == '2') {
+					const gx_frame *hf = nds_gx_front(&M);
+
+					printf("TODOS %llu %u %u\n", (unsigned long long)f, h, hf ? hf->npolys : 0u);
+				}
 				if (h) {
 					holes_total += h;
 					holes_frames++;
+					if (getenv("HOLES_LOG")) { /* cuadro, huecos y polígonos del cuadro (para ubicar escenas) */
+						const gx_frame *hf = nds_gx_front(&M);
+
+						printf("HUECOS %llu %u %u\n", (unsigned long long)f, h, hf ? hf->npolys : 0u);
+					}
 				}
 				if (h > holes_worst) {
 					holes_worst = h;
