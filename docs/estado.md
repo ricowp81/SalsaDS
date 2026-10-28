@@ -4,6 +4,21 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-26 — Comparación del guardado de HeartGold (pokemon-w2-guardado)
+- Host, copia de la partida: v0.0.4 y `007d384` muestran el mismo aviso de corrupción; no se reproduce una regresión exclusiva del prefijo.
+- Base: 12 sondeos `00 05 00` fallidos y acceso directo; rama: acceso con prefijo. Después, conversaciones normalizadas idénticas: 1121 lecturas, 286721 bytes, todos iguales al archivo.
+- Sin RDID ni otras órdenes IR; sin escrituras. Original y copias conservan SHA-256 `bb92a224b6c3def07e2b527689ed8b3add9acf1afa5f15839a3af5307548a3a0`.
+- Trazas completas, capturas del aviso y comparación en `build/w2/regresion/`; espera inicial de unos 28 minutos por turno de desarrollo.
+- Sin cambios al protocolo ni paquete nuevo: falta una partida comprobada con la base o aclarar la diferencia entre host y consola antes de corregir y validar.
+
+## 2026-10-26 — Prefijo de guardado infrarrojo (pokemon-w2-guardado)
+- `007d384`: `00 05 00` recibía `FF FF FF`; se admite el prefijo para códigos I. JEDEC, latencias y acceso directo sin cambios.
+- White 2, host: título, partida nueva, guardado manual de 524288 bytes y reinicio con «CONTINUE» verificados; vuelve al personaje y ubicación guardados. Capturas y trazas en `build/w2/`.
+- Regresión host: MKDS escribe y recarga 262144 bytes, conserva el perfil y entra al selector de kart. HeartGold no está disponible; pendiente en consola.
+- LE/SAN completos sin fallos; unitarias LE 8085059 comprobaciones. Reintento BE `-j1`: 8088789 comprobaciones, solo los 34 fallos conocidos de `test_arec.c:149/152`.
+- Corredor BE: GCC volvió a caer por segmentación de cc1 con `-j1`; sin repetir. ROMs BE y lockstep NSMB/SM64DS/MKDS/Metroid de 1500 cuadros pendientes; validación global termina en 1.
+- Paquete del código `007d384`: `build/salsads-w2.pkg`, «SalsaDS Guardado», `SLDS00032` libre en los PARAM.SFO locales; holgura mínima SPE 8432 B. Verificadores 0; sin envío ni prueba PS3.
+- SHA-256 `a937cc642b3a6ccffe3570c048a6c0a566251773cafd0a5ac75b06d2115cc370`; guion PS3 en `build/w2/guion-ps3.txt`: White 2 nueva partida/guardar/salir/continuar, HeartGold guardar/cargar y regresión NSMB.
 
 ## 2026-10-28 — Tramo del planificador del JIT en 512 ciclos del ARM9
 - Sonic Rush Adventure parpadeaba en la pantalla de abajo con el JIT y no con el intérprete. Con tramos de 1024 ciclos el juego prepara el motor B (DISPCNT, BG2, VRAMCNT) en las primeras líneas del cuadro siguiente: 4–20 cuadros «tarde» por ventana de 120. Con 512 o 128 (el del intérprete) no queda ninguno y no parpadea.

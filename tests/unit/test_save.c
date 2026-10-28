@@ -89,6 +89,53 @@ static int logged(const char *s)
 
 void test_save(void)
 {
+	/* Prefijo IR y RDSR por el bus real: conserva CS al cambiar de 1 a 4 MHz.
+	 * Antes, 00h anulaba toda la conversación y RDSR devolvía FFh (ocupado). */
+	{
+		static const char *codes[] = { "IRDO", "IREO", "IRBO", "IRAO", "IPKE", "IPGE" };
+		const uint8_t enable[] = { 0, 6 }, status[] = { 0, 5, 0 };
+		const uint8_t write[] = { 0, 0x0A, 7, 0xFF, 0xFE, 0xA5, 0x5A };
+		const uint8_t read[] = { 0, 3, 7, 0xFF, 0xFE, 0, 0 };
+		const uint8_t program[] = { 0, 2, 7, 0xFF, 0xFE, 0x0F };
+		const uint8_t erase_page[] = { 0, 0xDB, 7, 0xFF, 0 };
+		uint8_t r[7];
+
+		for (size_t k = 0; k < sizeof codes / sizeof codes[0]; k++) {
+			game(codes[k]);
+			nds_cart_write(&M, 0, 0x1A0, 2, 0xA042);
+			nds_cart_write(&M, 0, 0x1A2, 1, 0);
+			nds_cart_write(&M, 0, 0x1A0, 2, 0xA040);
+			nds_cart_write(&M, 0, 0x1A2, 1, 5);
+			nds_cart_write(&M, 0, 0x1A0, 2, 0xA000);
+			nds_cart_write(&M, 0, 0x1A2, 1, 0);
+			CHECK_EQ(nds_cart_read(&M, 0, 0x1A2, 1), 0);
+			CHECK_EQ(M.save.dirty, 0);
+			conv(enable, sizeof enable, NULL);
+			conv(status, sizeof status, r);
+			CHECK_EQ(r[2], 2);
+			conv(write, sizeof write, NULL);
+			conv(status, sizeof status, r);
+			CHECK_EQ(r[2], 0);
+			conv(read, sizeof read, r);
+			CHECK_EQ(r[5], 0xA5);
+			CHECK_EQ(r[6], 0x5A);
+			CHECK_EQ(M.savemem[0], 0xFF);
+			conv(enable, sizeof enable, NULL);
+			conv(program, sizeof program, NULL);
+			CHECK_EQ(read1(3, 0x7FFFE), 5); /* acceso directo sigue funcionando */
+			conv(enable, sizeof enable, NULL);
+			conv(erase_page, sizeof erase_page, NULL);
+			CHECK_EQ(read1(3, 0x7FFFE), 0xFF);
+			CHECK_EQ(read1(3, 0x7FFFF), 0xFF);
+			/* Soltar CS entre prefijo y orden no deja estado residual. */
+			conv(enable, 1, NULL);
+			wren();
+			CHECK_EQ(M.save.wel, 1);
+		}
+		game("ADAE");
+		conv(status, sizeof status, r);
+		CHECK_EQ(r[2], 0xFF); /* sin IR, 00h sigue sin ser una orden válida */
+	}
 	/* ---- tabla ---- */
 	game("IRDS");
 	CHECK_EQ(M.save.type, NDS_SAVE_FLASH);
