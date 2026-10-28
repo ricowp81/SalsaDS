@@ -7,6 +7,10 @@ import sys
 
 source = pathlib.Path(sys.argv[1]).read_text()
 regs = [int(n) for n in re.findall(r"\bR(\d+)\b", source)]
+# DEPTH es R1.z aunque el ensamblado no nombre R1. No usarlo para
+# acumular COLOR: escribir su azul después de DEPTH borraría la Z/W.
+if "result.depth" in source:
+    regs.append(1)
 out = "R" + str(max(regs, default=0) + 1)
 if (int(out[1:]) >= 32 or source.count("END") != 1 or
         source.count("OUTPUT oCol = result.color;") != 1):

@@ -1,5 +1,10 @@
 # Registro de rendimiento
 
+## 2026-10-28 — Profundidad exportada y bordes de niebla [PS3: diagnóstico; host: ensamblado]
+
+- Paquete `salsads-niebla-final-2`, PS3 aislada 1×: 452/512 escenas finales aceptadas, 60 fallos y 1 474 560 píxeles fuera de tolerancia; pruebas antiguas 0/8/10 con 384/8832/7680 diferencias. Los 60 fallos corresponden exactamente a exportar W=0 en la pasada de atributos por colisión COLOR/DEPTH con R1.z. Los tres fallos antiguos coinciden con reconstruir Z−1 en bordes de LUT.
+- Corrección comprobada en host: 13 656 casos fp40 con ambos alias de salida, descartes y bordes; las tres imágenes corregidas coinciden con los PPM de referencia (49 152 píxeles cada una). No son ejecuciones ni tiempos del RSX. Atributos Z añade cinco instrucciones; W usa un registro más para separar COLOR de DEPTH. Sin destinos nuevos ni lecturas durante el juego. Medir raster nativo/HD y cuadros >20 ms en consola, después de validar autopruebas 1×/2×; comparación con `3d-rsx-niebla-anterior` en la misma escena.
+
 ## 2026-10-28 — Salidas parciales de niebla [PS3: diagnóstico anterior; host: ensamblado]
 
 - Consola, paquete de niebla final anterior, autoprueba aislada 1×: 512/512 escenas rechazadas, 18 874 368 píxeles fuera de tolerancia. Las 18 pruebas anteriores también fallan. PPM 5: distintos R/G/B = 46 080/0/0; PPM 16 = 47 424/46 464/42 816. Dos colisiones de salida con R0 explican rojo sobrescrito y profundidad Z mutilada. La comprobación del ensamblado corregido da 11 556 casos sin fallos en host; no mide rendimiento RSX.

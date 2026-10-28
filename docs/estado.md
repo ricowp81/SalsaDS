@@ -4,6 +4,14 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-28 — Profundidad W y bordes Z de niebla RSX
+
+- La segunda autoprueba PS3 1× deja 60/512 escenas finales fuera de tolerancia: todas con W y bandera inicial de niebla. En el ensamblado, `DEPTH` escribe R1.z y el temporal elegido para COLOR vuelve a escribir R1.z=0. Se rechazan los translúcidos posteriores al primer escritor de profundidad; queda una bandera o profundidad anterior. Reproducir esa secuencia predice exactamente los 60 índices del log, incluidos los seis sin opaco y los 24 con ID repetido. La sonda de 17/19 confirma atributos 48:0 y bandera 255 donde el AND debe apagarla.
+- El corrector reserva R1 cuando existe DEPTH. La comprobación fp40 simula su alias con R1.z, compara la profundidad exportada y cubre descartes opacos/translúcidos, W desplazada y bordes Z con bandera de plano encendida/apagada: 13 656 casos sin fallos. Reintroducir cada shader anterior provoca el fallo esperado.
+- Los 384/8832/7680 píxeles erróneos de las pruebas antiguas 0/8/10 coinciden exactamente con Z−1 en un borde de LUT (incluido alfa mediante el PPM de diferencias). Los polígonos de Z constante pasan ahora Z>>9 entera a los atributos; los inclinados mantienen WPOS. El ensamblado corregido reproduce los 49 152 píxeles de referencia de cada prueba y alfa exacta en sus 256 planos. No se cambia la tolerancia ni la profundidad usada para visibilidad.
+- `test-host` termina con salida 1 sin fallos nuevos: LE 8 963 840 comprobaciones sin fallos; BE 8 967 570 con los 34 conocidos de `test_arec.c:149/152`. ROMs LE/BE/SAN, gráficos, sonido, 32 hashes y 16 comparaciones lockstep correctos. Las 512 escenas de referencia/bandas pasan en ambos órdenes.
+- Paquete `salsads-niebla-final-3` compilado desde directorio vacío, sin avisos, con holgura SPE mínima 8368 B. Validación gráfica 1×/2× y rendimiento del arreglo pendientes de PS3; informe y evidencias en `build/niebla-final/informe-3.md`. Sin commit por denegación de escritura del índice; se entrega parche y mensaje.
+
 ## 2026-10-28 — Corrección de las salidas parciales de niebla RSX
 
 - Los PPM de consola aíslan dos colisiones de `COLOR` con el temporal `R0` de cgcomp. En `niebla-5`, verde y azul son exactos en 49 152 píxeles y rojo satura en toda la imagen (46 080 distintos). La pasada final escribe RGB y después pisa rojo al calcular alfa. En atributos Z, escribir G pisa el byte alto de profundidad antes de escribir R: `niebla-16` termina leyendo LUT[0] en vez del tramo con offset 7000. El intérprete del ensamblado anterior reproduce exactamente los PPM 5 y 16; en el 0 reproduce rojo completo, pero quedan diferencias de intensidad sin validar en consola.

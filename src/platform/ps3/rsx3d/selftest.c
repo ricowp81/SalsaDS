@@ -332,7 +332,7 @@ static unsigned fog_tests(r3d_job *j)
         for (unsigned k = 0; k < R3D_W*R3D_H; k++) different += output[k] != reference[k];
         fail += ok != 1 || different != 0;
         salsads_log("rsx3d niebla prueba %u: estado %d, distintos %u", test, ok, different);
-        if (ok==1 && (test==0 || test==5 || test==16)) fog_diagnose(j);
+        if (ok==1 && (different || test==0 || test==5 || test==16)) fog_diagnose(j);
         char name[80];
         snprintf(name, sizeof name, "rsx3d-niebla-%u-rsx", test); save_pixels(name, output);
         snprintf(name, sizeof name, "rsx3d-niebla-%u-ref", test); save_pixels(name, reference);

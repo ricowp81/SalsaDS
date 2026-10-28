@@ -1068,6 +1068,15 @@ static int render_frame(const r3d_job *j, unsigned slot, rsx3d_stats *st)
             d->k[2][0][0] = R3D_PX_R(fc); d->k[2][0][1] = R3D_PX_G(fc);
             d->k[2][0][2] = R3D_PX_B(fc); d->k[2][0][3] = R3D_PX_A(fc);
             d->k[3][0][2] = !!(rs.d3 & D3_FOG_ALPHA);
+            if (!fog_previous && !rs.wbuf) {
+                /* La pasada de atributos no necesita FOG_COLOR. Evitar
+                 * la pérdida de una unidad al reconstruir Z desde WPOS
+                 * en polígonos planos, sin alterar la prueba de profundidad. */
+                unsigned flat = 1;
+                for (int k=1;k<p.n;k++) flat &= vv[k]->z == vv[0]->z;
+                d->k[2][0][0] = (float)(vv[0]->z >> 9);
+                d->k[2][0][1] = (float)flat;
+            }
         }
         if (p.mode == 2) {
             d->program = rs.wbuf ? toon_w : toon; d->ntex = 2;

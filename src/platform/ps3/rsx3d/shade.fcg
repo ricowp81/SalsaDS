@@ -54,6 +54,12 @@ void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
     float fogdepth = floor(pos.z * 16777215.0 + 0.5);
 #endif
     float z15 = floor(fogdepth / 512.0);
+#ifndef RSX3D_W
+    /* Z constante llega entera desde el PPE. Reconstruirla desde WPOS
+     * puede dar Z-1 justo en un borde de LUT, incluso en un plano.
+     * fc.xy = Z>>9 y bandera de plano; los inclinados conservan WPOS. */
+    z15 = lerp(z15, floor(fc.x + 0.5), step(0.5, fc.y));
+#endif
     float hi = floor(z15 / 256.0);
     result = float4(hi / 255.0, (z15 - hi * 256.0) / 255.0, 0.0, fp.w);
 #else

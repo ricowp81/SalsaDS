@@ -997,3 +997,19 @@ El build interpreta el ensamblado fp40 con este alias y prueba también
 la sonda de etapas. La autoprueba gráfica añade muestras de color previo,
 atributos, constantes/LUT leídas por la GPU y destino final, con desglose
 de error por canal. Pendiente validar la corrección en la PS3 real.
+
+La segunda prueba PS3 aísla otro alias: DEPTH sale por R1.z. El corrector
+reservaba R1 para COLOR en `fog_attr_w`; su escritura azul borraba W y
+rechazaba los translúcidos siguientes. Se reserva ahora R1 cuando hay
+DEPTH y se comprueba también la profundidad exportada en el intérprete
+fp40. La secuencia anterior explica exactamente las 60 escenas finales
+fallidas de las 512, con sus combinaciones de AND, TDEPTH e ID repetido.
+
+Las pruebas antiguas 0/8/10 pierden una unidad de Z al reconstruirla desde
+WPOS en algunos planos. Toda su diferencia RGB/alfa coincide con Z−1 al
+cruzar un borde de la tabla. Para Z constante en todos los vértices, la
+pasada de atributos recibe Z>>9 entera mediante fc.xy (valor e indicador);
+para Z inclinada mantiene la reconstrucción WPOS. No modifica visibilidad
+ni ensancha tolerancias. Las comprobaciones cubren ambos lados del borde,
+el indicador apagado y W desplazada; la autoprueba diagnostica ahora
+cualquier fallo entre las 18 escenas antiguas. Pendiente repetir en PS3.

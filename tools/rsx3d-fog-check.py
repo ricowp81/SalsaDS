@@ -3,7 +3,8 @@
 """Comprueba el ensamblado fp40 real con COLOR alias de R0.
 
 Intérprete de las operaciones usadas por niebla; no simula el raster RSX.
-Detecta temporales pisados por salidas parciales; no acredita paridad PS3.
+Detecta colisiones con COLOR/R0 y DEPTH/R1.z, y bordes Z de la LUT.
+No acredita paridad PS3.
 """
 import math
 from itertools import product
@@ -30,7 +31,7 @@ class Program:
             if m:
                 self.code.append((m[1], m[2].split(", ")))
 
-    def run(self, inputs, textures):
+    def run(self, inputs, textures, with_depth=False):
         registers = {name: [fp32(x) for x in value] for name,value in {**self.constants, **inputs}.items()}
         condition = [0.0] * 4
 
@@ -73,16 +74,19 @@ class Program:
                 value = [fp32(fn([v[c] for v in a])) for c in range(4)]
             if op.endswith("C"):
                 condition = value
+            # cgcomp exporta DEPTH desde R1.z, también si una escritura
+            # posterior a un temporal lo pisa. COLOR comparte R0.
+            if dest == "result.depth.z":
+                dest = "R1.z"
             name, _, mask = dest.partition(".")
             if name == "oCol":
                 name = "R0"
-            if name == "result":  # DEPTH no participa en esta comprobación.
-                continue
             v = registers.setdefault(name, [0.0] * 4)
             for c in mask or "xyzw":
                 i = "xyzw".index(c)
                 v[i] = value[i]
-        return registers["R0"]
+        color = registers["R0"]
+        return (color, registers.get("R1", [0.0]*4)[2]) if with_depth else color
 
 
 def density(z15, offset, step, table):
@@ -92,8 +96,52 @@ def density(z15, offset, step, table):
     return 128 if d == 127 else d
 
 
-def check(attr, attr_w, final, probe=None):
+def check_attributes(attr, attr_w):
     total = 0
+    for program, w in ((attr, False), (attr_w, True)):
+        cases = product((1, 3, 12, 127, 255, 256, 4095, 7000, 16384, 32767),
+                        (-1, 0, 1, 128, 511), (0, 1), (0, 13, 31), (0, 1, 2))
+        for z15, low, flag, alpha, render_pass in cases:
+            z = z15 * 512 + low
+            shift = 8 if w else 0
+            vertex_w = max(1, z >> shift)
+            inputs = {"fragment.texcoord[0]": [0.5]*4,
+                      "fragment.texcoord[1]": [0, alpha, 0, render_pass],
+                      "fragment.texcoord[2]": [0, (1<<shift)/16777215, 0, 1<<shift],
+                      "fragment.texcoord[3]": [z>>9, 1, 0, 0],
+                      "fragment.texcoord[4]": [0, 1024, 0, flag],
+                      # WPOS Z-1 reproduce el error medido en planos; la
+                      # constante debe conservar ambos lados del borde.
+                      "fragment.position": [0, 0, (z-1)/16777215, 1/vertex_w]}
+            result = program.run(inputs, {0: lambda uv: [31/255]*4}, with_depth=True)
+            survives = alpha > 0 and (alpha < 31) == bool(render_pass)
+            assert (result is not None) == survives, ("descarte", w, alpha, render_pass, result)
+            total += 1
+            if not survives:
+                continue
+            color, depth = result
+            expected_z15 = ((vertex_w << shift) if w else z) >> 9
+            want = [expected_z15//256, expected_z15%256, 0, flag*255]
+            assert [round(c*255) for c in color] == want, ("borde Z/W", w, z, color, want)
+            if w:
+                reciprocal = fp32(1/fp32(1/vertex_w))
+                expected_depth = min(1.0, fp32(math.floor(reciprocal)*fp32((1<<shift)/16777215)))
+                assert depth == expected_depth, ("DEPTH W", z, depth, expected_depth)
+            else:
+                # Con el indicador de plano apagado se sigue usando WPOS,
+                # aunque la constante contenga un valor muy diferente.
+                inputs["fragment.texcoord[3]"] = [32767, 0, 0, 0]
+                fallback = program.run(inputs, {0: lambda uv: [31/255]*4})
+                raster_z = fp32(fp32((z-1)/16777215)*16777215 + 0.5)
+                expected_z15 = math.floor(raster_z)//512
+                want = [expected_z15//256, expected_z15%256, 0, flag*255]
+                assert [round(c*255) for c in fallback] == want, ("Z inclinada", z, fallback, want)
+                total += 1
+    return total
+
+
+def check(attr, attr_w, final, probe=None):
+    total = check_attributes(attr, attr_w)
     for program, w in ((attr, False), (attr_w, True)):
         for z15 in (0, 1, 127, 255, 256, 4095, 7000, 16384, 32767):
             z = z15 * 512 + 128
@@ -103,7 +151,10 @@ def check(attr, attr_w, final, probe=None):
                           "fragment.texcoord[2]": [0, 1/16777215, 0, 1],
                           "fragment.texcoord[4]": [0, 1024, 0, flag],
                           "fragment.position": [0, 0, z/16777215, 1/z]}
-                result = program.run(inputs, {0: lambda uv: [31/255]*4})
+                result, depth = program.run(inputs, {0: lambda uv: [31/255]*4}, with_depth=True)
+                if w:
+                    expected_depth = fp32(math.floor(fp32(1/fp32(1/z))) * fp32(1/16777215))
+                    assert depth == expected_depth, ("DEPTH W", z15, depth, expected_depth)
                 got = [round(v*255) for v in result]
                 assert got == [z15//256, z15%256, 0, flag*255], ("atributos", w, z15, flag, got)
                 total += 1
@@ -141,7 +192,7 @@ def check(attr, attr_w, final, probe=None):
                     want = stage[:3] if not column else [stage[3],0,0]
                     assert [round(c*255) for c in got[:3]] == [round(c*255) for c in want], ("sonda",mode,column,got,want)
                     total += 1
-    print(f"niebla fp40: {total} casos, 0 fallos (COLOR comparte R0)")
+    print(f"niebla fp40: {total} casos, 0 fallos (COLOR comparte R0, DEPTH comparte R1.z)")
 
 
 if __name__ == "__main__":
