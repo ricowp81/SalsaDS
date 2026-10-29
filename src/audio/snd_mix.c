@@ -194,7 +194,8 @@ static void apply(snd_state *st, const snd_ent *e, const snd_bus *bus, cap_run *
 					cap_start(k);
 					k->phase = st->mode & SND_MODE_CORE_OLD ? 0 : st->ch[1 + 2*i].tmr;
 					k->fifo_head = k->fifo_count = 0;
-					for (int j = 0; j < 16; j++) k->fifo[j] = 0;
+					for (int j = 0; j < 16; j++) k->fifo[j] = 0, st->hdcap_fifo[i][j] = 0;
+					st->hdcap_written[i] = 0;
 				}
 				else if ((old & 0x80u) && !(nw & 0x80u))
 					k->on = 0;
@@ -506,13 +507,34 @@ static void chan_step(snd_chan *c, int ci, const snd_bus *bus, cap_run *cr, int 
 	else voice_step(c, ci, bus, cr);
 }
 
-static void hd_advance(snd_chan *c, int ci, const snd_bus *bus, uint32_t cycles, float *h, cap_run *cr, int old)
+/* La muestra que la voz acaba de leer (posición `pos` antes del paso): si es el anillo de una captura y ya tiene
+ * espejo interpolado, se oye el espejo; si no, el PCM fiel. Solo PCM8/PCM16 con el mismo tamaño que la captura. */
+static float hd_voice_out(const snd_state *st, const snd_chan *c, int32_t pos)
+{
+	const uint32_t fmt = c->cnt >> 29 & 3u;
+
+	if (pos >= 0 && fmt < 2u && !(st->mode & (SND_MODE_HD_CAP_OFF | SND_MODE_CORE_OLD)))
+		for (int i = 0; i < 2; i++) {
+			const snd_cap *k = &st->cap[i];
+			const uint32_t size = (k->cnt & 8u) ? 1u : 2u;
+
+			if (k->on && c->sad == k->base && (uint32_t)(c->pnt + c->len) * 4u == k->bytes &&
+			    fmt == size - 1u && (uint32_t)pos < st->hdcap_written[i] && (uint32_t)pos < SND_HDCAP_MAX)
+				return st->hdcap[i][pos];
+		}
+	return (float)c->out;
+}
+
+static void hd_advance(snd_state *st, snd_chan *c, int ci, const snd_bus *bus, uint32_t cycles, float *h, cap_run *cr,
+		       int old)
 {
 	c->tcnt += cycles;
 	while (c->tcnt >= 0x10000u && c->on) {
+		const int32_t pos = c->pos;
+
 		c->tcnt = c->tcnt - 0x10000u + c->tmr;
 		chan_step(c, ci, bus, cr, old);
-		h[0] = h[1]; h[1] = h[2]; h[2] = h[3]; h[3] = (float)c->out;
+		h[0] = h[1]; h[1] = h[2]; h[2] = h[3]; h[3] = hd_voice_out(st, c, pos);
 	}
 }
 
@@ -583,6 +605,7 @@ uint32_t snd_run(snd_state *st, const snd_ent *log, uint32_t nlog, uint32_t ntic
 	uint32_t ie = 0, peak = 0, hd_n = 0;
 	const int hd = (st->mode & SND_MODE_HD) != 0;
 	const int old = (st->mode & SND_MODE_CORE_OLD) != 0;
+	const int hdcap = hd && !old && !(st->mode & SND_MODE_HD_CAP_OFF);
 	/* Reloj racional idéntico en PPE/SPE: evita desplazar flancos PSG por el
 	 * redondeo hacia cero del SPU. Deriva cuantizada a 1/65536 (15 ppm). */
 	const int32_t adj = (int32_t)(st->ratio_adj * 65536.0f);
@@ -594,6 +617,7 @@ uint32_t snd_run(snd_state *st, const snd_ent *log, uint32_t nlog, uint32_t ntic
 			for (int side = 0; side < 2; side++) st->hd_last[c][side] = st->hd_anchor[c][side] = 0;
 			st->hd_fade[c] = st->hd_on[c] = 0;
 		}
+		st->hdcap_written[0] = st->hdcap_written[1] = 0; /* el espejo se rellena desde la próxima vuelta */
 	}
 	st->hd_active = (uint32_t)hd;
 
@@ -623,6 +647,7 @@ uint32_t snd_run(snd_state *st, const snd_ent *log, uint32_t nlog, uint32_t ntic
 		int32_t L, R, capv[2];
 		uint32_t sc;
 		float hm[2][2] = {{0}}, h1[2][2] = {{0}}, h3[2][2] = {{0}}, subcycle[2];
+		float hcm[2] = {0, 0}, hdir[4] = {0}; /* mezcla y voces directas HD en el instante del tick (espejo de captura) */
 		uint32_t sample_at[2];
 		uint32_t hn = 0;
 		if (hd) {
@@ -663,20 +688,27 @@ uint32_t snd_run(snd_state *st, const snd_ent *log, uint32_t nlog, uint32_t ntic
 				const uint32_t v = (c->cnt & 127u) == 127u ? 128u : c->cnt & 127u;
 				const uint32_t p = (c->cnt >> 16 & 127u) == 127u ? 128u : c->cnt >> 16 & 127u;
 				const float gain = (float)v * (1.0f/262144.0f) * (float)(16u >> divsh[c->cnt >> 8 & 3u]);
+				const uint32_t pl = old || p == 0 || p == 128 ? 128u - p : 127u - p;
+				const int excluded = (ci == 1 && (st->soundcnt & 0x1000u)) || (ci == 3 && (st->soundcnt & 0x2000u));
 				for (uint32_t j = 0; j < hn; j++) {
 					const uint32_t at = sample_at[j];
-					if (started) hd_advance(c, ci, bus, at - elapsed, st->hd_hist[ci], cr, old);
+					if (started) hd_advance(st, c, ci, bus, at - elapsed, st->hd_hist[ci], cr, old);
 					elapsed = at;
 					const float sample = hd_sample(st, ci, subcycle[j]) * gain;
-					const uint32_t pl = old || p == 0 || p == 128 ? 128u - p : 127u - p;
 					float l = sample * (float)pl, r = sample * (float)p;
 					hd_declick(st, ci, &l, &r);
 					if (ci == 1) { h1[j][0] = l; h1[j][1] = r; }
 					if (ci == 3) { h3[j][0] = l; h3[j][1] = r; }
-					if ((ci == 1 && (st->soundcnt & 0x1000u)) || (ci == 3 && (st->soundcnt & 0x2000u))) continue;
+					if (excluded) continue;
 					hm[j][0] += l; hm[j][1] += r;
 				}
-				if (started) hd_advance(c, ci, bus, 512u - elapsed, st->hd_hist[ci], cr, old);
+				if (started) hd_advance(st, c, ci, bus, 512u - elapsed, st->hd_hist[ci], cr, old);
+				if (hdcap && started) {
+					/* lo que la captura toma en este tick, con las voces interpoladas en el límite del tick */
+					const float xs = hd_sample(st, ci, 0.0f);
+					if (ci < 4) hdir[ci] = xs * (1.0f / (float)(1u << divsh[c->cnt >> 8 & 3u]));
+					if (!excluded) { hcm[0] += xs * gain * (float)pl; hcm[1] += xs * gain * (float)p; }
+				}
 			}
 			if (!active || (old && !c->on))
 				continue;
@@ -771,15 +803,28 @@ uint32_t snd_run(snd_state *st, const snd_ent *log, uint32_t nlog, uint32_t ntic
 			if (!k->on) continue;
 			if (old) cap_put(bus, k, &cr[i], capv[i]);
 			else {
+				const uint32_t cc = k->cnt;
+				const float hv = !hdcap ? 0.0f : cc & 2u ? hdir[2*i] + (cc & 1u ? hdir[2*i+1] : 0.0f) : hcm[i];
+
 				k->phase += 512;
 				while (k->phase >= 0x10000u && k->on) {
 					k->phase = k->phase - 0x10000u + st->ch[1 + 2*i].tmr;
-					if (k->fifo_count < 16) k->fifo[k->fifo_count++] = (int16_t)capv[i];
-					else {
+					if (k->fifo_count < 16) {
+						st->hdcap_fifo[i][k->fifo_count] = hv;
+						k->fifo[k->fifo_count++] = (int16_t)capv[i];
+					} else {
 						const int32_t sample = k->fifo[k->fifo_head];
+						const float hs = st->hdcap_fifo[i][k->fifo_head];
+						const uint32_t idx = k->pos / ((cc & 8u) ? 1u : 2u);
+
 						k->fifo[k->fifo_head] = (int16_t)capv[i];
+						st->hdcap_fifo[i][k->fifo_head] = hv;
 						k->fifo_head = (k->fifo_head + 1) & 15u;
 						cap_put(bus, k, &cr[i], sample);
+						if (hdcap && idx < SND_HDCAP_MAX) {
+							st->hdcap[i][idx] = hd_state_sample(hs);
+							if (idx >= st->hdcap_written[i]) st->hdcap_written[i] = idx + 1;
+						}
 					}
 				}
 			}

@@ -1,5 +1,44 @@
 # Registro de rendimiento
 
+## 2026-10-28 — NSMB 1-1: melonDS como referencia y espejo interpolado de SOUNDCAP (host)
+
+Grabaciones digitales de melonDS 1.1 (`tools/melonds-grabar.py`: controlador
+«disk» de SDL, 48 kHz PCM16 estéreo, 105 s desde el arranque, interpolación 0
+y 3) y del host (`salsads-cpurun`, 5000 cuadros, mismo guardado y botones). El
+nivel empieza a los 62 s en el host y a los 74 s en melonDS (sus pulsaciones
+duran más); se recorta cada archivo un segundo antes y se alinea por
+envolventes de seis bandas (correlación 0,83–0,95 en los primeros 8 s; la
+correlación de onda es baja, 0,03, porque los relojes de salida no coinciden).
+Tramo medido: 22 s. Energía por banda en dB respecto a la potencia total,
+media L/R; picos de |Δ²| > 0,05 FS separados ≥ 3 muestras, todo a 48 kHz
+(`build/sonido/analisis-3.py`, `espectro-3.py`).
+
+| Grabación | RMS L/R dBFS | picos/s L/R | 4–8 kHz | 8–12 kHz | 12–16 kHz |
+|---|---:|---:|---:|---:|---:|
+| host nativo (32 728 → 48 k) | −16,0/−18,3 | 323/517 | −24,87 | −30,22 | −31,49 |
+| host FIR (escucha sin HD) | −16,0/−18,3 | 276/387 | −24,88 | −30,22 | −32,98 |
+| host HD anterior (`audio-hd-sin-captura`) | −16,0/−18,3 | 218/444 | −25,02 | −31,38 | −34,54 |
+| host HD con espejo de captura | −18,4/−19,6 | 42/292 | −25,23 | −32,27 | −37,60 |
+| melonDS, interpolación ninguna | −17,8/−20,5 | 48/282 | −25,34 | −32,42 | −34,78 |
+| melonDS, interpolación cúbica | −18,1/−20,7 | 47/265 | −25,31 | −32,27 | −34,52 |
+
+Por tercios de octava (dB respecto al total): melonDS ninguna/cúbica difieren
+menos de 0,3 dB en todos; frente a nuestro nativo están entre −0,5 (6,35 kHz)
+y −2,1 dB (12,7 kHz). La aspereza del pasaje no es un defecto de temporización
+ni de formato: la referencia la reproduce igual y su interpolador no la toca,
+porque toda la salida de NSMB pasa por SOUNDCAP (SOUNDCNT `0xB97F`).
+
+Espejo interpolado (`snd_state.hdcap`): mismas muestras nativas con y sin él
+(`cmp` de los WAV nativos idéntico), RAM y estado fieles idénticos. Banco del
+seno por captura (`hd-captura-3`, mismo método que la sección siguiente): SINAD
+19,72 → 63,22 dB; imagen de 7498,65 Hz −23,89 → −64,44 dBc; la voz directa
+sigue en −64,04 dBc. El RMS baja 2,4/1,3 dB (L/R) en NSMB: es la respuesta de
+Hermite frente al escalón en la octava alta de cada voz, la misma que ya tiene
+la ruta HD directa. Costo en el host: ver `build/sonido/melonds/tiempo-host-3.log`
+(orden relativo; el costo real se mide en la PS3 con `DATO audio`). Estado
++16 KB en el SPE (holgura previa 165 600 B). WAV y métricas en
+`build/sonido/melonds/`, fuera del repositorio.
+
 ## 2026-10-28 — Hermite antes y después de SOUNDCAP (host LE/Docker)
 
 Banco propio sin ROM sobre `4181d5c`, mismo `snd_run` del núcleo nuevo. Seno

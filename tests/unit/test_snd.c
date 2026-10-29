@@ -404,10 +404,68 @@ static void test_hd_edges(void)
 	CHECK(fabsf(out[2*(n-1)]-2.0f)<1e-6f);
 }
 
+/* Un seno PCM16 de 500 Hz a 7998,56 Hz (TMR 2095) mezclado a SOUNDCAP0 y reproducido por la voz 1 a la frecuencia
+ * nativa: así enruta NSMB toda su música (SOUNDCNT 0x917F). Mide, en la salida HD de 48 kHz, el tono y su imagen a
+ * Fs−f (7498,65 Hz). Sin el espejo interpolado la imagen queda grabada en la captura (≈ −23,5 dBc); con él debe caer
+ * al menos 20 dB. Las muestras nativas, los canales y las capturas son idénticos en los dos modos. */
+static float tone_db(const double *sum, uint32_t n)
+{
+	return (float)(10.0 * log10((sum[0] * sum[0] + sum[1] * sum[1]) / ((double)n * n) + 1e-30));
+}
+
+static void test_hd_capture_mirror(void)
+{
+	static snd_state a, b;
+	static int16_t na[2*SND_TICKS_MAX], nb[2*SND_TICKS_MAX];
+	static float out[2*SND_OUT_MAX];
+	static uint8_t saved[MEM_SIZE];
+	const double pi = 3.14159265358979323846;
+	const double fs_voice = 16756991.0 / 2095.0, f_tone = fs_voice / 16.0, f_image = fs_voice - f_tone;
+	double sum[2][4] = {{0}}; /* por modo: tono sin/cos, imagen sin/cos (canal L, tras asentarse) */
+	uint32_t counted[2] = {0, 0}, produced;
+	snd_state *st[2] = {&a, &b};
+
+	reset(); snd_reset(&a); snd_reset(&b);
+	a.mode = SND_MODE_HD; b.mode = SND_MODE_HD | SND_MODE_HD_CAP_OFF;
+	for (unsigned i = 0; i < 32; i++)
+		wr16le(mem + 0x100 + 2*i, (uint16_t)(int16_t)(16000.0 * sin(2*pi*i/16.0) + (i % 16 < 8 ? 0.5 : -0.5)));
+	w16(0x100, 0x917F); /* L = voz 1 (excluida de la mezcla), R = mezcla */
+	chan(0, CNT(127, 0, 64, 1, 1), 0x02000100, 65536u - 2095u, 0, 16);
+	w32(0x110, 0x02000800); w16(0x114, 512); w16(0x108, 0x80); /* mezcla L → anillo PCM16 de 2048 B */
+	chan(1, CNT(127, 0, 64, 1, 1), 0x02000800, P512, 0, 512);
+	for (unsigned job = 0; job < 240; job++) {
+		for (int m = 0; m < 2; m++) {
+			const double n0 = (double)counted[m];
+			if (m == 0) memcpy(saved, mem, MEM_SIZE); else memcpy(mem, saved, MEM_SIZE);
+			snd_run(st[m], log_buf, job ? 0 : nlog, 547, &bus, m ? nb : na, out, SND_OUT_MAX, &produced);
+			if (job < 48) continue; /* el anillo da la primera vuelta y Hermite se asienta */
+			for (uint32_t i = 0; i < produced; i++) {
+				const double t = (n0 + i) / 48000.0;
+				sum[m][0] += out[2*i] * sin(2*pi*f_tone*t);  sum[m][1] += out[2*i] * cos(2*pi*f_tone*t);
+				sum[m][2] += out[2*i] * sin(2*pi*f_image*t); sum[m][3] += out[2*i] * cos(2*pi*f_image*t);
+			}
+			counted[m] += produced;
+		}
+		CHECK_EQ(memcmp(na, nb, 2*547*sizeof *na), 0);
+	}
+	CHECK_EQ(memcmp(a.ch, b.ch, sizeof a.ch), 0);
+	CHECK_EQ(memcmp(a.cap, b.cap, sizeof a.cap), 0);
+	CHECK_EQ(a.hdcap_written[0], 1024u);
+	CHECK_EQ(b.hdcap_written[0], 0u);
+	{
+		const float img_mirror = tone_db(sum[0] + 2, counted[0]) - tone_db(sum[0], counted[0]);
+		const float img_plain = tone_db(sum[1] + 2, counted[1]) - tone_db(sum[1], counted[1]);
+		CHECK(img_plain > -30.0f);              /* la imagen de la voz de origen sigue en la captura PCM */
+		CHECK(img_mirror < img_plain - 20.0f);  /* el espejo la quita */
+		CHECK(fabsf(tone_db(sum[0], counted[0]) - tone_db(sum[1], counted[1])) < 0.5f); /* mismo nivel del tono */
+	}
+}
+
 void test_snd_core(void);
 
 void test_snd(void)
 {
+	test_hd_capture_mirror();
 	test_hd_edges();
 	test_snd_core();
 	test_hd_native(0);

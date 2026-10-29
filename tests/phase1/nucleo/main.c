@@ -1507,7 +1507,12 @@ static void snd_load_cfg(void)
 	if (stat(SALSADS_DATA_DIR "/audio-hd", &fs) == 0) {
 		if (stat(SALSADS_DATA_DIR "/audio-sin-hd", &fs) != 0) {
 			mode |= SND_MODE_HD;
-			salsads_log("audio: HD, Hermite por voz a 48 kHz; captura nativa, limitador al final");
+			if (stat(SALSADS_DATA_DIR "/audio-hd-sin-captura", &fs) == 0) {
+				mode |= SND_MODE_HD_CAP_OFF;
+				salsads_log("audio: HD, Hermite por voz a 48 kHz; captura PCM también al oír (audio-hd-sin-captura)");
+			} else {
+				salsads_log("audio: HD, Hermite por voz a 48 kHz; captura nativa con espejo interpolado al oír");
+			}
 		} else {
 			salsads_log("audio: HD desactivado por audio-sin-hd");
 		}

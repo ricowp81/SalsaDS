@@ -24,6 +24,9 @@
  * SND_MODE_HD sustituye solo la escucha: Hermite causal por voz PCM/ADPCM a 48 kHz,
  * mezcla flotante sin recorte (limitador en audio_out), PSG/ruido sin interpolar.
  * La captura, las muestras nativas y el estado de los canales permanecen fieles.
+ * Lo que pasa por SOUNDCAP lleva un espejo interpolado (`hdcap`): la captura PCM se
+ * escribe igual, pero las voces 1/3 que la reproducen oyen la mezcla HD de ese
+ * instante. SND_MODE_HD_CAP_OFF vuelve al HD anterior (captura PCM también al oír).
  * La opción se fija al abrir el juego; no se conmuta durante la reproducción.
  */
 #ifndef SALSADS_AUDIO_SND_H
@@ -48,6 +51,8 @@
 #define SND_MODE_FRAME_CACHE_OLD 4u   /* diagnóstico: descartar todas las líneas de voz entre trabajos */
 #define SND_MODE_RESAMPLE_SIMPLE 8u    /* diagnóstico: conversión 48 kHz lineal, sin el FIR */
 #define SND_MODE_CORE_OLD 16u          /* núcleo anterior completo para A/B; se fija al abrir */
+#define SND_MODE_HD_CAP_OFF 32u        /* HD sin captura interpolada: las voces 1/3 oyen la captura PCM tal cual */
+#define SND_HDCAP_MAX 2048             /* muestras por captura con espejo interpolado (NSMB usa 1024) */
 
 /* Una escritura a un registro de sonido (media palabra): `off` es el desplazamiento desde 0x04000400. */
 typedef struct snd_ent {
@@ -98,6 +103,14 @@ typedef struct snd_state {
 	uint32_t hd_fade[SND_NCH], hd_on[SND_NCH];
 	uint32_t hd_phase;              /* fase en unidades de 1/48000 de ciclo del temporizador */
 	uint32_t hd_active, hd_pad[2];
+	/* Espejo interpolado de SOUNDCAP (solo escucha): por cada muestra PCM que la captura escribe en RAM se guarda la
+	 * mezcla de las voces HD en ese instante; las voces 1/3 que reproducen ese anillo la usan en vez del PCM. Así las
+	 * imágenes de las voces de origen no quedan grabadas en la captura. Valores enteros (hd_state_sample) para que el
+	 * PPE y el SPU conserven el mismo estado. */
+	float hdcap[2][SND_HDCAP_MAX];
+	float hdcap_fifo[2][16];
+	uint32_t hdcap_written[2];      /* muestras ya escritas desde el arranque de la captura (validez de la primera vuelta) */
+	uint32_t hdcap_pad[2];
 	/* resultados del último trabajo */
 	uint32_t busy;                   /* bit c: canal c encendido; bit 16 y 17: captura 0 y 1 */
 	uint32_t peak;                   /* pico absoluto de lo mezclado (0-32768), para el log */

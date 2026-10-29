@@ -3,7 +3,8 @@
  * SalsaDS — corre una ROM de prueba (tests/roms) en la máquina de src/core y lee su veredicto del bloque de
  * resultados (tests/roms/src/common/sds.h), como hace tools/melonds-run.py con melonDS.
  *
- *   salsads-cpurun [--wav FILE.wav] [--wav-native FILE.wav] [--snd-original] [--audio-hd] [--audio-lineal]
+ *   salsads-cpurun [--wav FILE.wav] [--wav-native FILE.wav] [--snd-original] [--audio-hd] [--audio-hd-sin-captura]
+ *                  [--audio-lineal]
  *                  [--cycles N] [--frames N] [--quantum N] [--stats] [--arm7] [--keys HEX] [--touch X,Y]
  *                  [--screens FILE.ppm] [--ref] [--vs-ref] [--expect] [--same-ab] [--unmapped] [--peek ADDR]... [--trace N [--trace7]] ROM.nds
  *
@@ -740,6 +741,8 @@ int main(int argc, char **argv)
 			gxdump_path = argv[++i];
 		else if (!strcmp(argv[i], "--audio-hd"))
 			snd_hd = 1;
+		else if (!strcmp(argv[i], "--audio-hd-sin-captura"))
+			snd_hd = 2; /* HD anterior: las voces 1/3 oyen la captura PCM sin espejo interpolado */
 		else if (!strcmp(argv[i], "--audio-lineal"))
 			snd_linear = 1;
 		else if (!strcmp(argv[i], "--snd-original"))
@@ -923,6 +926,7 @@ int main(int argc, char **argv)
 		M.snd.ops.sink = wav_sink;
 	if (snd_original || snd_hd || snd_linear || snd_frame_cache_old || snd_core_old)
 		nds_snd_set_mode(&M, (snd_hd ? SND_MODE_HD : snd_original ? SND_MODE_ORIGINAL : 0u) |
+				       (snd_hd == 2 ? SND_MODE_HD_CAP_OFF : 0u) |
 				       (snd_linear ? SND_MODE_RESAMPLE_SIMPLE : 0u) |
 					 (snd_frame_cache_old ? SND_MODE_FRAME_CACHE_OLD : 0u) | (snd_core_old ? SND_MODE_CORE_OLD : 0u));
 	if (lockstep) {

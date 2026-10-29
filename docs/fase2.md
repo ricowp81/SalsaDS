@@ -379,6 +379,8 @@ ni archivos en el bucle del mezclador PPE/SPE.
 Prueba de consola: crear o renombrar `/dev_hdd0/salsads/audio-nucleo-anterior`
 antes de abrir el juego. Sin él se usa el núcleo nuevo. Se conservan
 `audio-mezcla-ppe`, `audio-verificar`, `audio-grabar`, `audio-frontera-antigua`,
-`audio-hd`, `audio-sin-hd`, `audio-sin-remuestrear`, `audio-sin-estirar`,
-`audio-sin-limitador` y `audio-sin-ganancia`. El modo se fija al abrir el juego.
+`audio-hd`, `audio-sin-hd`, `audio-hd-sin-captura` (HD anterior: las voces 1/3
+oyen la captura PCM sin su espejo interpolado), `audio-sin-remuestrear`,
+`audio-sin-estirar`, `audio-sin-limitador` y `audio-sin-ganancia`. El modo se
+fija al abrir el juego.
 La cuantificación del defecto y sus límites están en `perf-log.md`.
