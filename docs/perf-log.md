@@ -1,5 +1,11 @@
 # Registro de rendimiento
 
+## 2026-10-29 — Sombras con cara trasera en W y niebla con toon o sombra en el RSX [host: planes y ensamblado; sin tiempos]
+
+- Log previo de SM64DS (PS3, 2×): 290–302 s `sombras: cara trasera W sin paridad` 120/120 en siete ventanas y 342–372 s `niebla combinada con toon o sombra` 120/120 en quince; el costo 3D del RSX en el castillo cuando entraba era 4,0–5,9 ms. Son respaldos de paridad, no de costo.
+- Banco del host `shadows_sweep`: 524 288 escenas de hasta cinco polígonos (una sombra 61 440, varias 135 168, ampliado 327 680) con y sin atributos de niebla, 0 diferencias contra `r3d_px.h`; los 3 717 120 estados de color y 5000 lotes siguen en 0. `rsx3d-wdepth-check.py`: 8 programas W, 848 casos iguales. `rsx3d-fog-check.py`: 15 856 casos.
+- Sin medición en consola: dibujos por polígono de sombra iguales a la ronda anterior (misma secuencia) más la pasada de atributos cuando hay niebla; medir en SM64DS castillo y Bob-omb Battlefield, MKDS y Metroid según `build/rsx-sombras/informe.md`.
+
 ## 2026-10-28 — Tramo del planificador del JIT: 1024 → 512 ciclos del ARM9
 - PS3 real, Sonic Rush Adventure (intro y título, sin tocar), emulación por cuadro (mediana por ventana de 120): 1024 ≈ 21 ms con 4–20 cuadros del motor B preparados tarde y parpadeo; 512 ≈ 21,6–22,2 ms (+3 %), 0 tarde, sin parpadeo; 128 ≈ 23,6 ms (+12 %), 0 tarde.
 - Metroid Prime Hunters con 512, 2 min de menús y juego: 9–13,5 ms por cuadro, presentación a 16,7 ms casi siempre; sin parpadeo. Sin A/B estricto contra 1024 en la misma escena.
