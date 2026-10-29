@@ -35,6 +35,13 @@ struct fmt_info {
 	GCM_TEXTURE_REMAP_MODE(GCM_TEXTURE_REMAP_ORDER_XYXY, a, r, g, b,                      \
 			       GCM_TEXTURE_REMAP_TYPE_ONE, GCM_TEXTURE_REMAP_TYPE_REMAP,       \
 			       GCM_TEXTURE_REMAP_TYPE_REMAP, GCM_TEXTURE_REMAP_TYPE_REMAP)
+/* Con el alfa de la textura (en vez de 1): blits hacia destinos con alfa. */
+#define REMAP_ARGB_A                                                                          \
+	GCM_TEXTURE_REMAP_MODE(GCM_TEXTURE_REMAP_ORDER_XYXY, GCM_TEXTURE_REMAP_COLOR_A,        \
+			       GCM_TEXTURE_REMAP_COLOR_R, GCM_TEXTURE_REMAP_COLOR_G,           \
+			       GCM_TEXTURE_REMAP_COLOR_B, GCM_TEXTURE_REMAP_TYPE_REMAP,        \
+			       GCM_TEXTURE_REMAP_TYPE_REMAP, GCM_TEXTURE_REMAP_TYPE_REMAP,     \
+			       GCM_TEXTURE_REMAP_TYPE_REMAP)
 #define REMAP_ARGB REMAP(GCM_TEXTURE_REMAP_COLOR_A, GCM_TEXTURE_REMAP_COLOR_R, \
 			 GCM_TEXTURE_REMAP_COLOR_G, GCM_TEXTURE_REMAP_COLOR_B)
 
@@ -75,6 +82,13 @@ struct rsxkit_fb {
 };
 
 static struct rsxkit_fb pool[RSXKIT_FB_MAX];
+
+static int blit_alpha;
+
+void rsxkit_blit_alpha(int on)
+{
+	blit_alpha = on;
+}
 
 static struct {
 	rsxVertexProgram *vp;
@@ -242,6 +256,7 @@ static void vertex(gcmContextData *ctx, float x, float y, float u, float v, uint
 
 void rsxkit_fb_draw(rsxkit_fb *fb, const rsxkit_view *view, rsxkit_rect *out)
 {
+	rsxkit_screen_texture_invalidate();
 	if (!fb || !fb->used || fb->slot < 0)
 		return;
 	static const rsxkit_view def = { RSXKIT_SCALE_FIT, RSXKIT_FILTER_LINEAR, 0.0f };
@@ -287,6 +302,11 @@ void rsxkit_blit_to(uint32_t offset, uint8_t location, uint32_t pitch, uint32_t 
 	tex.dimension = GCM_TEXTURE_DIMS_2D;
 	tex.cubemap = GCM_FALSE;
 	tex.remap = fi->remap;
+	/* El fragment program escribe el alfa que trae la textura: 1 con el
+	 * remapeo de la tabla (salvo RSXKIT_ARGB8888) y el suyo hacia un destino
+	 * con alfa (rsxkit_blit_alpha), donde XRGB8888 y RGBA5551 llevan el suyo. */
+	if (blit_alpha && (format == RSXKIT_XRGB8888 || format == RSXKIT_RGBA5551))
+		tex.remap = REMAP_ARGB_A;
 	tex.width = tex_w;
 	tex.height = tex_h;
 	tex.depth = 1;

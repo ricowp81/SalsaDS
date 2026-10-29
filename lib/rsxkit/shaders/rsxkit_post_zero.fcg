@@ -1,0 +1,7 @@
+/* SPDX-License-Identifier: MIT */
+/* rsxkit — borrado de una superficie intermedia (rsxkit_post_clear): 0 en
+ * los cuatro canales, también en fp16. */
+void main(float4 pos : TEXCOORD0, out float4 color : COLOR)
+{
+	color = float4(0.0, 0.0, 0.0, 0.0);
+}

@@ -5,8 +5,9 @@ glifos de rsxkit (src/font_8x13.h).
 
   lib/rsxkit/tools/bdf2c.py 8x13.bdf > lib/rsxkit/src/font_8x13.h
 
-Toma ASCII imprimible, Latin-1 y unos pocos símbolos para menús (flechas,
-triángulos, puntos, rayas). Todos los glifos deben ocupar la celda entera
+Toma ASCII imprimible, Latin-1, el Latin Extended-A del polaco y el turco, el
+cirílico básico y unos pocos símbolos para menús (flechas, triángulos, puntos,
+rayas). Todos los glifos deben ocupar la celda entera
 (BBX igual a FONTBOUNDINGBOX), como en la «fixed» 8x13 de X11.
 """
 import sys
@@ -17,7 +18,12 @@ EXTRA = [
     0x25B2, 0x25B3, 0x25B6, 0x25BA, 0x25BC, 0x25C0, 0x25C4, 0x25CB,
     0x25CF, 0xFFFD,
 ]
-WANTED = set(range(0x20, 0x7F)) | set(range(0xA0, 0x100)) | set(EXTRA)
+# Latin Extended-A que piden el polaco (ĄąĆćĘęŁłŃńŚśŹźŻż) y el turco (ĞğİıŞş),
+# y el cirílico básico (U+0400-U+045F: ruso, ucraniano, serbio, macedonio...).
+LATIN_EXT_A = [0x104, 0x105, 0x106, 0x107, 0x118, 0x119, 0x11E, 0x11F, 0x130, 0x131, 0x141, 0x142, 0x143,
+               0x144, 0x15A, 0x15B, 0x15E, 0x15F, 0x179, 0x17A, 0x17B, 0x17C]
+CYRILLIC = list(range(0x400, 0x460))
+WANTED = set(range(0x20, 0x7F)) | set(range(0xA0, 0x100)) | set(EXTRA) | set(LATIN_EXT_A) | set(CYRILLIC)
 
 
 def parse(path):

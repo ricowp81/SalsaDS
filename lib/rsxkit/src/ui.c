@@ -3,7 +3,10 @@
  * rsxkit — el 2D de rsxkit/ui.h en el RSX: memoria mapeada con el atlas y
  * dos búferes de vértices, y el lote dibujado sobre la pantalla del cuadro
  * con el 3D de draw3d.c (textura × color del vértice, mezcla alfa). La
- * geometría la arma ui_geom.c.
+ * geometría la arma ui_geom.c, que también escribe en el atlas los glifos
+ * nuevos de la fuente externa mientras arma el lote: el RSX los ve porque
+ * rsxkit_vertices invalida la caché de texturas en cada lote, después de la
+ * barrera de memoria de rsxkit_ui_end.
  */
 #include <malloc.h>
 #include <stdlib.h>
@@ -12,7 +15,7 @@
 #include "internal.h"
 #include "rsxkit/ui.h"
 
-#define UI_BYTES     (3u << 20)
+#define UI_BYTES     (6u << 20)
 #define ATLAS_PITCH  (RSXKIT_UI_ATLAS_W * 4)
 #define ATLAS_BYTES  ((ATLAS_PITCH * RSXKIT_UI_ATLAS_H + 0xFFFFu) & ~0xFFFFu)
 #define VB_CAP       (RSXKIT_UI_MAX_QUADS * 6)
@@ -113,7 +116,24 @@ int rsxkit_ui_image_set(int slot, const uint8_t *rgba, uint32_t w, uint32_t h)
 	return RSXKIT_OK;
 }
 
-void rsxkit_ui_begin(float lw, float lh)
+int rsxkit_ui_image_update(int slot, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint8_t *rgba)
+{
+	if (!ui.ready || slot < 0 || slot >= RSXKIT_UI_IMAGES || !ui.img_ok[slot] || !rgba || !w || !h)
+		return RSXKIT_EARG;
+	const rsxkit_texture *t = &ui.img[slot].tex[0];
+	if (x > t->width || w > t->width - x || y > t->height || h > t->height - y)
+		return RSXKIT_EARG;
+	for (int i = 0; i < 2; i++)
+		if (ui.fence[i])
+			rsxkit_fence_wait(ui.fence[i]);
+	uint8_t *dst = ui.mem + IMG_BASE + (size_t)slot * IMG_BYTES + (size_t)y * IMG_PITCH + (size_t)x * 4;
+	for (uint32_t r = 0; r < h; r++)
+		memcpy(dst + (size_t)r * IMG_PITCH, rgba + (size_t)r * w * 4, (size_t)w * 4);
+	__sync_synchronize();
+	return RSXKIT_OK;
+}
+
+static void ui_begin(rsxkit_target *t, float lw, float lh)
 {
 	if (!ui.ready)
 		return;
@@ -121,7 +141,12 @@ void rsxkit_ui_begin(float lw, float lh)
 	/* El RSX ya no lee este búfer (lo usó hace dos cuadros). */
 	if (ui.fence[ui.half])
 		rsxkit_fence_wait(ui.fence[ui.half]);
-	rsxkit_bind_frame(lw, lh);
+	if (t) {
+		if (rsxkit_bind(t, NULL, lw, lh) != RSXKIT_OK)
+			return;
+	} else {
+		rsxkit_bind_frame(lw, lh);
+	}
 	ui.draw.scissor[0] = ui.draw.scissor[1] = 0.0f;
 	ui.draw.scissor[2] = lw;
 	ui.draw.scissor[3] = lh;
@@ -130,6 +155,16 @@ void rsxkit_ui_begin(float lw, float lh)
 		memcpy(ui.img[i].scissor, ui.draw.scissor, sizeof ui.draw.scissor);
 	rsxkit_ui_batch(ui.vb[ui.half], VB_CAP, lw, lh);
 	ui.active = 1;
+}
+
+void rsxkit_ui_begin(float lw, float lh)
+{
+	ui_begin(NULL, lw, lh);
+}
+
+void rsxkit_ui_begin_target(rsxkit_target *t, float lw, float lh)
+{
+	ui_begin(t, lw, lh);
 }
 
 void rsxkit_ui_end(void)
@@ -143,10 +178,22 @@ void rsxkit_ui_end(void)
 		 * cada una son unas pocas palabras en el búfer de comandos. */
 		const uint32_t *first;
 		uint32_t groups = rsxkit_ui_groups(&first);
+		if (rsxkit_ui_atlas_dirty())
+			__sync_synchronize();  /* los glifos nuevos, antes de que el RSX lea */
 		rsxkit_vertices(ui.vb_off[ui.half], RSXKIT_MEM_MAIN);
 		for (uint32_t g = 0; g < groups; g++) {
 			uint32_t end = g + 1 < groups ? first[g + 1] : n;
 			uint32_t img = rsxkit_ui_group_image(g);
+			if (img == RSXKIT_UI_HOOK_GROUP) {
+				rsxkit_ui_hook_fn fn;
+				void *user;
+				rsxkit_ui_group_hook(g, &fn, &user);
+				if (fn) {
+					fn(user);
+					rsxkit_vertices(ui.vb_off[ui.half], RSXKIT_MEM_MAIN);
+				}
+				continue;
+			}
 			rsxkit_draw *d = img && ui.img_ok[img - 1] ? &ui.img[img - 1] : &ui.draw;
 			if (end > first[g] && (!img || ui.img_ok[img - 1]))
 				rsxkit_draw_triangles(d, first[g], end - first[g]);
