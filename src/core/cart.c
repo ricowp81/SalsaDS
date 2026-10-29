@@ -337,6 +337,8 @@ uint32_t nds_cart_read(struct nds *n, int cpu, uint32_t off, int sz)
 	 * evento) sin que el intérprete o el JIT ejecuten miles de lecturas. */
 	if (c->busy && !c->drq && off < 0x1A8u && off + (uint32_t)sz > 0x1A4u)
 		nds_poll_skip(n, cpu, EV_CART);
+	if (off == 0x1A4u && sz == 4 && !n->es_lenta) /* el sondeo del juego: la palabra de ROMCTRL sin armar la imagen entera */
+		return (c->romctl & ~((1u << 31) | (1u << 23))) | ((uint32_t)c->busy << 31) | ((uint32_t)c->drq << 23);
 	memset(img, 0, sizeof img);
 	wr16le(img + 0, (uint16_t)((c->auxcnt & 0xE043u) | (nds_cpu_now(n, cpu) < c->spi_done ? 0x80u : 0u)));
 	wr16le(img + 2, c->auxdata);

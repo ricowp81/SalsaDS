@@ -293,15 +293,21 @@ void nds_code_write_range(struct nds *n, const uint8_t *p, size_t len)
 {
 	if ((!n->jit9 && !n->jit7) || !len)
 		return;
-	for (size_t k = 0; k < len; k += 4) {
+	/* por líneas del mapa de código (una consulta por línea; cada aviso cubre un tramo dentro de su línea) */
+	for (size_t k = 0; k < len;) {
 		const uint32_t ph = phys_of(n, p + k, n->jit_phys);
+		const size_t line_left = (size_t)(1u << AREC_LINE_SHIFT) - (size_t)(ph & ((1u << AREC_LINE_SHIFT) - 1u));
+		const size_t piece = line_left < len - k ? line_left : len - k;
 
-		if (ph == AREC_PHYS_NONE)
+		if (ph == AREC_PHYS_NONE) {
+			k += 4;
 			continue;
+		}
 		if (n->jit9 && ph < n->jit_phys9)
-			arec_code_write(n->jit9, ph & ~3u, 4);
+			arec_code_write(n->jit9, ph, (uint32_t)piece);
 		if (n->jit7)
-			arec_code_write(n->jit7, ph & ~3u, 4);
+			arec_code_write(n->jit7, ph, (uint32_t)piece);
+		k += piece;
 	}
 }
 
@@ -328,6 +334,13 @@ static void jit_gx_wr(void *ctx, uint32_t a, uint32_t v)
 	else
 		nds_gx_cpu_write(n, a, v);
 }
+
+/* E/S directa del recompilador (arec_cfg.io_rd/io_wr): el reparto de los registros de cada CPU, que es adonde llegaría por el
+ * bus (la región 0x04000000-0x04000FFF no tiene puntero en el mapa de regiones). Con es_lenta no se instalan. */
+static uint32_t jit_io_rd9(void *ctx, uint32_t a, int sz) { return nds_io_read(ctx, NDS_CPU9, a, sz); }
+static uint32_t jit_io_rd7(void *ctx, uint32_t a, int sz) { return nds_io_read(ctx, NDS_CPU7, a, sz); }
+static void jit_io_wr9(void *ctx, uint32_t a, int sz, uint32_t v) { nds_io_write(ctx, NDS_CPU9, a, sz, v); }
+static void jit_io_wr7(void *ctx, uint32_t a, int sz, uint32_t v) { nds_io_write(ctx, NDS_CPU7, a, sz, v); }
 
 /* Cuántas páginas de 16 KB mapea el ARM7: de 0 al final de la WRAM propia (0x04000000). */
 #define JIT7_MAP_PAGES (0x04000000u >> AREC_PAGE_SHIFT)
@@ -358,6 +371,8 @@ int nds_jit_attach(struct nds *n, const struct nds_jit_cfg *jc)
 	cfg.phys_size = phys_size9(n);
 	cfg.on_exec = jc->on_exec;
 	cfg.gx_wr = n->gx_lento ? NULL : jit_gx_wr;
+	cfg.io_rd = n->es_lenta ? NULL : jit_io_rd9;
+	cfg.io_wr = n->es_lenta ? NULL : jit_io_wr9;
 	n->jit_phys9 = phys_size9(n);
 	n->jit_phys = n->jit_phys9;
 	if (!jc->no_arm9) {
@@ -384,6 +399,8 @@ int nds_jit_attach(struct nds *n, const struct nds_jit_cfg *jc)
 		cfg.map_pages = JIT7_MAP_PAGES;
 		cfg.max_blocks = JIT7_MAX_BLOCKS;
 		cfg.on_exec = jc->on_exec7;
+		cfg.io_rd = n->es_lenta ? NULL : jit_io_rd7;
+		cfg.io_wr = n->es_lenta ? NULL : jit_io_wr7;
 		n->jit7 = arec_create(&n->a7, &cfg);
 		if (n->jit7)
 			n->jit_phys = phys_size7(n);

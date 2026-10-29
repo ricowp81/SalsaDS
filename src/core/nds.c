@@ -52,6 +52,7 @@ void nds_init(struct nds *n)
 	const uint32_t dbg = n->dbg;
 	const uint8_t gx_lento = n->gx_lento;
 	const uint8_t wifi_off = n->wifi_off;
+	const uint8_t dma_lento = n->dma_lento, es_lenta = n->es_lenta, vram7_vaciar_siempre = n->vram7_vaciar_siempre;
 	const struct nds_snd_ops sops = n->snd.ops;
 	const uint32_t smode = n->snd.mode;
 	struct arec *const jit9 = n->jit9, *const jit7 = n->jit7;
@@ -65,6 +66,9 @@ void nds_init(struct nds *n)
 	n->dbg = dbg;
 	n->gx_lento = gx_lento;
 	n->wifi_off = wifi_off;
+	n->dma_lento = dma_lento;
+	n->es_lenta = es_lenta;
+	n->vram7_vaciar_siempre = vram7_vaciar_siempre;
 	n->vid.ops = vops;
 	n->vid.use_ref = use_ref;
 	n->vid.capture_classic = capture_classic;

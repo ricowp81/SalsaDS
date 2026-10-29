@@ -242,6 +242,7 @@ struct nds_math {
 	uint32_t sqrt_res;
 	uint64_t div_done, sqrt_done; /* instante (ARM9) en que termina el cálculo */
 	uint8_t div0;
+	uint8_t div_pending; /* la división está por calcular (se resuelve al leer el cociente, el resto o DIVCNT) */
 };
 
 /* ---- Video (Fase 2.1): instantáneas por cuadro para los motores 2D ----------------------------------------
@@ -447,6 +448,12 @@ struct nds {
 	uint8_t gx_lento;   /* 1: sin las rutas cortas de la FIFO de geometría (ráfagas de la DMA y escrituras de la CPU): la forma anterior,
 			     * para medir A/B en la PS3 (/dev_hdd0/salsads/gx-lento). Lo conserva nds_init */
 	uint8_t wifi_off; /* diagnóstico: sin configuración ni registros locales Wi-Fi; lo conserva nds_init */
+	uint8_t dma_lento; /* 1: la DMA mueve cada unidad por el bus (la forma anterior, sin copias por bloques ni ráfagas a la FIFO de
+			    * geometría en modo inmediato); para medir A/B en la PS3 (/dev_hdd0/salsads/dma-lento). Lo conserva nds_init */
+	uint8_t es_lenta;  /* 1: la E/S del recompilador por el bus entero, las matemáticas byte a byte con división en cada escritura y
+			    * ROMCTRL por la imagen de 32 bytes (la forma anterior; /dev_hdd0/salsads/es-lenta). Lo conserva nds_init */
+	uint8_t vram7_vaciar_siempre; /* 1: cualquier cambio de VRAMCNT_C/D vacía la caché del recompilador del ARM7, aunque el banco no
+				       * entre ni salga de su mapa (la forma anterior; /dev_hdd0/salsads/vram7-vaciar-siempre) */
 	uint8_t dma9_gxw;   /* caché (sched.c): hay un canal de DMA del ARM9 armado esperando el aviso de la FIFO de geometría */
 	uint32_t ipcsync_out[2]; /* bits 8-11 de cada CPU */
 	uint8_t ipcsync_irqen[2];
@@ -493,6 +500,10 @@ struct nds {
 		uint64_t ev_t[EV_COUNT];            /* ticks dentro de los eventos de cada tipo (solo con `prof_clock`) */
 		uint64_t gx_dma_words, gx_dma_bursts; /* palabras que la DMA de modo 7 pasó a la FIFO de geometría por la ráfaga, y ráfagas */
 		uint64_t gx_cpu_words;                /* palabras de la CPU a 0x04000400-0x040005FF por la ruta corta (bus y recompilador) */
+		uint64_t dma_block_units, dma_block_runs; /* unidades de DMA copiadas por bloques (sched.c, dma_block) y transferencias con algún bloque */
+		uint64_t dma_gxi_words;                /* palabras de DMA en modo inmediato a GXFIFO por la ruta corta */
+		uint64_t dma_unit_units;               /* unidades de DMA que fueron por el bus, una a una (sin contar la DMA del cartucho) */
+		uint64_t vram7_flush_skipped;          /* cambios de VRAMCNT_C/D que no vaciaron la caché del ARM7 (el banco no era suyo) */
 	} st;
 	uint64_t (*prof_clock)(void);
 	struct nds_video vid;
@@ -510,6 +521,7 @@ struct nds {
 #define NDS_DBG_VRAM7 64u /* bancos C/D, capturas rechazadas y captación ARM7 (host) */
 #define NDS_DBG_SPI 1u
 #define NDS_DBG_WIFI 128u /* diagnóstico de los registros locales Wi-Fi; sin radio */
+#define NDS_DBG_DMA 256u  /* cada transferencia de DMA que arranca (menos las del cartucho, palabra a palabra) */
 #define NDS_DBG_IPC 2u
 #define NDS_DBG_IRQ 4u
 #define NDS_DBG_CART 8u

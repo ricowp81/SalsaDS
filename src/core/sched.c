@@ -339,6 +339,148 @@ static uint32_t dma_gx_burst(struct nds *n, struct nds_dma *d, uint32_t count)
 	return done;
 }
 
+/* Avisos que debe una escritura por bloque a un tramo del host: código traducido (los dos recompiladores) y, en la VRAM,
+ * las páginas sucias del vídeo (una por 16 KB). Es lo que hace nds_bus_write por unidad, junto. */
+static void dma_wrote(struct nds *n, uint8_t *p, uint32_t len, uint32_t vram_off)
+{
+	nds_code_write_range(n, p, len);
+	if (vram_off != UINT32_MAX)
+		for (uint32_t o = vram_off & ~0x3FFFu; o < vram_off + len; o += 0x4000u)
+			nds_video_vram_dirty(n, o > vram_off ? o : vram_off);
+}
+
+/* Paleta (0x05) y OAM (0x07) del ARM9: el tramo del host hasta donde el espejo da la vuelta, para escribirlo de una vez y
+ * registrar después cada media palabra como hace nds_bus_write (log_change con el valor ya escrito; dentro de un tramo ninguna
+ * dirección se repite, así que el orden y los valores registrados son los mismos). *which: 5 o 7. */
+static uint8_t *dma_palobj_span(struct nds *n, int cpu, uint32_t a, uint32_t *avail, unsigned *which)
+{
+	const unsigned region = a >> 24;
+
+	if (cpu != NDS_CPU9 || (region != 5 && region != 7))
+		return NULL;
+	*which = region;
+	if (region == 5) {
+		*avail = NDS_PAL_SIZE - (a & (NDS_PAL_SIZE - 1));
+		return n->pal + (a & (NDS_PAL_SIZE - 1));
+	}
+	*avail = NDS_OAM_SIZE - (a & (NDS_OAM_SIZE - 1));
+	return n->oam + (a & (NDS_OAM_SIZE - 1));
+}
+
+static void dma_palobj_wrote(struct nds *n, unsigned which, uint32_t a, uint32_t len)
+{
+	if (which == 5)
+		for (uint32_t k = 0; k < len; k += 2)
+			nds_video_pal_written(n, (a + k) & (NDS_PAL_SIZE - 1));
+	else
+		for (uint32_t k = 0; k < len; k += 2)
+			nds_video_oam_written(n, (a + k) & (NDS_OAM_SIZE - 1));
+}
+
+/* Copia por bloques de una DMA que no es de la FIFO de geometría ni del cartucho: tramos contiguos del host en vez de una
+ * lectura y una escritura por el bus por unidad. Solo donde el resultado es el mismo byte a byte que unidad a unidad:
+ *  - fuente creciente con puntero (RAM, WRAM, VRAM de un solo banco) o fija en los registros DMAxFILL del ARM9 (su lectura no
+ *    tiene efectos) o con puntero; destino creciente con puntero; sin solaparse fuente y destino en el host;
+ *  - o, en el ARM9, palabras de una fuente con puntero a la FIFO de geometría con destino fijo (modo inmediato): cada
+ *    palabra va a nds_gx_fifo_write como por el bus, sin pasar por nds_bus_write/nds_io_write.
+ * Lo demás (paleta y OAM con su registro de cambios, E/S, decrementos, bancos solapados) sigue unidad a unidad desde donde
+ * esta función se detuvo. Devuelve cuántas unidades movió y deja d->src/d->dst al día. */
+static uint32_t dma_block(struct nds *n, int cpu, struct nds_dma *d, unsigned unit, unsigned sctl, unsigned dctl, uint32_t count)
+{
+	const uint32_t um = ~(uint32_t)(unit - 1);
+	const int src_inc = sctl == 0 || sctl == 3, src_fix = sctl == 2;
+	const int dst_inc = dctl == 0 || dctl == 3, dst_fix = dctl == 2;
+	uint32_t done = 0, fill = 0;
+	int filling = 0;
+
+	if (cpu == NDS_CPU9 && unit == 4 && dst_fix && src_inc && (d->dst & ~3u) - 0x04000400u < 0x40u && !(n->dbg & NDS_DBG_IO)) {
+		while (done < count) {
+			uint32_t avail, voff, k;
+			const uint8_t *s = nds_dma_span(n, cpu, d->src & um, 0, &avail, &voff);
+
+			if (!s)
+				break;
+			k = avail >> 2;
+			if (k > count - done)
+				k = count - done;
+			nds_gx_fifo_write_n(n, s, k);
+			d->src += 4u * k;
+			done += k;
+		}
+		n->st.dma_gxi_words += done;
+		return done;
+	}
+	if (!dst_inc || !(src_inc || src_fix))
+		return 0;
+	if (src_fix) {
+		const uint32_t sa = d->src & um;
+
+		if (cpu == NDS_CPU9 && (sa & 0xFFFFFFu) - 0xE0u < 0x10u) {
+			fill = nds_io_read(n, cpu, sa, (int)unit); /* DMAxFILL: valor fijo sin efectos al leer */
+			filling = 1;
+		} else {
+			uint32_t avail, voff;
+			const uint8_t *s = nds_dma_span(n, cpu, sa, 0, &avail, &voff);
+
+			if (!s || avail < unit)
+				return 0;
+			fill = unit == 4 ? rd32le(s) : rd16le(s);
+			filling = 2; /* el destino no debe pisar la fuente: se comprueba tramo a tramo */
+		}
+	}
+	while (done < count) {
+		uint32_t davail, dvoff, savail, svoff, len, k;
+		unsigned palobj = 0;
+		uint8_t *p = nds_dma_span(n, cpu, d->dst & um, 1, &davail, &dvoff);
+		const uint8_t *s = NULL;
+
+		if (!p)
+			p = dma_palobj_span(n, cpu, d->dst & um, &davail, &palobj);
+		if (!p || davail < unit)
+			break;
+		k = (davail / unit);
+		if (k > count - done)
+			k = count - done;
+		if (!filling) {
+			s = nds_dma_span(n, cpu, d->src & um, 0, &savail, &svoff);
+			if (!s || savail < unit)
+				break;
+			if (savail / unit < k)
+				k = savail / unit;
+		} else if (filling == 2) {
+			s = nds_dma_span(n, cpu, d->src & um, 0, &savail, &svoff);
+			if (!s)
+				break;
+			savail = unit;
+		}
+		len = k * unit;
+		if (s && ((const uint8_t *)p < s + (filling ? unit : len)) && (s < (const uint8_t *)p + len))
+			break; /* fuente y destino solapados en el host: unidad a unidad (así quedan los efectos del orden) */
+		if (filling) {
+			if (unit == 4)
+				for (uint32_t i = 0; i < k; i++)
+					wr32le(p + 4u * i, fill);
+			else
+				for (uint32_t i = 0; i < k; i++)
+					wr16le(p + 2u * i, (uint16_t)fill);
+		} else {
+			memcpy(p, s, len);
+			d->src += len;
+		}
+		if (palobj)
+			dma_palobj_wrote(n, palobj, d->dst & um, len);
+		else
+			dma_wrote(n, p, len, dvoff);
+		d->dst += len;
+		done += k;
+	}
+	if (done) {
+		n->st.dma_block_units += done;
+		n->st.dma_block_runs++;
+	}
+	return done;
+}
+
 static void dma_run(struct nds *n, int cpu, int ch, int one_unit)
 {
 	struct nds_dma *d = &n->io[cpu].dma[ch];
@@ -353,9 +495,17 @@ static void dma_run(struct nds *n, int cpu, int ch, int one_unit)
 	const int gxmode = cpu == NDS_CPU9 && dma_mode(cpu, ctl) == NDS_DMA_GXFIFO;
 	uint32_t done = 0;
 
+	if (!one_unit)
+		NDS_TRACE(n, NDS_DBG_DMA, "DMA%d.%d modo %u src %08x dst %08x unidad %d cuenta %u sctl %u dctl %u PC=%08x", cpu ? 7 : 9, ch,
+			  dma_mode(cpu, ctl), d->src, d->dst, unit, count, sctl, dctl, acore_pc(c));
+
 	/* Ráfaga: palabras, destino fijo en GXFIFO (0x04000400-0x0400043F) y fuente creciente */
 	if (gxmode && !n->gx_lento && unit == 4 && dctl == 2 && (d->dst & ~3u) - 0x04000400u < 0x40u && (sctl == 0 || sctl == 3))
 		done = dma_gx_burst(n, d, count);
+	else if (!gxmode && !one_unit && !n->dma_lento)
+		done = dma_block(n, cpu, d, (unsigned)unit, sctl, dctl, count);
+	if (!one_unit && !gxmode)
+		n->st.dma_unit_units += count - done; /* (la de modo 7 se para a media FIFO: lo que falta no va por el bus ahora) */
 
 	for (uint32_t i = done; i < count; i++) {
 		uint32_t v;

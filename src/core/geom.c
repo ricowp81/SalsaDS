@@ -42,6 +42,17 @@ void nds_gx_fifo_write(struct nds *n, uint32_t w)
 	gx_sched_after_write(n);
 }
 
+void nds_gx_fifo_write_n(struct nds *n, const uint8_t *src, uint32_t count)
+{
+	/* lo mismo que nds_gx_fifo_write por palabra; POWCNT1 no cambia dentro de una DMA (lo escribe el ARM9, que está parado) */
+	if (!GX_ON(n))
+		return;
+	for (uint32_t i = 0; i < count; i++) {
+		stall_cpu9(n, gx_fifo_write(&n->gx, nds_cpu_now(n, NDS_CPU9), rd32le(src + 4u * i)));
+		gx_sched_after_write(n);
+	}
+}
+
 void nds_gx_port_write(struct nds *n, uint32_t off, uint32_t w)
 {
 	if (!GX_ON(n))

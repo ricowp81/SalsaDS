@@ -32,6 +32,11 @@ static inline void NDS_CODE_WRITE(struct nds *n, const uint8_t *p, unsigned size
 	}
 }
 void nds_code_write_range(struct nds *n, const uint8_t *p, size_t len);
+/* Tramo contiguo del host para una DMA (mem.c): puntero a `a` para leer (write = 0) o escribir (1) desde `cpu`, y en *avail
+ * cuántos bytes seguidos hay hasta donde la región da la vuelta o cambia de banco. NULL = ese acceso tiene que ir por el bus
+ * (E/S, paleta, OAM, VRAM con varios bancos o sin banco, ranura de GBA...). En *vram_off, el desplazamiento dentro de la VRAM si
+ * el tramo está en ella (para avisar a nds_video_vram_dirty), si no UINT32_MAX. */
+uint8_t *nds_dma_span(struct nds *n, int cpu, uint32_t a, int write, uint32_t *avail, uint32_t *vram_off);
 void nds_jit_wramcnt(struct nds *n);
 void nds_jit_reinit(struct nds *n);
 
@@ -100,6 +105,8 @@ void nds_dma_trigger(struct nds *n, int cpu, unsigned mode);
 /* geom.c */
 void nds_gx_init(struct nds *n);
 void nds_gx_fifo_write(struct nds *n, uint32_t w);
+/* `count` palabras seguidas de `src` (little-endian) a la FIFO: lo mismo que nds_gx_fifo_write por palabra. */
+void nds_gx_fifo_write_n(struct nds *n, const uint8_t *src, uint32_t count);
 /* Ruta corta de la CPU (ARM9) a una palabra alineada de 0x04000400-0x040005FF: las mismas reglas que nds_io_write sin pasar por el bus. */
 void nds_gx_cpu_write(struct nds *n, uint32_t a, uint32_t v);
 /* Ráfaga de la DMA de modo 7: pasa a la FIFO hasta `count` palabras de `src` (little-endian, sin pasar por el bus) con las mismas
