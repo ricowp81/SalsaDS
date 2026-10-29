@@ -236,8 +236,18 @@ void nds_vramcnt_write(struct nds *n, unsigned bank, uint8_t v)
 	if (bank == 2 || bank == 3)
 		NDS_TRACE(n, NDS_DBG_VRAM7, "VRAMCNT_%c %02x->%02x PC9=%08x PC7=%08x",
 			'A' + bank, n->vramcnt[bank], v, acore_pc(&n->a9), acore_pc(&n->a7));
-	if (n->jit7 && (bank == 2 || bank == 3) && n->vramcnt[bank] != v)
-		arec_flush(n->jit7); /* cambió la identidad física del código en 0x06xxxxxx */
+	if (n->jit7 && (bank == 2 || bank == 3) && n->vramcnt[bank] != v) {
+		/* La identidad física del código del ARM7 en 0x06xxxxxx solo cambia si el banco estaba o queda en su mapa (MST 2 con
+		 * el bit 7); un cambio entre LCDC, fondos del motor B y texturas no lo toca (Metroid Prime Hunters alterna C/D entre
+		 * LCDC y texturas varias veces por cuadro: cada vaciado costaba más de 100 µs y la retraducción del ARM7). */
+		const unsigned old = n->vramcnt[bank];
+		const int was7 = (old & 0x80u) && (old & 7u) == 2u, is7 = (v & 0x80u) && (v & 7u) == 2u;
+
+		if (was7 || is7 || n->vram7_vaciar_siempre)
+			arec_flush(n->jit7);
+		else
+			n->st.vram7_flush_skipped++;
+	}
 	n->vramcnt[bank] = v;
 	vram_remap(n);
 	if (bank == 2 || bank == 3)
@@ -406,6 +416,48 @@ void nds_bus_write(struct nds *n, int cpu, uint32_t a, int sz, uint32_t v)
 		return;
 	default:
 		return;
+	}
+}
+
+/* ---- tramos para la DMA ----------------------------------------------------------------------------- */
+
+uint8_t *nds_dma_span(struct nds *n, int cpu, uint32_t a, int write, uint32_t *avail, uint32_t *vram_off)
+{
+	const struct nds_rgn *r = write ? &n->rgn_wr[cpu][a >> 23] : &n->rgn_rd[cpu][a >> 23];
+
+	*vram_off = UINT32_MAX;
+	if (r->p) {
+		*avail = r->mask + 1u - (a & r->mask);
+		return r->p + (a & r->mask);
+	}
+	if ((a >> 24) != 6)
+		return NULL;
+	{
+		const uint32_t pgoff = a & 0x3FFFu;
+		uint8_t *ptr;
+
+		if (cpu == NDS_CPU7) {
+			ptr = n->vpg7_ptr[(a & 0x3FFFFu) >> 14];
+		} else {
+			const unsigned region = (a >> 21) & 7u;
+
+			if (region == 4) { /* LCDC: una página por tramo (la máscara es por página) */
+				const uint32_t off = a - 0x06800000u;
+
+				if (off >= NDS_VRAM_SIZE || !n->vram_lcdc_mask[off >> 14])
+					return NULL;
+				ptr = n->vram + (off & ~0x3FFFu);
+			} else if (region > 3) {
+				return NULL;
+			} else {
+				ptr = n->vpg_ptr[region][(a & (win_size[region] - 1)) >> 14];
+			}
+		}
+		if (!ptr)
+			return NULL; /* sin banco, o varios solapados: por el bus */
+		*avail = 0x4000u - pgoff;
+		*vram_off = (uint32_t)(ptr + pgoff - n->vram);
+		return ptr + pgoff;
 	}
 }
 

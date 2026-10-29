@@ -95,6 +95,10 @@ struct arec_cfg {
 	/* Ruta corta de las escrituras de palabra a 0x04000400-0x040005FF (la FIFO de geometría del ARM9): escribe `v` en la palabra
 	 * alineada `a` con las reglas del bus sin pasar por mem_wr32 ni por el reparto de la E/S. NULL: todas por la ruta lenta. */
 	void (*gx_wr)(void *ctx, uint32_t a, uint32_t v);
+	/* E/S directa (0x04000000-0x04000FFF, fuera de las TCM): el reparto de los registros sin pasar por mem_rd32 y compañía ni por el
+	 * bus (dos llamadas y dos tablas menos por acceso lento; cuentan igual en las estadísticas). NULL: por el bus. */
+	uint32_t (*io_rd)(void *ctx, uint32_t a, int sz);
+	void (*io_wr)(void *ctx, uint32_t a, int sz, uint32_t v);
 };
 
 enum { AREC_EV_SERVICE = 0, AREC_EV_BLOCK = 1, AREC_EV_STEP = 2 };

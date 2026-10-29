@@ -842,6 +842,7 @@ int main(int argc, char **argv)
 	uint32_t trace_from = 0;
 	const char *wav_path = NULL;
 	int snd_original = 0, snd_hd = 0, snd_linear = 0, g2d_stats = 0, wifi_off = 0;
+	int dma_lento = 0, es_lenta = 0, vram7_vaciar_siempre = 0;
 	int snd_frame_cache_old = 0, snd_core_old = 0;
 	const char *gxdump_path = NULL;
 	int gx_clock = 0, r3d_stats_on = 0, holes_on = 0, gx_defer = 0, gx_lento = 0, geom_plain = 0, geom_scalar = 0;
@@ -886,6 +887,12 @@ int main(int argc, char **argv)
 			geom_plain = 1;
 		else if (!strcmp(argv[i], "--gx-lento"))
 			gx_lento = 1; /* sin las rutas cortas de la FIFO de geometría (ráfagas de la DMA y escrituras de la CPU): la forma anterior */
+		else if (!strcmp(argv[i], "--dma-lento"))
+			dma_lento = 1; /* la DMA unidad a unidad por el bus (sin copias por bloques ni GXFIFO inmediato por la ruta corta) */
+		else if (!strcmp(argv[i], "--es-lenta"))
+			es_lenta = 1; /* E/S del recompilador por el bus entero, matemáticas byte a byte, ROMCTRL por la imagen */
+		else if (!strcmp(argv[i], "--vram7-vaciar-siempre"))
+			vram7_vaciar_siempre = 1; /* cualquier cambio de VRAMCNT_C/D vacía la caché del recompilador del ARM7 */
 		else if (!strcmp(argv[i], "--wifi-sin-inicio"))
 			wifi_off = 1;
 		else if (!strcmp(argv[i], "--gx-defer"))
@@ -1139,6 +1146,9 @@ int main(int argc, char **argv)
 	M.dbg = dbg;
 	M.gx_lento = (uint8_t)gx_lento;
 	M.wifi_off = (uint8_t)wifi_off;
+	M.dma_lento = (uint8_t)dma_lento;
+	M.es_lenta = (uint8_t)es_lenta;
+	M.vram7_vaciar_siempre = (uint8_t)vram7_vaciar_siempre;
 	M.vid.use_ref = use_ref;
 	nds_init(&M);
 	if (gx_defer) {
@@ -1164,6 +1174,9 @@ int main(int argc, char **argv)
 		R.vid.use_ref = use_ref;
 		R.gx_lento = (uint8_t)gx_lento;
 		R.wifi_off = (uint8_t)wifi_off;
+		/* la referencia va siempre por las formas anteriores (DMA por unidad, E/S por el bus, vaciado del ARM7 en cada cambio):
+		 * así --lockstep también compara las rutas nuevas de M con las viejas */
+		R.dma_lento = R.es_lenta = R.vram7_vaciar_siempre = 1;
 		nds_init(&R);
 		if (snd_original || snd_hd || snd_linear || snd_frame_cache_old || snd_core_old)
 			nds_snd_set_mode(&R, (snd_hd ? SND_MODE_HD : snd_original ? SND_MODE_ORIGINAL : 0u) |
@@ -1495,6 +1508,12 @@ int main(int argc, char **argv)
 			printf("FIFO de geometría%s: por cuadro %.1f palabras de DMA en %.1f ráfagas y %.1f palabras de la CPU por las rutas cortas\n",
 			       M.gx_lento ? " (gx-lento)" : "", (double)M.st.gx_dma_words / (double)frames,
 			       (double)M.st.gx_dma_bursts / (double)frames, (double)M.st.gx_cpu_words / (double)frames);
+		if (stats)
+			printf("DMA%s: por cuadro %.1f unidades por bloques en %.1f transferencias, %.1f palabras a GXFIFO en modo inmediato por la ruta corta, "
+			       "%.1f unidades por el bus; cambios de VRAMCNT_C/D sin vaciar el ARM7: %.2f\n",
+			       M.dma_lento ? " (dma-lento)" : "", (double)M.st.dma_block_units / (double)frames,
+			       (double)M.st.dma_block_runs / (double)frames, (double)M.st.dma_gxi_words / (double)frames,
+			       (double)M.st.dma_unit_units / (double)frames, (double)M.st.vram7_flush_skipped / (double)frames);
 		if (stats && M.prof_clock)
 			printf("tiempo por cuadro (con --gx-clock; los relojes cuestan): ARM9 %.1f us, ARM7 %.1f us, eventos %.1f us; ARM7 %.0f instr. por cuadro\n",
 			       (double)M.st.prof_a9 / 1e3 / (double)frames, (double)M.st.prof_a7 / 1e3 / (double)frames,

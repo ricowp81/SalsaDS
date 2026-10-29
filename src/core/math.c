@@ -29,9 +29,11 @@ static uint64_t isqrt64(uint64_t x)
 	return r;
 }
 
-static void start_div(struct nds *n)
+/* El cociente y el resto solo dependen de DIVCNT, DIV_NUMER y DIV_DENOM en la última escritura antes de leerlos: con
+ * `es_lenta` se calculan en cada escritura (la forma anterior); si no, se marcan pendientes y se resuelven en la primera lectura
+ * del cociente, del resto o de la bandera de división entre cero (una división por uso en vez de dos o tres). */
+static void div_compute(struct nds_math *m)
 {
-	struct nds_math *m = &n->math;
 	const unsigned mode = m->divcnt & 3u;
 	int64_t num, den, q, r;
 
@@ -65,7 +67,24 @@ static void start_div(struct nds *n)
 	}
 	m->quot = (uint64_t)q;
 	m->rem = (uint64_t)r;
-	m->div_done = nds_cpu_now(n, NDS_CPU9) + (uint64_t)(mode == 0 ? 18 : 34) * 2;
+	m->div_pending = 0;
+}
+
+static void start_div(struct nds *n)
+{
+	struct nds_math *m = &n->math;
+
+	m->div_done = nds_cpu_now(n, NDS_CPU9) + (uint64_t)((m->divcnt & 3u) == 0 ? 18 : 34) * 2;
+	if (n->es_lenta)
+		div_compute(m);
+	else
+		m->div_pending = 1;
+}
+
+static inline void div_settle(struct nds_math *m)
+{
+	if (m->div_pending)
+		div_compute(m);
 }
 
 static void start_sqrt(struct nds *n)
@@ -77,9 +96,9 @@ static void start_sqrt(struct nds *n)
 	m->sqrt_done = nds_cpu_now(n, NDS_CPU9) + 13u * 2;
 }
 
-static uint8_t byte_of(const struct nds *n, uint32_t off)
+static uint8_t byte_of(struct nds *n, uint32_t off)
 {
-	const struct nds_math *m = &n->math;
+	struct nds_math *m = &n->math;
 	const uint64_t now = nds_cpu_now(n, NDS_CPU9);
 	uint64_t v = 0;
 	unsigned sh = (off & 7u) * 8u;
@@ -87,14 +106,15 @@ static uint8_t byte_of(const struct nds *n, uint32_t off)
 	switch (off & ~7u) {
 	case 0x280:
 		if ((off & 7u) < 2) {
+			div_settle(m);
 			v = (m->divcnt & 3u) | (m->div0 ? 0x4000u : 0u) | (now < m->div_done ? 0x8000u : 0u);
 			return (uint8_t)(v >> sh);
 		}
 		return 0;
 	case 0x290: v = m->numer; break;
 	case 0x298: v = m->denom; break;
-	case 0x2A0: v = m->quot; break;
-	case 0x2A8: v = m->rem; break;
+	case 0x2A0: div_settle(m); v = m->quot; break;
+	case 0x2A8: div_settle(m); v = m->rem; break;
 	case 0x2B0:
 		if ((off & 7u) < 2) {
 			v = (m->sqrtcnt & 1u) | (now < m->sqrt_done ? 0x8000u : 0u);
@@ -109,10 +129,41 @@ static uint8_t byte_of(const struct nds *n, uint32_t off)
 	return (uint8_t)(v >> sh);
 }
 
+/* Imagen de 8 bytes del grupo de registros al que pertenece `off` (lo mismo que byte_of, byte a byte). */
+static uint64_t group_image(struct nds *n, uint32_t off)
+{
+	struct nds_math *m = &n->math;
+
+	switch (off & ~7u) {
+	case 0x280: {
+		const uint64_t now = nds_cpu_now(n, NDS_CPU9);
+
+		div_settle(m);
+		return (m->divcnt & 3u) | (m->div0 ? 0x4000u : 0u) | (now < m->div_done ? 0x8000u : 0u);
+	}
+	case 0x290: return m->numer;
+	case 0x298: return m->denom;
+	case 0x2A0: div_settle(m); return m->quot;
+	case 0x2A8: div_settle(m); return m->rem;
+	case 0x2B0: {
+		const uint64_t now = nds_cpu_now(n, NDS_CPU9);
+
+		return ((m->sqrtcnt & 1u) | (now < m->sqrt_done ? 0x8000u : 0u)) | (uint64_t)m->sqrt_res << 32;
+	}
+	case 0x2B8: return m->sqrt_param;
+	default: return 0;
+	}
+}
+
 uint32_t nds_math_read(struct nds *n, uint32_t off, int sz)
 {
 	uint32_t v = 0;
 
+	if (!n->es_lenta && (off & 7u) + (uint32_t)sz <= 8u) {
+		const uint64_t img = group_image(n, off) >> ((off & 7u) * 8u);
+
+		return sz == 4 ? (uint32_t)img : (uint32_t)img & (sz == 2 ? 0xFFFFu : 0xFFu);
+	}
 	for (int i = 0; i < sz; i++)
 		v |= (uint32_t)byte_of(n, off + (uint32_t)i) << (8 * i);
 	return v;

@@ -136,22 +136,49 @@ static uint64_t h_rd(struct acore *c, uint32_t a, uint32_t kind)
 	if (prof_slow_on)
 		prof_slow_add(a, c->v5 ? 0u : 1u, 0);
 	j->exit_req = 0;
-	switch (kind) {
-	case MK_W:
-		v = ld_word(c, a);
-		break;
-	case MK_H:
-		v = ld_half(c, a);
-		break;
-	case MK_SH:
-		v = ld_shalf(c, a);
-		break;
-	case MK_B:
-		v = mem_rd8(c, a);
-		break;
-	default:
-		v = (uint32_t)(int32_t)(int8_t)mem_rd8(c, a);
-		break;
+	if (j->cfg.io_rd && a - 0x04000000u < 0x1000u && !IN_RANGE(a, 0u, c->itcm_rd_len) &&
+	    !IN_RANGE(a, c->dtcm_base, c->dtcm_rd_len)) {
+		/* registros de E/S: el mismo valor que ld_word/ld_half/ld_shalf/mem_rd8 (alineación y rotación de cada versión) */
+		switch (kind) {
+		case MK_W:
+			v = ror32(j->cfg.io_rd(j->cfg.ctx, a & ~3u, 4), (a & 3u) * 8);
+			break;
+		case MK_H:
+			v = j->cfg.io_rd(j->cfg.ctx, a & ~1u, 2);
+			if ((a & 1u) && !c->v5)
+				v = ror32(v, 8);
+			break;
+		case MK_SH:
+			if ((a & 1u) && !c->v5)
+				v = (uint32_t)(int32_t)(int8_t)j->cfg.io_rd(j->cfg.ctx, a, 1);
+			else
+				v = (uint32_t)(int32_t)(int16_t)j->cfg.io_rd(j->cfg.ctx, a & ~1u, 2);
+			break;
+		case MK_B:
+			v = j->cfg.io_rd(j->cfg.ctx, a, 1);
+			break;
+		default:
+			v = (uint32_t)(int32_t)(int8_t)j->cfg.io_rd(j->cfg.ctx, a, 1);
+			break;
+		}
+	} else {
+		switch (kind) {
+		case MK_W:
+			v = ld_word(c, a);
+			break;
+		case MK_H:
+			v = ld_half(c, a);
+			break;
+		case MK_SH:
+			v = ld_shalf(c, a);
+			break;
+		case MK_B:
+			v = mem_rd8(c, a);
+			break;
+		default:
+			v = (uint32_t)(int32_t)(int8_t)mem_rd8(c, a);
+			break;
+		}
 	}
 	c->abort = 0;
 	if (j->pub.tick) {
@@ -203,16 +230,27 @@ static uint32_t h_wr(struct acore *c, uint32_t a, uint32_t v, uint32_t kind)
 	if (prof_slow_on)
 		prof_slow_add(a, c->v5 ? 0u : 1u, 1);
 	j->exit_req = 0;
-	switch (kind) {
-	case MK_W:
-		mem_wr32(c, a & ~3u, v);
-		break;
-	case MK_H:
-		mem_wr16(c, a & ~1u, v);
-		break;
-	default:
-		mem_wr8(c, a, v);
-		break;
+	if (j->cfg.io_wr && a - 0x04000000u < 0x1000u && !IN_RANGE(a, 0u, c->itcm_wr_len) &&
+	    !IN_RANGE(a, c->dtcm_base, c->dtcm_wr_len)) {
+		/* registros de E/S: lo que mem_wr32/16/8 mandarían al bus (la FIFO de geometría ya salió arriba si hay gx_wr) */
+		if (kind == MK_W)
+			j->cfg.io_wr(j->cfg.ctx, a & ~3u, 4, v);
+		else if (kind == MK_H)
+			j->cfg.io_wr(j->cfg.ctx, a & ~1u, 2, v & 0xFFFFu);
+		else
+			j->cfg.io_wr(j->cfg.ctx, a, 1, v & 0xFFu);
+	} else {
+		switch (kind) {
+		case MK_W:
+			mem_wr32(c, a & ~3u, v);
+			break;
+		case MK_H:
+			mem_wr16(c, a & ~1u, v);
+			break;
+		default:
+			mem_wr8(c, a, v);
+			break;
+		}
 	}
 	c->abort = 0;
 	if (j->pub.tick) {
