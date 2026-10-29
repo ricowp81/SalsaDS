@@ -568,7 +568,9 @@ static unsigned shadow_tests(r3d_job *j)
         rsx3d_stats st; int ok = rsx3d_render(j, &st);
         unsigned different = 0;
         int backcase=(test>=24 && test<32) || test==34 || test==35 || (test>=36 && test<52) || test==53 || (test>=54 && test<62);
-        int fallback = test==33 || test==35 || (backcase && (frame.swap_params&2)) ||
+        /* Cara trasera con W: empates de W entera (wdepth.cgi); respaldo solo
+         * con 3d-rsx-sombra-trasera-w-spe o con la W truncada anterior. */
+        int fallback = test==33 || test==35 || (backcase && (frame.swap_params&2) && rsx3d_shadow_back_w_spe()) ||
             (backcase && forced_spe("sombra-trasera")) || ((test==52 || test==53 || test>=62) && forced_spe("sombra-ids"));
         for (unsigned k = 0; k < R3D_W*R3D_H; k++) different += output[k] != (fallback ? 0xa5a5a5a5u : reference[k]);
         fail += ok != !fallback || different != 0;
@@ -578,6 +580,141 @@ static unsigned shadow_tests(r3d_job *j)
         snprintf(name, sizeof name, "rsx3d-sombra-%u-rsx", test); save_pixels(name, output);
         snprintf(name, sizeof name, "rsx3d-sombra-%u-ref", test); save_pixels(name, reference);
         snprintf(name, sizeof name, "rsx3d-sombra-%u-diff", test); save_difference(name);
+    }
+    return fail;
+}
+/* Diferencias por píxel con la tolerancia de la niebla final (±2 en RGB6,
+ * alfa exacta); devuelve cuántos píxeles distintos y cuántos fuera. */
+static void fog_compare(unsigned *different, unsigned *over, unsigned *worst)
+{
+    *different=*over=*worst=0;
+    for (unsigned k=0;k<R3D_W*R3D_H;k++) {
+        uint32_t a=output[k], b=reference[k];
+        unsigned d=0;
+        for (unsigned c=0;c<3;c++) {
+            unsigned x=(a>>(8*c))&255u, y=(b>>(8*c))&255u, dd=x>y ? x-y : y-x;
+            if (dd>d) d=dd;
+        }
+        if (R3D_PX_A(a)!=R3D_PX_A(b)) d=255;
+        *different+=a!=b; *over+=d>2; if (d>*worst) *worst=d;
+    }
+}
+/* Niebla junto con sombras: la máscara y la sombra en la pasada de atributos
+ * (bandera AND, profundidad solo con PA_TDEPTH), Z y W, cara trasera (reparto
+ * ampliado, también con W), una o varias sombras, alfa 31, ID repetido. */
+static unsigned fog_shadow_tests(r3d_job *j)
+{
+    if (forced_spe("sombra") || forced_spe("niebla")) return 0;
+    unsigned fail=0, total_diff=0, total_over=0;
+    for (unsigned test=0;test<48;test++) {
+        const unsigned w=test&1, fog_opaque=!!(test&2), fog_shadow=!!(test&4), fog_alpha=!!(test&8), back=!!(test&16);
+        const unsigned variant=test>>5; /* 0: base; 1: varias sombras, TDEPTH, borrado con niebla y translúcido del mismo ID */
+        memset(&frame,0,sizeof frame);
+        frame.npolys=5; frame.nverts=20; frame.swap_params=w ? 3 : 1;
+        frame.regs.clear_depth=0x7fff;
+        frame.regs.clear_color=(63u<<24)|(31u<<16)|(variant ? 0x8000u : 0u);
+        frame.regs.disp3dcnt=D3_BLEND|D3_FOG|(10u<<8)|(fog_alpha ? D3_FOG_ALPHA : 0);
+        frame.regs.fog_color=(9u<<16)|0x001fu;
+        frame.regs.fog_offset=w ? 1000 : 10000;
+        for (unsigned t=0;t<32;t++) frame.regs.fog_table[t]=t==31 ? 127 : 4*t+(t&1);
+        quad(0,1,31,63,63,63,0);
+        quad(1,0,13,0,0,0,0);
+        quad(2,2,variant==1 && test&2 ? 31 : 13,0,0,0,0);
+        quad(3,0,13,0,0,0,0);
+        quad(4,variant ? 3 : 2,13,0,0,0,0);
+        for (unsigned n=1;n<5;n++) frame.poly[n].attr|=3u<<4;
+        if (!back) frame.poly[0].flags=GX_POLY_FRONT; else frame.poly[0].flags=0;
+        if (fog_opaque) frame.poly[0].attr|=PA_FOG;
+        if (fog_shadow) { frame.poly[2].attr|=PA_FOG; frame.poly[4].attr|=PA_FOG; }
+        if (variant) { frame.poly[2].attr|=PA_TDEPTH; frame.poly[1].attr|=PA_FOG; }
+        for (unsigned k=0;k<4;k++) {
+            frame.vtx[4+k].z=frame.vtx[12+k].z=0x900000;  /* las máscaras fallan la profundidad */
+            frame.vtx[16+k].sx+=32;
+        }
+        if (w) for (unsigned n=0;n<5;n++) {
+            frame.poly[n].wshift=8;
+            for (unsigned k=0;k<4;k++) frame.vtx[n*4+k].w=n==0 ? 8192 : (n==1 || n==3) ? 9000 : 7000;
+        }
+        if (variant) {
+            /* Un translúcido normal con el ID de la sombra 2 encima: AND de niebla y rechazo del mismo ID. */
+            frame.npolys=6; frame.nverts=24;
+            quad(5,2,15,0,63,0,0); frame.poly[5].attr|=PA_FOG;
+            for (unsigned k=0;k<4;k++) { frame.vtx[20+k].z=0x7c0000; frame.vtx[20+k].w=6500; }
+            if (w) frame.poly[5].wshift=8;
+        }
+        r3d_render_ref(&frame,vram,j->texslot,j->palslot,0,reference);
+        rsxkit_frame_begin(0); rsxkit_frame_end(); rsxkit_frame_begin(0);
+        memset(output,0xa5,sizeof output);
+        rsx3d_stats st; int ok=rsx3d_render(j,&st);
+        int fallback=rsx3d_fog_combined_spe() || (back && w && rsx3d_shadow_back_w_spe()) || (back && forced_spe("sombra-trasera"));
+        unsigned different=0, over=0, worst=0;
+        if (fallback) { for (unsigned k=0;k<R3D_W*R3D_H;k++) different+=output[k]!=0xa5a5a5a5u; over=different; }
+        else fog_compare(&different,&over,&worst);
+        fail+=ok!=!fallback || over!=0; total_diff+=different; total_over+=over;
+        salsads_log("rsx3d niebla+sombra prueba %u: estado %d (%s), distintos %u, fuera de tolerancia %u, peor %u/63, dibujos %u, %s",
+                    test,ok,fallback ? "respaldo esperado" : "RSX",different,over,worst,st.draws,rsx3d_reason());
+        if (!fallback && (over || test==0 || test==1 || test==21)) {
+            char name[80];
+            snprintf(name,sizeof name,"rsx3d-niebla-sombra-%u-rsx",test); save_pixels(name,output);
+            snprintf(name,sizeof name,"rsx3d-niebla-sombra-%u-ref",test); save_pixels(name,reference);
+            snprintf(name,sizeof name,"rsx3d-niebla-sombra-%u-diff",test); save_difference(name);
+            if (over && ok==1) fog_diagnose(j);
+        }
+    }
+    salsads_log("rsx3d niebla+sombra: 48 escenas Z/W, cara trasera, una y varias sombras, TDEPTH, alfa 31, ID repetido; distintos %u, fuera de tolerancia %u, %u fallos",total_diff,total_over,fail);
+    return fail;
+}
+/* Niebla junto con toon y resaltado: 512 cuadrados texturados con la tabla
+ * de toon, profundidad distinta por cuadrado y bandera alterna; Z y W. */
+static unsigned fog_toon_tests(r3d_job *j)
+{
+    if (forced_spe("toon") || forced_spe("niebla")) return 0;
+    unsigned fail=0;
+    for (unsigned test=0;test<4;test++) {
+        const unsigned w=test&1, highlight=test>>1;
+        memset(&frame,0,sizeof frame);
+        frame.npolys=512; frame.nverts=2048; frame.swap_params=w ? 3 : 1;
+        frame.regs.clear_depth=0x7fff; frame.regs.disp3dcnt=D3_TEXTURE|D3_BLEND|D3_FOG|(10u<<8)|(highlight ? D3_HIGHLIGHT : 0);
+        frame.regs.clear_color=(31u<<16)|0x8000u|0x4210u;
+        frame.regs.fog_color=(17u<<16)|0x7c1fu;
+        frame.regs.fog_offset=w ? 2000 : 8000;
+        for (unsigned t=0;t<32;t++) frame.regs.fog_table[t]=t==31 ? 127 : (t*37)&127;
+        for (unsigned t=0;t<32;t++) frame.regs.toon_table[t]=t|(((t*7)&31)<<5)|((31-t)<<10);
+        for (unsigned t=0;t<32;t++) {
+            unsigned rgb=t|((31-t)<<5)|(((t*7)&31)<<10)|0x8000;
+            vram[2*t]=rgb; vram[2*t+1]=rgb>>8;
+        }
+        for (unsigned n=0;n<512;n++) {
+            unsigned c=n&63, t=n/64, x=(n%32)*8, y=(n/32)*12;
+            quad(n,1,31,c,63-c,(c*13)&63,1);
+            gx_poly *p=&frame.poly[n];
+            p->attr|=2u<<4; p->attr|=(n&1) ? PA_FOG : 0;
+            p->xmin=x; p->xmax=x+8; p->ymin=y; p->ymax=y+12;
+            if (w) p->wshift=8;
+            uint32_t z=((w ? 2000u : 8000u)+(n%48)*600u+(n/48)*37u)<<9;
+            for (unsigned k=0;k<4;k++) {
+                gx_vertex *v=&frame.vtx[n*4+k];
+                v->sx=x+((k==1 || k==2) ? 8 : 0); v->sy=y+(k>=2 ? 12 : 0);
+                v->z=z; v->w=z>>8;
+                v->s=(t%8)*16+8; v->t=(t/8)*16+8;
+            }
+        }
+        r3d_render_ref(&frame,vram,j->texslot,j->palslot,0,reference);
+        rsxkit_frame_begin(0); rsxkit_frame_end(); rsxkit_frame_begin(0);
+        memset(output,0xa5,sizeof output);
+        rsx3d_stats st; int ok=rsx3d_render(j,&st);
+        int fallback=rsx3d_fog_combined_spe();
+        unsigned different=0, over=0, worst=0;
+        if (fallback) { for (unsigned k=0;k<R3D_W*R3D_H;k++) different+=output[k]!=0xa5a5a5a5u; over=different; }
+        else fog_compare(&different,&over,&worst);
+        fail+=ok!=!fallback || over!=0;
+        salsads_log("rsx3d niebla+%s %s: estado %d (%s), distintos %u, fuera de tolerancia %u, peor %u/63, dibujos %u, %s",
+                    highlight ? "resaltado" : "toon",w ? "W" : "Z",ok,fallback ? "respaldo esperado" : "RSX",different,over,worst,st.draws,rsx3d_reason());
+        if (!fallback) {
+            char name[80];
+            snprintf(name,sizeof name,"rsx3d-niebla-toon-%u-diff",test); save_difference(name);
+            if (over && ok==1) fog_diagnose(j);
+        }
     }
     return fail;
 }
@@ -663,6 +800,16 @@ static unsigned fallback_tests(r3d_job *j)
         rsx3d_stats st; int ok = rsx3d_render(j, &st);
         unsigned modified = 0;
         for (unsigned k = 0; k < R3D_W*R3D_H; k++) modified += output[k] != 0xa5a5a5a5u;
+        /* 5 (niebla con sombra) y 8 (igualdad con cara trasera en W) ya se
+         * admiten: exigir la imagen exacta de la referencia. */
+        if ((test == 5 && !rsx3d_fog_combined_spe()) || (test == 8 && !rsx3d_shadow_back_w_spe())) {
+            r3d_render_ref(&frame, vram, j->texslot, j->palslot, 0, reference);
+            unsigned differ = 0;
+            for (unsigned k = 0; k < R3D_W*R3D_H; k++) differ += output[k] != reference[k];
+            fail += ok != 1 || differ != 0;
+            salsads_log("rsx3d respaldo prueba %u: estado %d (admitida), distintos %u, %s", test, ok, differ, rsx3d_reason());
+            continue;
+        }
         if (test >= 6 && test < 8 && !rsx3d_fog_constant()) {
             /* Niebla por fragmento: el RSX admite el cuadro; se exige la tolerancia documentada
              * (±1 LSB de 5 bits por canal = ±2 en RGB6, alfa exacta) contra la referencia. */
@@ -1065,6 +1212,8 @@ int rsx3d_selftest(void)
     fail += equality_tests(&j);
     fail += fog_tests(&j,0);
     fail += fog_translucent_tests(&j,0);
+    fail += fog_shadow_tests(&j);
+    fail += fog_toon_tests(&j);
     if (rsx3d_scale()>1) {
         fail += fog_tests(&j,1);
         fail += fog_translucent_tests(&j,1);

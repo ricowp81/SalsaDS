@@ -27,7 +27,7 @@ class Program:
             self.constants[f"c[{index}]"] = (v + [0.0] * 4)[:4]
         self.code = []
         for line in text.splitlines():
-            m = re.fullmatch(r"(TEX|KIL|[A-Z]+R[CH]?)[ ]+(.+);", line)
+            m = re.fullmatch(r"(TEX|KIL|[A-Z]+R[CH]?(?:_SAT)?)[ ]+(.+);", line)
             if m:
                 self.code.append((m[1], m[2].split(", ")))
 
@@ -64,6 +64,8 @@ class Program:
                 value = [fp32(v) for v in textures[unit](source(operands[0]))]
             else:
                 a = [source(t) for t in operands]
+                saturate = op.endswith("_SAT")
+                op = op.removesuffix("_SAT")
                 fn = {
                     "MOVR": lambda x: x[0], "ADDR": lambda x: x[0] + x[1],
                     "MULR": lambda x: x[0] * x[1], "MADR": lambda x: x[0] * x[1] + x[2],
@@ -72,6 +74,8 @@ class Program:
                     "SGER": lambda x: float(x[0] >= x[1]), "SLTR": lambda x: float(x[0] < x[1]),
                 }[op.removesuffix("C")]
                 value = [fp32(fn([v[c] for v in a])) for c in range(4)]
+                if saturate:
+                    value = [min(1.0, max(0.0, v)) for v in value]
             if op.endswith("C"):
                 condition = value
             # cgcomp exporta DEPTH desde R1.z, también si una escritura
@@ -96,7 +100,18 @@ def density(z15, offset, step, table):
     return 128 if d == 127 else d
 
 
-def check_attributes(attr, attr_w):
+def w_depth(vertex_w, shift, rounded):
+    """La W por fragmento de wdepth.cgi: 1/pos.w llega como RCP(1/w) (en un
+    plano, w−ε); con el redondeo activo (s.x = 1) se redondea al entero y se
+    multiplica por 2^wshift/16777215 calculado desde el entero; con s.x = 0,
+    floor(1/pos.w)·q.y, la forma anterior."""
+    reciprocal = fp32(1 / fp32(1 / vertex_w))
+    if rounded:
+        return min(1.0, fp32(math.floor(reciprocal + 0.5) * fp32(fp32(1 << shift) / 16777215)))
+    return min(1.0, fp32(math.floor(reciprocal) * fp32((1 << shift) / 16777215)))
+
+
+def check_attributes(attr, attr_w, shadow=False):
     total = 0
     for program, w in ((attr, False), (attr_w, True)):
         cases = product((1, 3, 12, 127, 255, 256, 4095, 7000, 16384, 32767),
@@ -105,6 +120,7 @@ def check_attributes(attr, attr_w):
             z = z15 * 512 + low
             shift = 8 if w else 0
             vertex_w = max(1, z >> shift)
+            rounded = (z15 + low) % 2 == 0
             inputs = {"fragment.texcoord[0]": [0.5]*4,
                       "fragment.texcoord[1]": [0, alpha, 0, render_pass],
                       "fragment.texcoord[2]": [0, (1<<shift)/16777215, 0, 1<<shift],
@@ -112,11 +128,14 @@ def check_attributes(attr, attr_w):
                       # niebla, por constantes o por vértice (mismo formato).
                       "fragment.texcoord[3]": [(z>>9)//256, (z>>9)%256, 1, flag],
                       "fragment.texcoord[4]": [0, 1024, 0, 0],
+                      # s.x: redondeo de la W (1) o truncada anterior (0).
+                      "fragment.texcoord[5]": [1 if rounded else 0, 0, 0, 0],
                       # WPOS Z-1 reproduce el error medido en planos; la
                       # constante debe conservar ambos lados del borde.
                       "fragment.position": [0, 0, (z-1)/16777215, 1/vertex_w]}
             result = program.run(inputs, {0: lambda uv: [31/255]*4}, with_depth=True)
-            survives = alpha > 0 and (alpha < 31) == bool(render_pass)
+            # Sombra: siempre translúcida, también con alfa 31.
+            survives = alpha > 0 and (shadow or alpha < 31) == bool(render_pass)
             assert (result is not None) == survives, ("descarte", w, alpha, render_pass, result)
             total += 1
             if not survives:
@@ -126,9 +145,8 @@ def check_attributes(attr, attr_w):
             want = [expected_z15//256, expected_z15%256, 0, flag*255]
             assert [round(c*255) for c in color] == want, ("borde Z/W", w, z, color, want)
             if w:
-                reciprocal = fp32(1/fp32(1/vertex_w))
-                expected_depth = min(1.0, fp32(math.floor(reciprocal)*fp32((1<<shift)/16777215)))
-                assert depth == expected_depth, ("DEPTH W", z, depth, expected_depth)
+                expected_depth = w_depth(vertex_w, shift, rounded)
+                assert depth == expected_depth, ("DEPTH W", z, rounded, depth, expected_depth)
             else:
                 # Con el indicador de plano apagado se sigue usando WPOS,
                 # aunque la constante contenga un valor muy diferente.
@@ -142,8 +160,10 @@ def check_attributes(attr, attr_w):
     return total
 
 
-def check(attr, attr_w, final, probe=None):
+def check(attr, attr_w, final, probe=None, attr_shadow=None, attr_shadow_w=None):
     total = check_attributes(attr, attr_w)
+    if attr_shadow and attr_shadow_w:
+        total += check_attributes(attr_shadow, attr_shadow_w, shadow=True)
     for program, w in ((attr, False), (attr_w, True)):
         for z15 in (0, 1, 127, 255, 256, 4095, 7000, 16384, 32767):
             z = z15 * 512 + 128
@@ -153,10 +173,11 @@ def check(attr, attr_w, final, probe=None):
                           "fragment.texcoord[2]": [0, 1/16777215, 0, 1],
                           "fragment.texcoord[3]": [0, 0, 0, flag],
                           "fragment.texcoord[4]": [0, 1024, 0, 0],
+                          "fragment.texcoord[5]": [flag, 0, 0, 0],
                           "fragment.position": [0, 0, z/16777215, 1/z]}
                 result, depth = program.run(inputs, {0: lambda uv: [31/255]*4}, with_depth=True)
                 if w:
-                    expected_depth = fp32(math.floor(fp32(1/fp32(1/z))) * fp32(1/16777215))
+                    expected_depth = w_depth(z, 0, bool(flag))
                     assert depth == expected_depth, ("DEPTH W", z15, depth, expected_depth)
                 got = [round(v*255) for v in result]
                 assert got == [z15//256, z15%256, 0, flag*255], ("atributos", w, z15, flag, got)
@@ -195,7 +216,7 @@ def check(attr, attr_w, final, probe=None):
                     want = stage[:3] if not column else [stage[3],0,0]
                     assert [round(c*255) for c in got[:3]] == [round(c*255) for c in want], ("sonda",mode,column,got,want)
                     total += 1
-    print(f"niebla fp40: {total} casos, 0 fallos (COLOR comparte R0, DEPTH comparte R1.z)")
+    print(f"niebla fp40: {total} casos, 0 fallos (COLOR comparte R0, DEPTH comparte R1.z; W redondeada y truncada)")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* k: textura, alfa del polígono, modo decal, tipo de pasada.
- * q.x: referencia alfa. Pasadas: 0 opacos, 1 mezcla, 2 reemplazo translúcido. */
+ * q.x: referencia alfa; q.y, q.w y s.x: W por fragmento (wdepth.cgi).
+ * Pasadas: 0 opacos, 1 mezcla, 2 reemplazo translúcido. */
+#include "wdepth.cgi"
 void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
           float4 color : COLOR0, uniform sampler2D image : TEXUNIT0,
 #if defined(RSX3D_TOON) || defined(RSX3D_FOG)
@@ -13,12 +15,12 @@ void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
           float4 pos : WPOS,
 #endif
 #ifdef RSX3D_W
-          out float depth : DEPTH,
+          float4 s : TEXCOORD5, out float depth : DEPTH,
 #endif
           out float4 result : COLOR)
 {
 #ifdef RSX3D_W
-    depth = min(floor(1.0 / pos.w) * q.y, 1.0);
+    depth = RSX3D_WDEPTH(pos, q, s);
 #endif
     float4 t = floor(tex2D(image, uv.xy) * 255.0 + 0.5);
     float3 v = min(floor(color.rgb * 255.0 + 0.875), 63.0);
