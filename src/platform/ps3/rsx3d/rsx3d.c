@@ -396,9 +396,9 @@ static rsxkit_program *fog_attr_shadow, *fog_attr_shadow_w;
 /* Niebla junto con toon o sombras, cara trasera con W y redondeo de la W
  * por fragmento: interruptores de respaldo (3d-rsx-niebla-combinada-spe,
  * 3d-rsx-sombra-trasera-w-spe, 3d-rsx-w-truncada). La niebla con toon o
- * resaltado va al SPE por omisión hasta que la autoprueba de la consola la
- * acredite (3d-rsx-niebla-toon la lleva al RSX); la autoprueba degrada al
- * SPE el grupo que falle (toon o sombra) sin apagar el resto del 3D. */
+ * resaltado va al RSX (acreditada en la consola con la autoprueba a 1× y 2×;
+ * 3d-rsx-niebla-toon-spe la manda al SPE); la autoprueba degrada al SPE el
+ * grupo que falle (toon o sombra) sin apagar el resto del 3D. */
 static int fog_combined_spe, shadow_back_w_spe, w_truncated;
 static int fog_toon_rsx, fog_toon_degraded, fog_shadow_degraded;
 static rsxkit_program *fog_probe;
@@ -723,7 +723,7 @@ int rsx3d_init(void)
     shadow_spe = stat("/dev_hdd0/salsads/3d-rsx-sombra-spe", &flag) == 0;
     toon_spe = stat("/dev_hdd0/salsads/3d-rsx-toon-spe", &flag) == 0;
     fog_combined_spe = stat("/dev_hdd0/salsads/3d-rsx-niebla-combinada-spe", &flag) == 0; /* A/B: niebla con toon o sombra al SPE */
-    fog_toon_rsx = stat("/dev_hdd0/salsads/3d-rsx-niebla-toon", &flag) == 0; /* experimento: niebla con toon o resaltado en el RSX */
+    fog_toon_rsx = stat("/dev_hdd0/salsads/3d-rsx-niebla-toon-spe", &flag) != 0; /* A/B: niebla con toon o resaltado al SPE */
     fog_toon_degraded = fog_shadow_degraded = 0;
     shadow_back_w_spe = stat("/dev_hdd0/salsads/3d-rsx-sombra-trasera-w-spe", &flag) == 0; /* A/B: sombras con cara trasera en W al SPE */
     w_truncated = stat("/dev_hdd0/salsads/3d-rsx-w-truncada", &flag) == 0; /* A/B: W por fragmento truncada (floor) y escala interpolada, como antes */
@@ -809,7 +809,7 @@ int rsx3d_init(void)
     salsads_log("rsx3d pasadas: %s", passes_previous ? "ronda 3" : "opacos directos y atributos compactos");
     salsads_log("rsx3d sombras y niebla: niebla con sombra %s; niebla con toon o resaltado %s; cara trasera con W %s; W por fragmento %s",
                 fog_combined_spe || fog_previous ? "al SPE" : "en el RSX (tabla aparte, atributos de sombra)",
-                fog_combined_spe || fog_previous ? "al SPE" : fog_toon_rsx ? "en el RSX (3d-rsx-niebla-toon)" : "al SPE por omisión (3d-rsx-niebla-toon la prueba en el RSX)",
+                fog_combined_spe || fog_previous ? "al SPE" : fog_toon_rsx ? "en el RSX" : "al SPE (3d-rsx-niebla-toon-spe)",
                 shadow_back_w_spe || w_truncated ? "al SPE" : "en el RSX",
                 w_truncated ? "truncada con escala interpolada (anterior)" : "redondeada con escala entera (empates exactos)");
     salsads_log("rsx3d recursos listos: niebla auxiliar GDDR3 %u KiB; programas y destinos reservados",
@@ -1119,11 +1119,11 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
             (modes & ((1u << RSX_TOON) | (1u << RSX_HIGHLIGHT) | (1u << RSX_SHADOW_MASK) | (1u << RSX_SHADOW)))) {
             reason = "niebla combinada con toon o sombra"; return 0;
         }
-        /* Toon o resaltado con niebla: al SPE por omisión hasta acreditarlo
-         * en consola (3d-rsx-niebla-toon); también si la autoprueba degradó
-         * el grupo. Las sombras con niebla solo si las degradó la autoprueba. */
+        /* Toon o resaltado con niebla: al SPE con 3d-rsx-niebla-toon-spe o si
+         * la autoprueba degradó el grupo. Las sombras con niebla solo si las
+         * degradó la autoprueba. */
         if ((!fog_toon_rsx || fog_toon_degraded) && (modes & ((1u << RSX_TOON) | (1u << RSX_HIGHLIGHT)))) {
-            reason = fog_toon_degraded ? "niebla con toon: degradada por la autoprueba" : "niebla con toon o resaltado (SPE por omisión)"; return 0;
+            reason = fog_toon_degraded ? "niebla con toon: degradada por la autoprueba" : "niebla con toon o resaltado (3d-rsx-niebla-toon-spe)"; return 0;
         }
         if (fog_shadow_degraded && (modes & ((1u << RSX_SHADOW_MASK) | (1u << RSX_SHADOW)))) {
             reason = "niebla con sombras: degradada por la autoprueba"; return 0;
