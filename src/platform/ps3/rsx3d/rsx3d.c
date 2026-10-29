@@ -19,6 +19,8 @@
 #include "fog_w_fpo.h"
 #include "fog_attr_fpo.h"
 #include "fog_attr_w_fpo.h"
+#include "fog_attr_shadow_fpo.h"
+#include "fog_attr_shadow_w_fpo.h"
 #include "fog_final_fpo.h"
 #include "fog_probe_fpo.h"
 #include "range_fpo.h"
@@ -52,6 +54,8 @@ _Static_assert((int)RP_OFF == (int)RSXKIT_BLEND_OFF && (int)RP_NONE == (int)RSXK
 #define OUT_OFF(slot) (18u * 1024u * 1024u + (slot) * 256u * 1024u)
 #define SNAP_OFF (19u * 1024u * 1024u)
 #define TOON_OFF(slot) (20u * 1024u * 1024u + (slot) * 128u)
+/* Tabla de niebla aparte de la de toon: un cuadro puede llevar las dos. */
+#define FOG_OFF(slot) (20u * 1024u * 1024u + 256u + (slot) * 128u)
 #define CACHE_N 256u
 _Static_assert(GX_MAX_POLYS * (GX_POLY_MAXV - 2u) * 3u * sizeof(rsxkit_vertex) <= 2u * 1024u * 1024u, "vértices por ranura");
 #define PAGE_SIZE 1024u
@@ -388,6 +392,15 @@ static rsxkit_program *shade, *shade_w, *pack, *toon, *toon_w;
 static int toon_spe, shadow_spe, fog_spe;
 static rsxkit_program *fog, *fog_w;
 static rsxkit_program *fog_attr, *fog_attr_w, *fog_final;
+static rsxkit_program *fog_attr_shadow, *fog_attr_shadow_w;
+/* Niebla junto con toon o sombras, cara trasera con W y redondeo de la W
+ * por fragmento: interruptores de respaldo (3d-rsx-niebla-combinada-spe,
+ * 3d-rsx-sombra-trasera-w-spe, 3d-rsx-w-truncada). La niebla con toon o
+ * resaltado va al RSX (acreditada en la consola con la autoprueba a 1× y 2×;
+ * 3d-rsx-niebla-toon-spe la manda al SPE); la autoprueba degrada al SPE el
+ * grupo que falle (toon o sombra) sin apagar el resto del 3D. */
+static int fog_combined_spe, shadow_back_w_spe, w_truncated;
+static int fog_toon_rsx, fog_toon_degraded, fog_shadow_degraded;
 static rsxkit_program *fog_probe;
 /* Índice 0 nativo, 1 HD: imágenes transitorias compartidas por las ranuras.
  * El FIFO termina su posproceso antes de borrar las del siguiente cuadro. */
@@ -531,6 +544,17 @@ static rsxkit_draw last_draw;
 static int last_valid;
 
 const char *rsx3d_reason(void) { return reason; }
+int rsx3d_shadow_back_w_spe(void) { return shadow_back_w_spe || w_truncated; }
+int rsx3d_fog_combined_spe(void) { return fog_combined_spe || fog_previous; }
+int rsx3d_fog_toon_spe(void) { return rsx3d_fog_combined_spe() || !fog_toon_rsx || fog_toon_degraded; }
+int rsx3d_fog_shadow_spe(void) { return rsx3d_fog_combined_spe() || fog_shadow_degraded; }
+void rsx3d_fog_degrade(int toon)
+{
+    if (toon) fog_toon_degraded = 1; else fog_shadow_degraded = 1;
+    salsads_log("rsx3d autoprueba: niebla con %s falla en el RSX; esos cuadros van al SPE (el resto del 3D sigue en el RSX)",
+                toon ? "toon o resaltado" : "sombras");
+}
+int rsx3d_w_truncated(void) { return w_truncated; }
 int rsx3d_fog_constant(void) { return fog_constant; }
 int rsx3d_fog_final(void) { return !fog_previous; }
 static uint32_t tex_read(void *unused, uint32_t a)
@@ -698,6 +722,11 @@ int rsx3d_init(void)
     shadow_ids_spe = stat("/dev_hdd0/salsads/3d-rsx-sombra-ids-spe", &flag) == 0;
     shadow_spe = stat("/dev_hdd0/salsads/3d-rsx-sombra-spe", &flag) == 0;
     toon_spe = stat("/dev_hdd0/salsads/3d-rsx-toon-spe", &flag) == 0;
+    fog_combined_spe = stat("/dev_hdd0/salsads/3d-rsx-niebla-combinada-spe", &flag) == 0; /* A/B: niebla con toon o sombra al SPE */
+    fog_toon_rsx = stat("/dev_hdd0/salsads/3d-rsx-niebla-toon-spe", &flag) != 0; /* A/B: niebla con toon o resaltado al SPE */
+    fog_toon_degraded = fog_shadow_degraded = 0;
+    shadow_back_w_spe = stat("/dev_hdd0/salsads/3d-rsx-sombra-trasera-w-spe", &flag) == 0; /* A/B: sombras con cara trasera en W al SPE */
+    w_truncated = stat("/dev_hdd0/salsads/3d-rsx-w-truncada", &flag) == 0; /* A/B: W por fragmento truncada (floor) y escala interpolada, como antes */
     attr_const = stat("/dev_hdd0/salsads/3d-rsx-atributos-por-poligono", &flag) == 0;
     extended_unbatched = stat("/dev_hdd0/salsads/3d-rsx-ampliado-sin-lotes", &flag) == 0;
     gate_previous = stat("/dev_hdd0/salsads/3d-rsx-puerta-ronda6", &flag) == 0;
@@ -724,6 +753,7 @@ int rsx3d_init(void)
     fog = rsxkit_program_create(fog_fpo); fog_w = rsxkit_program_create(fog_w_fpo);
     fog_attr = rsxkit_program_create(fog_attr_fpo); fog_attr_w = rsxkit_program_create(fog_attr_w_fpo);
     fog_final = rsxkit_program_create(fog_final_fpo);
+    fog_attr_shadow = rsxkit_program_create(fog_attr_shadow_fpo); fog_attr_shadow_w = rsxkit_program_create(fog_attr_shadow_w_fpo);
     if (!fog_previous) {
         fog_color[0] = rsxkit_target_create_rgba(R3D_W, R3D_H);
         fog_attributes[0] = rsxkit_target_create_rgba(R3D_W, R3D_H);
@@ -732,7 +762,7 @@ int rsx3d_init(void)
     shadow = rsxkit_program_create(shadow_fpo); shadow_w = rsxkit_program_create(shadow_w_fpo);
     mask = rsxkit_program_create(mask_fpo); mask_w = rsxkit_program_create(mask_w_fpo);
     toon = rsxkit_program_create(toon_fpo); toon_w = rsxkit_program_create(toon_w_fpo);
-    if (!range_z || !range_w || !target || !depth || !output[0] || !output[1] || !shade || !shade_w || !pack || !toon || !toon_w || !shadow || !shadow_w || !mask || !mask_w || !fog || !fog_w || !fog_attr || !fog_attr_w || !fog_final) return -1;
+    if (!range_z || !range_w || !target || !depth || !output[0] || !output[1] || !shade || !shade_w || !pack || !toon || !toon_w || !shadow || !shadow_w || !mask || !mask_w || !fog || !fog_w || !fog_attr || !fog_attr_w || !fog_final || !fog_attr_shadow || !fog_attr_shadow_w) return -1;
     if (!fog_previous && (!fog_color[0] || !fog_attributes[0])) return -1;
     if (stat("/dev_hdd0/salsads/3d-rsx-2x", &flag) == 0) hd_scale=2;
     if (stat("/dev_hdd0/salsads/3d-rsx-3x", &flag) == 0) hd_scale=3;
@@ -777,6 +807,11 @@ int rsx3d_init(void)
                 cost_stale_ok ? "vale para bajar (ronda 6)" : "recalibra antes de bajar (más vieja que 120 cuadros)",
                 tid_limit8 ? "hasta 8 (tope anterior)" : "hasta 15 sin sombras (4 bits de TID)");
     salsads_log("rsx3d pasadas: %s", passes_previous ? "ronda 3" : "opacos directos y atributos compactos");
+    salsads_log("rsx3d sombras y niebla: niebla con sombra %s; niebla con toon o resaltado %s; cara trasera con W %s; W por fragmento %s",
+                fog_combined_spe || fog_previous ? "al SPE" : "en el RSX (tabla aparte, atributos de sombra)",
+                fog_combined_spe || fog_previous ? "al SPE" : fog_toon_rsx ? "en el RSX" : "al SPE (3d-rsx-niebla-toon-spe)",
+                shadow_back_w_spe || w_truncated ? "al SPE" : "en el RSX",
+                w_truncated ? "truncada con escala interpolada (anterior)" : "redondeada con escala entera (empates exactos)");
     salsads_log("rsx3d recursos listos: niebla auxiliar GDDR3 %u KiB; programas y destinos reservados",
                 fog_previous ? 0 : (384u * (1u + (hd_scale > 1 ? hd_scale * hd_scale : 0u))));
     reason = "Z nativa; W por fragmento";
@@ -796,6 +831,7 @@ void rsx3d_shutdown(void)
     rsxkit_finish();
     rsxkit_program_destroy(fog); rsxkit_program_destroy(fog_w);
     rsxkit_program_destroy(fog_attr); rsxkit_program_destroy(fog_attr_w); rsxkit_program_destroy(fog_final);
+    rsxkit_program_destroy(fog_attr_shadow); rsxkit_program_destroy(fog_attr_shadow_w);
     rsxkit_program_destroy(fog_probe);
     for (unsigned i=0;i<2;i++) { rsxkit_target_destroy(fog_color[i]); rsxkit_target_destroy(fog_attributes[i]); }
     rsxkit_program_destroy(range_z); rsxkit_program_destroy(range_w);
@@ -821,10 +857,16 @@ static void draw(struct command *c, uint8_t test, uint8_t ref, uint8_t compare, 
      * queda el del fragmento, no 1 como deja rsxkit por omisión. */
     d->dst_alpha = RSXKIT_DSTA_FRAG;
     rsxkit_program *program = d->program;
-    float saved_fc[2][4];
-    int attributes = fog_attribute_pass && (program == shade || program == shade_w);
+    float saved_fc[2][4], saved_kz = d->k[0][0][2];
+    const int toonlike = program == toon || program == toon_w;
+    const int shadowlike = program == shadow || program == shadow_w;
+    int attributes = fog_attribute_pass && (program == shade || program == shade_w || toonlike || shadowlike);
     if (attributes) {
-        d->program = program == shade_w ? fog_attr_w : fog_attr;
+        /* Sombras: siempre translúcidas (también con alfa 31). Toon: el alfa
+         * es el de modulación; k.z lleva el modo 2 solo para el color. */
+        d->program = shadowlike ? (program == shadow_w ? fog_attr_shadow_w : fog_attr_shadow) :
+                     (program == shade_w || program == toon_w) ? fog_attr_w : fog_attr;
+        if (toonlike) d->k[0][0][2] = 0;
         if (blend != RSXKIT_BLEND_NONE && pass != 0)
             d->blend = c->tdepth ? RSXKIT_BLEND_REPLACE_MIN_ALPHA : RSXKIT_BLEND_KEEP_MIN_ALPHA;
         /* fc = (Z>>9 alto, bajo, plano, niebla): por constantes del polígono
@@ -843,17 +885,13 @@ static void draw(struct command *c, uint8_t test, uint8_t ref, uint8_t compare, 
     if (!last_valid || memcmp(&last_draw, d, sizeof *d)) st->state_changes++;
     last_draw = *d; last_valid = 1;
     rsxkit_draw_triangles(d, c->first, c->count); st->draws++;
-    if (attributes) memcpy(d->k[2], saved_fc, sizeof saved_fc);
+    if (attributes) { memcpy(d->k[2], saved_fc, sizeof saved_fc); d->k[0][0][2] = saved_kz; }
     d->program = program;
 }
-static void draw_color_compact(struct command *c, const r3d_rstate *rs,
-                               unsigned prior_back, rsx3d_stats *st)
+/* Ejecuta un plan portable (rsx_passes.h): el color va con el programa del
+ * comando (shade, toon o sombra), la máscara y el rango con los suyos. */
+static void draw_plan(struct command *c, const r3d_rstate *rs, const rsx_pass *passes, unsigned n, rsx3d_stats *st)
 {
-    rsx_pass_input in = {c->id, tid[c->id], oid[c->id], trans_mask,
-        c->front, c->trans, c->d.k[0][0][1] == 31, c->tdepth, c->equal,
-        shadow_extended, !!(rs->d3 & D3_BLEND), R3D_PX_A(rs->clear_px) != 0,
-        fog_attribute_pass, prior_back};
-    rsx_pass passes[9]; unsigned n=rsx_color_passes_mode(&in,passes,!gate_previous);
     rsxkit_program *color=c->d.program;
     float saved=c->d.k[1][0][2];
     for (unsigned i=0;i<n;i++) {
@@ -865,6 +903,30 @@ static void draw_color_compact(struct command *c, const r3d_rstate *rs,
         draw(c,p->test,p->ref,p->compare,p->write,p->op,p->blend,p->depth,p->pass,st);
     }
     c->d.stencil_zfail=0; c->d.stencil_sfail=0; c->d.k[1][0][2]=saved; c->d.program=color;
+}
+static void draw_color_compact(struct command *c, const r3d_rstate *rs,
+                               unsigned prior_back, rsx3d_stats *st)
+{
+    rsx_pass_input in = {c->id, tid[c->id], oid[c->id], trans_mask,
+        c->front, c->trans, c->d.k[0][0][1] == 31, c->tdepth, c->equal,
+        shadow_extended, !!(rs->d3 & D3_BLEND), R3D_PX_A(rs->clear_px) != 0,
+        fog_attribute_pass, prior_back};
+    rsx_pass passes[9]; unsigned n=rsx_color_passes_mode(&in,passes,!gate_previous);
+    draw_plan(c,rs,passes,n,st);
+}
+/* Sombras y máscaras (modo 3), y los polígonos de color cuando hay sombras
+ * sin ampliar: el plan portable de rsx_passes.h. Sin ampliar y ampliado
+ * comparten la entrada; `consume` solo cuenta con una sola sombra. */
+static void draw_shadow_plan(struct command *c, const r3d_rstate *rs, rsx3d_stats *st)
+{
+    rsx_shadow_input in = {c->id, tid[c->id], oid[c->id], shadow_extended ? oid_test[c->id] : 255,
+        trans_mask, opaque_mask, c->front, c->tdepth, c->equal, !!(rs->d3 & D3_BLEND),
+        single_shadow, single_shadow && !shadow_unbatched && !c->d.k[0][0][0] && c->d.k[0][0][1] > c->d.k[1][0][0],
+        R3D_PX_A(rs->clear_px) != 0, shadow_extended};
+    rsx_pass passes[12]; unsigned n;
+    if (c->mode != 3) n=rsx_shadow_color_passes(&in,c->trans,passes);
+    else n=c->id ? rsx_shadow_passes(&in,passes) : rsx_mask_passes(&in,passes);
+    draw_plan(c,rs,passes,n,st);
 }
 /* Lote entre comandos contiguos de las pasadas de color y de atributos: la
  * clave portable (rsx_batch.h) cubre textura 0, k.xyz, q.xy, pruebas e IDs;
@@ -878,7 +940,8 @@ static int color_batch_equal(const struct command *a, const struct command *b, u
         rsx_batch_equal(&a->key,&b->key,flags);
 }
 /* Puerta por polígono: conserva Z y su cara mientras se consultan los IDs.
- * El bit alto guarda el resultado temporal sin perder la ocupación. */
+ * El bit alto guarda el resultado temporal sin perder la ocupación. Solo con
+ * 3d-rsx-pasadas-ronda3; la ruta normal usa el plan portable (rsx_passes.h). */
 static void draw_shadow_extended(struct command *c, const r3d_rstate *rs, rsx3d_stats *st)
 {
     rsxkit_program *color = c->d.program;
@@ -948,7 +1011,7 @@ static void fog_pass(rsxkit_post_pass *p, const r3d_rstate *rs, unsigned slot, u
     rsxkit_target_texture(fog_attributes[hd_pass], 0, R3D_H*(hd_pass ? hd_scale : 1), &tx);
     p->in[1] = rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
     memset(&tx, 0, sizeof tx);
-    tx.offset = offset + TOON_OFF(slot); tx.pitch = 128; tx.width = 32; tx.height = 1;
+    tx.offset = offset + FOG_OFF(slot); tx.pitch = 128; tx.width = 32; tx.height = 1;
     tx.format = RSXKIT_RGBA8888; tx.location = RSXKIT_MEM_MAIN;
     p->in[2] = rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
     p->k[0][0] = R3D_PX_R(rs->fog_px); p->k[0][1] = R3D_PX_G(rs->fog_px);
@@ -1052,8 +1115,21 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
         return 0;
     }
     if (modes & (1u << RSX_FOG)) {
-        if (modes & ((1u << RSX_TOON) | (1u << RSX_HIGHLIGHT) | (1u << RSX_SHADOW_MASK) | (1u << RSX_SHADOW))) {
+        /* La niebla final repite el raster en la pasada de atributos con los
+         * programas de sombra y toon y lee su tabla aparte de la de toon; la
+         * niebla anterior (por fragmento) comparte TEXUNIT1 con el toon. */
+        if ((fog_previous || fog_combined_spe) &&
+            (modes & ((1u << RSX_TOON) | (1u << RSX_HIGHLIGHT) | (1u << RSX_SHADOW_MASK) | (1u << RSX_SHADOW)))) {
             reason = "niebla combinada con toon o sombra"; return 0;
+        }
+        /* Toon o resaltado con niebla: al SPE con 3d-rsx-niebla-toon-spe o si
+         * la autoprueba degradó el grupo. Las sombras con niebla solo si las
+         * degradó la autoprueba. */
+        if ((!fog_toon_rsx || fog_toon_degraded) && (modes & ((1u << RSX_TOON) | (1u << RSX_HIGHLIGHT)))) {
+            reason = fog_toon_degraded ? "niebla con toon: degradada por la autoprueba" : "niebla con toon o resaltado (3d-rsx-niebla-toon-spe)"; return 0;
+        }
+        if (fog_shadow_degraded && (modes & ((1u << RSX_SHADOW_MASK) | (1u << RSX_SHADOW)))) {
+            reason = "niebla con sombras: degradada por la autoprueba"; return 0;
         }
         for (unsigned i = 0; i < f->npolys; i++) {
             const gx_poly *p = &f->poly[i];
@@ -1077,82 +1153,28 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
     shadow_extended = 0;
     if (shadows && (modes & (1u<<RSX_EQUAL))) { reason = "igualdad con sombras"; return 0; }
     if (shadows || (modes & (1u<<RSX_EQUAL))) {
-        int needs_back = 0;
-        /* Si solo hay un ID de sombra basta guardar OID==sombra. El resto
-         * de los IDs opacos son indistinguibles para las operaciones admitidas.
-         * Cuatro bits TID: 0 vacío, 1..7 otros IDs, 8 sombra; bits 5/6/7
-         * máscara, temporal y ocupado. Con varias sombras: OID2 + TID3. */
-        unsigned shadow_id = 64;
-        single_shadow = !shadow_general;
-        for (unsigned i = 0; i < f->npolys; i++) {
-            uint32_t a = f->poly[i].attr;
-            if (PA_MODE(a) == 3 && PA_ID(a)) {
-                if (shadow_id != 64 && shadow_id != PA_ID(a)) single_shadow = 0;
-                shadow_id = PA_ID(a);
-            }
-        }
-        if (shadow_id == 64) single_shadow = 0;
-        memset(oid, 255, sizeof oid); memset(tid, 255, sizeof tid);
-        unsigned no = 1, nt = 1;
-        if (single_shadow) {
-            for (unsigned id = 0; id < 64; id++) oid[id] = id == shadow_id;
-            tid[shadow_id] = 16;
-        } else oid[AT_OID(rs.clear_attr)] = 0;
-        trans_mask = single_shadow ? 30 : 28;
-        for (unsigned i = 0; i < f->npolys; i++) {
-            const gx_poly *p = &f->poly[i];
-            unsigned a = PA_ALPHA(p->attr), m = PA_MODE(p->attr), id = PA_ID(p->attr);
-            unsigned fmt = (p->texparam >> 26) & 7u;
-            if (m == 3 && !id) continue;
-            /* LESS solo es equivalente si ningún escritor deja AT_BACK.
-             * No confundir el empate frontal/trasero con igualdad explícita. */
-            if (!(p->flags & GX_POLY_FRONT) && ((m != 3 && a == 31) || (p->attr & PA_TDEPTH))) {
-                needs_back = 1;
-            }
-            if (m != 3 && a == 31 && oid[id] == 255) oid[id] = no++;
-            if ((m == 3 || a < 31 || (m != 1 && (rs.d3 & D3_TEXTURE) && (fmt == 1 || fmt == 6))) && tid[id] == 255)
-                tid[id] = nt++ << (single_shadow ? 1 : 2);
-        }
-        int needs_ids = no > 4 || nt > 8;
-        /* El empate W de máscaras sigue sin paridad tras dos variantes. */
-        if (needs_back && rs.wbuf) { reason = "sombras: cara trasera W sin paridad"; return 0; }
-        if (needs_back && shadow_back_spe) { reason = "sombras: profundidad de cara trasera"; return 0; }
-        if (needs_ids && shadow_ids_spe) { reason = "sombras: capacidad de IDs excedida"; return 0; }
+        /* Reparto portable (rsx_passes.h), el mismo que ejecuta el banco del
+         * host: una sola sombra, varias, o ampliado con puerta y cara. */
+        rsx_shadow_layout layout;
+        rsx_shadow_layout_init(&layout, f, &rs, shadow_general);
+        /* El empate W (frente gana a espalda con LEQUAL) exige la misma W
+         * entera en todos los programas: redondeo de 1/pos.w y escala
+         * entera (wdepth.cgi). Con la W truncada anterior no hay paridad. */
+        if (layout.needs_back && rs.wbuf && (w_truncated || shadow_back_w_spe)) { reason = "sombras: cara trasera W sin paridad"; return 0; }
+        if (layout.needs_back && shadow_back_spe) { reason = "sombras: profundidad de cara trasera"; return 0; }
+        if (layout.needs_ids && shadow_ids_spe) { reason = "sombras: capacidad de IDs excedida"; return 0; }
         /* Sin sombras el reparto ampliado deja 4 bits de TID (15 IDs); el
          * tope de 8 solo se conserva como A/B. Con sombras lo decide el
          * reparto de abajo. */
-        if (nt > 8 && (tid_limit8 || shadows)) { reason = "3D ampliado: capacidad translúcida sin paridad"; return 0; }
-        if (needs_back || needs_ids || (modes & (1u<<RSX_EQUAL))) {
-            /* Bit 7: puerta Z; 6: cara; 5: máscara; 4: ocupado.
-             * Solo distinguir OID que una sombra puede consultar y algún
-             * opaco (o el borrado) puede escribir. El resto comparte cero. */
-            uint8_t writers[64]={0}, readers[64]={0};
-            writers[AT_OID(rs.clear_attr)]=1;
-            memset(oid, 0, sizeof oid); memset(tid, 255, sizeof tid);
-            memset(oid_test, 255, sizeof oid_test);
-            no = 1; nt = 1;
-            for (unsigned i=0;i<f->npolys;i++) {
-                uint32_t a=f->poly[i].attr;
-                if (PA_MODE(a)==3 && PA_ID(a)) readers[PA_ID(a)]=1;
-                if (PA_MODE(a)!=3 && PA_ALPHA(a)==31) writers[PA_ID(a)]=1;
-            }
-            for (unsigned id=0;id<64;id++) if (readers[id] && writers[id])
-                oid_test[id]=oid[id]=no++;
-            unsigned bits=0;
-            while ((1u<<bits)<no) bits++;
-            if (bits>3) { reason = "sombras: capacidad de IDs excedida"; return 0; }
-            opaque_mask=(1u<<bits)-1; trans_mask=15 & ~opaque_mask;
-            for (unsigned i=0;i<f->npolys;i++) {
-                uint32_t a=f->poly[i].attr, fmt=(f->poly[i].texparam>>26)&7u;
-                if ((PA_MODE(a)==3 && PA_ID(a)) || PA_ALPHA(a)<31 ||
-                    (PA_MODE(a)!=1 && (rs.d3&D3_TEXTURE) && (fmt==1 || fmt==6))) {
-                    if (PA_MODE(a)==3 && !PA_ID(a)) continue;
-                    if (tid[PA_ID(a)]==255) tid[PA_ID(a)]=nt++<<bits;
-                }
-            }
-            if (nt>(16u>>bits)) { reason = shadows ? "sombras: capacidad de IDs excedida" : "3D ampliado: más de 15 IDs translúcidos"; return 0; }
-            shadow_extended=1;
+        if (layout.translucents > 8 && (tid_limit8 || shadows)) { reason = "3D ampliado: capacidad translúcida sin paridad"; return 0; }
+        if (layout.needs_back || layout.needs_ids || (modes & (1u<<RSX_EQUAL))) {
+            const char *why = rsx_shadow_layout_extend(&layout, f, &rs, shadows);
+            if (why) { reason = why; return 0; }
         }
+        memcpy(oid, layout.oid, sizeof oid); memcpy(tid, layout.tid, sizeof tid);
+        memcpy(oid_test, layout.oid_test, sizeof oid_test);
+        trans_mask = layout.trans_mask; opaque_mask = layout.opaque_mask;
+        single_shadow = layout.single; shadow_extended = layout.extended;
     }
     /* Decidir después de la admisión: los respaldos de paridad conservan su
      * motivo. No preparar texturas ni vértices de un cuadro elegido para SPE. */
@@ -1179,18 +1201,19 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
             b[0] = R3D_PX_R(rs.toon[i]); b[1] = R3D_PX_G(rs.toon[i]);
             b[2] = R3D_PX_B(rs.toon[i]); b[3] = 0;
         }
-    } else if (rs.d3 & D3_FOG) {
-        /* La tabla de niebla ocupa la ranura de toon (excluyentes): R = densidad 0..127. */
+    }
+    if (rs.d3 & D3_FOG) {
+        /* Tabla de niebla en su propia ranura (puede convivir con toon): R = densidad 0..127. */
         for (unsigned i = 0; i < 32; i++) {
-            uint8_t *b = mem + TOON_OFF(slot) + 4*i;
+            uint8_t *b = mem + FOG_OFF(slot) + 4*i;
             b[0] = (uint8_t)rs.fog_table[i]; b[1] = b[2] = b[3] = 0;
         }
     }
     if ((modes & ((1u << RSX_TOON) | (1u << RSX_HIGHLIGHT))) || (rs.d3 & D3_FOG)) {
-        /* Los 128 bytes de la tabla caben en una línea de caché del PPE: con pocos vértices nada la desaloja y el RSX
-         * leía la tabla del cuadro anterior (prueba de respaldo 6/7). Escribirla a memoria antes de encolar. */
+        /* Los 128 bytes de cada tabla caben en una línea de caché del PPE: con pocos vértices nada la desaloja y el RSX
+         * leía la tabla del cuadro anterior (prueba de respaldo 6/7). Escribirlas a memoria antes de encolar. */
 #ifdef __powerpc__
-        __asm__ volatile("dcbf 0,%0; sync" : : "r"(mem + TOON_OFF(slot)) : "memory");
+        __asm__ volatile("dcbf 0,%0; dcbf 0,%1; sync" : : "r"(mem + TOON_OFF(slot)), "r"(mem + FOG_OFF(slot)) : "memory");
 #else
         __sync_synchronize();
 #endif
@@ -1255,10 +1278,20 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
         d->k[0][0][0] = p.textured; d->k[0][0][1] = p.alpha; d->k[0][0][2] = p.mode == 3 ? 0 : p.mode;
         d->k[1][0][1] = (float)(1u << p.wshift) / 16777215.0f;
         d->k[1][0][0] = (rs.d3 & D3_ALPHATEST) ? rs.alpha_ref : 0;
+        /* W por fragmento (wdepth.cgi): q.w = 2^wshift entero y s.x elige el
+         * redondeo con escala entera (1) o la truncada anterior (0). */
+        d->k[1][0][3] = (float)(1u << p.wshift);
+        d->k[4][0][0] = w_truncated ? 0.0f : 1.0f;
         if (p.mode == 3) d->program = rs.wbuf ? shadow_w : shadow;
-        if (p.mode == 2) {
-            d->tex[1].offset = offset + TOON_OFF(slot); d->tex[1].pitch = 128;
-            d->tex[1].width = 32; d->tex[1].height = 1;
+        /* TEXUNIT1: la tabla de toon para el modo 2, la de niebla solo en la
+         * ruta por fragmento anterior (rsx_color_table). Antes la niebla la
+         * sobrescribía también en los polígonos toon y el programa de toon
+         * leía las densidades como colores (autoprueba de la consola:
+         * niebla+toon/resaltado con el color de toon en negro o rojizo). */
+        const unsigned table = rsx_color_table(p.mode, !!(rs.d3 & D3_FOG), fog_previous);
+        if (table != RSX_TABLE_NONE) {
+            d->tex[1].offset = offset + (table == RSX_TABLE_TOON ? TOON_OFF(slot) : FOG_OFF(slot));
+            d->tex[1].pitch = 128; d->tex[1].width = 32; d->tex[1].height = 1;
             d->tex[1].format = RSXKIT_RGBA8888; d->tex[1].location = RSXKIT_MEM_MAIN;
             d->tex[1].filter = RSXKIT_FILTER_NEAREST;
             d->tex[1].wrap_s = d->tex[1].wrap_t = RSXKIT_WRAP_CLAMP;
@@ -1268,11 +1301,6 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
             /* Constantes comunes a niebla anterior y atributos finales.
              * Solo la ruta anterior lee la tabla durante el dibujo. */
             if (fog_previous) d->ntex = 2;
-            d->tex[1].offset = offset + TOON_OFF(slot); d->tex[1].pitch = 128;
-            d->tex[1].width = 32; d->tex[1].height = 1;
-            d->tex[1].format = RSXKIT_RGBA8888; d->tex[1].location = RSXKIT_MEM_MAIN;
-            d->tex[1].filter = RSXKIT_FILTER_NEAREST;
-            d->tex[1].wrap_s = d->tex[1].wrap_t = RSXKIT_WRAP_CLAMP;
             d->k[3][0][0] = (float)rs.fog_offset;
             d->k[3][0][1] = (float)(1u << (rs.fog_shift > 10 ? 0u : 10u - rs.fog_shift));
             d->k[3][0][3] = (p.attr & PA_FOG) ? 1.0f : 0.0f;
@@ -1418,73 +1446,8 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
         if (!passes_previous && c->mode != 3 && (shadow_extended || !shadows)) {
             draw_color_compact(c,&rs,earlier_back,st); continue;
         }
-        if (shadow_extended) { draw_shadow_extended(c, &rs, st); continue; }
-        if (shadows) {
-            rsxkit_program *color_program = c->d.program;
-            uint8_t label = tid[c->id];
-            if (c->mode == 3) {
-                c->d.program = rs.wbuf ? mask_w : mask;
-                if (!c->id) {
-                    c->d.stencil_zfail = 1;
-                    draw(c, 1, 32, 255, 32, 2, RSXKIT_BLEND_NONE, z, 0, st);
-                    c->d.stencil_zfail = 0;
-                } else if (single_shadow) {
-                    /* Bits 7/5/4/0: ocupado, máscara, último ID de sombra,
-                     * OID igual a sombra. La comparación rechaza ambos IDs;
-                     * invertir publica el TID sin exigirlo antes de dibujar.
-                     * Los bits bajos del TID anterior ya no se consultan hasta
-                     * que otro translúcido los reemplaza (y limpia el bit 4). */
-                    /* Consumo inmediato: la siguiente primitiva del lote
-                     * ve la máscara apagada también si falla profundidad.
-                     * Solo sin descarte alfa/textura; los demás conservan
-                     * las tres pasadas originales por polígono. */
-                    int consume = !shadow_unbatched && !c->d.k[0][0][0] &&
-                                  c->d.k[0][0][1] > c->d.k[1][0][0];
-                    c->d.stencil_zfail = consume ? 2 : 0;
-                    c->d.program = color_program;
-                    draw(c, 3, 160, 177, consume ? 48 : 16, 1,
-                         (rs.d3 & D3_BLEND) ? RSXKIT_BLEND_ALPHA_MAX : RSXKIT_BLEND_OFF,
-                         z | (c->tdepth ? RSXKIT_DEPTH_WRITE : 0), (rs.d3 & D3_BLEND) ? 1 : 2, st);
-                    /* Un borrado con alfa ocupa toda la pantalla; ninguna
-                     * pasada admitida vuelve a dejar un destino vacío. */
-                    if (!consume || !ca)
-                        draw(c, 3, 32, 177, consume ? 176 : 144, 1, RSXKIT_BLEND_OFF,
-                             z | (c->tdepth ? RSXKIT_DEPTH_WRITE : 0), 2, st);
-                    c->d.stencil_zfail = 0;
-                    c->d.program = rs.wbuf ? mask_w : mask;
-                    draw(c, 1, 0, 0, 32, 0, RSXKIT_BLEND_NONE, 0, 0, st);
-                } else {
-                    /* Consumir la máscara aun si falla Z, ID o alfa. El bit 6
-                     * solo vive durante este polígono; OID nunca se pierde. */
-                    draw(c, 3, 96, 32, 64, 0, RSXKIT_BLEND_NONE, 0, 0, st);
-                    if (oid[c->id] != 255)
-                        draw(c, 3, oid[c->id], 3, 64, 0, RSXKIT_BLEND_NONE, 0, 0, st);
-                    draw(c, 3, label, trans_mask, 64, 0, RSXKIT_BLEND_NONE, 0, 0, st);
-                    c->d.program = color_program;
-                    draw(c, 3, label | 192, 192, trans_mask | 128, 0,
-                         (rs.d3 & D3_BLEND) ? RSXKIT_BLEND_ALPHA_MAX : RSXKIT_BLEND_OFF,
-                         z | (c->tdepth ? RSXKIT_DEPTH_WRITE : 0), (rs.d3 & D3_BLEND) ? 1 : 2, st);
-                    draw(c, 3, label | 64, 192, trans_mask, 0, RSXKIT_BLEND_OFF,
-                         z | (c->tdepth ? RSXKIT_DEPTH_WRITE : 0), 2, st);
-                    draw(c, 3, label | 128, trans_mask, 128, 0, RSXKIT_BLEND_NONE, 0, 2, st);
-                    c->d.program = rs.wbuf ? mask_w : mask;
-                    draw(c, 1, 0, 0, 96, 0, RSXKIT_BLEND_NONE, 0, 0, st);
-                }
-                c->d.program = color_program;
-                continue;
-            }
-            draw(c, 1, oid[c->id] | 128, 255, 159, 0, RSXKIT_BLEND_OFF, z | RSXKIT_DEPTH_WRITE, 0, st);
-            if (!c->trans) continue;
-            draw(c, 3, label, single_shadow && label == 16 ? 16 : trans_mask, 64, 1, RSXKIT_BLEND_NONE, z, 2, st);
-            draw(c, 3, label | 128, 192, trans_mask | 128, 0,
-                 (rs.d3 & D3_BLEND) ? RSXKIT_BLEND_ALPHA_MAX : RSXKIT_BLEND_OFF,
-                 z | (c->tdepth ? RSXKIT_DEPTH_WRITE : 0), (rs.d3 & D3_BLEND) ? 1 : 2, st);
-            draw(c, 3, label, 128, trans_mask, 0, RSXKIT_BLEND_OFF,
-                 z | (c->tdepth ? RSXKIT_DEPTH_WRITE : 0), 2, st);
-            draw(c, 3, label | 128, trans_mask, 128, 0, RSXKIT_BLEND_NONE, 0, 2, st);
-            draw(c, 3, 64, 64, 64, 1, RSXKIT_BLEND_NONE, 0, 2, st);
-            continue;
-        }
+        if (shadow_extended && passes_previous) { draw_shadow_extended(c, &rs, st); continue; }
+        if (shadows || shadow_extended) { draw_shadow_plan(c, &rs, st); continue; }
         draw(c, 1, 64, 255, 255, 0, RSXKIT_BLEND_OFF, z | RSXKIT_DEPTH_WRITE, 0, st);
         if (!c->trans) continue;
         /* Marcar repetidos, mezclar ocupados, reemplazar vacíos y restaurar el marcador.

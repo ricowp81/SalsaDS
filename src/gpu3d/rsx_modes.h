@@ -27,4 +27,16 @@ static inline uint32_t rsx_modes(const gx_frame *f, uint32_t flags)
     }
     return modes;
 }
+/* Tabla de 32 entradas que ocupa TEXUNIT1 en el dibujo de color de un
+ * polígono. La de toon la lee toon.fcg (modo 2); la de niebla solo la ruta
+ * por fragmento anterior (fog.fcg), que no convive con toon. La pasada final
+ * de niebla la lee en TEXUNIT2 y la de atributos no la lee. Un polígono toon
+ * con niebla final conserva la de toon: con la de niebla en su lugar, el
+ * color toon sale de las densidades (R) con G = B = 0. */
+enum { RSX_TABLE_NONE, RSX_TABLE_TOON, RSX_TABLE_FOG };
+static inline unsigned rsx_color_table(unsigned mode, unsigned fog, unsigned fog_previous)
+{
+    if (mode == 2) return RSX_TABLE_TOON;
+    return fog && fog_previous ? RSX_TABLE_FOG : RSX_TABLE_NONE;
+}
 #endif

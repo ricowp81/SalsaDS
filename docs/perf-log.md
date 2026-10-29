@@ -1,5 +1,16 @@
 # Registro de rendimiento
 
+## 2026-10-29 — Autoprueba en consola de rsx-sombras (2×) y niebla con toon [PS3: autoprueba; sin tiempos nuevos]
+
+- Paquete «SalsaDS sombras» a 2×: sombras 0–63 (36–51 con cara trasera en W y la W redondeada) 0 fallos; niebla+sombra 48/48 dentro de la tolerancia (24 576 distintos exactos de ±1); niebla final 512, reducción, composición HD y reproducciones OK. Niebla+toon/resaltado Z 27 840 y 27 744 fuera de tolerancia, W 48 960 y 48 768: TEXUNIT1 llevaba la tabla de niebla en los polígonos toon (ver `estado.md`).
+- Sin medición de tiempos: la niebla con toon o resaltado queda al SPE por omisión (`3d-rsx-niebla-toon` para medirla en el RSX); la niebla con sombras sigue en el RSX.
+
+## 2026-10-29 — Sombras con cara trasera en W y niebla con toon o sombra en el RSX [host: planes y ensamblado; sin tiempos]
+
+- Log previo de SM64DS (PS3, 2×): 290–302 s `sombras: cara trasera W sin paridad` 120/120 en siete ventanas y 342–372 s `niebla combinada con toon o sombra` 120/120 en quince; el costo 3D del RSX en el castillo cuando entraba era 4,0–5,9 ms. Son respaldos de paridad, no de costo.
+- Banco del host `shadows_sweep`: 524 288 escenas de hasta cinco polígonos (una sombra 61 440, varias 135 168, ampliado 327 680) con y sin atributos de niebla, 0 diferencias contra `r3d_px.h`; los 3 717 120 estados de color y 5000 lotes siguen en 0. `rsx3d-wdepth-check.py`: 8 programas W, 848 casos iguales. `rsx3d-fog-check.py`: 15 856 casos.
+- Sin medición en consola: dibujos por polígono de sombra iguales a la ronda anterior (misma secuencia) más la pasada de atributos cuando hay niebla; medir en SM64DS castillo y Bob-omb Battlefield, MKDS y Metroid según `build/rsx-sombras/informe.md`.
+
 ## 2026-10-29 — E/S lenta del ARM9 por registro (PS3, logs de la ronda anterior) y caminos rápidos (host)
 - Fuente: logs de la PS3 del paquete «SalsaDS rend fable» 2 con `jit-tiempos` (`DATO jit-lentos-es`, ventanas de 120 cuadros): Metroid Prime Hunters de la intro a la zona pesada (102 ventanas) y SM64DS (157). Agregado por registro, ms por cuadro (accesos × µs por acceso):
 
