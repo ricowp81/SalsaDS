@@ -56,8 +56,10 @@ static sample execute(sample s, const rsx_pass_input *in, unsigned alpha,
     return s;
 }
 
-static unsigned sweep(int compact)
+static unsigned sweep(int compact, unsigned mask)
 {
+    /* mask: bits de TID (12: dos bits con OID; 15: cuatro bits, sin sombras) */
+    const unsigned dst_tid=mask==15 ? 13 : 4, other_tid=mask==15 ? 9 : 8;
     unsigned cases=0;
     /* Barrido de estado previo válido y todos los controles independientes.
      * Los desplazamientos incluyen ambos bordes de igualdad y sus vecinos. */
@@ -71,7 +73,7 @@ static unsigned sweep(int compact)
         unsigned dst_back=(bits>>9)&1, w=(bits>>10)&1, poly_trans=(bits>>11)&1;
         if ((!c.extended && (c.equal || dst_back)) || (empty && dst_trans)) continue;
         c.prior_back=dst_back; c.occupied=!empty;
-        c.id=repeated ? 3 : 4; c.tid=repeated ? 4 : 8; c.oid=1; c.trans_mask=12;
+        c.id=repeated ? 3 : 4; c.tid=repeated ? dst_tid : other_tid; c.oid=mask==15 ? 0 : 1; c.trans_mask=mask;
         c.opaque=!poly_trans; c.trans=!(bits&4096);
         if (!c.trans && poly_trans) continue;
         for (unsigned a=0;a<5;a++) for (unsigned d=0;d<11;d++)
@@ -83,7 +85,7 @@ static unsigned sweep(int compact)
             unsigned z=10000+delta[d], da=empty ? 0 : 19;
             sample s={R3D_PX(7,43,59,da),10000,10000>>9,oldfog,0};
             /* El bit 7 (puerta temporal) empieza en cualquier estado. */
-            s.stencil=c.extended ? ((flags&2) ? 128 : 0)|32|(dst_back ? 64 : 0)|(empty ? 0 : 16)|(dst_trans ? 4 : 0)|2 :
+            s.stencil=c.extended ? ((flags&2) ? 128 : 0)|32|(dst_back ? 64 : 0)|(empty ? 0 : 16)|(dst_trans ? dst_tid : 0)|(mask==15 ? 0 : 2) :
                 (empty ? 255 : dst_trans ? 3 : 64);
             sample got=execute(s,&c,alpha,alpha_ref,z,fog,w,compact), want=s;
             r3d_rstate rs={0}; rs.wbuf=w;
@@ -101,7 +103,7 @@ static unsigned sweep(int compact)
                 } else want.color=R3D_PX(53,17,29,alpha);
                 if (c.extended) {
                     if (alpha==31) want.stencil=32|16|c.oid|(c.front ? 0 : 64);
-                    else want.stencil=(s.stencil&~(12|16|(c.tdepth ? 64 : 0)))|16|c.tid|
+                    else want.stencil=(s.stencil&~(mask|16|(c.tdepth ? 64 : 0)))|16|c.tid|
                         ((c.tdepth && !c.front) ? 64 : 0);
                 } else want.stencil=alpha==31 ? 64 : c.id;
             }
@@ -160,8 +162,8 @@ static unsigned batches(void)
 
 void test_rsx_passes(void)
 {
-    unsigned compact=sweep(1), previous=sweep(0);
-    CHECK(compact>100000 && previous==compact);
+    unsigned compact=sweep(1,12), previous=sweep(0,12), wide=sweep(1,15);
+    CHECK(compact>100000 && previous==compact && wide==compact);
     unsigned lotes=batches();
     CHECK(lotes>2000);
     /* Sin mezcla, atributos o borrado ocupado: una pasada translúcida.

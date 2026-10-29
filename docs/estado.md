@@ -4,6 +4,12 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-28 — Metroid: 15 IDs translúcidos en 3D ampliado y recalibración del selector
+
+- Medido en PS3 con los lotes nuevos (Metroid pesado 2×): 343 polígonos → 242 + 242 dibujos; GPU 7,7 ms (antes 15,5); costo 3D RSX 8,2–8,7 ms. Pero de 123 a 140 s todos los cuadros caían al SPE por «3D ampliado: capacidad translúcida sin paridad» (tope de 8 IDs antes de intentar el reparto ampliado, que sin sombras deja 4 bits de TID), y en 140 s el selector bajó al SPE comparando con una referencia SPE de 107 s (escena ligera, 3,1 ms): los cuadros sin 3D no la renovaban.
+- Sin sombras se admiten hasta 15 IDs translúcidos (`3d-rsx-ids-translucidos-8` restaura el tope). El selector cuenta la edad de la referencia SPE en cuadros (con o sin 3D) y, si decidiría bajar con una de más de 120, recalibra primero (motivo «referencia SPE de otra escena: recalibrar», contador `recalibrar` en `rutas`; `3d-rsx-referencia-vieja` = ronda 6). Prueba en `test_rsx_cost`.
+- La carga del cuadro RSX (18,8–20,9 ms) es trabajo del PPE: emulación ~16–21 ms (cuadros impares de Metroid) + presentación HD 2,07 (1,0 del `memcpy` de metadatos) + espera de textura 0,58 + preparación y envío 1,6; las esperas a la GPU son nulas. Pendiente: evitar el `memcpy` con un tercer juego de metadatos.
+
 ## 2026-10-28 — Menos dibujos RSX en Metroid: lotes en 3D ampliado, puerta compacta y atributos por vértice
 
 - Causa medida en PS3 (ronda 6, Metroid pesado a 2×): 333 polígonos → 688 dibujos de color + 688 de atributos por cuadro; GPU color 8,1 + auxiliar 6,7 + posproceso 0,7 ms y envío PPE 3,7 ms. Las ventanas a 1× dan unos 6–8 µs de GPU por dibujo (sin relleno), así que ~9 de los 15,5 ms de GPU son dibujos, no píxeles. Todas esas escenas tienen polígonos con igualdad de profundidad: el 3D ampliado apagaba los lotes (cada opaco frontal con espalda previa son dos dibujos) y cada translúcido costaba 7 dibujos de color y 5 de atributos (borrado de puerta, puerta, rechazo de ID y color).

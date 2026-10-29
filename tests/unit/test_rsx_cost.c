@@ -123,6 +123,33 @@ void test_rsx_cost(void)
     samples(&c,8,1,650,22000);
     samples(&c,16,0,2800,22000); /* CPU lenta: perder HD no mejora el cuadro */
     CHECK_EQ(c.phase,RSX_COST_RSX);
+    /* Referencia SPE vieja (escena ligera hace muchos cuadros sin 3D): al
+     * llegar una escena pesada, recalibrar antes de bajar; con la medida
+     * fresca del SPE en la misma escena no hay mejora y se conserva HD. */
+    {
+        rsx_cost s={0};
+        samples(&s,8,1,3100,5200);               /* calibración en escena ligera */
+        samples(&s,16,0,1100,8100);              /* HD estable */
+        CHECK_EQ(s.phase,RSX_COST_RSX);
+        s.spe_age=2000;                          /* cuadros sin 3D: la referencia envejece */
+        samples(&s,8,0,14400,20900);             /* escena pesada */
+        CHECK_EQ(s.phase,RSX_COST_BASE);
+        CHECK_EQ(s.reason,RSX_COST_STALE);
+        samples(&s,8,1,12000,21000);             /* SPE medido en la misma escena */
+        CHECK_EQ(s.phase,RSX_COST_PROBE);
+        CHECK_EQ(s.spe_age,0);
+        samples(&s,16,0,8400,19000);             /* RSX 8,4 frente a SPE 12: sin mejora */
+        CHECK_EQ(s.phase,RSX_COST_RSX);
+        CHECK_EQ(s.reason,RSX_COST_NO_GAIN);
+        /* Con allow_stale (ronda 6) la referencia vieja sí baja al SPE. */
+        rsx_cost t={0}; t.allow_stale=1;
+        samples(&t,8,1,3100,5200);
+        samples(&t,16,0,1100,8100);
+        t.spe_age=2000;
+        samples(&t,16,0,14400,20900);
+        CHECK_EQ(t.phase,RSX_COST_SPE);
+        CHECK_EQ(t.reason,RSX_COST_OVER);
+    }
     CHECK_EQ(c.reason,RSX_COST_NO_GAIN);
 
     /* Fronteras de mejora: no basta con exceder el presupuesto. */
