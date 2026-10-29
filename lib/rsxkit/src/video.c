@@ -8,6 +8,7 @@
  * profundidad en la memoria local del RSX, flip en vsync.
  */
 #include <malloc.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/systime.h>
 #include <sysutil/video.h>
@@ -18,6 +19,36 @@
 #define DEFAULT_HOST_SIZE (16u << 20)
 
 struct rsxkit_state rsxkit_g;
+
+static uint64_t screen_ticket;
+static uint32_t screen_saved;
+static bool screen_saved_valid;
+
+void rsxkit_screen_texture_invalidate(void)
+{
+	if (screen_saved == rsxkit_g.cur)
+		screen_saved_valid = false;
+}
+
+uint64_t rsxkit_screen_texture(rsxkit_texture *out)
+{
+	struct rsxkit_state *g = &rsxkit_g;
+	memset(out, 0, sizeof *out);
+	out->offset = g->color_offset[g->cur];
+	out->pitch = g->color_pitch;
+	out->width = g->screen.width;
+	out->height = g->screen.height;
+	out->format = RSXKIT_XRGB8888;
+	out->location = RSXKIT_MEM_LOCAL;
+	screen_saved = g->cur;
+	screen_saved_valid = true;
+	return ++screen_ticket;
+}
+
+bool rsxkit_screen_texture_valid(uint64_t ticket)
+{
+	return screen_saved_valid && ticket == screen_ticket && screen_saved != rsxkit_g.cur;
+}
 
 static const int32_t default_modes[] = {
 	VIDEO_RESOLUTION_720, VIDEO_RESOLUTION_1080, VIDEO_RESOLUTION_480, VIDEO_RESOLUTION_576,
@@ -92,8 +123,11 @@ static int32_t pick_mode(const rsxkit_config *cfg, videoResolution *res)
 }
 
 /* videoConfigure del modo `id` y la superficie de salida resultante. */
+static uint32_t pitch_override;  /* pitch vigente del XMB (init_video), 0 = el nuestro */
+
 static int set_mode(int32_t id, const videoResolution *res)
 {
+	pitch_override = 0;
 	videoConfiguration vc;
 	memset(&vc, 0, sizeof vc);
 	vc.resolution = (u8)id;
@@ -115,15 +149,86 @@ static int set_mode(int32_t id, const videoResolution *res)
 	return RSXKIT_OK;
 }
 
+static rsxkit_video_boot boot_info = { .prev_mode = -1, .mode = -1 };
+const rsxkit_video_boot *rsxkit_video_boot_info(void)
+{
+	return &boot_info;
+}
+
+/* Regiones de mosaico (tiles) con algo puesto, para el log. */
+static void scan_tiles(void)
+{
+	const gcmTileInfo *ti = gcmGetTileInfo();
+	size_t n = 0;
+	boot_info.tiles[0] = '\0';
+	for (int i = 0; ti && i < 15; i++) {
+		if (!ti[i].tile && !ti[i].limit && !ti[i].pitch)
+			continue;
+		boot_info.tiles_active++;
+		if (n + 40 < sizeof boot_info.tiles)
+			n += (size_t)snprintf(boot_info.tiles + n, sizeof boot_info.tiles - n, "%d:%x/%x/%x ", i,
+					      (unsigned)ti[i].tile, (unsigned)ti[i].limit, (unsigned)ti[i].pitch);
+	}
+}
+
 static int init_video(const rsxkit_config *cfg)
 {
 	videoResolution res;
 	int32_t id = pick_mode(cfg, &res);
-	return id < 0 ? RSXKIT_EVIDEO : set_mode(id, &res);
+	if (id < 0)
+		return RSXKIT_EVIDEO;
+	memset(&boot_info, 0, sizeof boot_info);
+	boot_info.prev_mode = -1;
+	boot_info.mode = id;
+	boot_info.configured = 1;
+	pitch_override = 0;
+	videoState st;
+	if (videoGetState(VIDEO_PRIMARY, 0, &st) == 0) {
+		boot_info.state_ok = 1;
+		boot_info.prev_mode = st.displayMode.resolution;
+		boot_info.state = st.state;
+		boot_info.color_space = st.colorSpace;
+		boot_info.scan_mode = st.displayMode.scanMode;
+		boot_info.conversion = st.displayMode.conversion;
+		boot_info.aspect = st.displayMode.aspect;
+		boot_info.refresh = st.displayMode.refreshRates;
+	}
+	videoConfiguration cur;
+	memset(&cur, 0, sizeof cur);
+	if (videoGetConfiguration(VIDEO_PRIMARY, &cur, NULL) == 0) {
+		boot_info.cfg_ok = 1;
+		boot_info.cfg_resolution = cur.resolution;
+		boot_info.cfg_format = cur.format;
+		boot_info.cfg_aspect = cur.aspect;
+		boot_info.cfg_pitch = cur.pitch;
+	}
+	scan_tiles();
+	if (boot_info.cfg_ok && cur.resolution == id && cur.pitch >= res.width * 4 && cur.format == VIDEO_BUFFER_FORMAT_XRGB) {
+		/* Los mismos valores que dejó el XMB: un cambio real de formato,
+		 * aspecto o pitch hace que el monitor renegocie el HDMI. */
+		videoConfiguration vc = cur;
+		if (videoConfigure(VIDEO_PRIMARY, &vc, NULL, 0) != 0)
+			return RSXKIT_EVIDEO;
+		boot_info.configured_us = (uint64_t)sysGetSystemTime();
+		pitch_override = cur.pitch;
+		boot_info.used_current = 1;
+		int wide = id == VIDEO_RESOLUTION_720 || id == VIDEO_RESOLUTION_1080;
+		if (boot_info.aspect != VIDEO_ASPECT_AUTO)
+			wide = boot_info.aspect == VIDEO_ASPECT_16_9;
+		rsxkit_g.screen.width = res.width;
+		rsxkit_g.screen.height = res.height;
+		rsxkit_g.screen.aspect = wide ? 16.0f / 9.0f : 4.0f / 3.0f;
+		rsxkit_g.mode_id = id;
+		return RSXKIT_OK;
+	}
+	int rc = set_mode(id, &res);
+	boot_info.configured_us = (uint64_t)sysGetSystemTime();
+	return rc;
 }
 
 static void free_screen_buffers(void)
 {
+	screen_saved_valid = false;
 	struct rsxkit_state *g = &rsxkit_g;
 	for (int i = 0; i < 2; i++) {
 		if (g->color_buf[i])
@@ -160,7 +265,8 @@ static int alloc_screen_buffers(void)
 {
 	struct rsxkit_state *g = &rsxkit_g;
 	uint32_t w = g->screen.width, h = g->screen.height;
-	g->color_pitch = w * 4;
+	g->color_pitch = pitch_override ? pitch_override : w * 4;
+	boot_info.pitch = g->color_pitch;
 	for (int i = 0; i < 2; i++) {
 		g->color_buf[i] = rsxMemalign(64, h * g->color_pitch);
 		if (!g->color_buf[i])
@@ -214,6 +320,7 @@ int rsxkit_init(const rsxkit_config *cfg)
 	memset(g, 0, sizeof *g);
 	g->fp_3d = -1;
 	g->host = memalign(1024 * 1024, host);
+	g->host_size = host;
 	if (!g->host || rsxInit(&g->ctx, cmd, host, g->host) != 0 || !g->ctx)
 		return RSXKIT_EINIT;
 	/* Las etiquetas de GCM no están inicializadas. La comparación modular
@@ -310,6 +417,7 @@ void rsxkit_finish(void)
 
 void rsxkit_bind_screen(void)
 {
+	rsxkit_screen_texture_invalidate();
 	struct rsxkit_state *g = &rsxkit_g;
 	gcmSurface sf;
 	memset(&sf, 0, sizeof sf);
@@ -349,6 +457,7 @@ void rsxkit_set_2d_state_size(uint32_t w, uint32_t h)
 	rsxSetColorMask(g->ctx, GCM_COLOR_MASK_B | GCM_COLOR_MASK_G | GCM_COLOR_MASK_R | GCM_COLOR_MASK_A);
 	rsxSetColorMaskMrt(g->ctx, 0);
 	rsxSetStencilTestEnable(g->ctx, GCM_FALSE);
+	rsxSetBlendEquation(g->ctx, GCM_FUNC_ADD, GCM_FUNC_ADD);  /* el 3D la deja en MAX o MIN */
 	rsxSetViewport(g->ctx, 0, 0, w, h, 0.0f, 1.0f, scale, offset);
 	rsxSetScissor(g->ctx, 0, 0, w, h);
 	rsxSetZMinMaxControl(g->ctx, GCM_FALSE, GCM_TRUE, GCM_FALSE);
@@ -406,6 +515,7 @@ uint64_t rsxkit_vblank_count(void)
 
 int rsxkit_after_system(void)
 {
+	screen_saved_valid = false;
 	struct rsxkit_state *g = &rsxkit_g;
 	if (!g->ctx)
 		return 0;
@@ -428,4 +538,19 @@ const uint32_t *rsxkit_back_buffer(uint32_t *pitch_bytes)
 	if (pitch_bytes)
 		*pitch_bytes = rsxkit_g.color_pitch;
 	return rsxkit_g.color_buf[rsxkit_g.cur];
+}
+
+/* Diagnóstico: la dirección en memoria principal de un offset de E/S del
+ * búfer de comandos (el GET o el PUT del RSX), o NULL si cae fuera de la
+ * memoria mapeada. `avail` recibe cuántas palabras quedan hasta el final. */
+const uint32_t *rsxkit_cmd_at(uint32_t io_offset, uint32_t *avail)
+{
+	struct rsxkit_state *g = &rsxkit_g;
+	uint32_t base;
+	if (!g->host || rsxAddressToOffset(g->host, &base) != 0 || io_offset < base ||
+	    io_offset - base >= g->host_size || (io_offset & 3))
+		return NULL;
+	if (avail)
+		*avail = (g->host_size - (io_offset - base)) / 4;
+	return (const uint32_t *)((const uint8_t *)g->host + (io_offset - base));
 }

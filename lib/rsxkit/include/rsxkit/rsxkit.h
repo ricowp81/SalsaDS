@@ -62,6 +62,7 @@ enum {
 	RSXKIT_ENOMEM = -3,    /* memoria local del RSX */
 	RSXKIT_EARG = -4,      /* argumento fuera de rango */
 	RSXKIT_EDEPTH = -5,    /* ninguna zeta cubre el destino (rsxkit_depth_reserve) */
+	RSXKIT_EFONT = -6,     /* la fuente del sistema: módulo, biblioteca o juego de fuentes (sysfont.h) */
 };
 
 typedef struct rsxkit_screen {
@@ -70,6 +71,29 @@ typedef struct rsxkit_screen {
 } rsxkit_screen;
 
 const rsxkit_screen *rsxkit_screen_info(void);
+
+/* Lo que hizo rsxkit_init con el video, para el log y para esperar a que
+ * el monitor se recupere. Si la salida ya está en el modo elegido (el del
+ * XMB), videoConfigure lleva exactamente la configuración vigente (formato,
+ * aspecto y pitch de videoGetConfiguration, que en la PS3 es 8192 a 1080p
+ * y no ancho × 4) y los búferes de pantalla usan ese pitch: así el monitor
+ * no renegocia el HDMI por segunda vez. Con otro modo, la configuración de
+ * siempre. */
+typedef struct rsxkit_video_boot {
+	int32_t prev_mode;        /* VIDEO_RESOLUTION_* que tenía la salida antes (-1: no se supo) */
+	int32_t mode;             /* el elegido */
+	int configured;           /* 1 si se llamó a videoConfigure, 0 si se conservó el modo */
+	uint64_t configured_us;   /* sysGetSystemTime() justo después de videoConfigure (0 si no) */
+	/* Lo que había antes de configurar (videoGetState y videoGetConfiguration). */
+	int state_ok, state, color_space, scan_mode, conversion, aspect, refresh;
+	int cfg_ok, cfg_resolution, cfg_format, cfg_aspect;
+	uint32_t cfg_pitch;
+	uint32_t pitch;           /* el de nuestros búferes de color */
+	int used_current;         /* 1 si videoConfigure llevó los valores vigentes (formato, aspecto, pitch) */
+	int tiles_active;
+	char tiles[160];          /* las regiones de mosaico con algo (índice:tile/límite/pitch) */
+} rsxkit_video_boot;
+const rsxkit_video_boot *rsxkit_video_boot_info(void);
 
 /* ---- Cuadro -------------------------------------------------------------- */
 
@@ -130,6 +154,9 @@ typedef struct rsxkit_wait_info {
 	uint32_t calls;       /* llamadas al gancho en esta espera (1: la primera) */
 	bool done;            /* la espera terminó (solo si el gancho ya se había llamado) */
 } rsxkit_wait_info;
+
+/* Diagnóstico: palabras del búfer de comandos en un offset de E/S (GET/PUT). */
+const uint32_t *rsxkit_cmd_at(uint32_t io_offset, uint32_t *avail);
 
 /* El gancho se llama desde el hilo que espera, dentro de la llamada a
  * rsxkit que espera, cuando la espera pasa de `after_us` y después cada
@@ -223,6 +250,10 @@ rsxkit_rect rsxkit_layout(uint32_t width, uint32_t height, const rsxkit_view *vi
  * alineada a 1 MB, tamaño múltiplo de 1 MB) y da su offset. Vértices y
  * texturas pueden vivir ahí: los escribe la CPU o un SPE sin copiarlos. */
 int rsxkit_map_main(void *ptr, uint32_t size, uint32_t *offset);
+/* Deshace un rsxkit_map_main (la misma dirección) para poder liberar esa
+ * memoria: espera a que el RSX termine lo enviado. Devuelve 0 o
+ * RSXKIT_EARG (no estaba mapeada). */
+int rsxkit_unmap_main(void *ptr);
 
 /* Barrera: marca lo enviado hasta ahora; rsxkit_fence_done dice si el RSX
  * ya lo terminó y rsxkit_fence_wait lo espera. rsxkit_fence_done solo lee
@@ -234,18 +265,58 @@ void rsxkit_fence_wait(uint32_t fence);
 
 /* ---- Destinos de render ------------------------------------------------------ */
 
-typedef struct rsxkit_target rsxkit_target;  /* color X8R8G8B8, memoria local */
-typedef struct rsxkit_program rsxkit_program;
+typedef struct rsxkit_target rsxkit_target;  /* color X8R8G8B8 o A8R8G8B8, memoria local */
+typedef struct rsxkit_program rsxkit_program; /* fragment program precompilado (post.h) */
 typedef struct rsxkit_depth rsxkit_depth;    /* profundidad Z24S8, memoria local */
 
-/* NULL si no hay memoria. El color nace negro y la profundidad en 1. */
+/* NULL si no hay memoria. El color nace negro y la profundidad en 1.
+ * rsxkit_target_create: X8R8G8B8, sin alfa (el byte alto se ignora).
+ *
+ * rsxkit_target_create_ex con RSXKIT_TARGET_ALPHA: A8R8G8B8, un destino con
+ * canal alfa, para lo que se dibuja y luego se usa como textura (render a
+ * textura con transparencia: una imagen RGBA5551 de una consola de 16 bits).
+ * Nace con alfa 0. Lo que lo escribe:
+ *  - rsxkit_clear: el byte alto de `rgb` es el alfa;
+ *  - rsxkit_draw: cada píxel escrito queda con alfa 1 (la mezcla de alfa
+ *    del dibujo no toca el canal), o con el alfa del fragmento si
+ *    rsxkit_draw.dst_alpha = RSXKIT_DSTA_FRAG y blend es RSXKIT_BLEND_OFF
+ *    (relleno con un color de alfa 0/1, copias de textura sin mezcla); las
+ *    mezclas RSXKIT_BLEND_ALPHA_MAX, _REPLACE_MIN_ALPHA y _KEEP_MIN_ALPHA
+ *    traen su propia cuenta del alfa (máximo o mínimo con el del destino);
+ *  - rsxkit_target_fill / _fill_rows: el alfa de la imagen (el bit de alfa
+ *    de RSXKIT_RGBA5551);
+ *  - rsxkit_target_copy: se copia el alfa si el origen también lo tiene.
+ * rsxkit_target_texture lo devuelve como RSXKIT_ARGB8888 (y los destinos sin
+ * alfa como RSXKIT_XRGB8888): el 3D lee el alfa de los dos; el framebuffer
+ * 2D, los blits y las pasadas de posprocesado lo leen solo de ARGB8888 (de
+ * XRGB8888 toman 1). Sin alfa, la lectura trae lo que el RSX deje en el
+ * byte alto de X8R8G8B8 (opaco).
+ * Un destino con alfa mezcla en cada dibujo (ONE / ZERO en los opacos):
+ * conviene para los que se leen como textura, no para el cuadro principal. */
+#define RSXKIT_TARGET_ALPHA 0x1u
 rsxkit_target *rsxkit_target_create(uint32_t width, uint32_t height);
-/* Variante con alfa conservado (A8R8G8B8). */
-rsxkit_target *rsxkit_target_create_rgba(uint32_t width, uint32_t height);
+rsxkit_target *rsxkit_target_create_ex(uint32_t width, uint32_t height, uint32_t flags);
+int rsxkit_target_has_alpha(const rsxkit_target *t);
+/* Lo mismo que rsxkit_target_create_ex con RSXKIT_TARGET_ALPHA. */
+static inline rsxkit_target *rsxkit_target_create_rgba(uint32_t width, uint32_t height)
+{
+	return rsxkit_target_create_ex(width, height, RSXKIT_TARGET_ALPHA);
+}
 void rsxkit_target_destroy(rsxkit_target *t);
 void rsxkit_target_size(const rsxkit_target *t, uint32_t *width, uint32_t *height);
 rsxkit_depth *rsxkit_depth_create(uint32_t width, uint32_t height);
 void rsxkit_depth_destroy(rsxkit_depth *d);
+/* Carga en la profundidad `d` una imagen de w × h palabras de 32 bits de la
+ * memoria principal mapeada (offset alineado a 64, pitch múltiplo de 64):
+ * cada palabra es la profundidad de 24 bits en los altos y el stencil en el
+ * byte bajo (la misma disposición de Z24S8 que ve la CPU), agrandada `scale`
+ * veces sin filtro (copia de 32 bits del motor 2D: exacta). Va encolada
+ * entre esperas del RSX, así que lo dibujado antes no la ve y lo de después
+ * sí. Las h filas van desde la fila y0 de la imagen (cargar solo las que
+ * cambiaron). Para la z que un juego deja en la memoria con la CPU. Deja sin ligar
+ * el destino: volver a rsxkit_bind. Devuelve 0 o RSXKIT_EARG. */
+int rsxkit_depth_load(rsxkit_depth *d, uint32_t src_offset, uint32_t src_pitch, uint32_t w, uint32_t h,
+		      uint32_t y0, uint32_t scale);
 
 /* Dibujar en t (y su profundidad d, que puede ser NULL) hasta otro
  * rsxkit_bind o rsxkit_frame_begin. Las coordenadas de los vértices y
@@ -274,9 +345,11 @@ void rsxkit_bind_frame(float lw, float lh);
 
 #define RSXKIT_CLEAR_COLOR 0x1u
 #define RSXKIT_CLEAR_DEPTH 0x2u
-#define RSXKIT_CLEAR_ALPHA 0x4u /* incluye el byte alto de rgb */
+#define RSXKIT_CLEAR_ALPHA 0x4u /* el byte alto de rgb es el alfa aunque el destino no tenga canal alfa */
 /* Borra en el destino ligado el rectángulo lógico (x0, y0, x1, y1), o todo
- * si rect es NULL. depth en [0, 1]. */
+ * si rect es NULL. depth en [0, 1]. rgb es 0x00RRGGBB; en un destino con
+ * alfa (RSXKIT_TARGET_ALPHA), o con RSXKIT_CLEAR_ALPHA, el byte alto es el
+ * alfa (0 si se deja en 0). */
 void rsxkit_clear(uint32_t flags, uint32_t rgb, float depth, const float rect[4]);
 void rsxkit_clear_stencil(uint8_t value);
 
@@ -321,6 +394,15 @@ typedef struct rsxkit_texture {
 	uint8_t pad[2];
 	float xf[4];
 } rsxkit_texture;
+
+/* Vista prestada del búfer actual, sin copiar ni reservar memoria. El ticket
+ * más reciente permite leerlo tras el flip, mientras no se haya vuelto a dibujar en
+ * él. Comprobar valid antes de cada lectura; guardar de nuevo tras copiarlo
+ * al otro búfer. La UI, el sistema y un cambio de salida invalidan la vista.
+ * Quien escriba directamente en la pantalla debe invalidarla primero. */
+uint64_t rsxkit_screen_texture(rsxkit_texture *out);
+bool rsxkit_screen_texture_valid(uint64_t ticket);
+void rsxkit_screen_texture_invalidate(void);
 
 /* Canales que lee una textura: los de su formato, o el rojo en los cuatro
  * (una imagen de intensidad dibujada en un destino: R = G = B = A). */
@@ -376,6 +458,12 @@ enum { RSXKIT_K_T0, RSXKIT_K_T0A, RSXKIT_K_T1, RSXKIT_K_T1A, RSXKIT_K_ONE, RSXKI
 #define RSXKIT_K_TERMS   RSXKIT_FP_MAX_TERMS
 #define RSXKIT_K_FACTORS RSXKIT_FP_MAX_FACTORS
 
+/* rsxkit_draw.dst_alpha, solo en destinos con RSXKIT_TARGET_ALPHA. No
+ * cuenta con las mezclas que traen su propia cuenta del alfa
+ * (RSXKIT_BLEND_ALPHA_MAX, _REPLACE_MIN_ALPHA, _KEEP_MIN_ALPHA). */
+#define RSXKIT_DSTA_ONE  0  /* los píxeles escritos quedan con alfa 1 */
+#define RSXKIT_DSTA_FRAG 1  /* con blend OFF: el alfa del fragmento; con ALPHA o ADD, igual que ONE */
+
 typedef struct rsxkit_draw {
 	/* Programa opcional: entradas de rsxkit_lincomb.vcg. NULL conserva la combinación. */
 	rsxkit_program *program;
@@ -387,6 +475,7 @@ typedef struct rsxkit_draw {
 	/* Operación al fallar la prueba de stencil: 0 conservar, 1 reemplazar, 2 poner a cero. */
 	uint8_t stencil_sfail;
 	uint8_t blend;      /* rsxkit_blend */
+	uint8_t dst_alpha;  /* RSXKIT_DSTA_*: alfa que deja en un destino con alfa */
 	uint8_t cull;       /* rsxkit_cull */
 	uint8_t depth;      /* RSXKIT_DEPTH_* */
 	uint8_t alpha_ref;  /* 0: sin prueba de alfa; si no, pasa alfa >= ref/255 */
@@ -456,7 +545,8 @@ void rsxkit_texture_sync(void);
 
 /* Copia a la memoria principal (mapeada con rsxkit_map_main) la región
  * `src` del destino (NULL: todo), reducida a img_w × img_h píxeles con
- * filtro lineal, en `format` (RSXKIT_RGB565 o RSXKIT_XRGB8888) y con
+ * filtro lineal (o copiada tal cual si ya miden lo mismo:
+ * rsxkit_target_read_exact), en `format` (RSXKIT_RGB565 o RSXKIT_XRGB8888) y con
  * `dst_pitch` bytes por fila (múltiplo de 64; offset alineado a 128). Lo
  * hace el RSX con el pipeline 3D sobre una superficie en memoria
  * principal: encola el trabajo y vuelve; rsxkit_fence/rsxkit_fence_wait
@@ -469,6 +559,20 @@ void rsxkit_texture_sync(void);
  * que va ligada con la salida). */
 int rsxkit_target_read(const rsxkit_target *t, const rsxkit_rect *src, uint32_t dst_offset, uint32_t dst_pitch,
 		       uint32_t img_w, uint32_t img_h, rsxkit_format format);
+
+/* Filtro de rsxkit_target_read: lineal cuando reduce (img_w × img_h menor
+ * que la región), y el más cercano cuando la región ya mide img_w × img_h
+ * (copia 1:1). El filtro lineal a 1:1 no es una copia exacta en el RSX: el
+ * vértice se ajusta a su subpíxel y la muestra cae a una fracción de texel
+ * del centro, así que mezcla una parte del vecino; con imágenes que llevan
+ * un índice de paleta en el rojo (una capa de 8 bits) un índice mezclado es
+ * otro color (puntos sueltos en cada borde). `exact` = 0 vuelve al lineal
+ * siempre (para comparar); por omisión, 1. */
+static inline int rsxkit_read_filter_nearest(uint32_t src_w, uint32_t src_h, uint32_t img_w, uint32_t img_h, int exact)
+{
+	return exact && src_w == img_w && src_h == img_h;
+}
+void rsxkit_target_read_exact(int exact);
 
 /* Copia todo el destino `src` en `dst` (del mismo tamaño o mayor; se
  * estira si no), para leer como textura lo que se está dibujando en
@@ -484,6 +588,11 @@ int rsxkit_target_copy(rsxkit_target *dst, const rsxkit_target *src);
  * Deja el destino ligado, sin profundidad: volver a rsxkit_bind con ella.
  * Devuelve 0, RSXKIT_EARG o RSXKIT_EDEPTH (como rsxkit_bind sin
  * profundidad). */
+/* Como rsxkit_target_fill, solo con las filas [y0, y1) de la imagen (en las
+ * mismas filas del destino, a su escala): para volver a cebar lo que se
+ * dibujó encima sin subir la imagen entera. */
+int rsxkit_target_fill_rows(rsxkit_target *t, uint32_t src_offset, uint32_t src_pitch, uint32_t w, uint32_t h,
+			    uint32_t y0, uint32_t y1, rsxkit_format format);
 int rsxkit_target_fill(rsxkit_target *t, uint32_t src_offset, uint32_t src_pitch, uint32_t w, uint32_t h,
 		       rsxkit_format format);
 

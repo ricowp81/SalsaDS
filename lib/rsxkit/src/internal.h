@@ -22,6 +22,7 @@
 struct rsxkit_state {
 	gcmContextData *ctx;
 	void *host;
+	uint32_t host_size;
 	rsxkit_screen screen;
 	int32_t mode_id;        /* VIDEO_RESOLUTION_* en uso */
 	uint32_t color_pitch, depth_pitch;
@@ -61,6 +62,7 @@ struct rsxkit_bound {
 	uint32_t scissor[4]; /* último puesto, en píxeles */
 	uint32_t w, h;       /* superficie del destino, en píxeles */
 	float vp_z;          /* z fija del viewport (RSXKIT_DEPTH_CONST); < 0: la de los vértices */
+	int alpha;           /* el destino tiene canal alfa (RSXKIT_TARGET_ALPHA) */
 };
 extern struct rsxkit_bound rsxkit_bound;
 void rsxkit_logical_rect(const float r[4], uint32_t out[4]);
@@ -141,5 +143,9 @@ void rsxkit_blit_to(uint32_t offset, uint8_t location, uint32_t pitch, uint32_t 
 		    float v0, float u1, float v1, rsxkit_format format, const rsxkit_rect *r, uint32_t surf_w,
 		    uint32_t surf_h, rsxkit_filter filter);
 int rsxkit_blit_init(void);
+/* Los blits siguientes (rsxkit_blit_to) escriben el alfa de la textura en vez
+ * de 1, y las texturas ARGB8888 / RGBA5551 se leen con su alfa. Para llenar
+ * o copiar entre destinos con alfa (target.c); 0 lo apaga. */
+void rsxkit_blit_alpha(int on);
 
 #endif

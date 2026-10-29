@@ -267,37 +267,60 @@ static void fixed_state(void)
 	g->state_valid = 1;
 }
 
-static void set_blend(uint8_t blend)
+/* El alfa que queda en un destino con alfa (rsxkit_bound.alpha): 1 en cada
+ * píxel escrito (la mezcla de alfa pasa a ONE / ZERO, que no mira el alfa
+ * del fragmento), o el del fragmento con RSXKIT_DSTA_FRAG sin mezcla. Sin
+ * alfa en el destino, el canal de alfa de la mezcla no cuenta. Las mezclas
+ * con máximo o mínimo del alfa (ALPHA_MAX, REPLACE_MIN_ALPHA,
+ * KEEP_MIN_ALPHA) traen su propia cuenta y no miran dst_alpha. */
+static void set_blend(uint8_t blend, uint8_t dsta)
 {
 	gcmContextData *ctx = rsxkit_g.ctx;
-	if (blend == d3.blend)
+	uint8_t key = (uint8_t)(blend | (dsta ? 0x10 : 0));
+	if (key == d3.blend)
 		return;
-	d3.blend = blend;
-	rsxSetBlendEquation(ctx, GCM_FUNC_ADD, blend == RSXKIT_BLEND_ALPHA_MAX ? GCM_FUNC_MAX :
-		(blend == RSXKIT_BLEND_REPLACE_MIN_ALPHA || blend == RSXKIT_BLEND_KEEP_MIN_ALPHA) ? GCM_FUNC_MIN : GCM_FUNC_ADD);
+	d3.blend = key;
+	int alpha = rsxkit_bound.alpha;
+	/* La ecuación del alfa: máximo o mínimo en las mezclas que lo piden y
+	 * suma en las demás (fixed_state la deja en suma). */
+	rsxSetBlendEquation(ctx, GCM_FUNC_ADD,
+			    blend == RSXKIT_BLEND_ALPHA_MAX ? GCM_FUNC_MAX
+			    : (blend == RSXKIT_BLEND_REPLACE_MIN_ALPHA || blend == RSXKIT_BLEND_KEEP_MIN_ALPHA)
+				      ? GCM_FUNC_MIN
+				      : GCM_FUNC_ADD);
 	u32 mask = GCM_COLOR_MASK_B | GCM_COLOR_MASK_G | GCM_COLOR_MASK_R | GCM_COLOR_MASK_A;
 	switch (blend) {
 	case RSXKIT_BLEND_REPLACE_MIN_ALPHA:
 	case RSXKIT_BLEND_KEEP_MIN_ALPHA:
 		rsxSetBlendEnable(ctx, GCM_TRUE);
 		rsxSetBlendFunc(ctx, blend == RSXKIT_BLEND_KEEP_MIN_ALPHA ? GCM_ZERO : GCM_ONE,
-			blend == RSXKIT_BLEND_KEEP_MIN_ALPHA ? GCM_ONE : GCM_ZERO, GCM_ONE, GCM_ONE);
+				blend == RSXKIT_BLEND_KEEP_MIN_ALPHA ? GCM_ONE : GCM_ZERO, GCM_ONE, GCM_ONE);
 		break;
 	case RSXKIT_BLEND_ALPHA_MAX:
+		/* RGB como ALPHA; el alfa con MAX, que no mira los factores. */
+		rsxSetBlendEnable(ctx, GCM_TRUE);
+		rsxSetBlendFunc(ctx, GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA, GCM_ONE, GCM_ONE);
+		break;
 	case RSXKIT_BLEND_ALPHA:
 		rsxSetBlendEnable(ctx, GCM_TRUE);
-		rsxSetBlendFunc(ctx, GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA, GCM_ZERO, GCM_ONE);
+		rsxSetBlendFunc(ctx, GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA, alpha ? GCM_ONE : GCM_ZERO,
+				alpha ? GCM_ZERO : GCM_ONE);
 		break;
 	case RSXKIT_BLEND_ADD:
 		rsxSetBlendEnable(ctx, GCM_TRUE);
-		rsxSetBlendFunc(ctx, GCM_SRC_ALPHA, GCM_ONE, GCM_ZERO, GCM_ONE);
+		rsxSetBlendFunc(ctx, GCM_SRC_ALPHA, GCM_ONE, alpha ? GCM_ONE : GCM_ZERO, alpha ? GCM_ZERO : GCM_ONE);
 		break;
 	case RSXKIT_BLEND_NONE:
 		rsxSetBlendEnable(ctx, GCM_FALSE);
 		mask = 0;
 		break;
 	default:
-		rsxSetBlendEnable(ctx, GCM_FALSE);
+		if (alpha && !dsta) {
+			rsxSetBlendEnable(ctx, GCM_TRUE);
+			rsxSetBlendFunc(ctx, GCM_ONE, GCM_ZERO, GCM_ONE, GCM_ZERO);
+		} else {
+			rsxSetBlendEnable(ctx, GCM_FALSE);
+		}
 		break;
 	}
 	rsxSetColorMask(ctx, mask);
@@ -311,11 +334,22 @@ static void set_depth(uint8_t depth)
 	if (depth == d3.depth)
 		return;
 	d3.depth = depth;
-	rsxSetDepthTestEnable(ctx, (depth & RSXKIT_DEPTH_TEST) ? GCM_TRUE : GCM_FALSE);
+	/* Escribir sin probar: en el RSX (como en GL) la prueba apagada apaga
+	 * también la escritura, así que va con la prueba encendida y ALWAYS.
+	 * Rogue Squadron dibuja así el fondo (hangar, terreno, cielo) para
+	 * dejar la z de cada cuadro sin borrarla: sin escribirla, los modelos
+	 * se probaban contra la z de cuadros viejos y desaparecían a pedazos.
+	 * La máscara de la Lente de la Verdad de Zelda (un TEXRECT que solo
+	 * escribe z) necesita lo mismo. */
+	u32 func = !(depth & RSXKIT_DEPTH_TEST) || (depth & RSXKIT_DEPTH_ALWAYS) ? GCM_ALWAYS
+		   : (depth & RSXKIT_DEPTH_EQUAL)			       ? GCM_EQUAL
+		   : (depth & RSXKIT_DEPTH_GEQUAL)			       ? GCM_GEQUAL
+		   : (depth & RSXKIT_DEPTH_LESS)			       ? GCM_LESS
+									       : GCM_LEQUAL;
+	rsxSetDepthTestEnable(ctx, (depth & (RSXKIT_DEPTH_TEST | RSXKIT_DEPTH_WRITE)) ? GCM_TRUE : GCM_FALSE);
 	rsxSetDepthWriteEnable(ctx, (depth & RSXKIT_DEPTH_WRITE) ? GCM_TRUE : GCM_FALSE);
 	rsxSetPolygonOffsetFillEnable(ctx, (depth & RSXKIT_DEPTH_OFFSET) ? GCM_TRUE : GCM_FALSE);
-	rsxSetDepthFunc(ctx, (depth & RSXKIT_DEPTH_ALWAYS) ? GCM_ALWAYS : (depth & RSXKIT_DEPTH_EQUAL) ? GCM_EQUAL :
-			     (depth & RSXKIT_DEPTH_GEQUAL) ? GCM_GEQUAL : (depth & RSXKIT_DEPTH_LESS) ? GCM_LESS : GCM_LEQUAL);
+	rsxSetDepthFunc(ctx, func);
 }
 
 /* z < 0: la de los vértices (el viewport que puso rsxkit_bind). */
@@ -563,7 +597,7 @@ void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
 	if (!g->arrays_bound)
 		bind_arrays();
 	set_scissor(sc);
-	set_blend(d->blend);
+	set_blend(d->blend, d->dst_alpha);
 	set_depth(d->depth);
 	/* Sin prueba ni escritura la z no importa: no se toca el viewport. */
 	if (d3.depth & (RSXKIT_DEPTH_TEST | RSXKIT_DEPTH_WRITE))

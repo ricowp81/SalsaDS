@@ -129,12 +129,13 @@ Vista (`rsxkit_view`):
 | Función | Qué hace |
 |---|---|
 | `int rsxkit_map_main(void *p, uint32_t size, uint32_t *offset)` | Hace visible para el RSX memoria principal (alineada a 1 MB, tamaño múltiplo de 1 MB) y da su offset. Ahí pueden vivir vértices y texturas que escribe la CPU o un SPE, sin copias. |
+| `int rsxkit_unmap_main(void *p)` | Deshace un `rsxkit_map_main` (la misma dirección) para poder liberar esa memoria; espera antes a que el RSX termine lo enviado. |
 | `uint32_t rsxkit_fence(void)` | Marca lo enviado hasta ahora. |
 | `int rsxkit_fence_done(uint32_t f)` / `void rsxkit_fence_wait(uint32_t f)` | ¿Ya lo terminó el RSX? / esperarlo. Sirve para reutilizar un búfer que el RSX estaba leyendo. `rsxkit_fence_done` solo lee la etiqueta que escribe el RSX y es la única función que puede llamarse desde otro hilo (el que produce los búferes). |
 
 ### Destinos de render
 
-Un destino es una superficie X8R8G8B8 en la memoria local; la profundidad
+Un destino es una superficie X8R8G8B8 (o A8R8G8B8, ver abajo) en la memoria local; la profundidad
 (Z24S8) va aparte para que varios destinos compartan una. Al ligarlos se da
 un **espacio lógico** (por ejemplo 320×240) que se estira sobre todo el
 destino: un núcleo dibuja en sus coordenadas y la escala (2×, 3×…) la pone
@@ -146,7 +147,8 @@ el tamaño del destino.
 | `rsxkit_depth *rsxkit_depth_create(w, h)` / `rsxkit_depth_destroy(d)` | Profundidad; nace en 1. Debe ser al menos tan grande como el destino. |
 | `int rsxkit_bind(t, d, lw, lh)` | Dibujar en `t` (y `d`, o `NULL`) con espacio lógico `lw × lh`, hasta otro `rsxkit_bind` o `rsxkit_frame_begin`. Sin `d` (o con una más chica que `t`) liga la profundidad de la pantalla, con prueba y escritura apagadas; si tampoco cubre a `t`, no liga nada y devuelve `RSXKIT_EDEPTH` (una zeta más chica que el color puede fallar o recortar en el RSX). |
 | `int rsxkit_depth_reserve(w, h)` | Agranda la profundidad de la pantalla a al menos `w × h`, para ligar sin profundidad propia destinos más grandes que la pantalla (1600×1200 en 720p). Reserva al llamarla (fuera del bucle de dibujo), olvida lo ligado y se conserva en `rsxkit_video_reconfigure`; `0 × 0` vuelve al tamaño de la pantalla. `rsxkit_target_copy`, `rsxkit_target_fill` y `rsxkit_target_read` también devuelven `RSXKIT_EDEPTH` si su superficie no cabe en ella. |
-| `void rsxkit_clear(flags, rgb, depth, rect)` | Borra color y/o profundidad en un rectángulo lógico (`NULL`: todo). |
+| `rsxkit_target *rsxkit_target_create_ex(w, h, flags)` / `int rsxkit_target_has_alpha(t)` | Con `RSXKIT_TARGET_ALPHA`, un destino A8R8G8B8 con canal alfa, para render a textura con transparencia (una imagen RGBA5551 de una consola de 16 bits). Nace con alfa 0. Lo escriben: `rsxkit_clear` (el byte alto de `rgb` es el alfa), los dibujos (cada píxel escrito queda con alfa 1; con `rsxkit_draw.dst_alpha = RSXKIT_DSTA_FRAG` y `blend = RSXKIT_BLEND_OFF`, con el alfa del fragmento: rellenos de un color de alfa 0/1 y copias de textura), `rsxkit_target_fill` (el bit de alfa de `RSXKIT_RGBA5551`) y `rsxkit_target_copy` (copia el alfa si el origen también lo tiene). `rsxkit_target_texture` lo devuelve como `RSXKIT_ARGB8888` (los destinos sin alfa, como `RSXKIT_XRGB8888`): el 3D y el posprocesado leen su alfa; `rsxkit_target_present` lo ignora. Las mezclas `RSXKIT_BLEND_ALPHA_MAX`, `_REPLACE_MIN_ALPHA` y `_KEEP_MIN_ALPHA` dejan en el alfa el máximo o el mínimo con el del destino, sin mirar `dst_alpha`. `RSXKIT_CLEAR_ALPHA` en `rsxkit_clear` toma el byte alto como alfa aunque el destino no tenga canal alfa. `rsxkit_target_create_rgba(w, h)` es `rsxkit_target_create_ex` con `RSXKIT_TARGET_ALPHA`. Cada dibujo en un destino con alfa mezcla (ONE / ZERO en los opacos): úsese en los que se leen como textura, no en el cuadro principal. |
+| `void rsxkit_clear(flags, rgb, depth, rect)` | Borra color y/o profundidad en un rectángulo lógico (`NULL`: todo). `rgb` es `0x00RRGGBB`; en un destino con alfa el byte alto es el alfa. |
 | `void rsxkit_target_present(t, src, img_w, img_h, view, out)` | En el cuadro en curso, presenta la región `src` del destino (cualquier rectángulo: sirve para recortar el overscan) acomodada como una imagen de `img_w × img_h` (como `rsxkit_fb_draw`). |
 
 Un destino como textura, y de vuelta a la memoria principal (efectos de
@@ -339,13 +341,22 @@ for (;;) {
 
 | Función | Qué hace |
 |---|---|
-| `int rsxkit_ui_init(void)` | Reserva 3 MB de memoria principal mapeada al RSX: el atlas de la fuente, dos búferes de vértices que se turnan con una barrera y `RSXKIT_UI_IMAGES` ranuras de imagen. |
+| `int rsxkit_ui_init(void)` | Reserva 6 MB de memoria principal mapeada al RSX: el atlas (la 8x13 y la caché de glifos), dos búferes de vértices que se turnan con una barrera y `RSXKIT_UI_IMAGES` ranuras de imagen. |
 | `void rsxkit_ui_begin(lw, lh)` / `rsxkit_ui_end()` | Empieza el lote sobre la pantalla del cuadro (`rsxkit_bind_frame`) con espacio lógico `lw × lh` / lo envía. |
+| `void rsxkit_ui_begin_target(t, lw, lh)` | Igual que `rsxkit_ui_begin`, sobre un destino de render (`rsxkit_target_create`) en vez de la pantalla; sin borrarlo (`rsxkit_clear` antes). Con `rsxkit_texture_sync` y `rsxkit_target_texture` la imagen se usa como textura (p. ej. para un filtro de posprocesado). |
 | `rsxkit_ui_gradient(x, y, w, h, tl, tr, bl, br)` / `rsxkit_ui_rect(x, y, w, h, rgba)` | Rectángulo con un color por esquina / de un color. |
-| `float rsxkit_ui_text(x, y, utf8, scale, rgba, max_cells)` | Texto: a escala 1 cada carácter mide 8 × 13 unidades. Con `max_cells`, «…» al final si no cabe. Devuelve el ancho. |
+| `float rsxkit_ui_text(x, y, utf8, scale, rgba, max_cells)` | Texto: a escala 1 el renglón mide 13 unidades de alto; con la 8x13 cada carácter, 8 de ancho. Con `max_cells`, «…» al final si no cabe en `max_cells × 8 × scale`. Devuelve el ancho. |
+| `float rsxkit_ui_text_fit(x, y, utf8, scale, rgba, max_w)` | Igual, con el límite como ancho lógico. |
+| `float rsxkit_ui_text_width(utf8, scale)` / `rsxkit_ui_text_fit_width(utf8, scale, max_w)` | Ancho con la fuente en uso (con la 8x13, celdas × 8 × escala) / el que dibujaría `_fit` con ese límite (para alinear a la derecha). |
+| `size_t rsxkit_ui_text_wrap(utf8, scale, max_w, &next)` | Corte de línea: bytes del primer renglón que caben; corta en espacios o, en japonés, chino y coreano, entre caracteres (sin empezar renglón con la puntuación de cierre). |
+| `rsxkit_ui_font(const rsxkit_glyph_source *src)` | Fuente externa (proporcional) para todo el texto; `NULL`, la 8x13. Ver «Fuente externa» abajo. |
+| `rsxkit_ui_font_stats_get(&st)` | Estado de la caché de glifos (aciertos, rasterizados, reemplazos, diferidos, con la 8x13). |
+| `rsxkit_ui_hook(fn, user)` | Un dibujo propio (3D con `rsxkit_draw_triangles`, por ejemplo un modelo girando) en medio del lote: lo anterior queda debajo y lo posterior encima. `rsxkit_ui_end` llama a `fn(user)` en ese punto con la pantalla del cuadro ligada y el mismo espacio lógico; `fn` puede cambiar los vértices con `rsxkit_vertices` (el 2D vuelve a poner los suyos), no debe llamar a otra `rsxkit_ui_*` y debe tener su propia memoria de vértices y texturas. Hasta `RSXKIT_UI_MAX_HOOKS` (4) por cuadro; la pantalla del cuadro no tiene profundidad, así que un modelo ordena sus triángulos de atrás hacia adelante. |
 | `rsxkit_ui_wave(const rsxkit_wave *w, float t)` | Una onda a lo ancho: cresta de dos senos con línea brillante y lámina que se desvanece hacia abajo, en el instante `t`. |
-| `int rsxkit_ui_image_set(slot, rgba, w, h)` | Sube una imagen RGBA8888 (bytes R, G, B, A; hasta `RSXKIT_UI_IMAGE_MAX_W × _H`, 320 × 448) a una ranura (`RSXKIT_UI_IMAGES`, hoy 1). Espera a que el RSX termine los cuadros que la usan: se llama entre cuadros y rara vez (al cambiar de carátula). |
+| `int rsxkit_ui_image_set(slot, rgba, w, h)` | Sube una imagen RGBA8888 (bytes R, G, B, A; hasta `RSXKIT_UI_IMAGE_MAX_W × _H`, 320 × 448) a una ranura (`RSXKIT_UI_IMAGES`, hoy 4). Espera a que el RSX termine los cuadros que la usan: se llama entre cuadros y rara vez (al cambiar de carátula). |
+| `int rsxkit_ui_image_update(slot, x, y, w, h, rgba)` | Reescribe un rectángulo de una imagen ya subida (una casilla de un atlas de miniaturas): `w × h` píxeles RGBA8888 seguidos. Espera al RSX como `_set`: no más de una por cuadro. |
 | `rsxkit_ui_image(slot, x, y, w, h, rgba)` | Dibuja la imagen de la ranura estirada al rectángulo; `rgba` la tiñe y le da alfa (`0xFFFFFFFF` tal cual). Sin imagen subida, no dibuja nada. |
+| `rsxkit_ui_image_part(slot, x, y, w, h, sx, sy, sw, sh, rgba)` | Igual, pero solo el rectángulo (`sx`, `sy`, `sw`, `sh`) de la imagen, en píxeles: varias figuras en una misma ranura. |
 | `void rsxkit_bind_frame(lw, lh)` (`rsxkit.h`) | El 3D de `rsxkit_draw_triangles` sobre la pantalla del cuadro en vez de un destino. |
 
 - Colores `0xRRGGBBAA`. Todo con mezcla alfa, sin profundidad.
@@ -361,6 +372,54 @@ for (;;) {
   búfer de comandos.
 - La geometría no usa el RSX: con `rsxkit_ui_batch` y `rsxkit_ui_atlas` se
   arma en memoria propia, para pruebas y vistas previas en la PC.
+
+#### Fuente externa y caché de glifos
+
+`rsxkit_ui_font(src)` cambia la fuente de todo el texto del 2D por una que
+da glifos con `rsxkit_glyph_source.render`: rasteriza un carácter con
+cobertura de 8 bits en una caja de `RSXKIT_GLYPH_BOX` (26 × 26 téxeles, el
+renglón entero al doble) y devuelve su avance, dónde empieza la imagen y su
+ancho. Lo que la fuente no tiene (`render` < 0) se dibuja con la 8x13.
+
+- El atlas (512 × 952) guarda arriba a la izquierda la 8x13 y en el resto
+  `RSXKIT_UI_GLYPH_SLOTS` (392) casillas de 28 × 28 para los glifos
+  rasterizados. Una tabla de 2048 glifos conocidos guarda el avance aunque
+  la imagen salga del atlas: medir rasteriza cada carácter una sola vez.
+- Reemplazo: si no hay casilla libre, la usada hace más cuadros (LRU por
+  cuadro), nunca una usada en este cuadro o en el anterior, que el RSX puede
+  estar leyendo (`rsxkit_ui_begin` espera la barrera del de hace dos). No se
+  espera al RSX ni se corta el cuadro: lo que no cabe, o lo que pasa de 32
+  rasterizados por cuadro para volver al atlas, sale en el cuadro siguiente.
+- El texto proporcional cambia las cuentas de quien mide: usar
+  `rsxkit_ui_text_width`, `_fit` y `_wrap` en vez de celdas × 8.
+
+### Fuente del sistema de la PS3 (`rsxkit/sysfont.h`)
+
+Las fuentes del XMB (Rodin, NewRodin, YG para el coreano, DFHei5 para el
+chino) con los módulos del firmware libfont, FreeType y libfontFT. Se leen
+de `/dev_flash` en tiempo de ejecución: no van en el programa. Enlazar con
+`-lfontFT -lfont -lsysmodule`.
+
+```c
+#include <rsxkit/sysfont.h>
+
+if (rsxkit_sysfont_open(RSXKIT_SYSFONT_JAPANESE, 0) == RSXKIT_OK)
+	rsxkit_ui_font(rsxkit_sysfont_source());   /* si falla, sigue la 8x13 */
+...
+rsxkit_ui_font(NULL);
+rsxkit_sysfont_close();
+```
+
+| Función | Qué hace |
+|---|---|
+| `int rsxkit_sysfont_open(script, bold)` | Carga los módulos, inicia libfont (1 MB de caché de archivos) y abre el juego de fuentes de la escritura (`RSXKIT_SYSFONT_LATIN`, `_JAPANESE`, `_KOREAN`, `_TCHINESE`, `_SCHINESE`), probando del más completo («RODIN2», con Latin2) al más viejo. Otra llamada cambia de juego (vaciar la caché con `rsxkit_ui_font(NULL)` y volver a ponerla). |
+| `rsxkit_sysfont_source()` / `rsxkit_sysfont_has(cp)` | La fuente para `rsxkit_ui_font` / si dibuja un carácter. |
+| `rsxkit_sysfont_info_get(&info)` | Juego abierto, calibración, en qué paso y con qué código falló, memoria de libfont (actual y máxima). |
+| `rsxkit_sysfont_close()` | Cierra fuente, renderizador y biblioteca y descarga los módulos. |
+
+Los glifos salen a 22 píxeles por eme con la línea base en la fila 20 de la
+caja. Detalles, códigos de los juegos de fuentes y trampas de la API en las
+notas del RSX de Salsa64 (`docs/fuente-sistema.md`).
 - Hasta `RSXKIT_UI_MAX_QUADS` (4096) quads por cuadro; los de más se
   descartan y se cuentan (`rsxkit_ui_dropped`).
 
@@ -401,6 +460,9 @@ rsxkit_post_run(&b);
 | `rsxkit_program_set(p, name, v, count)` | Un `uniform float4` (o `count` elementos de un arreglo). En el RSX las constantes van dentro del microcódigo, una copia en cada instrucción que las lee; se parchea la copia del programa (si el RSX lo está usando, espera). Para valores que cambian poco; lo que cambia en cada dibujo va en `pass.k`. |
 | `rsxkit_post_run(pass)` | Dibuja el rectángulo `pass.rect` de la salida (`pass.out`, o la pantalla si es NULL) con el programa y hasta 8 texturas (`pass.in`, unidad = índice). Antes espera en el RSX a que termine lo anterior e invalida la caché de texturas: una pasada puede leer lo que escribió la anterior o un destino recién dibujado. |
 | `rsxkit_surface_wrap_main(w, h, format, mem, offset, pitch)` | Superficie sobre memoria principal que ya mapeó quien llama (`rsxkit_map_main`; `mem` alineada a 128, `pitch` múltiplo de 64): el RSX la dibuja y la CPU o un SPE la leen rápido (leer la memoria local desde el Cell es muy lento), o al revés. rsxkit no la libera. |
+| `pass.kx`, `pass.ky` | Constantes afines (opcionales): con `kx[j]` o `ky[j]` distintos de 0, TEXCOORD(j + 1) vale `k[j] + kx[j]·(i + 0,5) + ky[j]·(j + 0,5)` en el píxel (i, j) del rectángulo. Lo que es lineal en la pantalla (coordenadas de una textura que se desplaza, un degradado) llega interpolado y el programa no gasta instrucciones en armarlo. En 0, constantes como siempre. |
+| `rsxkit_post_clear(s)` | Borra la superficie (todos sus canales a 0), p. ej. antes de sumarle mallas. |
+| `rsxkit_post_run_mesh(pass, mesh)` | Dibuja triángulos indexados (índices de 16 bits) de un arreglo de `rsxkit_post_vertex` (posición en el espacio de recorte y TEXCOORD0 con corrección de perspectiva) en memoria principal o local, con el programa, las entradas y la salida de `pass`, sumando (`RSXKIT_BLEND_ADD`: src + dst, también en fp16 y con valores negativos) o no, y descartando caras de frente o de atrás. Sirve para que el rasterizador encuentre los cruces de cada rayo de la pantalla con una superficie (cada triángulo aporta una vez por píxel que cubre) en lugar de buscarlos en un programa por píxel. |
 | `rsxkit_post_reduce(src, region, factor, dst)` | Filtro de caja: cada píxel de `dst` promedia un bloque `factor × factor` (1–6) de la región. Para llevar una imagen dibujada a escala interna alta a la resolución de la consola. Por omisión en dos pasadas (a lo ancho sobre una tabla fp16 interna, después a lo alto), para leer la imagen grande por filas seguidas; en una sola pasada (3 × 3 lecturas bilineales por píxel) la lectura de una superficie lineal a factor 5 costaba 3,1 ms en la PS3 para 320 × 237. |
 | `rsxkit_post_reduce_passes(n)` | 1 o 2 pasadas para `rsxkit_post_reduce` (para comparar); devuelve lo que había. |
 | `rsxkit_post_label_write(i, v)` / `rsxkit_post_label_wait(i, v)` / `rsxkit_label_address(i)` | Etiquetas del RSX para coordinarlo con un SPE o la CPU (las de `RSXKIT_LABEL_USER_MIN` a `_MAX` no las usa rsxkit): el RSX escribe una cuando terminó lo anterior; el RSX espera a que otro escriba un valor; la dirección en la memoria principal, para leerla o escribirla por DMA. |
@@ -449,8 +511,12 @@ un componente).
 - Memoria local: 2 búferes de color + 1 de profundidad del tamaño de la
   pantalla (11 MB a 720p, 24 MB a 1080), `2 × max_w × max_h × 4` bytes por
   framebuffer y `w × h × 4` por destino y por profundidad.
-- Memoria principal mapeada: 3 MB si se usa `rsxkit_ui_init` (2 MB del
-  atlas y los vértices, más 576 KB por ranura de imagen redondeados a 64 KB).
+- Memoria principal mapeada: 6 MB si se usa `rsxkit_ui_init` (1,9 MB del
+  atlas con la caché de glifos, 1,5 MB de vértices y 576 KB por ranura de
+  imagen redondeados a 64 KB). La caché de glifos suma ~35 KB de `.bss`.
+- Fuente del sistema (`sysfont.h`): 1 MB de caché de archivos, lo que
+  libfont pida por sus funciones de memoria (el renderizador, hasta 1 MB) y
+  9 KB de superficie; todo se suelta con `rsxkit_sysfont_close`.
 - Posprocesado: lo que midan las superficies (`rsxkit_surface_bytes`) y una
   copia de cada programa (memoria local y principal). Vertex program
   `rsxkit_post.vcg` (atributos POSITION y TEXCOORD0..7, en modo inmediato).
@@ -471,5 +537,12 @@ regla de Scale2x/EPX, escrita aquí a partir de su descripción pública (no
 se copió código). Las ranuras de imagen del 2D (`rsxkit_ui_image_set` y
 `rsxkit_ui_image`, para las carátulas del menú de Salsa64) son una
 contribución de VIDEOGAMES SCZ, bajo MIT con su conformidad
-(2026-10-13). No contiene código de proyectos GPL ni de proyectos sin
-licencia clara.
+(2026-10-13). La fuente del sistema (`src/sysfont.c`) se escribió con las
+cabeceras de PSL1GHT (`font/font.h`, `font/fontFT.h`, `font/fontset.h`,
+MIT); las fuentes del firmware no se copian, se abren en la consola. No
+contiene código de proyectos GPL ni de proyectos sin licencia clara.
+
+`rsxkit_screen_texture` presta como textura el búfer recién dibujado sin copiarlo.
+Su ticket más reciente debe pasar `rsxkit_screen_texture_valid` tras el flip;
+la UI, el redibujo y el sistema invalidan el préstamo. Quien escriba directamente
+en la pantalla llama antes a `rsxkit_screen_texture_invalidate`.

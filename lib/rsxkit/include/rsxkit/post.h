@@ -139,6 +139,12 @@ typedef struct rsxkit_post_pass {
 	/* Constantes de este dibujo: TEXCOORD1 .. TEXCOORD7 (iguales en todos los
 	 * píxeles). */
 	float k[RSXKIT_POST_K][4];
+	/* Opcional: constantes afines. Con kx[j] o ky[j] distintos de 0,
+	 * TEXCOORD(j + 1) vale k[j] + kx[j]·(i + 0,5) + ky[j]·(j + 0,5) en el
+	 * centro del píxel (i, j) del rectángulo: lo que es lineal en la
+	 * pantalla lo interpola el RSX sin cuentas en el programa. En 0 (con
+	 * el memset de siempre), constantes. No cuentan en las mallas. */
+	float kx[RSXKIT_POST_K][4], ky[RSXKIT_POST_K][4];
 } rsxkit_post_pass;
 
 /* Entrada que lee una superficie intermedia. */
@@ -154,6 +160,38 @@ rsxkit_post_input rsxkit_post_texture_input(const rsxkit_texture *t, rsxkit_filt
  * RSXKIT_EARG o RSXKIT_EDEPTH (la salida es más grande que la profundidad
  * de la pantalla, que va ligada con ella: rsxkit_depth_reserve). */
 int rsxkit_post_run(const rsxkit_post_pass *p);
+
+/* Borra la superficie (todos sus canales a 0) antes de sumarle mallas. */
+int rsxkit_post_clear(rsxkit_surface *s);
+
+/* ---- Pasadas con malla ------------------------------------------------------------ */
+
+/* Un vértice de malla: la posición en el espacio de recorte (x/w e y/w en
+ * [−1, 1] sobre la salida, la y hacia arriba; w > 0) y TEXCOORD0, que el
+ * RSX interpola con corrección de perspectiva. */
+typedef struct rsxkit_post_vertex {
+	float pos[4];
+	float t0[4];
+} rsxkit_post_vertex;
+
+typedef struct rsxkit_post_mesh {
+	uint32_t vertices;  /* offset del primer rsxkit_post_vertex (alineado a 16) */
+	uint32_t indices;   /* offset del primer índice (uint16_t, triángulos sueltos) */
+	uint32_t count;     /* índices (múltiplo de 3) */
+	uint8_t location;   /* RSXKIT_MEM_* de vértices e índices */
+	uint8_t blend;      /* RSXKIT_BLEND_OFF, o RSXKIT_BLEND_ADD: suma sin peso (src + dst) */
+	uint8_t cull;       /* rsxkit_cull (frente: antihorario con la y hacia arriba) */
+	uint8_t pad;
+} rsxkit_post_mesh;
+
+/* Dibuja triángulos de una malla sobre la salida de la pasada `p`, con su
+ * programa y sus entradas (rect, origin, step y k no se usan). Para sumar
+ * en una superficie fp16 lo que aporta cada triángulo de una superficie
+ * vista desde la cámara (una pasada que no busca nada por píxel: el
+ * rasterizador da cada cruce del rayo). Los vértices y los índices los
+ * escribe la CPU o un SPE; no cambiarlos hasta que el RSX los suelte
+ * (rsxkit_fence). Devuelve 0, RSXKIT_EARG o RSXKIT_EDEPTH. */
+int rsxkit_post_run_mesh(const rsxkit_post_pass *p, const rsxkit_post_mesh *m);
 
 /* Reduce la región `region` (en texeles) de `src` con un filtro de caja:
  * cada píxel de `dst` es el promedio de un bloque factor × factor (1 a 6).

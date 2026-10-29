@@ -35,6 +35,7 @@ extern const u8 rsxkit_post_vpo[];
 extern const u8 rsxkit_post_reduce_fpo[];
 extern const u8 rsxkit_post_reduce_h_fpo[];
 extern const u8 rsxkit_post_reduce_v_fpo[];
+extern const u8 rsxkit_post_zero_fpo[];
 
 #define SURF_ALIGN 128
 
@@ -71,6 +72,7 @@ static struct {
 	int reduce2_factor;
 	rsxkit_surface *reduce_tmp;  /* la tabla entre las dos (fp16) */
 	int reduce_passes;          /* 1 o 2 (0: aún sin elegir, 2) */
+	rsxkit_program *zero;       /* rsxkit_post_clear */
 } post;
 
 static inline u32 halves(u32 w)
@@ -411,6 +413,7 @@ static int bind_output(struct rsxkit_surface *s, uint32_t *w, uint32_t *h)
 {
 	struct rsxkit_state *g = &rsxkit_g;
 	if (!s) {
+		rsxkit_screen_texture_invalidate();
 		if (!g->screen_bound)
 			rsxkit_bind_screen();
 		else
@@ -500,14 +503,111 @@ int rsxkit_post_run(const rsxkit_post_pass *p)
 	float u0 = p->origin[0], v0 = p->origin[1], u1 = u0 + r.w * stx, v1 = v0 + r.h * sty;
 	const float t00[4] = { u0, v0, 0.0f, 0.0f }, t10[4] = { u1, v0, 1.0f, 0.0f };
 	const float t01[4] = { u0, v1, 0.0f, 1.0f }, t11[4] = { u1, v1, 1.0f, 1.0f };
-	rsxDrawVertexBegin(ctx, GCM_TYPE_TRIANGLE_STRIP);
+	/* Constantes afines: un valor por esquina (las esquinas del rectángulo
+	 * están medio píxel antes y después de los centros extremos). */
+	int affine = 0;
 	for (int j = 0; j < RSXKIT_POST_K; j++)
-		rsxDrawVertex4f(ctx, GCM_VERTEX_ATTRIB_TEX1 + j, p->k[j]);
-	vertex(ctx, x0, y0, (float)sw, (float)sh, t00);
-	vertex(ctx, x1, y0, (float)sw, (float)sh, t10);
-	vertex(ctx, x0, y1, (float)sw, (float)sh, t01);
-	vertex(ctx, x1, y1, (float)sw, (float)sh, t11);
+		for (int c = 0; c < 4; c++)
+			if (p->kx[j][c] != 0.0f || p->ky[j][c] != 0.0f)
+				affine = 1;
+	const float *const tc[4] = { t00, t10, t01, t11 };
+	const float cu[4] = { 0.0f, (float)r.w, 0.0f, (float)r.w }, cv[4] = { 0.0f, 0.0f, (float)r.h, (float)r.h };
+	const float px[4] = { x0, x1, x0, x1 }, py[4] = { y0, y0, y1, y1 };
+	rsxDrawVertexBegin(ctx, GCM_TYPE_TRIANGLE_STRIP);
+	if (!affine)
+		for (int j = 0; j < RSXKIT_POST_K; j++)
+			rsxDrawVertex4f(ctx, GCM_VERTEX_ATTRIB_TEX1 + j, p->k[j]);
+	for (int v = 0; v < 4; v++) {
+		if (affine)
+			for (int j = 0; j < RSXKIT_POST_K; j++) {
+				float kv[4];
+				for (int c = 0; c < 4; c++)
+					kv[c] = p->k[j][c] + p->kx[j][c] * cu[v] + p->ky[j][c] * cv[v];
+				rsxDrawVertex4f(ctx, GCM_VERTEX_ATTRIB_TEX1 + j, kv);
+			}
+		vertex(ctx, px[v], py[v], (float)sw, (float)sh, tc[v]);
+	}
 	rsxDrawVertexEnd(ctx);
+
+	uint32_t seq = ++post.seq;
+	rsxSetWriteBackendLabel(ctx, RSXKIT_LABEL_POST, seq);
+	p->program->last_use = seq;
+	if (p->out)
+		p->out->last_use = seq;
+	for (uint32_t i = 0; i < p->inputs; i++)
+		if (p->in[i].surface)
+			((struct rsxkit_surface *)p->in[i].surface)->last_use = seq;
+	return RSXKIT_OK;
+}
+
+int rsxkit_post_clear(rsxkit_surface *s)
+{
+	if (!s || !s->used)
+		return RSXKIT_EARG;
+	/* Una pasada que escribe 0 y no el borrado del RSX (rsxClearSurface):
+	 * así vale igual en cualquier formato de superficie. */
+	if (!post.zero && !(post.zero = rsxkit_program_create(rsxkit_post_zero_fpo)))
+		return RSXKIT_ENOMEM;
+	rsxkit_post_pass p;
+	memset(&p, 0, sizeof p);
+	p.program = post.zero;
+	p.out = s;
+	return rsxkit_post_run(&p);
+}
+
+int rsxkit_post_run_mesh(const rsxkit_post_pass *p, const rsxkit_post_mesh *m)
+{
+	struct rsxkit_state *g = &rsxkit_g;
+	gcmContextData *ctx = g->ctx;
+	if (!p || !m || !p->program || !p->program->used || p->inputs > RSXKIT_POST_INPUTS ||
+	    (p->out && !p->out->used) || !m->count || m->count % 3 || (m->vertices & 15) || (m->indices & 1) ||
+	    (m->blend != RSXKIT_BLEND_OFF && m->blend != RSXKIT_BLEND_ADD))
+		return RSXKIT_EARG;
+	for (uint32_t i = 0; i < p->inputs; i++)
+		if (p->in[i].surface && !p->in[i].surface->used)
+			return RSXKIT_EARG;
+	post_init();
+	rsxkit_reserve(RSXKIT_RESERVE_DRAW);
+	rsxkit_leave_3d();
+	uint32_t sw, sh;
+	int rc = bind_output(p->out, &sw, &sh);
+	if (rc != RSXKIT_OK)
+		return rc;
+
+	rsxSetWaitForIdle(ctx);
+	rsxInvalidateTextureCache(ctx, GCM_INVALIDATE_TEXTURE);
+	rsxInvalidateVertexCache(ctx);
+	for (uint32_t i = 0; i < p->inputs; i++)
+		set_input(ctx, (u8)i, &p->in[i]);
+	rsxLoadVertexProgram(ctx, post.vp, post.vp_ucode);
+	rsxLoadFragmentProgramLocation(ctx, &p->program->hdr, p->program->offset, GCM_LOCATION_RSX);
+
+	if (m->blend == RSXKIT_BLEND_ADD) {
+		rsxSetBlendEnable(ctx, GCM_TRUE);
+		rsxSetBlendFunc(ctx, GCM_ONE, GCM_ONE, GCM_ONE, GCM_ONE);
+		rsxSetBlendEquation(ctx, GCM_FUNC_ADD, GCM_FUNC_ADD);
+	}
+	if (m->cull != RSXKIT_CULL_NONE) {
+		/* Como en draw3d.c: frente antihorario con la y hacia arriba. */
+		rsxSetFrontFace(ctx, GCM_FRONTFACE_CCW);
+		rsxSetCullFaceEnable(ctx, GCM_TRUE);
+		rsxSetCullFace(ctx, m->cull == RSXKIT_CULL_FRONT ? GCM_CULL_FRONT : GCM_CULL_BACK);
+	}
+	u8 loc = m->location == RSXKIT_MEM_MAIN ? GCM_LOCATION_CELL : GCM_LOCATION_RSX;
+	const u8 stride = sizeof(rsxkit_post_vertex);
+	rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_POS, 0, m->vertices, stride, 4, GCM_VERTEX_DATA_TYPE_F32, loc);
+	rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX0, 0, m->vertices + 16, stride, 4, GCM_VERTEX_DATA_TYPE_F32,
+				 loc);
+	g->arrays_bound = 1;
+	rsxDrawIndexArray(ctx, GCM_TYPE_TRIANGLES, m->indices, m->count, GCM_INDEX_TYPE_16B, loc);
+	/* Lo que dejan las pasadas: sin mezcla, sin descartar caras y sin
+	 * arreglos (los vuelve a poner quien los use). */
+	rsxkit_reserve(RSXKIT_RESERVE_DRAW);
+	if (m->blend == RSXKIT_BLEND_ADD)
+		rsxSetBlendEnable(ctx, GCM_FALSE);
+	if (m->cull != RSXKIT_CULL_NONE)
+		rsxSetCullFaceEnable(ctx, GCM_FALSE);
+	rsxkit_leave_3d();
 
 	uint32_t seq = ++post.seq;
 	rsxSetWriteBackendLabel(ctx, RSXKIT_LABEL_POST, seq);
@@ -706,7 +806,7 @@ void rsxkit_post_shutdown(void)
 				rsxFree(surfaces[i].mem);
 			surfaces[i].used = 0;
 		}
-	post.reduce = post.reduce_h = post.reduce_v = NULL;
+	post.reduce = post.reduce_h = post.reduce_v = post.zero = NULL;
 	post.reduce_tmp = NULL;
 	post.ready = 0;
 }
