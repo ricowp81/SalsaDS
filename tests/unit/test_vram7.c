@@ -137,16 +137,17 @@ static void test_vram7_jit(struct nds *n)
 	CHECK(arec_stats(n->jit7)->inval_blocks > 0);
 	/* VRAMCNT_C/D solo vacía la caché del ARM7 si el banco entra o sale de su mapa (MST 2); entre LCDC, fondos y texturas no */
 	{
-		uint64_t f;
+		uint64_t f, sk;
 
 		cnt(n, 2, 0x80); /* venía del ARM7: vacía */
 		f = arec_stats(n->jit7)->flushes;
+		sk = n->st.vram7_flush_skipped;
 		cnt(n, 2, 0x83);
 		cnt(n, 2, 0x80);
 		cnt(n, 2, 0x84);
 		cnt(n, 2, 0x80);
 		CHECK_EQ(arec_stats(n->jit7)->flushes, f);
-		CHECK_EQ(n->st.vram7_flush_skipped, 4);
+		CHECK_EQ(n->st.vram7_flush_skipped - sk, 4);
 		cnt(n, 2, 0x82);
 		CHECK_EQ(arec_stats(n->jit7)->flushes, f + 1);
 		cnt(n, 2, 0x8a); /* otro desplazamiento dentro del ARM7: también */
