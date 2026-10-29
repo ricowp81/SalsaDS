@@ -3893,6 +3893,13 @@ int main(void)
 				break;
 		}
 	}
+#ifdef NUCLEO_JIT
+	/* La marca se pone al conectar el recompilador (arriba) y la quita game_close; si la aplicación sale sin haber abierto
+	 * ningún juego (desde el selector, o la autoprueba al terminar) quedaba puesta y el siguiente arranque de esta versión
+	 * usaba el intérprete: aquí no hay código traducido corriendo, así que la salida ordenada la quita siempre. */
+	if (jit_on)
+		salsads_rec_marker(JIT_MARKER, NUCLEO_VERSION, 0);
+#endif
 	/* Fin de la aplicación: ahora sí se detienen los SPE y el audio */
 #ifdef NUCLEO_RSX
     rsx3d_decode_worker(NULL);
