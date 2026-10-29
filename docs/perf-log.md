@@ -34,8 +34,9 @@ seno por captura (`hd-captura-3`, mismo método que la sección siguiente): SINA
 19,72 → 63,22 dB; imagen de 7498,65 Hz −23,89 → −64,44 dBc; la voz directa
 sigue en −64,04 dBc. El RMS baja 2,4/1,3 dB (L/R) en NSMB: es la respuesta de
 Hermite frente al escalón en la octava alta de cada voz, la misma que ya tiene
-la ruta HD directa. Costo en el host: ver `build/sonido/melonds/tiempo-host-3.log`
-(orden relativo; el costo real se mide en la PS3 con `DATO audio`). Estado
+la ruta HD directa. Costo en el host (5000 cuadros de NSMB, dos pasadas, orden
+relativo): HD anterior 17,11/16,80 s, HD con espejo 17,11/16,90 s, dentro del
+ruido; el costo real se mide en la PS3 con `DATO audio`. Estado
 +16 KB en el SPE (holgura previa 165 600 B). WAV y métricas en
 `build/sonido/melonds/`, fuera del repositorio.
 
