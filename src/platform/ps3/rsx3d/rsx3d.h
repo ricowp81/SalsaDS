@@ -67,9 +67,15 @@ const char *rsx3d_reason(void);
 int rsx3d_fog_constant(void); /* 1: solo niebla de densidad constante por polígono (3d-rsx-niebla-constante) */
 int rsx3d_fog_final(void); /* 0: comparación con la ruta anterior */
 /* Respaldos al SPE vigentes (autoprueba): sombras con cara trasera en W,
- * niebla junto con toon o sombra; W por fragmento truncada (anterior). */
+ * niebla junto con toon o sombra; W por fragmento truncada (anterior).
+ * La niebla con toon o resaltado va al SPE por omisión (3d-rsx-niebla-toon
+ * la lleva al RSX); la autoprueba degrada un grupo que falle (toon o sombra)
+ * a su respaldo SPE sin apagar el resto del 3D. */
 int rsx3d_shadow_back_w_spe(void);
 int rsx3d_fog_combined_spe(void);
+int rsx3d_fog_toon_spe(void);
+int rsx3d_fog_shadow_spe(void);
+void rsx3d_fog_degrade(int toon);
 int rsx3d_w_truncated(void);
 /* Solo autoprueba síncrona, tras render: lee etapas nativa y HD del píxel. */
 void rsx3d_fog_diagnose(const r3d_job *job, unsigned x, unsigned y);

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "check.h"
 #include "gpu3d/rsx_passes.h"
+#include "gpu3d/rsx_modes.h"
 #include "gpu3d/r3d_px.h"
 
 typedef struct sample {
@@ -313,5 +314,13 @@ void test_rsx_passes(void)
     CHECK_EQ(rsx_color_passes_mode(&c,plan,0),5);
     c.prior_back=0; CHECK_EQ(rsx_color_passes(&c,plan),2);
     c.equal=1; CHECK_EQ(rsx_color_passes(&c,plan),3);
+    /* TEXUNIT1 del dibujo de color: toon conserva su tabla también con
+     * niebla final (la autoprueba de la PS3 vio las densidades como colores
+     * toon); la de niebla solo en la ruta por fragmento anterior. */
+    for (unsigned mode=0;mode<4;mode++) for (unsigned fog=0;fog<2;fog++) for (unsigned previous=0;previous<2;previous++) {
+        unsigned table=rsx_color_table(mode,fog,previous);
+        if (mode==2) CHECK_EQ(table,RSX_TABLE_TOON);
+        else CHECK_EQ(table,fog && previous ? RSX_TABLE_FOG : RSX_TABLE_NONE);
+    }
     printf("RSX pasadas: %u estados contra las reglas escalares por plan (compacto y ronda 6), %u lotes frontales, 0 diferencias\n",compact,lotes);
 }

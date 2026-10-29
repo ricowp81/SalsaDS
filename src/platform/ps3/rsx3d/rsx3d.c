@@ -395,8 +395,12 @@ static rsxkit_program *fog_attr, *fog_attr_w, *fog_final;
 static rsxkit_program *fog_attr_shadow, *fog_attr_shadow_w;
 /* Niebla junto con toon o sombras, cara trasera con W y redondeo de la W
  * por fragmento: interruptores de respaldo (3d-rsx-niebla-combinada-spe,
- * 3d-rsx-sombra-trasera-w-spe, 3d-rsx-w-truncada). */
+ * 3d-rsx-sombra-trasera-w-spe, 3d-rsx-w-truncada). La niebla con toon o
+ * resaltado va al SPE por omisión hasta que la autoprueba de la consola la
+ * acredite (3d-rsx-niebla-toon la lleva al RSX); la autoprueba degrada al
+ * SPE el grupo que falle (toon o sombra) sin apagar el resto del 3D. */
 static int fog_combined_spe, shadow_back_w_spe, w_truncated;
+static int fog_toon_rsx, fog_toon_degraded, fog_shadow_degraded;
 static rsxkit_program *fog_probe;
 /* Índice 0 nativo, 1 HD: imágenes transitorias compartidas por las ranuras.
  * El FIFO termina su posproceso antes de borrar las del siguiente cuadro. */
@@ -542,6 +546,14 @@ static int last_valid;
 const char *rsx3d_reason(void) { return reason; }
 int rsx3d_shadow_back_w_spe(void) { return shadow_back_w_spe || w_truncated; }
 int rsx3d_fog_combined_spe(void) { return fog_combined_spe || fog_previous; }
+int rsx3d_fog_toon_spe(void) { return rsx3d_fog_combined_spe() || !fog_toon_rsx || fog_toon_degraded; }
+int rsx3d_fog_shadow_spe(void) { return rsx3d_fog_combined_spe() || fog_shadow_degraded; }
+void rsx3d_fog_degrade(int toon)
+{
+    if (toon) fog_toon_degraded = 1; else fog_shadow_degraded = 1;
+    salsads_log("rsx3d autoprueba: niebla con %s falla en el RSX; esos cuadros van al SPE (el resto del 3D sigue en el RSX)",
+                toon ? "toon o resaltado" : "sombras");
+}
 int rsx3d_w_truncated(void) { return w_truncated; }
 int rsx3d_fog_constant(void) { return fog_constant; }
 int rsx3d_fog_final(void) { return !fog_previous; }
@@ -711,6 +723,8 @@ int rsx3d_init(void)
     shadow_spe = stat("/dev_hdd0/salsads/3d-rsx-sombra-spe", &flag) == 0;
     toon_spe = stat("/dev_hdd0/salsads/3d-rsx-toon-spe", &flag) == 0;
     fog_combined_spe = stat("/dev_hdd0/salsads/3d-rsx-niebla-combinada-spe", &flag) == 0; /* A/B: niebla con toon o sombra al SPE */
+    fog_toon_rsx = stat("/dev_hdd0/salsads/3d-rsx-niebla-toon", &flag) == 0; /* experimento: niebla con toon o resaltado en el RSX */
+    fog_toon_degraded = fog_shadow_degraded = 0;
     shadow_back_w_spe = stat("/dev_hdd0/salsads/3d-rsx-sombra-trasera-w-spe", &flag) == 0; /* A/B: sombras con cara trasera en W al SPE */
     w_truncated = stat("/dev_hdd0/salsads/3d-rsx-w-truncada", &flag) == 0; /* A/B: W por fragmento truncada (floor) y escala interpolada, como antes */
     attr_const = stat("/dev_hdd0/salsads/3d-rsx-atributos-por-poligono", &flag) == 0;
@@ -793,8 +807,9 @@ int rsx3d_init(void)
                 cost_stale_ok ? "vale para bajar (ronda 6)" : "recalibra antes de bajar (más vieja que 120 cuadros)",
                 tid_limit8 ? "hasta 8 (tope anterior)" : "hasta 15 sin sombras (4 bits de TID)");
     salsads_log("rsx3d pasadas: %s", passes_previous ? "ronda 3" : "opacos directos y atributos compactos");
-    salsads_log("rsx3d sombras y niebla: niebla con toon o sombra %s; cara trasera con W %s; W por fragmento %s",
-                fog_combined_spe || fog_previous ? "al SPE" : "en el RSX (tablas separadas, atributos de sombra y toon)",
+    salsads_log("rsx3d sombras y niebla: niebla con sombra %s; niebla con toon o resaltado %s; cara trasera con W %s; W por fragmento %s",
+                fog_combined_spe || fog_previous ? "al SPE" : "en el RSX (tabla aparte, atributos de sombra)",
+                fog_combined_spe || fog_previous ? "al SPE" : fog_toon_rsx ? "en el RSX (3d-rsx-niebla-toon)" : "al SPE por omisión (3d-rsx-niebla-toon la prueba en el RSX)",
                 shadow_back_w_spe || w_truncated ? "al SPE" : "en el RSX",
                 w_truncated ? "truncada con escala interpolada (anterior)" : "redondeada con escala entera (empates exactos)");
     salsads_log("rsx3d recursos listos: niebla auxiliar GDDR3 %u KiB; programas y destinos reservados",
@@ -1104,6 +1119,15 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
             (modes & ((1u << RSX_TOON) | (1u << RSX_HIGHLIGHT) | (1u << RSX_SHADOW_MASK) | (1u << RSX_SHADOW)))) {
             reason = "niebla combinada con toon o sombra"; return 0;
         }
+        /* Toon o resaltado con niebla: al SPE por omisión hasta acreditarlo
+         * en consola (3d-rsx-niebla-toon); también si la autoprueba degradó
+         * el grupo. Las sombras con niebla solo si las degradó la autoprueba. */
+        if ((!fog_toon_rsx || fog_toon_degraded) && (modes & ((1u << RSX_TOON) | (1u << RSX_HIGHLIGHT)))) {
+            reason = fog_toon_degraded ? "niebla con toon: degradada por la autoprueba" : "niebla con toon o resaltado (SPE por omisión)"; return 0;
+        }
+        if (fog_shadow_degraded && (modes & ((1u << RSX_SHADOW_MASK) | (1u << RSX_SHADOW)))) {
+            reason = "niebla con sombras: degradada por la autoprueba"; return 0;
+        }
         for (unsigned i = 0; i < f->npolys; i++) {
             const gx_poly *p = &f->poly[i];
             unsigned fmt = (p->texparam >> 26) & 7u;
@@ -1256,9 +1280,15 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
         d->k[1][0][3] = (float)(1u << p.wshift);
         d->k[4][0][0] = w_truncated ? 0.0f : 1.0f;
         if (p.mode == 3) d->program = rs.wbuf ? shadow_w : shadow;
-        if (p.mode == 2) {
-            d->tex[1].offset = offset + TOON_OFF(slot); d->tex[1].pitch = 128;
-            d->tex[1].width = 32; d->tex[1].height = 1;
+        /* TEXUNIT1: la tabla de toon para el modo 2, la de niebla solo en la
+         * ruta por fragmento anterior (rsx_color_table). Antes la niebla la
+         * sobrescribía también en los polígonos toon y el programa de toon
+         * leía las densidades como colores (autoprueba de la consola:
+         * niebla+toon/resaltado con el color de toon en negro o rojizo). */
+        const unsigned table = rsx_color_table(p.mode, !!(rs.d3 & D3_FOG), fog_previous);
+        if (table != RSX_TABLE_NONE) {
+            d->tex[1].offset = offset + (table == RSX_TABLE_TOON ? TOON_OFF(slot) : FOG_OFF(slot));
+            d->tex[1].pitch = 128; d->tex[1].width = 32; d->tex[1].height = 1;
             d->tex[1].format = RSXKIT_RGBA8888; d->tex[1].location = RSXKIT_MEM_MAIN;
             d->tex[1].filter = RSXKIT_FILTER_NEAREST;
             d->tex[1].wrap_s = d->tex[1].wrap_t = RSXKIT_WRAP_CLAMP;
@@ -1268,11 +1298,6 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
             /* Constantes comunes a niebla anterior y atributos finales.
              * Solo la ruta anterior lee la tabla durante el dibujo. */
             if (fog_previous) d->ntex = 2;
-            d->tex[1].offset = offset + FOG_OFF(slot); d->tex[1].pitch = 128;
-            d->tex[1].width = 32; d->tex[1].height = 1;
-            d->tex[1].format = RSXKIT_RGBA8888; d->tex[1].location = RSXKIT_MEM_MAIN;
-            d->tex[1].filter = RSXKIT_FILTER_NEAREST;
-            d->tex[1].wrap_s = d->tex[1].wrap_t = RSXKIT_WRAP_CLAMP;
             d->k[3][0][0] = (float)rs.fog_offset;
             d->k[3][0][1] = (float)(1u << (rs.fog_shift > 10 ? 0u : 10u - rs.fog_shift));
             d->k[3][0][3] = (p.attr & PA_FOG) ? 1.0f : 0.0f;
