@@ -4,6 +4,13 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-10-28 — Límite de HD al reproducir SOUNDCAP (sonido-desmume)
+- Banco propio, host LE en Docker, sin ROM: PCM16 a 7998,56 Hz, seno de 499,91 Hz. HD reduce la imagen de 7498,65 Hz de −23,50 a −64,04 dBc en salida directa, pero solo de −23,50 a −23,89 dBc al reproducir la captura por la voz 1. Las muestras nativas son idénticas con/sin HD en ambos recorridos. Hermite interpola la captura ya mezclada; no elimina las imágenes que entraron desde sus voces de origen.
+- No se acredita equivalencia completa de los WAV aportados de PS3 y el tramo host del nivel: correlación mono 0,0057 al buscar un desfase fijo; sí hay un tramo común de unos 8 s con el comienzo del WAV host completo (0,8951; bandas a menos de 0,10 dB). No usar el residuo de pasajes sin alinear como medida de ruido. Método y límites en `perf-log.md`; informe local `build/sonido/informe-2.md`.
+- El log PS3 aportado del núcleo nuevo acredita la autoprueba de ocho trabajos con 0 diferencias de muestras, estado, memoria y salida. `audio-verificar` estaba apagado durante el juego. Su banco de 16 voces da 1,512/4,129 ms por trabajo fiel/HD; son datos de ese arranque, no el costo de una mitigación nueva.
+- Referencia digital melonDS pendiente: el ejecutable no pudo conectar con los servicios gráficos del entorno; el paquete no ofrece plataforma sin ventana. No se obtuvo audio de referencia ni se consultó su código. No se concluye que la aspereza sea del hardware; tampoco se cambia el núcleo ni se genera otro paquete sin esa comparación.
+- `test-host=1` solo por los 34 fallos BE conocidos de `test_arec.c:149/152`: LE con sanitizadores 22 852 825 comprobaciones sin fallos; BE 22 856 555. ROMs, escenas e imágenes LE/SAN/BE, 32 hashes y lockstep correctos. Texto publicable y formato correctos.
+
 ## 2026-10-28 — Voces y captura a partir de DeSmuME (sonido-desmume)
 - Núcleo portable nuevo, con origen y avisos GPL-2.0-or-later: avance PCM/ADPCM, predictor e índice de bucle, PSG/ruido, redondeo de volumen/paneo, maestro antes del recorte y captura con temporizador/FIFO. Las escrituras SOUNDCAP pendientes se reenvían a las voces; ya no cambian la realimentación al partir el trabajo.
 - NSMB 1-1, host, 20,032 s: concentración de saltos por cuadro 2,896→1,543; corrigiendo solo captura, 1,452 (correlación 0,999895). SOUNDCNT `0xB97F`: toda la salida pasa por las voces PCM16 1/3 de captura. Se identifica un defecto periódico; la energía en banda alta varía poco y no queda demostrado que desaparezca todo el ruido audible. Datos y límites en `perf-log.md`.

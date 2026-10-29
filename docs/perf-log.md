@@ -1,5 +1,86 @@
 # Registro de rendimiento
 
+## 2026-10-28 — Hermite antes y después de SOUNDCAP (host LE/Docker)
+
+Banco propio sin ROM sobre `4181d5c`, mismo `snd_run` del núcleo nuevo. Seno
+PCM16 de 32 muestras (dos períodos), amplitud 16000, TMR de la voz 0 con período
+2095: Fs = 7998,5637 Hz, tono = 499,9102 Hz. Dos recorridos: voz 0 directa o
+mezcla L → SOUNDCAP0 → anillo PCM16 de 2048 B → voz 1, período 512. Salida L
+de la voz 1, excluida del mezclador de captura; sin realimentación ni recorte.
+Cada caso genera 240 trabajos de 547 ticks. Ajuste senoidal desde el segundo 1
+hasta el final; SINAD = potencia del tono / residuo completo, incluida la imagen
+Fs−f, sin confundirlo con una estimación de ruido blanco.
+
+| Recorrido | HD | SINAD (dB) | Imagen a 7498,65 Hz (dBc) |
+|---|---:|---:|---:|
+| Directo | no | 19,6504 | −23,4969 |
+| Directo | sí | 62,7597 | −64,0407 |
+| Por captura | no | 19,6511 | −23,4971 |
+| Por captura | sí | 19,7168 | −23,8929 |
+
+Las 131280 muestras nativas estéreo de cada recorrido son idénticas con HD
+encendido y apagado. La mejora de rechazo de imagen es 40,54 dB directa y
+0,40 dB por captura. Se confirma un límite de la mejora de escucha: las voces
+de origen se mezclan sin interpolar para SOUNDCAP; interpolar después las voces
+1/3 a la frecuencia nativa conserva sus imágenes dentro de banda. El pasaje
+host de NSMB usa precisamente esta salida, SOUNDCNT `0xB97F`, voces 1/3 PCM16
+con TMR `0xFE00`. Esto no determina cómo suena el hardware ni melonDS.
+
+Artefactos locales: `build/sonido/hd-captura-2.c`, `medir-seno-2.py`,
+`seno-metricas-2.json` y `seno-captura*-hd*-2.f32/.pcm`. Compilación y ejecución
+con `tools/build.sh --sh`, GCC `-O2`, sin cambiar fuentes del núcleo. No se
+midió tiempo del host para inferir costo del Cell.
+
+### WAV aportados de PS3 y equivalencia de pasajes
+
+Los dos WAV PS3 nuevos duran 20 s; nativo 32728 Hz/PCM16 y salida 48000 Hz/float32.
+El host del nivel dura 20,032 s. Remuestreo de diagnóstico con
+`scipy.signal.resample_poly` a una tasa común, correlación mono y búsqueda
+de ±10 s: PS3 nativo frente al tramo host, 0,00568; las señales no quedan
+alineadas por un desfase fijo. No es una comparación válida de ruido residual.
+
+La búsqueda por envolventes de seis bandas encuentra PS3 2–10 s frente a host
+completo 3,34–11,34 s: correlación de envolventes 0,99356. A tasa nativa,
+refinamiento de −81 muestras (−2,475 ms), correlación mono 0,89514 y diferencias
+espectrales de `tools/audio-stage-compare.py` entre −0,099 y +0,048 dB en sus
+cinco bandas. Esto identifica un pasaje común con el comienzo del WAV completo;
+no acredita una pareja de grabaciones del nivel entero. La correlación mono
+tampoco acredita paridad estéreo: el residuo conjunto L/R, compensando una sola
+ganancia, tiene relación señal/residuo de 1,58 dB.
+
+Máximos locales de `abs(Δ²)` > 0,05 de escala completa, separados al menos tres
+muestras, contados en la tasa original de cada archivo:
+
+| WAV | Máximos/s L / R | Cruces del umbral/s L / R |
+|---|---:|---:|
+| Host nivel, nuevo | 679,0 / 644,0 | 1584,3 / 1595,6 |
+| Host nivel, anterior | 705,0 / 656,6 | 1635,4 / 1637,6 |
+| PS3 nuevo, nativo | 609,2 / 757,4 | 1141,4 / 1381,0 |
+| PS3 nuevo, HD | 233,4 / 283,4 | 340,3 / 395,8 |
+
+Los cruces consecutivos pueden pertenecer al mismo escalón; estos conteos no
+son equivalentes entre sí ni miden solo ruido. En el host nuevo, mediana de
+distancias 11 muestras en L/R y 43,7/44,3 % entre 6 y 20 muestras. Los WAV PS3
+tienen 13,53 % de pares exactamente cero (nativo), frente a 1,32 % en el tramo
+host; el decil inferior sin excluir silencio daría una medida engañosa. Entre
+los bloques activos de unos 10 ms, el decil inferior da RMS L/R −29,58/−28,32
+dBFS host y −31,80/−33,27 dBFS PS3 nativo. Incluyen colas musicales: no son
+una medición aislada de energía de ruido entre notas.
+
+El log PS3 aportado acredita autoprueba nueva de ocho trabajos: 0 diferencias
+en muestras, estado, memoria y salida; `audio-verificar` apagado en juego.
+Banco del arranque, 16 voces/120 cuadros: fiel media/máximo 1512/1515 µs;
+HD 4129/4133 µs. El log anterior da 966/968 y 3597/3601 µs. Son medidas de
+esos arranques de consola, sin A/B controlado ni estimación de una futura ruta
+de captura interpolada. El log confirma grabación sin pérdidas, silencio por
+faltas ni bloques tarde; no identifica por sí solo el pasaje musical.
+
+Referencia melonDS pendiente por falta de acceso gráfico en el entorno.
+Conclusión limitada al recorrido HD propio; no se atribuye la aspereza al
+hardware y no se implementa una corrección de emulación sin referencia.
+Informe, métricas por banda/canal, alineaciones y scripts: `build/sonido/`,
+sufijo `-2`. Todos los WAV y señales permanecen fuera del repositorio.
+
 ## 2026-10-28 — Sonido basado en DeSmuME: captura y voces (host)
 
 NSMB, nivel 1-1, 5000 cuadros desde el mismo guardado y con las mismas pulsaciones.
