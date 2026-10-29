@@ -817,6 +817,9 @@ static void draw(struct command *c, uint8_t test, uint8_t ref, uint8_t compare, 
     d->stencil = test; d->stencil_ref = ref; d->stencil_compare_mask = compare;
     d->stencil_write_mask = write; d->stencil_op = op;
     d->blend = blend; d->depth = z; d->k[0][0][3] = pass;
+    /* Los destinos son A8R8G8B8 y el alfa es dato (IDs, RGB6/A5): sin mezcla
+     * queda el del fragmento, no 1 como deja rsxkit por omisión. */
+    d->dst_alpha = RSXKIT_DSTA_FRAG;
     rsxkit_program *program = d->program;
     float saved_fc[2][4];
     int attributes = fog_attribute_pass && (program == shade || program == shade_w);
