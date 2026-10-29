@@ -126,6 +126,14 @@ static int geom_poly_plain, geom_read_scalar;
  * la regla anterior (borde derecho exclusivo siempre), para comparar en la misma escena. */
 #define R3D_SIN_COMPLETO_FLAG SALSADS_DATA_DIR "/r3d-sin-completo"
 #define WIFI_OFF_FLAG SALSADS_DATA_DIR "/wifi-sin-inicio"
+/* Caminos rápidos de la E/S lenta del ARM9 (rama arm9-es; docs/fase4.md, «E/S lenta»): cada archivo vuelve a la forma anterior de
+ * uno, para medir A/B en la misma escena. DMA_LENTO: la DMA unidad a unidad por el bus (sin copias por bloques a RAM, VRAM,
+ * paleta y OAM, ni palabras a GXFIFO en modo inmediato por la ruta corta). ES_LENTA: la E/S del recompilador por el bus entero,
+ * la unidad de matemáticas byte a byte con la división en cada escritura y ROMCTRL por la imagen de 32 bytes.
+ * VRAM7_VACIAR_SIEMPRE: cualquier cambio de VRAMCNT_C/D vacía la caché del recompilador del ARM7, entre o no el banco en su mapa. */
+#define DMA_LENTO_FLAG SALSADS_DATA_DIR "/dma-lento"
+#define ES_LENTA_FLAG SALSADS_DATA_DIR "/es-lenta"
+#define VRAM7_VACIAR_SIEMPRE_FLAG SALSADS_DATA_DIR "/vram7-vaciar-siempre"
 #define AUDIO_VERIFY_FLAG SALSADS_DATA_DIR "/audio-verificar"
 #define AUDIO_PPE_FLAG SALSADS_DATA_DIR "/audio-mezcla-ppe"
 
@@ -1837,6 +1845,23 @@ static void log_stats(void)
 		salsads_log("DATO eventos: por cuadro, cuántos (ms con reloj de perfil, promedio de %u cuadros; incluye lo que el evento ejecuta, "
 			    "p. ej. la geometría en «gx»):%s", (unsigned)acc_prof_n, line);
 	}
+	if (n) {
+		/* la DMA por bloques (sched.c, dma_block): cuánto va por tramos del host y cuánto sigue unidad a unidad */
+		static uint64_t pbu, pbr, pgx, puu, pvf;
+
+		if (nds->st.dma_block_units < pbu || nds->st.dma_unit_units < puu) /* (juego nuevo: nds_init puso a cero) */
+			pbu = pbr = pgx = puu = pvf = 0;
+		salsads_log("DATO dma: por cuadro: %.1f unidades por bloques en %.1f transferencias, %.1f palabras a GXFIFO en modo inmediato "
+			    "por la ruta corta, %.1f unidades por el bus%s; cambios de VRAMCNT_C/D sin vaciar el ARM7: %.2f",
+			    (double)(nds->st.dma_block_units - pbu) / (double)n, (double)(nds->st.dma_block_runs - pbr) / (double)n,
+			    (double)(nds->st.dma_gxi_words - pgx) / (double)n, (double)(nds->st.dma_unit_units - puu) / (double)n,
+			    nds->dma_lento ? " [dma-lento: todo por el bus]" : "", (double)(nds->st.vram7_flush_skipped - pvf) / (double)n);
+		pbu = nds->st.dma_block_units;
+		pbr = nds->st.dma_block_runs;
+		pgx = nds->st.dma_gxi_words;
+		puu = nds->st.dma_unit_units;
+		pvf = nds->st.vram7_flush_skipped;
+	}
 	if (nds->cart.paged) {
 		uint64_t ra_acc, ra_miss, ra_ra;
 
@@ -3478,6 +3503,14 @@ int main(void)
 
 		nds->gx_lento = stat(GX_LENTO_FLAG, &gst) == 0; /* (nds_init lo conserva) */
 		nds->wifi_off = stat(WIFI_OFF_FLAG, &gst) == 0;
+		nds->dma_lento = stat(DMA_LENTO_FLAG, &gst) == 0;
+		nds->es_lenta = stat(ES_LENTA_FLAG, &gst) == 0;
+		nds->vram7_vaciar_siempre = stat(VRAM7_VACIAR_SIEMPRE_FLAG, &gst) == 0;
+		salsads_log("E/S lenta del ARM9: DMA %s (%s); E/S del recompilador, matemáticas y ROMCTRL %s (%s); VRAMCNT_C/D %s (%s)",
+			    nds->dma_lento ? "unidad a unidad por el bus" : "por bloques y GXFIFO inmediato por la ruta corta", DMA_LENTO_FLAG,
+			    nds->es_lenta ? "por la forma anterior" : "directas", ES_LENTA_FLAG,
+			    nds->vram7_vaciar_siempre ? "vacía el ARM7 en cada cambio" : "vacía el ARM7 solo si el banco entra o sale de su mapa",
+			    VRAM7_VACIAR_SIEMPRE_FLAG);
 		salsads_log("Wi-Fi: inicialización local %s; sin conexión inalámbrica", nds->wifi_off ? "desactivada (wifi-sin-inicio)" : "activa");
 		salsads_log("gx: FIFO de geometría por %s (%s)", nds->gx_lento ? "la ruta anterior (gx-lento)" : "las rutas cortas",
 			    GX_LENTO_FLAG);
