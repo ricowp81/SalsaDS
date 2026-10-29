@@ -5,9 +5,9 @@
  *   mezclador (SPE) → audio_out_push (anillo) → hilo de audio: llena los bloques del puerto cuando el sistema los consume
  *
  * El hilo de la emulación empuja las muestras que entrega el mezclador (estéreo flotante a 48 kHz, intercaladas). El hilo de
- * audio las saca en bloques; si faltan, completa con silencio y lo cuenta (la emulación más lenta que la DS real no se
- * estira: se oye cortada, y el log lo dice). Para que la latencia no crezca ni se agote, el hilo de la emulación consulta
- * `audio_out_ratio_adj()` antes de cada cuadro y se lo pasa al remuestreador (corrección de la razón de ±2 %).
+ * audio conserva el tono con solape y búsqueda de correlación cuando faltan muestras. La mezcla a velocidad completa
+ * pasa intacta por el estirador; la protección suave tras el FIR tiene su propio interruptor. El control de deriva
+ * `audio_out_ratio_adj()` corrige la deriva de los relojes dentro de ±0,25 %.
  *
  * Nada de esto toca el log desde el hilo de audio (el logger no es seguro entre hilos): deja contadores.
  */
@@ -17,6 +17,10 @@
 #include <stdint.h>
 
 struct audio_out_stats {
+	uint64_t played; /* pares entregados durante reproducción, sin contar el selector */
+	uint32_t stretch_max_us, joins, rate_permil, grain_ms;
+	uint64_t inserted, active, stretch_us; /* pares añadidos, pares procesados con solape, costo acumulado */
+	int stretch_enabled, limiter_enabled;
 	uint64_t pushed;     /* muestras (pares) recibidas */
 	uint64_t dropped;    /* muestras descartadas porque el anillo estaba lleno */
 	uint64_t blocks;     /* bloques entregados al puerto */
@@ -26,6 +30,11 @@ struct audio_out_stats {
 	uint32_t level;      /* muestras en el anillo ahora */
 	uint32_t peak;       /* pico absoluto (0-32768) desde la última lectura */
 	uint64_t busy_us;    /* tiempo del hilo de audio trabajando */
+	uint64_t lim_total;  /* muestras (por canal) que pasaron por el limitador desde la última lectura con reinicio */
+	uint64_t lim_n;      /* de ellas, las que superaron la rodilla (el limitador actuó) */
+	double lim_sum_db;   /* suma de la reducción en dB en esas muestras */
+	float lim_max_db;    /* mayor reducción en dB */
+	float gain_db;       /* ganancia de salida aplicada antes del limitador (audio-ganancia) */
 };
 
 /* 0 = abierto; otro valor = sin audio (el resto de las funciones se pueden llamar igual y no hacen nada). */
@@ -36,5 +45,13 @@ float audio_out_ratio_adj(void);
 void audio_out_stats(struct audio_out_stats *s, int reset_peak);
 int audio_out_is_open(void);
 void audio_out_shutdown(void);
+/* Llamar al cerrar tras esperar al productor; confirma el vaciado antes del próximo juego. */
+void audio_out_set_active(int enabled);
+
+/* Grabación digital (archivo vacío audio-grabar): `nat` es la mezcla nativa de la DS (16 bits, 32 728 Hz, estéreo) que devuelve
+ * el SPE; llamar con cada trabajo recogido. audio_out_record_service() escribe los archivos a trozos desde el hilo de
+ * emulación (una vez por cuadro); el cierre del juego termina lo pendiente. */
+void audio_out_record_mix(const int16_t *nat, uint32_t nticks);
+void audio_out_record_service(void);
 
 #endif

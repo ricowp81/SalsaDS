@@ -3,25 +3,31 @@
  * SalsaDS — mezclador de sonido de la DS (Fase 2.2): los 16 canales del ARM7, SOUNDCNT/SOUNDBIAS, la captura y el
  * remuestreo a la salida de la PS3. Código portable: corre en el host, en el PPE y en un SPE (src/spu/snd).
  *
- * Modelo (comprobado muestra a muestra contra melonDS 1.1 con la ROM `snd` y tools/snd-compare.py):
- *  - El mezclador saca una muestra cada 1024 ciclos del ARM7 (33 513 982 Hz / 1024 = 32 728,5 Hz): un «tick».
- *  - Cada canal tiene un contador de temporizador que sube 512 unidades por tick (16,757 MHz); al llegar a 0x10000
- *    pasa a TMR (y toma una muestra: PCM8/16/ADPCM, un paso de PSG o un desplazamiento del ruido). La muestra se
- *    mantiene hasta el siguiente desbordamiento.
- *  - Una escritura a un registro hecha en el intervalo del tick I se ve a partir del tick I + 1 (el inicio de un canal
- *    o de una captura se enganchan en el límite del tick); el canal empieza en la posición -3 (tres desbordamientos
- *    antes de la muestra 0; el PSG y el ruido empiezan en 0).
- *  - Volumen y balance: izquierda = (m * v * (128 - p)) >> (14 + d) y derecha = (m * v * p) >> (14 + d), con v = 128 si
- *    VOL = 127, p = 128 si PAN = 127 y d = {0, 1, 2, 4}: un solo desplazamiento al final (con redondeos intermedios
- *    cambian muestras sueltas respecto de melonDS). La suma de los canales se
- *    recorta a 16 bits: eso es lo que captura SNDCAP. El volumen general (SOUNDCNT) se aplica después, y de ahí sale
- *    el audio (la captura no lo ve).
+ * Núcleo basado en DeSmuME (origen en snd_voice.h y docs/THIRD_PARTY.md):
+ *  - Un tick nativo son 1024 ciclos ARM7, 512 del reloj de las voces.
+ *  - Temporizadores enteros con recarga TMR; se decodifica cada muestra saltada.
+ *  - PCM/ADPCM arrancan en -3; PSG/ruido en -1. Una escritura del tick I
+ *    se aplica en I+1. Se conserva el predictor ADPCM inicial durante la cabecera.
+ *  - Volumen, divisor y paneo redondean en pasos separados; 127 equivale a 128.
+ *    El volumen maestro precede a la saturación final. SOUNDBIAS se aplica a
+ *    la salida nativa; SOUNDCAP toma la señal antes del maestro y del sesgo.
+ *  - Las capturas tienen el reloj de los canales 1/3 y FIFO de 16 muestras;
+ *    las lecturas ven también las escrituras aún agrupadas para DMA.
+ * SND_MODE_CORE_OLD conserva el núcleo anterior, incluidas sus reglas de
+ * redondeo, captura y arranque, para comparación con un solo paquete.
  *
  * Salida: las muestras de 16 bits a 32,7 kHz se convierten a flotante y se remuestrean a 48 kHz. FIR polifásico
  * de 32 coeficientes (snd_fir.h, de tools/gen-snd-fir.py; pasabajos de 15 kHz): `snd_resample()` (snd_mix.c) es la única
  * función que sabe del filtro; arrastra entre trabajos las últimas 32 muestras nativas por canal (`snd_state.hist`) y
  * `frac`, y la salida va retrasada 16 muestras nativas. La opción `SND_MODE_ORIGINAL` reproduce la
  * cuantización a 10 bits con el sesgo (SOUNDBIAS) de la salida de la DS real.
+ * SND_MODE_HD sustituye solo la escucha: Hermite causal por voz PCM/ADPCM a 48 kHz,
+ * mezcla flotante sin recorte (limitador en audio_out), PSG/ruido sin interpolar.
+ * La captura, las muestras nativas y el estado de los canales permanecen fieles.
+ * Lo que pasa por SOUNDCAP lleva un espejo interpolado (`hdcap`): la captura PCM se
+ * escribe igual, pero las voces 1/3 que la reproducen oyen la mezcla HD de ese
+ * instante. SND_MODE_HD_CAP_OFF vuelve al HD anterior (captura PCM también al oír).
+ * La opción se fija al abrir el juego; no se conmuta durante la reproducción.
  */
 #ifndef SALSADS_AUDIO_SND_H
 #define SALSADS_AUDIO_SND_H
@@ -40,7 +46,13 @@
 #define SND_HIST 32
 
 /* modos (snd_state.mode) */
+#define SND_MODE_HD 2u               /* escucha a 48 kHz; captura y estado nativos intactos */
 #define SND_MODE_ORIGINAL 1u         /* cuantizar a 10 bits con SOUNDBIAS, como la salida de la DS */
+#define SND_MODE_FRAME_CACHE_OLD 4u   /* diagnóstico: descartar todas las líneas de voz entre trabajos */
+#define SND_MODE_RESAMPLE_SIMPLE 8u    /* diagnóstico: conversión 48 kHz lineal, sin el FIR */
+#define SND_MODE_CORE_OLD 16u          /* núcleo anterior completo para A/B; se fija al abrir */
+#define SND_MODE_HD_CAP_OFF 32u        /* HD sin captura interpolada: las voces 1/3 oyen la captura PCM tal cual */
+#define SND_HDCAP_MAX 2048             /* muestras por captura con espejo interpolado (NSMB usa 1024) */
 
 /* Una escritura a un registro de sonido (media palabra): `off` es el desplazamiento desde 0x04000400. */
 typedef struct snd_ent {
@@ -53,7 +65,7 @@ typedef struct snd_chan {
 	uint32_t cnt;                    /* SOUNDxCNT sin el bit 31 */
 	uint32_t sad, len;               /* 27 y 22 bits */
 	uint16_t tmr, pnt;
-	uint8_t on, hdr, pad[2];
+	uint8_t on, hdr, keyon, loop_valid;
 	int32_t pos;                     /* posición en muestras (ADPCM: nibbles; PSG: paso 0-7) */
 	uint32_t tcnt;                   /* contador del temporizador (sube hasta 0x10000) */
 	int32_t out;                     /* muestra actual, 16 bits con signo */
@@ -69,6 +81,9 @@ typedef struct snd_cap {
 	uint32_t dad, len;               /* destino y longitud (palabras) tal como se escribieron */
 	uint32_t pos;                    /* bytes escritos */
 	uint32_t base, bytes;            /* dirección y tamaño en uso (los que valían al empezar) */
+	uint32_t phase, fifo_head, fifo_count; /* contador TMR independiente, FIFO DeSmuME */
+	int16_t fifo[16];
+	uint32_t pad2;
 } snd_cap;
 
 typedef struct snd_state {
@@ -78,9 +93,24 @@ typedef struct snd_state {
 	uint64_t tick;                   /* ticks ya generados */
 	/* remuestreo */
 	float hist[2][SND_HIST];         /* últimas SND_HIST muestras nativas de cada canal (la ventana del FIR) */
-	float frac;                      /* fase dentro de la muestra nativa, [0, 1) */
+	uint32_t resample_phase;         /* fase Q0.32 dentro de la muestra nativa */
 	float ratio_adj;                 /* corrección de la razón de remuestreo (control de deriva), 0 = ninguna */
 	uint32_t mode;
+	/* Historia causal por voz: Hermite entre las dos muestras centrales, sin anticipar RAM. */
+	float hd_hist[SND_NCH][4];
+	float hd_last[SND_NCH][2], hd_anchor[SND_NCH][2], hd_inv[SND_NCH];
+	uint32_t hd_period[SND_NCH];
+	uint32_t hd_fade[SND_NCH], hd_on[SND_NCH];
+	uint32_t hd_phase;              /* fase en unidades de 1/48000 de ciclo del temporizador */
+	uint32_t hd_active, hd_pad[2];
+	/* Espejo interpolado de SOUNDCAP (solo escucha): por cada muestra PCM que la captura escribe en RAM se guarda la
+	 * mezcla de las voces HD en ese instante; las voces 1/3 que reproducen ese anillo la usan en vez del PCM. Así las
+	 * imágenes de las voces de origen no quedan grabadas en la captura. Valores enteros (hd_state_sample) para que el
+	 * PPE y el SPU conserven el mismo estado. */
+	float hdcap[2][SND_HDCAP_MAX];
+	float hdcap_fifo[2][16];
+	uint32_t hdcap_written[2];      /* muestras ya escritas desde el arranque de la captura (validez de la primera vuelta) */
+	uint32_t hdcap_pad[2];
 	/* resultados del último trabajo */
 	uint32_t busy;                   /* bit c: canal c encendido; bit 16 y 17: captura 0 y 1 */
 	uint32_t peak;                   /* pico absoluto de lo mezclado (0-32768), para el log */

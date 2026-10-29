@@ -1,14 +1,33 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SalsaDS — mezclador de sonido de la DS (ver snd.h). Código propio; el comportamiento sale de GBATEK y de lo medido
- * contra melonDS 1.1 con la ROM `snd` (tools/snd-compare.py). Sin asignaciones ni libc: compila en el SPE.
+ * Adaptación de desmume/src/SPU.cpp y SPU.h, commit
+ * fc504ee0bc9ac3434cafcaae7b129c025499a609 (TASEmulators/desmume).
+ * Copyright (C) 2006 yopyop
+ * Copyright (C) 2006 Theo Berkau
+ * Copyright (C) 2008-2025 DeSmuME team
+ * Ideas borrowed from Stephane Dallongeville's SCSP core
  *
- * Presupuesto del local store (SPE de audio): snd_state ≈ 3,4 KB; la entrada de escrituras (SND_LOG_MAX * 16 =
- * 32 KB), 2 * SND_TICKS_MAX muestras nativas (2,5 KB), la salida flotante (SND_OUT_MAX * 8 = 8 KB) y el escalón de la
- * captura (2 * 1 KB): menos de 60 KB en total.
+ * This file is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 2 of the License, or
+ * (at your option) any later version.
+ * This file is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ * You should have received a copy of the GNU General Public License
+ * along with this software. If not, see <https://www.gnu.org/licenses/>.
+ *
  */
+/* Mezcla portable PPE/SPE: mismo reloj entero y misma captura.
+ * Historia de origen y diferencias en docs/THIRD_PARTY.md y docs/fase2.md.
+ * Núcleo anterior seleccionable con SND_MODE_CORE_OLD. */
 #include "audio/snd.h"
+#include <stddef.h>
 #include "audio/snd_fir.h"
+#ifdef SND_DIAGNOSTIC
+extern void snd_trace_tick(const snd_state *, uint64_t, const int16_t *, const int16_t *);
+#endif
 #ifdef __SPU__
 #include <spu_intrinsics.h>
 #endif
@@ -21,6 +40,15 @@ static const int16_t ima_step[89] = {
 	32767
 };
 static const int8_t ima_adj[8] = { -1, -1, -1, -1, 2, 4, 6, 8 };
+
+#define CAP_STAGE 1024
+typedef struct cap_run {
+	uint8_t buf[CAP_STAGE] __attribute__((aligned(16)));
+	uint32_t addr, n;
+	snd_state *coherent; /* solo el núcleo nuevo: actualizar las líneas al vaciar */
+} cap_run;
+
+#include "audio/snd_voice.h"
 
 void snd_reset(snd_state *st)
 {
@@ -69,7 +97,7 @@ static void cap_start(snd_cap *k)
 	k->bytes = (k->len ? k->len : 1u) * 4u;
 }
 
-static void apply(snd_state *st, const snd_ent *e)
+static void apply(snd_state *st, const snd_ent *e, const snd_bus *bus, cap_run *cr)
 {
 	const uint32_t off = e->off;
 	const uint32_t v = e->val, m = e->mask;
@@ -89,8 +117,11 @@ static void apply(snd_state *st, const snd_ent *e)
 			if (m & 0x8000u) {
 				const int want = (v & 0x8000u) != 0;
 
-				if (want && !c->on)
+				c->keyon = (uint8_t)want;
+				if (want && !c->on && ((st->mode & SND_MODE_CORE_OLD) || (st->soundcnt & 0x8000u))) {
 					chan_start(c, (int)(off >> 4));
+					if (!(st->mode & SND_MODE_CORE_OLD)) voice_start(c, bus, cr);
+				}
 				else if (!want && c->on) {
 					c->on = 0;
 					c->out = 0;
@@ -99,10 +130,22 @@ static void apply(snd_state *st, const snd_ent *e)
 			break;
 		}
 		case 4:
-			c->sad = ((c->sad & ~m) | (v & m)) & 0x07FFFFFCu;
+			{
+				const uint32_t sad = ((c->sad & ~m) | (v & m)) & 0x07FFFFFCu;
+
+				if (sad != c->sad)
+					c->tag = 0xFFFFFFFFu;
+				c->sad = sad;
+			}
 			break;
 		case 6:
-			c->sad = ((c->sad & ~(m << 16)) | ((v & m) << 16)) & 0x07FFFFFCu;
+			{
+				const uint32_t sad = ((c->sad & ~(m << 16)) | ((v & m) << 16)) & 0x07FFFFFCu;
+
+				if (sad != c->sad)
+					c->tag = 0xFFFFFFFFu;
+				c->sad = sad;
+			}
 			break;
 		case 8:
 			c->tmr = (uint16_t)((c->tmr & ~m) | (v & m));
@@ -124,6 +167,14 @@ static void apply(snd_state *st, const snd_ent *e)
 	switch (off) {
 	case 0x100:
 		st->soundcnt = (uint16_t)((st->soundcnt & ~m) | (v & m)) & 0xBF7Fu;
+		if (!(st->mode & SND_MODE_CORE_OLD))
+			for (int i = 0; i < SND_NCH; i++) {
+				snd_chan *c = &st->ch[i];
+				if (!(st->soundcnt & 0x8000u)) c->on = 0, c->out = 0;
+				else if (c->keyon && !c->on) {
+					chan_start(c, i); voice_start(c, bus, cr);
+				}
+			}
 		break;
 	case 0x104:
 		st->bias = (uint16_t)(((st->bias & ~m) | (v & m)) & 0x3FFu);
@@ -139,8 +190,13 @@ static void apply(snd_state *st, const snd_ent *e)
 				const uint32_t old = k->cnt, nw = (old & ~bm) | (bv & bm);
 
 				k->cnt = (uint8_t)(nw & 0x8F);
-				if (!(old & 0x80u) && (nw & 0x80u))
+				if ((nw & 0x80u) && (!(old & 0x80u) || !(st->mode & SND_MODE_CORE_OLD))) {
 					cap_start(k);
+					k->phase = st->mode & SND_MODE_CORE_OLD ? 0 : st->ch[1 + 2*i].tmr;
+					k->fifo_head = k->fifo_count = 0;
+					for (int j = 0; j < 16; j++) k->fifo[j] = 0, st->hdcap_fifo[i][j] = 0;
+					st->hdcap_written[i] = 0;
+				}
 				else if ((old & 0x80u) && !(nw & 0x80u))
 					k->on = 0;
 			}
@@ -171,7 +227,7 @@ static void apply(snd_state *st, const snd_ent *e)
 
 /* ---- un canal: un desbordamiento del temporizador -------------------------------------------------------- */
 
-static void chan_step(snd_chan *c, int idx, const snd_bus *bus)
+static void chan_step_old(snd_chan *c, int idx, const snd_bus *bus)
 {
 	const uint32_t fmt = (c->cnt >> 29) & 3u, mode = (c->cnt >> 27) & 3u;
 	uint32_t total, loopstart;
@@ -219,6 +275,7 @@ static void chan_step(snd_chan *c, int idx, const snd_bus *bus)
 			return;
 		}
 		c->pos = (int32_t)loopstart;
+		c->tag = 0xFFFFFFFFu; /* el juego puede haber rellenado el búfer antes de esta vuelta */
 		if (fmt == 2) {
 			c->adv = c->alv;
 			c->adi = c->ali;
@@ -282,17 +339,21 @@ static void chan_step(snd_chan *c, int idx, const snd_bus *bus)
 
 /* ---- captura ------------------------------------------------------------------------------------------------ */
 
-#define CAP_STAGE 1024
-
-typedef struct cap_run {
-	uint8_t buf[CAP_STAGE] __attribute__((aligned(16)));
-	uint32_t addr, n;
-} cap_run;
-
 static void cap_flush(const snd_bus *bus, cap_run *r)
 {
 	if (r->n) {
 		bus->store(bus->ctx, r->addr, r->buf, r->n);
+		if (r->coherent)
+			for (int i = 0; i < SND_NCH; i++) {
+				snd_chan *c = &r->coherent->ch[i];
+				/* La captura pendiente también se consulta antes de la caché.
+				 * Al vaciarla, conservar esos mismos bytes en las líneas vivas. */
+				if (c->tag != UINT32_MAX)
+					for (uint32_t j = 0; j < SND_LINE; j++) {
+						const uint32_t d = c->tag + j - r->addr;
+						if (d < r->n) c->line[j] = r->buf[d];
+					}
+			}
 		r->n = 0;
 	}
 }
@@ -396,36 +457,134 @@ static inline float fir_dot(const float *c, const float *x)
 
 static uint32_t snd_resample(snd_state *st, const float *wl, const float *wr, uint32_t n, float *out, uint32_t out_max)
 {
-	const float ratio = (SND_RATE_NATIVE / SND_RATE_OUT) * (1.0f + st->ratio_adj);
+	/* 33 513 982 / 1024 / 48 000 en Q0.32. La fase entera evita que el
+	 * PPE y el SPU acumulen redondeos distintos entre trabajos. */
+	const uint64_t base = 0xAE8D4F30u;
+	const int32_t adj = (int32_t)(st->ratio_adj * 65536.0f);
+	const uint32_t step = (uint32_t)(base + (int64_t)base * adj / 65536);
 	const uint32_t last = SND_HIST + n - SND_AFTER_MAX; /* se puede sacar mientras k < last (k + 16 < SND_HIST + n) */
-	float f = st->frac;
+	uint32_t phase = st->resample_phase;
 	uint32_t k = FIR_K0, produced = 0;
 	float c[SND_FIR_TAPS] __attribute__((aligned(16)));
 
 	while (produced < out_max) {
-		float pf, a;
+		float a;
 		uint32_t ph;
+		uint64_t next;
 
-		while (f >= 1.0f) {
-			f -= 1.0f;
-			k++;
-		}
 		if (k >= last)
 			break;
-		pf = f * (float)SND_FIR_PHASES;
-		ph = (uint32_t)pf;
-		a = pf - (float)ph;
-		fir_coefs(c, snd_fir[ph], snd_fir[ph + 1], a);
-		out[2 * produced] = fir_dot(c, wl + (k - SND_FIR_BEFORE));
-		out[2 * produced + 1] = fir_dot(c, wr + (k - SND_FIR_BEFORE));
+		ph = phase >> 26;
+		a = (float)(phase & 0x03FFFFFFu) * (1.0f / 67108864.0f);
+		if (st->mode & SND_MODE_RESAMPLE_SIMPLE) {
+			const float f = (float)phase * (1.0f / 4294967296.0f);
+
+			out[2 * produced] = wl[k] + f * (wl[k + 1] - wl[k]);
+			out[2 * produced + 1] = wr[k] + f * (wr[k + 1] - wr[k]);
+		} else {
+			fir_coefs(c, snd_fir[ph], snd_fir[ph + 1], a);
+			out[2 * produced] = fir_dot(c, wl + (k - SND_FIR_BEFORE));
+			out[2 * produced + 1] = fir_dot(c, wr + (k - SND_FIR_BEFORE));
+		}
 		produced++;
-		f += ratio;
+		next = (uint64_t)phase + step;
+		phase = (uint32_t)next;
+		k += (uint32_t)(next >> 32);
 	}
 	/* si faltó sitio en `out` lo pendiente se descarta: la ventana siguiente empieza en n + 16 */
 	if (k < last)
-		f = 0.0f;
-	st->frac = f;
+		phase = 0;
+	st->resample_phase = phase;
 	return produced;
+}
+
+/* HD comparte el decodificador y sus lecturas: divide los mismos 512 ciclos por tick
+ * en los instantes de salida. No anticipa muestras ni modifica la captura. Hermite
+ * causal retrasa dos muestras de cada voz; PSG/ruido conservan sus escalones. */
+static void chan_step(snd_chan *c, int ci, const snd_bus *bus, cap_run *cr, int old)
+{
+	if (old) chan_step_old(c, ci, bus);
+	else voice_step(c, ci, bus, cr);
+}
+
+/* La muestra que la voz acaba de leer (posición `pos` antes del paso): si es el anillo de una captura y ya tiene
+ * espejo interpolado, se oye el espejo; si no, el PCM fiel. Solo PCM8/PCM16 con el mismo tamaño que la captura. */
+static float hd_voice_out(const snd_state *st, const snd_chan *c, int32_t pos)
+{
+	const uint32_t fmt = c->cnt >> 29 & 3u;
+
+	if (pos >= 0 && fmt < 2u && !(st->mode & (SND_MODE_HD_CAP_OFF | SND_MODE_CORE_OLD)))
+		for (int i = 0; i < 2; i++) {
+			const snd_cap *k = &st->cap[i];
+			const uint32_t size = (k->cnt & 8u) ? 1u : 2u;
+
+			if (k->on && c->sad == k->base && (uint32_t)(c->pnt + c->len) * 4u == k->bytes &&
+			    fmt == size - 1u && (uint32_t)pos < st->hdcap_written[i] && (uint32_t)pos < SND_HDCAP_MAX)
+				return st->hdcap[i][pos];
+		}
+	return (float)c->out;
+}
+
+static void hd_advance(snd_state *st, snd_chan *c, int ci, const snd_bus *bus, uint32_t cycles, float *h, cap_run *cr,
+		       int old)
+{
+	c->tcnt += cycles;
+	while (c->tcnt >= 0x10000u && c->on) {
+		const int32_t pos = c->pos;
+
+		c->tcnt = c->tcnt - 0x10000u + c->tmr;
+		chan_step(c, ci, bus, cr, old);
+		h[0] = h[1]; h[1] = h[2]; h[2] = h[3]; h[3] = hd_voice_out(st, c, pos);
+	}
+}
+
+static float hd_sample(snd_state *st, int ci, float subcycle)
+{
+	const snd_chan *c = &st->ch[ci];
+	const float *h = st->hd_hist[ci];
+	float x = 0;
+	if (c->on) {
+		if ((c->cnt >> 29 & 3u) == 3u) x = (float)c->out;
+		else {
+			float f = ((float)((int32_t)c->tcnt - (int32_t)c->tmr) + subcycle) * st->hd_inv[ci];
+			/* Un cambio de TMR puede dejar el contador antes de la nueva recarga. */
+			if (f < 0) f = 0;
+			if (f > 1) f = 1;
+			const float m0 = 0.5f * (h[2] - h[0]), m1 = 0.5f * (h[3] - h[1]);
+			x = ((2*(h[1]-h[2])+m0+m1)*f + 3*(h[2]-h[1])-2*m0-m1)*f*f + m0*f + h[1];
+		}
+	}
+	return x;
+}
+
+static float hd_state_sample(float x)
+{
+	/* La envolvente solo conserva el ancla de una rampa posterior. Una muestra
+	 * entera evita que la contracción FMA distinta del PPE y el SPU cambie el
+	 * estado persistente, sin cuantizar la salida actual. */
+	return (float)(int32_t)(x + (x < 0 ? -0.5f : 0.5f));
+}
+
+/* Compensación posterior al volumen/balance: apagar escribiendo CNT=0 también
+ * conserva la cola. Rampa finita de 32 pares (0,67 ms), sin continua residual. */
+static void hd_declick(snd_state *st, int ci, float *l, float *r)
+{
+	float x[2] = {*l, *r};
+	const uint32_t on = st->ch[ci].on;
+	if (st->hd_on[ci] != on) {
+		for (int side = 0; side < 2; side++) st->hd_anchor[ci][side] = st->hd_last[ci][side];
+		st->hd_fade[ci] = 32;
+		st->hd_on[ci] = on;
+	}
+	for (int side = 0; side < 2; side++) {
+		if (st->hd_fade[ci]) {
+			const float a = (float)st->hd_fade[ci] / 32.0f;
+			x[side] = x[side] * (1.0f - a) + st->hd_anchor[ci][side] * a;
+		}
+		st->hd_last[ci][side] = hd_state_sample(x[side]);
+	}
+	if (st->hd_fade[ci]) st->hd_fade[ci]--;
+	*l = x[0]; *r = x[1];
 }
 
 /* ---- el trabajo ---------------------------------------------------------------------------------------------- */
@@ -443,38 +602,122 @@ uint32_t snd_run(snd_state *st, const snd_ent *log, uint32_t nlog, uint32_t ntic
 	float wl_[SND_HIST + SND_TICKS_MAX + 4] __attribute__((aligned(16)));
 	float wr_[SND_HIST + SND_TICKS_MAX + 4] __attribute__((aligned(16)));
 	float *const wl = wl_, *const wr = wr_;
-	uint32_t ie = 0, peak = 0;
+	uint32_t ie = 0, peak = 0, hd_n = 0;
+	const int hd = (st->mode & SND_MODE_HD) != 0;
+	const int old = (st->mode & SND_MODE_CORE_OLD) != 0;
+	const int hdcap = hd && !old && !(st->mode & SND_MODE_HD_CAP_OFF);
+	/* Reloj racional idéntico en PPE/SPE: evita desplazar flancos PSG por el
+	 * redondeo hacia cero del SPU. Deriva cuantizada a 1/65536 (15 ppm). */
+	const int32_t adj = (int32_t)(st->ratio_adj * 65536.0f);
+	const uint32_t hd_step = (uint32_t)(16756991 + (int64_t)16756991 * adj / 65536);
+	if (hd && !st->hd_active) {
+		st->hd_phase = 0;
+		for (int c = 0; c < SND_NCH; c++) {
+			for (int k = 0; k < 4; k++) st->hd_hist[c][k] = (float)st->ch[c].out;
+			for (int side = 0; side < 2; side++) st->hd_last[c][side] = st->hd_anchor[c][side] = 0;
+			st->hd_fade[c] = st->hd_on[c] = 0;
+		}
+		st->hdcap_written[0] = st->hdcap_written[1] = 0; /* el espejo se rellena desde la próxima vuelta */
+	}
+	st->hd_active = (uint32_t)hd;
 
 	if (nticks > SND_TICKS_MAX)
 		nticks = SND_TICKS_MAX;
 	cr[0].n = cr[1].n = 0;
+	cr[0].addr = cr[1].addr = 0;
+	cr[0].coherent = cr[1].coherent = old ? NULL : st;
 	for (uint32_t i = 0; i < SND_HIST; i++) {
 		wl[i] = st->hist[0][i];
 		wr[i] = st->hist[1][i];
 	}
+	/* Las voces 1 y 3 suelen reproducir lo que escriben SOUNDCAP0/1. La línea
+	 * que ya estaban leyendo es parte de su estado: volver a traerla aquí
+	 * cambia de golpe a la instantánea de RAM del cuadro siguiente. Se refresca
+	 * al cambiar SAD, al arrancar y al volver al principio del bucle. */
 	for (int c = 0; c < SND_NCH; c++)
-		st->ch[c].tag = 0xFFFFFFFFu; /* lo que haya en RAM ahora (el juego pudo rellenar el búfer) */
+		if ((st->mode & SND_MODE_FRAME_CACHE_OLD) || (c != 1 && c != 3))
+			st->ch[c].tag = 0xFFFFFFFFu;
 	for (uint32_t t = 0; t < nticks; t++) {
 		const uint64_t T = st->tick + t;
+#ifdef SND_DIAGNOSTIC
+		int16_t trace_raw[16] = {0}, trace_mix[32] = {0};
+#endif
 		int32_t mix[2] = { 0, 0 }, c1[3] = { 0, 0, 0 }, c3[3] = { 0, 0, 0 };
+		int32_t direct[4] = {0};
 		int32_t L, R, capv[2];
 		uint32_t sc;
-
-		while (ie < nlog && log[ie].tick < T)
-			apply(st, &log[ie++]);
+		float hm[2][2] = {{0}}, h1[2][2] = {{0}}, h3[2][2] = {{0}}, subcycle[2];
+		float hcm[2] = {0, 0}, hdir[4] = {0}; /* mezcla y voces directas HD en el instante del tick (espejo de captura) */
+		uint32_t sample_at[2];
+		uint32_t hn = 0;
+		if (hd) {
+			while (st->hd_phase < 24576000u && hn < 2) {
+				sample_at[hn] = st->hd_phase / 48000u;
+				subcycle[hn++] = (float)(st->hd_phase % 48000u) * (1.0f / 48000.0f);
+				st->hd_phase += hd_step;
+			}
+			st->hd_phase -= 24576000u;
+		}
+		while (ie < nlog && log[ie].tick < T) {
+			const snd_ent *e = &log[ie++];
+			if (hd && e->off < 0x100 && (e->off & 15u) == 2 &&
+			    (e->mask & e->val & 0x8000u) && !st->ch[e->off >> 4].on) {
+				for (int k = 0; k < 4; k++) st->hd_hist[e->off >> 4][k] = 0;
+				st->hd_on[e->off >> 4] = 0;
+			}
+			apply(st, e, bus, cr);
+		}
 		for (int ci = 0; ci < SND_NCH; ci++) {
 			snd_chan *c = &st->ch[ci];
 			int32_t x, l, r;
 			uint32_t vol, pan;
+			const int active = c->on;
 
-			if (!c->on)
+			if (!c->on && (!hd || (!st->hd_on[ci] && !st->hd_fade[ci]))) {
+				if (hd) st->hd_last[ci][0] = st->hd_last[ci][1] = 0;
 				continue;
-			c->tcnt += 512u;
+			}
+			if (hd) {
+				const int started = c->on;
+				const uint32_t period = 0x10000u - c->tmr;
+				if (st->hd_period[ci] != period) {
+					st->hd_period[ci] = period;
+					st->hd_inv[ci] = 1.0f / (float)period;
+				}
+				uint32_t elapsed = 0;
+				const uint32_t v = (c->cnt & 127u) == 127u ? 128u : c->cnt & 127u;
+				const uint32_t p = (c->cnt >> 16 & 127u) == 127u ? 128u : c->cnt >> 16 & 127u;
+				const float gain = (float)v * (1.0f/262144.0f) * (float)(16u >> divsh[c->cnt >> 8 & 3u]);
+				const uint32_t pl = old || p == 0 || p == 128 ? 128u - p : 127u - p;
+				const int excluded = (ci == 1 && (st->soundcnt & 0x1000u)) || (ci == 3 && (st->soundcnt & 0x2000u));
+				for (uint32_t j = 0; j < hn; j++) {
+					const uint32_t at = sample_at[j];
+					if (started) hd_advance(st, c, ci, bus, at - elapsed, st->hd_hist[ci], cr, old);
+					elapsed = at;
+					const float sample = hd_sample(st, ci, subcycle[j]) * gain;
+					float l = sample * (float)pl, r = sample * (float)p;
+					hd_declick(st, ci, &l, &r);
+					if (ci == 1) { h1[j][0] = l; h1[j][1] = r; }
+					if (ci == 3) { h3[j][0] = l; h3[j][1] = r; }
+					if (excluded) continue;
+					hm[j][0] += l; hm[j][1] += r;
+				}
+				if (started) hd_advance(st, c, ci, bus, 512u - elapsed, st->hd_hist[ci], cr, old);
+				if (hdcap && started) {
+					/* lo que la captura toma en este tick, con las voces interpoladas en el límite del tick */
+					const float xs = hd_sample(st, ci, 0.0f);
+					if (ci < 4) hdir[ci] = xs * (1.0f / (float)(1u << divsh[c->cnt >> 8 & 3u]));
+					if (!excluded) { hcm[0] += xs * gain * (float)pl; hcm[1] += xs * gain * (float)p; }
+				}
+			}
+			if (!active || (old && !c->on))
+				continue;
+			if (!hd) c->tcnt += 512u;
 			while (c->tcnt >= 0x10000u && c->on) {
 				c->tcnt = c->tcnt - 0x10000u + c->tmr;
-				chan_step(c, ci, bus);
+				chan_step(c, ci, bus, cr, old);
 			}
-			if (!c->on)
+			if (old && !c->on)
 				continue;
 			vol = c->cnt & 127u;
 			if (vol == 127u)
@@ -486,6 +729,18 @@ uint32_t snd_run(snd_state *st, const snd_ent *log, uint32_t nlog, uint32_t ntic
 			l = (c->out * (int32_t)(vol * (128u - pan))) >> (14 + divsh[(c->cnt >> 8) & 3u]);
 			r = (c->out * (int32_t)(vol * pan)) >> (14 + divsh[(c->cnt >> 8) & 3u]);
 			x = (c->out * (int32_t)vol) >> (7 + divsh[(c->cnt >> 8) & 3u]);
+			if (!old) {
+				const uint32_t p = c->cnt >> 16 & 127u;
+				x = voice_mul7(c->out, c->cnt & 127u) >> divsh[c->cnt >> 8 & 3u];
+				l = voice_mul7(x, 127u - p);
+				r = voice_mul7(x, p);
+				if (ci < 4) direct[ci] = c->out >> divsh[c->cnt >> 8 & 3u];
+			}
+#ifdef SND_DIAGNOSTIC
+			trace_raw[ci] = (int16_t)c->out;
+			trace_mix[2 * ci] = (int16_t)l;
+			trace_mix[2 * ci + 1] = (int16_t)r;
+#endif
 			if (ci == 1) {
 				c1[0] = l;
 				c1[1] = r;
@@ -504,27 +759,79 @@ uint32_t snd_run(snd_state *st, const snd_ent *log, uint32_t nlog, uint32_t ntic
 		}
 		/* salida izquierda y derecha: el mezclador o los canales 1 y 3 (SOUNDCNT bits 8-11) */
 		sc = st->soundcnt;
+		if (hd) {
+			const uint32_t mv = (sc & 127u) == 127u ? 128u : sc & 127u;
+			for (uint32_t j = 0; j < hn; j++) {
+				for (int side = 0; side < 2; side++) {
+					float x;
+					switch (sc >> (8 + 2*side) & 3u) {
+					case 0: x = hm[j][side]; break;
+					case 1: x = h1[j][side]; break;
+					case 2: x = h3[j][side]; break;
+					default: x = h1[j][side] + h3[j][side]; break;
+					}
+					if (out && hd_n < out_max) out[2*hd_n + side] = (sc & 0x8000u) ? x * ((float)mv / (128.0f*32768.0f)) : 0;
+				}
+				if (hd_n < out_max) hd_n++;
+			}
+		}
 		{
-			const int32_t ml = clamp16(mix[0]), mr = clamp16(mix[1]);
+			const int32_t ml = old ? clamp16(mix[0]) : mix[0], mr = old ? clamp16(mix[1]) : mix[1];
 
 			capv[0] = (st->cap[0].cnt & 2u) ? clamp16(c1[2]) : ml;
 			capv[1] = (st->cap[1].cnt & 2u) ? clamp16(c3[2]) : mr;
+			if (!old)
+				for (int i = 0; i < 2; i++) {
+					const uint32_t cc = st->cap[i].cnt;
+					capv[i] = clamp16(cc & 2u ? direct[2*i] + (cc & 1u ? direct[2*i+1] : 0) : mix[i]);
+				}
 			switch ((sc >> 8) & 3u) {
 			case 0: L = ml; break;
 			case 1: L = c1[0]; break;
 			case 2: L = c3[0]; break;
-			default: L = clamp16(c1[0] + c3[0]); break;
+			default: L = old ? clamp16(c1[0] + c3[0]) : c1[0] + c3[0]; break;
 			}
 			switch ((sc >> 10) & 3u) {
 			case 0: R = mr; break;
 			case 1: R = c1[1]; break;
 			case 2: R = c3[1]; break;
-			default: R = clamp16(c1[1] + c3[1]); break;
+			default: R = old ? clamp16(c1[1] + c3[1]) : c1[1] + c3[1]; break;
 			}
 		}
-		for (int i = 0; i < 2; i++)
-			if (st->cap[i].on)
-				cap_put(bus, &st->cap[i], &cr[i], capv[i]);
+		for (int i = 0; i < 2; i++) {
+			snd_cap *k = &st->cap[i];
+			if (!k->on) continue;
+			if (old) cap_put(bus, k, &cr[i], capv[i]);
+			else {
+				const uint32_t cc = k->cnt;
+				const float hv = !hdcap ? 0.0f : cc & 2u ? hdir[2*i] + (cc & 1u ? hdir[2*i+1] : 0.0f) : hcm[i];
+
+				k->phase += 512;
+				while (k->phase >= 0x10000u && k->on) {
+					k->phase = k->phase - 0x10000u + st->ch[1 + 2*i].tmr;
+					if (k->fifo_count < 16) {
+						st->hdcap_fifo[i][k->fifo_count] = hv;
+						k->fifo[k->fifo_count++] = (int16_t)capv[i];
+					} else {
+						const int32_t sample = k->fifo[k->fifo_head];
+						const float hs = st->hdcap_fifo[i][k->fifo_head];
+						const uint32_t idx = k->pos / ((cc & 8u) ? 1u : 2u);
+
+						k->fifo[k->fifo_head] = (int16_t)capv[i];
+						st->hdcap_fifo[i][k->fifo_head] = hv;
+						k->fifo_head = (k->fifo_head + 1) & 15u;
+						cap_put(bus, k, &cr[i], sample);
+						if (hdcap && idx < SND_HDCAP_MAX) {
+							st->hdcap[i][idx] = hd_state_sample(hs);
+							if (idx >= st->hdcap_written[i]) st->hdcap_written[i] = idx + 1;
+						}
+					}
+				}
+			}
+		}
+#ifdef SND_DIAGNOSTIC
+		snd_trace_tick(st, T, trace_raw, trace_mix);
+#endif
 		{
 			int32_t mv = (int32_t)(sc & 127u);
 
@@ -532,6 +839,10 @@ uint32_t snd_run(snd_state *st, const snd_ent *log, uint32_t nlog, uint32_t ntic
 				mv = 128;
 			L = (L * mv) >> 7;
 			R = (R * mv) >> 7;
+			if (!old) {
+				L = clamp16(L + ((int32_t)st->bias - 512) * 64);
+				R = clamp16(R + ((int32_t)st->bias - 512) * 64);
+			}
 			if (!(sc & 0x8000u))
 				L = R = 0;
 		}
@@ -548,7 +859,7 @@ uint32_t snd_run(snd_state *st, const snd_ent *log, uint32_t nlog, uint32_t ntic
 				peak = ar;
 		}
 		if (st->mode & SND_MODE_ORIGINAL) { /* 10 bits con el sesgo: así la salida de la DS */
-			int32_t ql = (L >> 6) + (int32_t)st->bias, qr = (R >> 6) + (int32_t)st->bias;
+			int32_t ql = (L >> 6) + (old ? (int32_t)st->bias : 512), qr = (R >> 6) + (old ? (int32_t)st->bias : 512);
 
 			ql = ql < 0 ? 0 : ql > 1023 ? 1023 : ql;
 			qr = qr < 0 ? 0 : qr > 1023 ? 1023 : qr;
@@ -574,7 +885,7 @@ uint32_t snd_run(snd_state *st, const snd_ent *log, uint32_t nlog, uint32_t ntic
 	st->ticks_run = nticks;
 	st->log_applied = ie;
 	if (out && out_n) {
-		*out_n = snd_resample(st, wl, wr, nticks, out, out_max);
+		*out_n = hd ? hd_n : snd_resample(st, wl, wr, nticks, out, out_max);
 		for (uint32_t i = 0; i < SND_HIST; i++) { /* historia del siguiente trabajo: las últimas SND_HIST de la ventana */
 			st->hist[0][i] = wl[nticks + i];
 			st->hist[1][i] = wr[nticks + i];

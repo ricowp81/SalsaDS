@@ -26,6 +26,8 @@ void test_acore_arm(void);
 void test_acore_thumb(void);
 void test_acore_sys(void);
 void test_snd(void);
+void test_stretch(void);
+void test_wavrec(void);
 void test_gx(void);
 void test_gx_defer(void);
 void test_gx_job(void);
@@ -45,8 +47,19 @@ int main(int argc, char **argv)
 	const char *order = *(const uint8_t *)&probe == 0x02 ? "LE" : "BE";
 
 	printf("host: %s\n", order);
+	if (getenv("UNIT_ONLY") && !strcmp(getenv("UNIT_ONLY"), "sonido")) {
+		test_snd();
+		printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);
+		return check_failed ? 1 : 0;
+	}
 	if (argc > 1 && !strcmp(argv[1], "arec")) { /* solo el recompilador (para iterar) */
 		test_arec();
+		printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);
+		return check_failed ? 1 : 0;
+	}
+	if (getenv("UNIT_ONLY") && !strcmp(getenv("UNIT_ONLY"), "audio")) {
+		test_stretch();
+	test_wavrec();
 		printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);
 		return check_failed ? 1 : 0;
 	}
@@ -72,6 +85,8 @@ int main(int argc, char **argv)
 	test_acore_thumb();
 	test_acore_sys();
 	test_snd();
+	test_stretch();
+	test_wavrec();
 	test_gx();
 	test_gx_defer();
 	test_gx_job();

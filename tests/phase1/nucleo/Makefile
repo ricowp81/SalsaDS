@@ -3,7 +3,7 @@ PROGRAM := salsads-nucleo
 TITLE   := SalsaDS núcleo
 APPID   := SLDS00008
 SRCS    := main.c
-COMMON  := src/platform/ps3/log.c src/platform/ps3/audio_out.c src/frontend/dspad.c src/frontend/layout.c \
+COMMON  := src/platform/ps3/log.c src/platform/ps3/audio_out.c src/audio/stretch.c src/audio/wavrec.c src/frontend/dspad.c src/frontend/layout.c \
            src/jit/arec.c src/jit/arec_dec.c src/jit/arec_emit.c \
            $(patsubst $(abspath ../../..)/%,%,$(wildcard $(abspath ../../..)/src/core/*.c $(abspath ../../..)/src/bios/*.c $(abspath ../../..)/src/cpu/*.c $(abspath ../../..)/src/gpu2d/gpu2d_ref.c $(abspath ../../..)/src/gpu2d/gpu2d_compose.c $(abspath ../../..)/src/gpu3d/gx.c $(abspath ../../..)/src/gpu3d/gx_exec.c $(abspath ../../..)/src/gpu3d/gx_selftest.c $(abspath ../../..)/src/gpu3d/r3d_ref.c $(abspath ../../..)/src/gpu3d/r3d_core.c $(abspath ../../..)/src/gpu3d/r3d_scene.c $(abspath ../../..)/src/audio/snd_mix.c))
 LIBS    := -lrsx -lgcm_sys -lio -lsysutil -lnet -lsysmodule -lrt -llv2 -laudio -lm
@@ -35,7 +35,7 @@ geom_STACK_ARGS := --edge emit_poly_inner:job_flush --edge job_flush:put_verts -
 # Mezclador de sonido: un SPE (src/spu/snd + src/audio)
 snd_SRCS     := ../../../src/spu/snd/snd.c ../../../src/audio/snd_mix.c
 snd_STACK_MIN := 8192
-snd_STACK_ARGS := --edge snd_run:bus_fetch --edge snd_run:bus_store --ignore __call_exitprocs --ignore __do_global_ctors_aux --ignore exit --ignore register_tm_clones
+snd_STACK_ARGS := --edge snd_run:bus_fetch --edge snd_run:bus_store --edge chan_step_old:bus_fetch --edge voice_byte.isra.0:bus_fetch --edge cap_flush.isra.0:bus_store --ignore __call_exitprocs --ignore __do_global_ctors_aux --ignore exit --ignore register_tm_clones
 
 # ROM de carga propia, embebida (símbolos carga_bin, carga_bin_end y carga_bin_size en carga_bin.h): se usa
 # si no existe /dev_hdd0/salsads/rom.nds.

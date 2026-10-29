@@ -36,7 +36,7 @@ Cifras en MB. **Previsto** = estimación de diseño (todavía no hay núcleo);
 | Registro de escrituras de video por línea (cuadro) | 1 | | Para los SPEs (2D/3D); doble búfer |
 | Texturas decodificadas (3D) | 8 | | |
 | Búferes de DMA y anillos de los SPEs | 4 | | |
-| Audio | 1 | 0,3 (2 trabajos de 43 KB + anillo de 128 KB; `sizeof struct nds` pasó de 8 623 872 a 8 749 184 B con el estado y las escrituras del sonido) | Fase 2.2: anillo de 16 384 muestras estéreo flotantes (340 ms) en `audio_out.c` |
+| Audio | 1 | 0,3 (2 trabajos de 43 KB + anillo de 128 KB + ≈27 KiB para historia, solape y grano de salida en el PPE; `sizeof struct nds` pasó de 8 623 872 a 8 749 184 B con el estado y las escrituras del sonido) | Fase 2.2: anillo de 16 384 muestras estéreo flotantes (340 ms) en `audio_out.c` |
 | Estados guardados | 10 | | Foto en segundo plano |
 | Código, pilas, heap de newlib | 16 | | |
 | **Total previsto** | **≈ 230** | | Con una ROM de 128 MB no cabe junto con todo lo demás en ~210 MB: decidir el tope de ROM o leerla por demanda |
@@ -83,7 +83,7 @@ datos, búferes de DMA y pila; la holgura de la pila se mide al enlazar con
 |---|---|---|---|---|
 | `spu_gpu2d` (composición 2D de 2 pantallas, Fase 0.5) | 11,8 KB | 187 KB (contexto 186 KB: OBJ 2 × 128 × 512 B = 128 KB, teselas 17 KB, cambios 24 KB, resto 12 KB) | holgura 60 976 B | medido al enlazar (`spu-size`, `tools/spu-stack.py`); ≈ 199,7 KB |
 | `gpu2d` (compositor de una pantalla, Fase 2.1; `src/spu/gpu2d`) | 38,5 KB | 198,2 KB (contexto 196 224 B: paleta unificada 42 KB, mapas afines 40 KB, OBJ 2 × 16 KB, teselas 4 × 2 × 2 KB, cambios 2 × 4 KB, el resto líneas y trabajos) | holgura ≈ 25 KB (mínimo 4 KB) | un SPE por pantalla; medido al enlazar |
-| `snd` (mezclador de sonido, Fase 2.2; `src/spu/snd`) | 14,4 KB | 50,2 KB (estado 3,4 KB, escrituras 32 KB, muestras de 16 bits 2,5 KB, salida flotante 8 KB, escalón de la captura) | holgura 190 KB (mínimo 4 KB) | un SPE; medido al enlazar |
+| `snd` (mezclador de sonido, Fase 2.2; `src/spu/snd`) | texto 34 344 B | datos 800 B, BSS 50 576 B; estado 4560 B (incluye dos FIFO de captura), escrituras 32 KiB, muestras nativas 2,6 KiB, salida 8 KiB | libres 176 224 B; cadena 10 624 B; holgura 165 600 B (mínimo 8192 B) | enlace limpio de sonido del 2026-10-28; ambos núcleos y salida HD; sin asignaciones durante la mezcla. No es una medición de tiempo en PS3 |
 | `raster3d` (render 3D, Fase 3.2, 3.4 y 3.9; `src/spu/raster3d`) | texto 59 968 B | bss 184 480 B (contexto 180 736 B: color 2 × 18 KB, profundidad 18 KB, atributos 18 KB, caché de texturas 73 KB en una `union`: bloques de 256 texeles (64 KB + líneas de VRAM de 128 B 3 KB + paletas convertidas 1 KB) o celdas de 4×4 (32 KB + líneas de 1 KB 20 KB + etiquetas y tablas 8 KB), orden 16 KB, lista 4 KB, lotes 23 KB) | 16 720 B libres; usa 7 360 B (holgura 9 360 B, mínimo 8 192 B) | dos SPE, bandas repartidas por costo; medido al enlazar (3.9: texto +3,9 KB; caché de líneas del modo de bloques de 32 a 16 líneas; la sonda 3 ya no arrastra `__divdi3`) |
 | `spe-raster3d` (0.4) | 27,3 KB | 202,9 KB | 25,6 KB libres; usa 2,5 KB (holgura 23,1 KB, mínimo 8 KB) | Caché de texturas 112 KB, color 2 × 16 KB, profundidad 16 KB, cajas 16 KB, registros 12 KB; detalle en `tests/phase0/spe-raster3d/spu_main.c` |
 

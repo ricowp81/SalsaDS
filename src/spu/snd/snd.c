@@ -7,9 +7,9 @@
  * el estado, las muestras nativas de 16 bits y la salida. Los datos de los canales y los destinos de la captura se
  * leen y escriben por DMA directamente en la memoria emulada.
  *
- * Presupuesto del local store (256 KB): estado 3,5 KB + escrituras 32 KB + muestras nativas 2,6 KB + salida 8 KB +
- * pila de snd_run (muestras en flotante 5 KB, escalón de captura 2 KB) + código ≈ 20 KB: unos 75 KB. El enlace mide la
- * holgura de la pila (tools/spu-stack.py).
+ * Presupuesto del local store (256 KiB): snd_state 21 KB (incluye dos FIFO de captura de 16 muestras y el espejo interpolado de SOUNDCAP, 16 KB), escrituras
+ * 32 KiB, muestras nativas 2,6 KiB, salida 8 KiB. Código ≈34 KiB, datos/bss ≈51 KiB y cadena de pila ≈11 KiB:
+ * total <100 KiB, sin asignaciones. El enlace exige al menos 8192 B de holgura con tools/spu-stack.py.
  */
 #include <spukit/spu.h>
 #include <sys/spu_thread.h>
@@ -24,11 +24,26 @@ static snd_ent log_buf[SND_LOG_MAX] __attribute__((aligned(128)));
 static int16_t nat_buf[2 * SND_TICKS_MAX + 8] __attribute__((aligned(128)));
 static float out_buf[2 * SND_OUT_MAX + 4] __attribute__((aligned(128)));
 static uint8_t st_buf[1056 + 32] __attribute__((aligned(128)));
+static uint8_t live_line[SND_LINE] __attribute__((aligned(128)));
 
 static struct {
 	uint64_t ea[4];
 	uint32_t mask[4];
+	int64_t live_delta;
+	uint32_t verify, reads, changed;
+	struct {
+		uint32_t addr, len;
+	} written[8];
+	uint32_t nwritten, write_overflow;
 } rgn;
+
+static int captured_byte(uint32_t addr)
+{
+	for (uint32_t i = 0; i < rgn.nwritten; i++)
+		if (addr - rgn.written[i].addr < rgn.written[i].len)
+			return 1;
+	return 0;
+}
 
 /* Una línea de SND_LINE bytes alineada de la memoria del ARM7. */
 static void bus_fetch(void *ctx, uint32_t addr, uint8_t *dst)
@@ -38,7 +53,18 @@ static void bus_fetch(void *ctx, uint32_t addr, uint8_t *dst)
 	(void)ctx;
 	if (r >= 4 && r < 8 && rgn.ea[r - 4]) {
 		spukit_dma_get(dst, rgn.ea[r - 4] + (addr & rgn.mask[r - 4]), SND_LINE, 0);
-		spukit_dma_wait(1u << 0);
+		if (rgn.verify)
+			spukit_dma_get(live_line, (uint64_t)((int64_t)(rgn.ea[r - 4] + (addr & rgn.mask[r - 4])) +
+							 rgn.live_delta), SND_LINE, 5);
+		spukit_dma_wait((1u << 0) | (rgn.verify ? 1u << 5 : 0));
+		if (rgn.verify) {
+			int changed = 0;
+
+			rgn.reads++;
+			for (uint32_t i = 0; i < SND_LINE; i++)
+				changed |= dst[i] != live_line[i] && !captured_byte(addr + i);
+			rgn.changed += changed != 0;
+		}
 	} else {
 		memset(dst, 0, SND_LINE);
 	}
@@ -57,6 +83,12 @@ static void bus_store(void *ctx, uint32_t addr, const uint8_t *src, uint32_t n)
 	(void)ctx;
 	if (r < 4 || r >= 8 || !rgn.ea[r - 4])
 		return;
+	if (rgn.verify && rgn.nwritten < sizeof rgn.written / sizeof rgn.written[0]) {
+		rgn.written[rgn.nwritten].addr = addr;
+		rgn.written[rgn.nwritten].len = n;
+		rgn.nwritten++;
+	} else if (rgn.verify)
+		rgn.write_overflow++;
 	ea = rgn.ea[r - 4] + (addr & rgn.mask[r - 4]);
 	start = ea & ~15ull;
 	len = (uint32_t)(((ea + n + 15) & ~15ull) - start);
@@ -88,6 +120,11 @@ static int handler(void *user, const spukit_job *job, spukit_result *res)
 		rgn.ea[i] = js->rgn_ea[i];
 		rgn.mask[i] = js->rgn_mask[i];
 	}
+	rgn.live_delta = js->live_delta;
+	rgn.verify = js->verify;
+	rgn.reads = rgn.changed = 0;
+	rgn.nwritten = 0;
+	rgn.write_overflow = 0;
 	spukit_dma_get(&st, js->state_ea, sizeof st, 2);
 	spukit_dma_wait(1u << 2);
 	st.mode = js->mode;
@@ -103,6 +140,9 @@ static int handler(void *user, const spukit_job *job, spukit_result *res)
 	out.out_n = out_n;
 	out.busy = st.busy;
 	out.peak = st.peak;
+	out.ram_reads = rgn.reads;
+	out.ram_changed = rgn.changed;
+	out.write_overflow = rgn.write_overflow;
 
 	spukit_dma_put(&st, js->state_ea, sizeof st, 2);
 	spukit_dma_put(nat_buf, js->nat_ea, (js->nticks * 4u + 15u) & ~15u, 3);

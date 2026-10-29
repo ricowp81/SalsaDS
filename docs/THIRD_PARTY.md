@@ -31,6 +31,22 @@ quedan bajo la licencia de SalsaDS (GPL-2.0-or-later).
 | `tests/phase0/udplog/` | `tests/phase0/udplog/` | |
 | `tests/phase0/jit-arm/ps3mapi.h` | `tests/phase0/jit-ppe/ps3mapi.h` (rama `jit-ps3mapi`) | Llamadas a PS3MAPI reescritas; los opcodes y el orden de argumentos se tomaron como referencia de github.com/bucanero/ps3mapi-lib (MIT) y github.com/crystalct/ps3mapidynarec (GPLv2) sin copiar su código |
 
+## Núcleo de sonido
+
+`src/audio/snd_voice.h` y las rutas nuevas de `src/audio/snd_mix.c` adaptan
+`desmume/src/SPU.cpp` y `SPU.h` de [TASEmulators/desmume](https://github.com/TASEmulators/desmume/tree/fc504ee0bc9ac3434cafcaae7b129c025499a609),
+commit `fc504ee0bc9ac3434cafcaae7b129c025499a609` (consulta 2026-10-28).
+Licencia comprobada en las cabeceras: GPL-2.0-or-later.
+Copyright (C) 2006 yopyop; Copyright (C) 2006 Theo Berkau;
+Copyright (C) 2008-2025 DeSmuME team. Ideas borrowed from Stephane Dallongeville's SCSP core.
+Se adaptan el avance por muestra, la diferencia e índice ADPCM, la restauración
+del bucle, la secuencia PSG/ruido, el redondeo de volumen/paneo y la selección,
+temporizador y FIFO de 16 muestras de SOUNDCAP. Las tablas IMA coinciden con las
+del estándar que ya estaban en el proyecto. Sin C++, asignaciones ni dependencias
+del emulador de origen; reloj entero nativo y bus LE propios. SOUNDBIAS conserva
+una implementación explícita (DeSmuME lo ignora); los casos límite y diferencias
+se describen en `fase2.md`. El modo anterior se conserva para comparación.
+
 ## Datos de compatibilidad de guardado
 
 Consulta del 2026-10-26: [GBATEK, comandos SPI del cartucho infrarrojo](https://mgba-emu.github.io/gbatek/#ds-cart-infrared-cartridge-spi-commands), prefijo 00h y cambio de 1 a 4 MHz; [DeSmuME, mc.cpp](https://github.com/TASEmulators/desmume/blob/master/desmume/src/mc.cpp), GPL-2.0-o-posterior, tratamiento de 00h y RDSR. Implementación propia del paso hacia la flash, sin copiar código. JEDEC y latencias sin cambios: el fallo observado ocurre en RDSR antes de cualquier RDID.
@@ -70,7 +86,8 @@ anterior al aviso no solicita RDID ni 08h, por lo que no se cambia AUXSPI ni su 
 |---|---|---|---|
 | BlocksDS v1.24.0 (github.com/blocksds/sdk; imagen `skylyrac/blocksds` fijada por digest) | construir `tests/roms` | libnds y crt0 zlib; picolibc MIT/BSD; libgcc GPL-3.0 + excepción de runtime; ndstool GPL-3.0/MIT | Lo que acaba dentro de las ROMs y sus avisos: `tests/roms/homebrew/AVISOS.md` y `docs/fase0.md` (0.2) |
 | melonDS 1.1 (github.com/melonDS-emu/melonDS) | emulador de referencia, solo para comparar | GPL-3.0 | Instalado fuera del repositorio; `tools/melonds-run.py` solo lo lanza y lee su memoria por GDB. **No se copia código suyo** |
-| DeSmuME, NooDS | referencia posible | GPL-2.0-o-posterior, GPL-3.0 | DeSmuME consultado según las entradas anteriores, sin copiar código; NooDS no consultado |
+| DeSmuME | referencia y adaptación del sonido | GPL-2.0-or-later | Origen fijado y avisos en «Núcleo de sonido»; no se distribuye el emulador |
+| NooDS | referencia posible | GPL-3.0 | No se consulta ni se copia su código |
 | gba-suite (jsmolka) | modelo para pruebas de ARMv4T | MIT | No se copió nada |
 | RockWrestler, armwrestler-gba-fixed | — | sin licencia visible | **No se copian ni redistribuyen** |
 

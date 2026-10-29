@@ -112,6 +112,8 @@ static int geom_poly_plain, geom_read_scalar;
  * la regla anterior (borde derecho exclusivo siempre), para comparar en la misma escena. */
 #define R3D_SIN_COMPLETO_FLAG SALSADS_DATA_DIR "/r3d-sin-completo"
 #define WIFI_OFF_FLAG SALSADS_DATA_DIR "/wifi-sin-inicio"
+#define AUDIO_VERIFY_FLAG SALSADS_DATA_DIR "/audio-verificar"
+#define AUDIO_PPE_FLAG SALSADS_DATA_DIR "/audio-mezcla-ppe"
 
 #ifdef NUCLEO_JIT
 /* «SalsaDS JIT núcleo» (Fase 4): el ARM9 con el recompilador (src/jit/arec*); caché de código y prueba con respaldo de la
@@ -168,6 +170,7 @@ static int jit_times; /* JIT_TIMES_FLAG: reloj (timebase) en el despachador, los
 #define ROM_PATH SALSADS_DATA_DIR "/rom.nds"
 #define CFG_PATH SALSADS_DATA_DIR "/controles.cfg"
 #define AUDIO_CFG_PATH SALSADS_DATA_DIR "/audio.cfg"
+#define AUDIO_FRAME_CACHE_OLD_FLAG SALSADS_DATA_DIR "/audio-frontera-antigua"
 
 SYS_PROCESS_PARAM(1001, 0x100000);
 
@@ -962,11 +965,186 @@ static struct {
 	uint32_t ticks_max, mix_max, errors;
 } snd_acc;
 
+static struct {
+	int on;
+	uint8_t *initial, *spe, *ppe;
+	size_t bytes;
+	struct nds_snd_job *job;
+	snd_state before, ppe_state;
+	uint64_t frame;
+	uint64_t jobs, diff_jobs, nat_diff, state_diff, cap_diff, out_diff;
+	uint64_t ram_changed, ram_reads, write_overflow, copy_us, ppe_us, compare_us;
+	uint64_t diff_total;
+} snd_verify;
+static int16_t snd_verify_nat[2 * SND_TICKS_MAX] __attribute__((aligned(128)));
+static float snd_verify_out[2 * SND_OUT_MAX] __attribute__((aligned(128)));
+static snd_state st_spe __attribute__((aligned(128))), st_ppe __attribute__((aligned(128)));
+static int snd_float_close(float a, float b, float eps);
+
+static uint64_t snd_verify_ea(const uint8_t *snapshot, uint64_t ea)
+{
+	if (!ea)
+		return 0;
+	return (uint64_t)(uintptr_t)(snapshot + ((uintptr_t)ea - (uintptr_t)nds->ram));
+}
+
+struct snd_verify_bus {
+	uint64_t ea[4];
+	uint32_t mask[4];
+};
+
+static void snd_verify_fetch(void *ctx, uint32_t addr, uint8_t *dst)
+{
+	const struct snd_verify_bus *b = ctx;
+	const uint32_t r = (addr >> 23) & 511u;
+
+	if (r >= 4 && r < 8 && b->ea[r - 4])
+		memcpy(dst, (const void *)(uintptr_t)(b->ea[r - 4] + (addr & b->mask[r - 4])), SND_LINE);
+	else
+		memset(dst, 0, SND_LINE);
+}
+
+static void snd_verify_store(void *ctx, uint32_t addr, const uint8_t *src, uint32_t len)
+{
+	const struct snd_verify_bus *b = ctx;
+	const uint32_t r = (addr >> 23) & 511u;
+
+	if (r >= 4 && r < 8 && b->ea[r - 4])
+		memcpy((void *)(uintptr_t)(b->ea[r - 4] + (addr & b->mask[r - 4])), src, len);
+}
+
+static int snd_chan_equal(const snd_chan *a, const snd_chan *b)
+{
+	return a->cnt == b->cnt && a->sad == b->sad && a->len == b->len && a->tmr == b->tmr && a->pnt == b->pnt &&
+	       a->keyon == b->keyon && a->loop_valid == b->loop_valid &&
+	       a->on == b->on && a->hdr == b->hdr && a->pos == b->pos && a->tcnt == b->tcnt && a->out == b->out &&
+	       a->adv == b->adv && a->adi == b->adi && a->alv == b->alv && a->ali == b->ali && a->lfsr == b->lfsr &&
+	       a->tag == b->tag && memcmp(a->line, b->line, SND_LINE) == 0;
+}
+
+static void snd_selftest_diagnose(int pass)
+{
+	for (int c = 0; c < SND_NCH; c++) {
+		const snd_chan *s = &st_spe.ch[c], *p = &st_ppe.ch[c];
+		int line = -1;
+
+		if (snd_chan_equal(s, p))
+			continue;
+		for (int i = 0; i < SND_LINE && line < 0; i++)
+			if (s->line[i] != p->line[i]) line = i;
+		salsads_log("FALLO autoprueba audio estado: trabajo %d voz %d: CNT %08x/%08x SAD %08x/%08x LEN %u/%u "
+			    "TMR %u/%u PNT %u/%u encendida %u/%u cabecera %u/%u posición %d/%d fracción-temporizador %u/%u salida %d/%d",
+			    pass, c, s->cnt, p->cnt, s->sad, p->sad, s->len, p->len, s->tmr, p->tmr, s->pnt, p->pnt,
+			    s->on, p->on, s->hdr, p->hdr, s->pos, p->pos, s->tcnt, p->tcnt, s->out, p->out);
+		salsads_log("FALLO autoprueba audio estado: trabajo %d voz %d: ADPCM valor %d/%d índice %d/%d bucle %d,%d/%d,%d; "
+			    "ruido %u/%u línea %08x/%08x primer byte distinto %d",
+			    pass, c, s->adv, p->adv, s->adi, p->adi, s->alv, s->ali, p->alv, p->ali,
+			    s->lfsr, p->lfsr, s->tag, p->tag, line);
+	}
+	for (int c = 0; c < 2; c++)
+		if (memcmp(&st_spe.cap[c], &st_ppe.cap[c], sizeof(snd_cap)) != 0)
+			salsads_log("FALLO autoprueba audio estado: trabajo %d SOUNDCAP%d: CNT %u/%u encendida %u/%u destino %08x/%08x "
+				    "longitud %u/%u posición %u/%u base %08x/%08x bytes %u/%u", pass, c,
+				    st_spe.cap[c].cnt, st_ppe.cap[c].cnt, st_spe.cap[c].on, st_ppe.cap[c].on,
+				    st_spe.cap[c].dad, st_ppe.cap[c].dad, st_spe.cap[c].len, st_ppe.cap[c].len,
+				    st_spe.cap[c].pos, st_ppe.cap[c].pos, st_spe.cap[c].base, st_ppe.cap[c].base,
+				    st_spe.cap[c].bytes, st_ppe.cap[c].bytes);
+	if (st_spe.resample_phase != st_ppe.resample_phase || st_spe.hd_phase != st_ppe.hd_phase ||
+	    st_spe.hd_active != st_ppe.hd_active)
+		salsads_log("FALLO autoprueba audio estado: trabajo %d: fase remuestreo %08x/%08x, fase HD %u/%u, activa %u/%u",
+			    pass, st_spe.resample_phase, st_ppe.resample_phase, st_spe.hd_phase, st_ppe.hd_phase,
+			    st_spe.hd_active, st_ppe.hd_active);
+	if (st_spe.soundcnt != st_ppe.soundcnt || st_spe.bias != st_ppe.bias || st_spe.tick != st_ppe.tick ||
+	    st_spe.busy != st_ppe.busy || st_spe.peak != st_ppe.peak || st_spe.nout != st_ppe.nout ||
+	    st_spe.ticks_run != st_ppe.ticks_run || st_spe.log_applied != st_ppe.log_applied)
+		salsads_log("FALLO autoprueba audio estado: trabajo %d mezcla: SOUNDCNT %04x/%04x BIAS %u/%u tick %llu/%llu "
+			    "ocupadas %05x/%05x pico %u/%u salida %u/%u ticks %u/%u escrituras %u/%u", pass,
+			    st_spe.soundcnt, st_ppe.soundcnt, st_spe.bias, st_ppe.bias,
+			    (unsigned long long)st_spe.tick, (unsigned long long)st_ppe.tick, st_spe.busy, st_ppe.busy,
+			    st_spe.peak, st_ppe.peak, st_spe.nout, st_ppe.nout, st_spe.ticks_run, st_ppe.ticks_run,
+			    st_spe.log_applied, st_ppe.log_applied);
+	{
+		uint32_t hist = 0;
+
+		for (int side = 0; side < 2; side++)
+			for (int i = 0; i < SND_HIST; i++)
+				hist += !snd_float_close(st_spe.hist[side][i], st_ppe.hist[side][i], 0.0005f);
+		if (hist)
+			salsads_log("FALLO autoprueba audio estado: trabajo %d: %u muestras distintas en la historia del remuestreador", pass, hist);
+	}
+	for (int c = 0; c < SND_NCH; c++) {
+		uint32_t hist = 0, lr = 0;
+
+		for (int i = 0; i < 4; i++) hist += !snd_float_close(st_spe.hd_hist[c][i], st_ppe.hd_hist[c][i], 0.0005f);
+		for (int side = 0; side < 2; side++)
+			lr += !snd_float_close(st_spe.hd_last[c][side], st_ppe.hd_last[c][side], 0.0005f) ||
+			      !snd_float_close(st_spe.hd_anchor[c][side], st_ppe.hd_anchor[c][side], 0.0005f);
+		if (hist || lr || st_spe.hd_period[c] != st_ppe.hd_period[c] || st_spe.hd_fade[c] != st_ppe.hd_fade[c] ||
+		    st_spe.hd_on[c] != st_ppe.hd_on[c] || !snd_float_close(st_spe.hd_inv[c], st_ppe.hd_inv[c], 0.00001f))
+			salsads_log("FALLO autoprueba audio estado: trabajo %d voz %d HD: historia %u, salida/ancla %u, período %u/%u, "
+				    "envolvente %u/%u, encendida %u/%u, inversa %.9g/%.9g", pass, c, hist, lr,
+				    st_spe.hd_period[c], st_ppe.hd_period[c], st_spe.hd_fade[c], st_ppe.hd_fade[c],
+				    st_spe.hd_on[c], st_ppe.hd_on[c], st_spe.hd_inv[c], st_ppe.hd_inv[c]);
+	}
+}
+
+static int snd_float_close(float a, float b, float eps)
+{
+	const float d = a - b;
+
+	return d <= eps && d >= -eps;
+}
+
+static int snd_float_state_equal(const snd_state *a, const snd_state *b)
+{
+	if (a->resample_phase != b->resample_phase || a->hd_phase != b->hd_phase || a->hd_active != b->hd_active)
+		return 0;
+	for (int side = 0; side < 2; side++)
+		for (int i = 0; i < SND_HIST; i++)
+			if (!snd_float_close(a->hist[side][i], b->hist[side][i], 0.0005f))
+				return 0;
+	for (int c = 0; c < SND_NCH; c++) {
+		if (a->hd_period[c] != b->hd_period[c] || a->hd_fade[c] != b->hd_fade[c] || a->hd_on[c] != b->hd_on[c])
+			return 0;
+		if (!snd_float_close(a->hd_inv[c], b->hd_inv[c], 0.00001f))
+			return 0;
+		for (int i = 0; i < 4; i++)
+			if (!snd_float_close(a->hd_hist[c][i], b->hd_hist[c][i], 0.0005f))
+				return 0;
+		for (int side = 0; side < 2; side++)
+			if (!snd_float_close(a->hd_last[c][side], b->hd_last[c][side], 0.0005f) ||
+			    !snd_float_close(a->hd_anchor[c][side], b->hd_anchor[c][side], 0.0005f))
+				return 0;
+	}
+	return 1;
+}
+
+static const char *snd_format(unsigned voice, uint32_t cnt)
+{
+	switch (cnt >> 29 & 3u) {
+	case 0: return "PCM8";
+	case 1: return "PCM16";
+	case 2: return "ADPCM";
+	default: return voice >= 14 ? "ruido" : voice >= 8 ? "PSG" : "reservado";
+	}
+}
+
 static void snd_submit(void *ctx, int set, struct nds_snd_job *job, snd_state *st)
 {
 	job_snd js;
+	uint64_t copy_t0 = 0;
 
 	(void)ctx;
+	if (snd_verify.on) {
+		copy_t0 = now_us();
+		nds_snd_copy_memory(nds, snd_verify.initial, snd_verify.bytes);
+		memcpy(snd_verify.spe, snd_verify.initial, snd_verify.bytes);
+		memcpy(snd_verify.ppe, snd_verify.initial, snd_verify.bytes);
+		snd_verify.before = *st;
+		snd_verify.job = job;
+		snd_verify.frame = nds->frames;
+		snd_verify.copy_us += now_us() - copy_t0;
+	}
 	memset(&js, 0, sizeof js);
 	js.state_ea = (uint64_t)(uintptr_t)st;
 	js.log_ea = (uint64_t)(uintptr_t)job->log;
@@ -978,10 +1156,102 @@ static void snd_submit(void *ctx, int set, struct nds_snd_job *job, snd_state *s
 	js.mode = job->mode;
 	js.ratio_adj = job->ratio_adj;
 	for (int i = 0; i < 4; i++) {
-		js.rgn_ea[i] = job->rgn[i].rd;
+		js.rgn_ea[i] = snd_verify.on ? snd_verify_ea(snd_verify.spe, job->rgn[i].rd) : job->rgn[i].rd;
 		js.rgn_mask[i] = job->rgn[i].mask;
 	}
+	if (snd_verify.on) {
+		js.live_delta = (int64_t)(uintptr_t)nds->ram - (int64_t)(uintptr_t)snd_verify.spe;
+		js.verify = 1;
+	}
 	snd_seq[set] = spukit_post(wk_snd, JOB_SND, &js, sizeof js);
+}
+
+static void snd_verify_compare(int set, const job_snd_result *jr)
+{
+	struct snd_verify_bus vb;
+	snd_bus bus = { &vb, snd_verify_fetch, snd_verify_store };
+	struct nds_snd_job *j = snd_verify.job;
+	uint32_t ppe_n = 0, applied;
+	uint64_t t0;
+	uint32_t nat_diff = 0, state_diff = 0, cap_diff = 0, out_diff = 0;
+	int first_sample = -1, first_voice = -1;
+	int16_t first_spe = 0, first_ppe = 0;
+
+	if (!j || j != &nds->snd.job[set])
+		return;
+	for (int i = 0; i < 4; i++) {
+		vb.ea[i] = snd_verify_ea(snd_verify.ppe, j->rgn[i].rd);
+		vb.mask[i] = j->rgn[i].mask;
+	}
+	snd_verify.ppe_state = snd_verify.before;
+	t0 = now_us();
+	applied = snd_run(&snd_verify.ppe_state, j->log, j->nlog, j->nticks, &bus, snd_verify_nat, snd_verify_out,
+			  SND_OUT_MAX, &ppe_n);
+	snd_verify.ppe_us += now_us() - t0;
+	t0 = now_us();
+	for (uint32_t i = 0; i < 2 * j->nticks; i++)
+		if (j->nat[i] != snd_verify_nat[i]) {
+			if (first_sample < 0) {
+				first_sample = (int)i;
+				first_spe = j->nat[i];
+				first_ppe = snd_verify_nat[i];
+			}
+			nat_diff++;
+		}
+	for (int c = 0; c < SND_NCH; c++)
+		if (!snd_chan_equal(&nds->snd.st.ch[c], &snd_verify.ppe_state.ch[c])) {
+			if (first_voice < 0)
+				first_voice = c;
+			state_diff++;
+		}
+	for (int c = 0; c < 2; c++)
+		cap_diff += memcmp(&nds->snd.st.cap[c], &snd_verify.ppe_state.cap[c], sizeof(snd_cap)) != 0;
+	state_diff += nds->snd.st.soundcnt != snd_verify.ppe_state.soundcnt || nds->snd.st.bias != snd_verify.ppe_state.bias ||
+		      nds->snd.st.tick != snd_verify.ppe_state.tick || nds->snd.st.busy != snd_verify.ppe_state.busy ||
+		      nds->snd.st.peak != snd_verify.ppe_state.peak || nds->snd.st.nout != snd_verify.ppe_state.nout ||
+		      nds->snd.st.ticks_run != snd_verify.ppe_state.ticks_run || applied != jr->applied ||
+		      !snd_float_state_equal(&nds->snd.st, &snd_verify.ppe_state);
+	if (jr->out_n != ppe_n)
+		out_diff++;
+	else
+		for (uint32_t i = 0; i < 2 * ppe_n; i++) {
+			const float d = j->out[i] - snd_verify_out[i];
+
+			out_diff += d > 0.0005f || d < -0.0005f;
+		}
+	for (size_t i = 0; i < snd_verify.bytes; i++)
+		cap_diff += snd_verify.spe[i] != snd_verify.ppe[i];
+	nds_snd_commit_memory(nds, snd_verify.initial, snd_verify.spe);
+	snd_verify.compare_us += now_us() - t0;
+	snd_verify.jobs++;
+	snd_verify.nat_diff += nat_diff;
+	snd_verify.state_diff += state_diff;
+	snd_verify.cap_diff += cap_diff;
+	snd_verify.out_diff += out_diff;
+	snd_verify.ram_reads += jr->ram_reads;
+	snd_verify.ram_changed += jr->ram_changed;
+	snd_verify.write_overflow += jr->write_overflow;
+	if (nat_diff || state_diff || cap_diff || out_diff) {
+		const int vc = first_voice >= 0 ? first_voice : 0;
+		const snd_chan *b = &snd_verify.before.ch[vc], *s = &nds->snd.st.ch[vc], *p = &snd_verify.ppe_state.ch[vc];
+
+		snd_verify.diff_jobs++;
+		snd_verify.diff_total++;
+		if (snd_verify.diff_total == 1 || snd_verify.diff_total % 120 == 0)
+			salsads_log("DATO audio-verificar: cuadro %llu, voz %d, formato %s, muestra %d (%s) SPE/PPE %d/%d; "
+				    "estado antes %u,%d,%u,%d,%d,%d,%u; después SPE %u,%d,%u,%d,%d,%d,%u PPE %u,%d,%u,%d,%d,%d,%u; "
+				    "capturas antes %u,%u/%u,%u, SPE %u,%u/%u,%u, PPE %u,%u/%u,%u; "
+				    "entrada RAM cambió %s; diferencias muestras %u, voces %u, capturas/bytes %u, salida %u",
+				    (unsigned long long)snd_verify.frame, first_voice, first_voice >= 0 ? snd_format((unsigned)first_voice, s->cnt) : "mezcla",
+				    first_sample >= 0 ? first_sample / 2 : -1, first_sample < 0 ? "?" : first_sample & 1 ? "R" : "L", first_spe, first_ppe,
+				    b->on, b->pos, b->tcnt, b->out, b->adv, b->adi, b->lfsr,
+				    s->on, s->pos, s->tcnt, s->out, s->adv, s->adi, s->lfsr,
+				    p->on, p->pos, p->tcnt, p->out, p->adv, p->adi, p->lfsr,
+				    snd_verify.before.cap[0].on, snd_verify.before.cap[0].pos, snd_verify.before.cap[1].on, snd_verify.before.cap[1].pos,
+				    nds->snd.st.cap[0].on, nds->snd.st.cap[0].pos, nds->snd.st.cap[1].on, nds->snd.st.cap[1].pos,
+				    snd_verify.ppe_state.cap[0].on, snd_verify.ppe_state.cap[0].pos, snd_verify.ppe_state.cap[1].on, snd_verify.ppe_state.cap[1].pos,
+				    jr->ram_changed ? "sí" : "no", nat_diff, state_diff, cap_diff, out_diff);
+	}
 }
 
 static void snd_wait(void *ctx, int set)
@@ -999,6 +1269,8 @@ static void snd_wait(void *ctx, int set)
 		return;
 	}
 	nds->snd.job[set].out_n = jr.out_n;
+	if (snd_verify.on)
+		snd_verify_compare(set, &jr);
 	snd_acc.jobs++;
 	snd_acc.ticks += jr.ticks;
 	snd_acc.mix_ticks += jr.mix_ticks;
@@ -1012,20 +1284,18 @@ static void snd_wait(void *ctx, int set)
 static void snd_sink(void *ctx, const float *out, uint32_t n, const int16_t *nat, uint32_t nticks)
 {
 	(void)ctx;
-	(void)nat;
-	(void)nticks;
+	audio_out_record_mix(nat, nticks);
 	audio_out_push(out, n);
 }
 
 /* Autoprueba del SPE de audio: el mismo trabajo en el SPE y en el PPE (mismo código C) con una memoria de prueba propia:
  * las muestras de 16 bits, el estado y lo capturado tienen que ser idénticos; la salida flotante, igual salvo el redondeo
- * del SPU. Dos trabajos seguidos (el estado se arrastra). Devuelve 0 si coincide. */
+ * del SPU. Cuatro trabajos seguidos, dos de ellos HD (el estado se arrastra). Devuelve 0 si coincide. */
 #define ST_MEM 0x10000u
 static uint8_t st_mem_spe[ST_MEM] __attribute__((aligned(128))), st_mem_ppe[ST_MEM] __attribute__((aligned(128)));
 static snd_ent st_log[SND_LOG_MAX] __attribute__((aligned(128)));
 static int16_t st_nat_spe[2 * SND_TICKS_MAX] __attribute__((aligned(128))), st_nat_ppe[2 * SND_TICKS_MAX];
 static float st_out_spe[2 * SND_OUT_MAX] __attribute__((aligned(128))), st_out_ppe[2 * SND_OUT_MAX];
-static snd_state st_spe __attribute__((aligned(128))), st_ppe __attribute__((aligned(128)));
 
 static void st_bus_fetch(void *ctx, uint32_t addr, uint8_t *dst)
 {
@@ -1071,13 +1341,14 @@ static int snd_selftest(void)
 	memcpy(st_mem_ppe, st_mem_spe, sizeof st_mem_ppe);
 	snd_reset(&st_spe);
 	snd_reset(&st_ppe);
-	for (int pass = 0; pass < 2; pass++) {
-		const uint32_t nt = 300u + 77u * (uint32_t)pass;
-		uint32_t n_ppe = 0, applied;
+	for (int pass = 0; pass < 8; pass++) {
+		const uint32_t nt = 300u + 77u * (uint32_t)(pass & 1);
+		uint32_t n_ppe = 0, applied, state0 = bad_state;
 		snd_bus bus = { NULL, st_bus_fetch, st_bus_store };
 
 		st_n = 0;
-		if (pass == 0) {
+		if ((pass & 3) == 0) {
+			snd_reset(&st_spe); snd_reset(&st_ppe);
 			st_w(0x100, 0x807F);
 			st_w32(0x00 + 4, D16 & 0x07FFFFFFu);
 			st_w(0x08, (uint16_t)(0x10000u - 700u));
@@ -1108,8 +1379,8 @@ static int snd_selftest(void)
 		js.nlog = st_n;
 		js.nticks = nt;
 		js.out_max = SND_OUT_MAX;
-		js.mode = (uint32_t)pass;
-		js.ratio_adj = 0.003f * (float)pass;
+		js.mode = (uint32_t)(pass & 3) | (pass >= 4 ? SND_MODE_CORE_OLD : 0u);
+		js.ratio_adj = 0.003f * (float)(pass & 3);
 		js.rgn_ea[0] = (uint64_t)(uintptr_t)st_mem_spe;
 		js.rgn_mask[0] = ST_MEM - 1;
 		{
@@ -1140,37 +1411,141 @@ static int snd_selftest(void)
 
 				bad_out += d > 0.0005f || d < -0.0005f;
 			}
-		if (st_spe.busy != st_ppe.busy || st_spe.tick != st_ppe.tick || st_spe.peak != st_ppe.peak)
+		if (st_spe.busy != st_ppe.busy || st_spe.tick != st_ppe.tick || st_spe.peak != st_ppe.peak ||
+		    st_spe.soundcnt != st_ppe.soundcnt || st_spe.bias != st_ppe.bias || st_spe.log_applied != st_ppe.log_applied ||
+		    st_spe.nout != st_ppe.nout || st_spe.ticks_run != st_ppe.ticks_run || !snd_float_state_equal(&st_spe, &st_ppe))
 			bad_state++;
 		for (int c = 0; c < SND_NCH; c++)
-			if (st_spe.ch[c].pos != st_ppe.ch[c].pos || st_spe.ch[c].out != st_ppe.ch[c].out ||
-			    st_spe.ch[c].tcnt != st_ppe.ch[c].tcnt || st_spe.ch[c].lfsr != st_ppe.ch[c].lfsr ||
-			    st_spe.ch[c].adv != st_ppe.ch[c].adv)
+			if (!snd_chan_equal(&st_spe.ch[c], &st_ppe.ch[c]))
 				bad_state++;
+		for (int c = 0; c < 2; c++)
+			if (memcmp(&st_spe.cap[c], &st_ppe.cap[c], sizeof(snd_cap)) != 0)
+				bad_state++;
+		if (bad_state != state0)
+			snd_selftest_diagnose(pass);
 		bad_mem += memcmp(st_mem_spe, st_mem_ppe, sizeof st_mem_ppe) != 0;
 	}
-	salsads_log("autoprueba del audio: SPE contra PPE, 2 trabajos: %u muestras distintas, %u del estado, %u de la memoria "
+	salsads_log("autoprueba del audio: SPE contra PPE, 8 trabajos (dos núcleos, fiel y HD): %u muestras distintas, %u del estado, %u de la memoria "
 		    "capturada, %u de la salida flotante", (unsigned)bad_nat, (unsigned)bad_state, (unsigned)bad_mem,
 		    (unsigned)bad_out);
 	return bad_nat || bad_state || bad_mem || bad_out ? -1 : 0;
 }
 
+/* Banco aislado: 16 voces PCM16, frecuencias próximas a 8/16/22 kHz.
+ * No entrega muestras al puerto. El decrementador solo mide esta PS3. */
+static void snd_hd_bench(void)
+{
+	for (unsigned mode = 0; mode <= SND_MODE_HD; mode += SND_MODE_HD) {
+		job_snd js;
+		uint64_t ticks = 0;
+		uint32_t maximum = 0;
+		snd_reset(&st_spe);
+		st_spe.soundcnt = 0x807f;
+		for (unsigned c = 0; c < SND_NCH; c++) {
+			snd_chan *ch = &st_spe.ch[c];
+			const unsigned period[3] = {2095, 1047, 762};
+			ch->cnt = (1u << 29) | (1u << 27) | (64u << 16) | 8u;
+			ch->sad = 0x02000100; ch->len = 128; ch->on = 1; ch->pos = -3;
+			ch->tmr = (uint16_t)(65536u - period[c % 3]); ch->tcnt = ch->tmr;
+		}
+		memset(&js, 0, sizeof js);
+		js.state_ea = (uint64_t)(uintptr_t)&st_spe;
+		js.out_ea = (uint64_t)(uintptr_t)st_out_spe;
+		js.nat_ea = (uint64_t)(uintptr_t)st_nat_spe;
+		js.nticks = 547; js.out_max = SND_OUT_MAX; js.mode = mode;
+		js.rgn_ea[0] = (uint64_t)(uintptr_t)st_mem_spe; js.rgn_mask[0] = ST_MEM - 1;
+		for (unsigned frame = 0; frame < 124; frame++) {
+			const uint32_t seq = spukit_post(wk_snd, JOB_SND, &js, sizeof js);
+			const spukit_result *r = spukit_wait(wk_snd, seq);
+			job_snd_result jr;
+			if (r->error) { salsads_log("FALLO banco Audio HD: %d", r->error); return; }
+			memcpy(&jr, r->data, sizeof jr);
+			if (frame < 4) continue;
+			ticks += jr.mix_ticks;
+			if (jr.mix_ticks > maximum) maximum = jr.mix_ticks;
+		}
+		salsads_log("DATO audio-hd-banco: HD %u, 16 voces, 120 cuadros; snd_run media %llu us, máximo %llu us",
+			mode != 0, (unsigned long long)(ticks * 1000000ull / 120 / spukit_tick_hz()),
+			(unsigned long long)((uint64_t)maximum * 1000000ull / spukit_tick_hz()));
+	}
+}
+
 static void snd_load_cfg(void)
 {
-	FILE *f = fopen(AUDIO_CFG_PATH, "r");
+	struct stat fs;
+	uint32_t mode = 0;
+	FILE *f;
 	char text[256];
 	size_t len;
 
-	if (!f)
+	if (stat(SALSADS_DATA_DIR "/audio-nucleo-anterior", &fs) == 0) mode |= SND_MODE_CORE_OLD;
+	salsads_log("audio: núcleo %s", mode & SND_MODE_CORE_OLD ? "anterior" : "basado en DeSmuME");
+	snd_verify.on = stat(AUDIO_VERIFY_FLAG, &fs) == 0;
+	if (snd_verify.on && !snd_verify.initial) {
+		snd_verify.bytes = (size_t)((uintptr_t)(nds->wram7 + sizeof nds->wram7) - (uintptr_t)nds->ram);
+		snd_verify.initial = memalign(128, snd_verify.bytes);
+		snd_verify.spe = memalign(128, snd_verify.bytes);
+		snd_verify.ppe = memalign(128, snd_verify.bytes);
+		if (!snd_verify.initial || !snd_verify.spe || !snd_verify.ppe) {
+			free(snd_verify.initial);
+			free(snd_verify.spe);
+			free(snd_verify.ppe);
+			snd_verify.initial = snd_verify.spe = snd_verify.ppe = NULL;
+			snd_verify.on = 0;
+			salsads_log("audio-verificar: sin memoria para tres instantáneas de %u KB", (unsigned)(snd_verify.bytes >> 10));
+		} else {
+			salsads_log("audio-verificar: activo; SPE y PPE mezclan la misma instantánea de %u KB; capturas privadas",
+				    (unsigned)(snd_verify.bytes >> 10));
+		}
+	} else if (snd_verify.on) {
+		salsads_log("audio-verificar: activo; se reutilizan tres instantáneas de %u KB", (unsigned)(snd_verify.bytes >> 10));
+	} else {
+		salsads_log("audio-verificar: apagado (crear %s para comparar cada trabajo SPE/PPE)", AUDIO_VERIFY_FLAG);
+	}
+
+	if (stat(AUDIO_FRAME_CACHE_OLD_FLAG, &fs) == 0) {
+		mode |= SND_MODE_FRAME_CACHE_OLD;
+		salsads_log("audio: las voces 1 y 3 descartan su línea entre trabajos (existe %s)", AUDIO_FRAME_CACHE_OLD_FLAG);
+	} else {
+		salsads_log("audio: las voces 1 y 3 conservan la línea de SOUNDCAP entre trabajos");
+	}
+	if (stat(SALSADS_DATA_DIR "/audio-hd", &fs) == 0) {
+		if (stat(SALSADS_DATA_DIR "/audio-sin-hd", &fs) != 0) {
+			mode |= SND_MODE_HD;
+			if (stat(SALSADS_DATA_DIR "/audio-hd-sin-captura", &fs) == 0) {
+				mode |= SND_MODE_HD_CAP_OFF;
+				salsads_log("audio: HD, Hermite por voz a 48 kHz; captura PCM también al oír (audio-hd-sin-captura)");
+			} else {
+				salsads_log("audio: HD, Hermite por voz a 48 kHz; captura nativa con espejo interpolado al oír");
+			}
+		} else {
+			salsads_log("audio: HD desactivado por audio-sin-hd");
+		}
+		if (stat(SALSADS_DATA_DIR "/audio-sin-remuestrear", &fs) == 0) {
+			mode |= SND_MODE_RESAMPLE_SIMPLE;
+			salsads_log("audio: FIR desactivado; conversión lineal a 48 kHz");
+		}
+		nds_snd_set_mode(nds, mode);
 		return;
+	}
+	f = fopen(AUDIO_CFG_PATH, "r");
+	if (!f) {
+		nds_snd_set_mode(nds, mode);
+		return;
+	}
 	len = fread(text, 1, sizeof text - 1, f);
 	fclose(f);
 	text[len] = '\0';
 	/* una clave por línea: «original = si» cuantiza a 10 bits con el sesgo, como la salida de la DS */
 	if (strstr(text, "original = si") || strstr(text, "original=si")) {
-		nds_snd_set_mode(nds, SND_MODE_ORIGINAL);
+		mode |= SND_MODE_ORIGINAL;
 		salsads_log("audio: salida «como el original» (10 bits con SOUNDBIAS) por %s", AUDIO_CFG_PATH);
 	}
+	if (stat(SALSADS_DATA_DIR "/audio-sin-remuestrear", &fs) == 0) {
+		mode |= SND_MODE_RESAMPLE_SIMPLE;
+		salsads_log("audio: FIR desactivado; conversión lineal a 48 kHz");
+	}
+	nds_snd_set_mode(nds, mode);
 }
 
 /* ---- un cuadro ------------------------------------------------------------------------------------------------ */
@@ -1383,16 +1758,40 @@ static void log_stats(void)
 			salsads_log("DATO audio: mezcla en el SPE por cuadro (decrementador): trabajo %u.%02u ms (máx %u.%02u), de eso snd_run "
 				    "%u.%02u ms (máx %u.%02u); el PPE esperando %u.%02u ms por cuadro; %u muestras de 48 kHz por cuadro; "
 				    "errores %u; salida: %s, anillo %u muestras, %u faltas (%u muestras de silencio en este lapso), %u bloques "
-				    "tarde, pico %.0f dBFS",
+				    "tarde, pico %.2f dBFS, ganancia %.1f dB, limitador actúa en %.2f%% de las muestras (reducción máx %.2f dB, "
+				    "media %.2f dB)",
 				    MS(snd_acc.ticks * 1000000ull / snd_acc.jobs / spukit_tick_hz()),
 				    MS((uint64_t)snd_acc.ticks_max * 1000000ull / spukit_tick_hz()),
 				    MS(snd_acc.mix_ticks * 1000000ull / snd_acc.jobs / spukit_tick_hz()),
 				    MS((uint64_t)snd_acc.mix_max * 1000000ull / spukit_tick_hz()),
 				    MS(snd_acc.wait_us / snd_acc.jobs), (unsigned)(snd_acc.out_n / snd_acc.jobs),
 				    (unsigned)snd_acc.errors, audio_out_is_open() ? "abierta" : "sin audio", as.level, as.underruns,
-				    (unsigned)(as.silent - prev_silent), as.late, as.peak ? 20.0 * log10(as.peak / 32768.0) : -99.0);
+				    (unsigned)(as.silent - prev_silent), as.late, as.peak ? 20.0 * log10(as.peak / 32768.0) : -99.0,
+				    (double)as.gain_db, as.lim_total ? 100.0 * (double)as.lim_n / (double)as.lim_total : 0.0,
+				    (double)as.lim_max_db, as.lim_n ? as.lim_sum_db / (double)as.lim_n : 0.0);
+		salsads_log("DATO audio-estirar: versión %d, limitador %d; acumulado %llu muestras añadidas, %u%% tiempo estirando; %u faltas; costo %llu us (máx %u us/grano), hilo %llu us; uniones %u, producción %u/1000, grano %u ms",
+		    as.stretch_enabled, as.limiter_enabled, (unsigned long long)as.inserted,
+		    as.played ? (unsigned)(as.active * 100 / as.played) : 0, as.underruns,
+		    (unsigned long long)as.stretch_us, as.stretch_max_us, (unsigned long long)as.busy_us, as.joins, as.rate_permil, as.grain_ms);
 		prev_silent = as.silent;
 		memset(&snd_acc, 0, sizeof snd_acc);
+	}
+	if (snd_verify.on && snd_verify.jobs) {
+		const uint64_t nj = snd_verify.jobs;
+
+		salsads_log("DATO audio-verificar: ventana %llu trabajos; con diferencias %llu; muestras %llu, estado de voces %llu, "
+			    "capturas/bytes %llu, salida flotante %llu; lecturas RAM %llu, líneas cambiadas durante la mezcla %llu, desbordes %llu; "
+			    "costo por trabajo: copia %llu us, PPE %llu us, comparación/aplicación %llu us",
+			    (unsigned long long)nj, (unsigned long long)snd_verify.diff_jobs,
+			    (unsigned long long)snd_verify.nat_diff, (unsigned long long)snd_verify.state_diff,
+			    (unsigned long long)snd_verify.cap_diff, (unsigned long long)snd_verify.out_diff,
+			    (unsigned long long)snd_verify.ram_reads, (unsigned long long)snd_verify.ram_changed,
+			    (unsigned long long)snd_verify.write_overflow,
+			    (unsigned long long)(snd_verify.copy_us / nj), (unsigned long long)(snd_verify.ppe_us / nj),
+			    (unsigned long long)(snd_verify.compare_us / nj));
+		snd_verify.jobs = snd_verify.diff_jobs = snd_verify.nat_diff = snd_verify.state_diff = 0;
+		snd_verify.cap_diff = snd_verify.out_diff = snd_verify.ram_changed = snd_verify.ram_reads = snd_verify.write_overflow = 0;
+		snd_verify.copy_us = snd_verify.ppe_us = snd_verify.compare_us = 0;
 	}
 	if (secs_a9 > 0)
 		mips9_cpu = (double)acc_i9p / secs_a9 / 1e6;
@@ -2059,6 +2458,7 @@ static void render_frame(void)
 	nds_set_input(nds, k, tx, ty);
 	if (snd_on)
 		nds_snd_set_ratio_adj(nds, audio_out_ratio_adj());
+	audio_out_record_service();
 	i9a = nds->a9.icount;
 	i7a = nds->a7.icount;
 	{
@@ -2266,6 +2666,11 @@ static void stats_reset(void)
 	r3d_fail = 0;
 	memset(&geom_acc, 0, sizeof geom_acc);
 	memset(&snd_acc, 0, sizeof snd_acc);
+	snd_verify.job = NULL;
+	snd_verify.jobs = snd_verify.diff_jobs = snd_verify.nat_diff = snd_verify.state_diff = 0;
+	snd_verify.cap_diff = snd_verify.out_diff = snd_verify.ram_changed = snd_verify.ram_reads = snd_verify.write_overflow = 0;
+	snd_verify.copy_us = snd_verify.ppe_us = snd_verify.compare_us = 0;
+	snd_verify.diff_total = 0;
 	memset(prof_buf, 0, sizeof prof_buf);
 	prof_n = 0;
 	prev_i9 = prev_i7 = 0;
@@ -2410,6 +2815,7 @@ static int game_open(const char *path)
 		salsads_rec_marker(JIT_MARKER, NUCLEO_VERSION, 1);
 	}
 #endif
+	audio_out_set_active(1);
 	return 0;
 }
 
@@ -2424,6 +2830,7 @@ static void game_close(void)
 	salsads_log("cierre: esperando sonido, geometría y 3D");
 	if (snd_on && nds->snd.prev >= 0)
 		snd_wait(NULL, nds->snd.prev);
+	audio_out_set_active(0);
 	if (geom_on) {
 		gx_sync(&nds->gx, 0);
 		geom_collect((int)geom_last_seq);
@@ -2896,11 +3303,19 @@ int main(void)
 	}
 	nds->snd.ops.sink = snd_sink;
 	if (wk_snd) {
-		if (snd_selftest() == 0) {
+		struct stat ast;
+		const int force_ppe = stat(AUDIO_PPE_FLAG, &ast) == 0;
+		const int selftest_ok = snd_selftest() == 0;
+
+		if (selftest_ok && !force_ppe) {
 			nds->snd.ops.submit = snd_submit;
 			nds->snd.ops.wait = snd_wait;
 			snd_on = 1;
 			salsads_log("sonido: mezclador en un SPE (autoprueba contra el PPE: igual)");
+			snd_hd_bench();
+		} else if (selftest_ok) {
+			snd_on = 0;
+			salsads_log("sonido: mezcla el PPE por audio-mezcla-ppe (la autoprueba SPE/PPE fue igual)");
 		} else {
 			failures++;
 			salsads_log("sonido: la autoprueba del SPE falló: mezcla el PPE");

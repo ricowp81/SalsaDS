@@ -5,6 +5,194 @@
 - Metroid Prime Hunters con 512, 2 min de menús y juego: 9–13,5 ms por cuadro, presentación a 16,7 ms casi siempre; sin parpadeo. Sin A/B estricto contra 1024 en la misma escena.
 - Interruptor: `nucleo-jit-tramo` con el número de ciclos (16–20000) en el directorio de datos.
 
+## 2026-10-28 — NSMB 1-1: melonDS como referencia y espejo interpolado de SOUNDCAP (host)
+
+Grabaciones digitales de melonDS 1.1 (`tools/melonds-grabar.py`: controlador
+«disk» de SDL, 48 kHz PCM16 estéreo, 105 s desde el arranque, interpolación 0
+y 3) y del host (`salsads-cpurun`, 5000 cuadros, mismo guardado y botones). El
+nivel empieza a los 62 s en el host y a los 74 s en melonDS (sus pulsaciones
+duran más); se recorta cada archivo un segundo antes y se alinea por
+envolventes de seis bandas (correlación 0,83–0,95 en los primeros 8 s; la
+correlación de onda es baja, 0,03, porque los relojes de salida no coinciden).
+Tramo medido: 22 s. Energía por banda en dB respecto a la potencia total,
+media L/R; picos de |Δ²| > 0,05 FS separados ≥ 3 muestras, todo a 48 kHz
+(`build/sonido/analisis-3.py`, `espectro-3.py`).
+
+| Grabación | RMS L/R dBFS | picos/s L/R | 4–8 kHz | 8–12 kHz | 12–16 kHz |
+|---|---:|---:|---:|---:|---:|
+| host nativo (32 728 → 48 k) | −16,0/−18,3 | 323/517 | −24,87 | −30,22 | −31,49 |
+| host FIR (escucha sin HD) | −16,0/−18,3 | 276/387 | −24,88 | −30,22 | −32,98 |
+| host HD anterior (`audio-hd-sin-captura`) | −16,0/−18,3 | 218/444 | −25,02 | −31,38 | −34,54 |
+| host HD con espejo de captura | −18,4/−19,6 | 42/292 | −25,23 | −32,27 | −37,60 |
+| melonDS, interpolación ninguna | −17,8/−20,5 | 48/282 | −25,34 | −32,42 | −34,78 |
+| melonDS, interpolación cúbica | −18,1/−20,7 | 47/265 | −25,31 | −32,27 | −34,52 |
+
+Por tercios de octava (dB respecto al total): melonDS ninguna/cúbica difieren
+menos de 0,3 dB en todos; frente a nuestro nativo están entre −0,5 (6,35 kHz)
+y −2,1 dB (12,7 kHz). La aspereza del pasaje no es un defecto de temporización
+ni de formato: la referencia la reproduce igual y su interpolador no la toca,
+porque toda la salida de NSMB pasa por SOUNDCAP (SOUNDCNT `0xB97F`).
+
+Espejo interpolado (`snd_state.hdcap`): mismas muestras nativas con y sin él
+(`cmp` de los WAV nativos idéntico), RAM y estado fieles idénticos. Banco del
+seno por captura (`hd-captura-3`, mismo método que la sección siguiente): SINAD
+19,72 → 63,22 dB; imagen de 7498,65 Hz −23,89 → −64,44 dBc; la voz directa
+sigue en −64,04 dBc. El RMS baja 2,4/1,3 dB (L/R) en NSMB: es la respuesta de
+Hermite frente al escalón en la octava alta de cada voz, la misma que ya tiene
+la ruta HD directa. Costo en el host (5000 cuadros de NSMB, dos pasadas, orden
+relativo): HD anterior 17,11/16,80 s, HD con espejo 17,11/16,90 s, dentro del
+ruido; el costo real se mide en la PS3 con `DATO audio`. Estado
++16 KB en el SPE (holgura previa 165 600 B). WAV y métricas en
+`build/sonido/melonds/`, fuera del repositorio.
+
+## 2026-10-28 — Hermite antes y después de SOUNDCAP (host LE/Docker)
+
+Banco propio sin ROM sobre `4181d5c`, mismo `snd_run` del núcleo nuevo. Seno
+PCM16 de 32 muestras (dos períodos), amplitud 16000, TMR de la voz 0 con período
+2095: Fs = 7998,5637 Hz, tono = 499,9102 Hz. Dos recorridos: voz 0 directa o
+mezcla L → SOUNDCAP0 → anillo PCM16 de 2048 B → voz 1, período 512. Salida L
+de la voz 1, excluida del mezclador de captura; sin realimentación ni recorte.
+Cada caso genera 240 trabajos de 547 ticks. Ajuste senoidal desde el segundo 1
+hasta el final; SINAD = potencia del tono / residuo completo, incluida la imagen
+Fs−f, sin confundirlo con una estimación de ruido blanco.
+
+| Recorrido | HD | SINAD (dB) | Imagen a 7498,65 Hz (dBc) |
+|---|---:|---:|---:|
+| Directo | no | 19,6504 | −23,4969 |
+| Directo | sí | 62,7597 | −64,0407 |
+| Por captura | no | 19,6511 | −23,4971 |
+| Por captura | sí | 19,7168 | −23,8929 |
+
+Las 131280 muestras nativas estéreo de cada recorrido son idénticas con HD
+encendido y apagado. La mejora de rechazo de imagen es 40,54 dB directa y
+0,40 dB por captura. Se confirma un límite de la mejora de escucha: las voces
+de origen se mezclan sin interpolar para SOUNDCAP; interpolar después las voces
+1/3 a la frecuencia nativa conserva sus imágenes dentro de banda. El pasaje
+host de NSMB usa precisamente esta salida, SOUNDCNT `0xB97F`, voces 1/3 PCM16
+con TMR `0xFE00`. Esto no determina cómo suena el hardware ni melonDS.
+
+Artefactos locales: `build/sonido/hd-captura-2.c`, `medir-seno-2.py`,
+`seno-metricas-2.json` y `seno-captura*-hd*-2.f32/.pcm`. Compilación y ejecución
+con `tools/build.sh --sh`, GCC `-O2`, sin cambiar fuentes del núcleo. No se
+midió tiempo del host para inferir costo del Cell.
+
+### WAV aportados de PS3 y equivalencia de pasajes
+
+Los dos WAV PS3 nuevos duran 20 s; nativo 32728 Hz/PCM16 y salida 48000 Hz/float32.
+El host del nivel dura 20,032 s. Remuestreo de diagnóstico con
+`scipy.signal.resample_poly` a una tasa común, correlación mono y búsqueda
+de ±10 s: PS3 nativo frente al tramo host, 0,00568; las señales no quedan
+alineadas por un desfase fijo. No es una comparación válida de ruido residual.
+
+La búsqueda por envolventes de seis bandas encuentra PS3 2–10 s frente a host
+completo 3,34–11,34 s: correlación de envolventes 0,99356. A tasa nativa,
+refinamiento de −81 muestras (−2,475 ms), correlación mono 0,89514 y diferencias
+espectrales de `tools/audio-stage-compare.py` entre −0,099 y +0,048 dB en sus
+cinco bandas. Esto identifica un pasaje común con el comienzo del WAV completo;
+no acredita una pareja de grabaciones del nivel entero. La correlación mono
+tampoco acredita paridad estéreo: el residuo conjunto L/R, compensando una sola
+ganancia, tiene relación señal/residuo de 1,58 dB.
+
+Máximos locales de `abs(Δ²)` > 0,05 de escala completa, separados al menos tres
+muestras, contados en la tasa original de cada archivo:
+
+| WAV | Máximos/s L / R | Cruces del umbral/s L / R |
+|---|---:|---:|
+| Host nivel, nuevo | 679,0 / 644,0 | 1584,3 / 1595,6 |
+| Host nivel, anterior | 705,0 / 656,6 | 1635,4 / 1637,6 |
+| PS3 nuevo, nativo | 609,2 / 757,4 | 1141,4 / 1381,0 |
+| PS3 nuevo, HD | 233,4 / 283,4 | 340,3 / 395,8 |
+
+Los cruces consecutivos pueden pertenecer al mismo escalón; estos conteos no
+son equivalentes entre sí ni miden solo ruido. En el host nuevo, mediana de
+distancias 11 muestras en L/R y 43,7/44,3 % entre 6 y 20 muestras. Los WAV PS3
+tienen 13,53 % de pares exactamente cero (nativo), frente a 1,32 % en el tramo
+host; el decil inferior sin excluir silencio daría una medida engañosa. Entre
+los bloques activos de unos 10 ms, el decil inferior da RMS L/R −29,58/−28,32
+dBFS host y −31,80/−33,27 dBFS PS3 nativo. Incluyen colas musicales: no son
+una medición aislada de energía de ruido entre notas.
+
+El log PS3 aportado acredita autoprueba nueva de ocho trabajos: 0 diferencias
+en muestras, estado, memoria y salida; `audio-verificar` apagado en juego.
+Banco del arranque, 16 voces/120 cuadros: fiel media/máximo 1512/1515 µs;
+HD 4129/4133 µs. El log anterior da 966/968 y 3597/3601 µs. Son medidas de
+esos arranques de consola, sin A/B controlado ni estimación de una futura ruta
+de captura interpolada. El log confirma grabación sin pérdidas, silencio por
+faltas ni bloques tarde; no identifica por sí solo el pasaje musical.
+
+Referencia melonDS pendiente por falta de acceso gráfico en el entorno.
+Conclusión limitada al recorrido HD propio; no se atribuye la aspereza al
+hardware y no se implementa una corrección de emulación sin referencia.
+Informe, métricas por banda/canal, alineaciones y scripts: `build/sonido/`,
+sufijo `-2`. Todos los WAV y señales permanecen fuera del repositorio.
+
+## 2026-10-28 — Sonido basado en DeSmuME: captura y voces (host)
+
+NSMB, nivel 1-1, 5000 cuadros desde el mismo guardado y con las mismas pulsaciones.
+Se comparan 655 607 pares nativos (20,032 s, desde el tick 2 079 000), antes de
+cualquier etapa de salida. Se descarta de la traza el último trabajo de 548 ticks,
+todavía no recogido por el receptor WAV. Corredor nativo del host, **no tiempos ni
+escucha de la PS3**. Evidencia local y WAV de las 16 voces en `build/sonido/`;
+extracción reproducible con `SND_TRACE` y `tools/audio-voice-report.py`.
+
+| Medida | Núcleo anterior | Solo captura corregida | Núcleo nuevo completo |
+|---|---:|---:|---:|
+| Concentración pico/media de saltos por fase del cuadro, señal mono | 2,8961 | 1,4520 | 1,5429 |
+| RMS de segunda diferencia L / R (unidades PCM16) | 737,26 / 848,48 | 708,59 / 823,15 | 707,39 / 825,69 |
+| Energía 8 kHz–Nyquist / energía total L / R | 0,12484 % / 0,29038 % | 0,11669 % / 0,27698 % | 0,12215 % / 0,27470 % |
+| RMS L / R (unidades PCM16) | 5587,31 / 4183,25 | 5546,23 / 4161,22 | 5449,95 / 4203,22 |
+
+- Aislamiento: la variante local de captura conserva el decodificador, arranque y
+  paneo anteriores; cambia FIFO, visibilidad de escrituras y reglas de captura.
+  Correlación 0,999895, desfase 0. La reducción de concentración de saltos (49,9 %)
+  identifica un defecto de realimentación dependiente de los bloques.
+- En ese tramo SOUNDCNT es `0xB97F`: L sale exclusivamente de la voz 1 y R de la 3;
+  ambas son PCM16 de SOUNDCAP, TMR `0xFE00`. Se capturan las mezclas L/R sin esas
+  voces. Las otras voces usan ADPCM y, entre la 8 y la 13, también PSG; no hay
+  ruido LFSR ni PCM8. SOUNDBIAS siempre 512. El mapa previo solo usaba ADPCM.
+- Las tablas de pasos/índices ADPCM ya coincidían; cambian el redondeo de la
+  diferencia, el extremo negativo y la recuperación del bucle. El temporizador
+  de captura nominal y el sesgo constantes descartan esos dos factores como
+  causa de este tramo. No se atribuye el ruido a todas las voces ADPCM.
+- `tools/audio-stage-compare.py` (ambos argumentos son **host**, aunque sus claves
+  se llamen `ps3`/`host`): núcleo completo, correlación 0,953850, desfase −1 muestra,
+  diferencia de espectro por banda 0,06–0,15 dB. Su `snr_db=8,04` mide el residuo
+  entre dos implementaciones, **no** una SNR contra audio limpio. No hay una
+  referencia digital independiente de este juego y no se afirma que todo el
+  siseo se haya eliminado. La banda alta cambia poco y contiene música legítima.
+- El interruptor anterior reproduce exactamente los 2 734 607 pares del WAV
+  previo. Las etapas HD/Hermite, FIR, estirado, limitador y ganancia siguen
+  disponibles. Costo del SPE y escucha A/B con audífonos: pendientes de PS3.
+
+## 2026-10-27 — Audio PPE/SPE y estiramiento fuerte (host/RPCS3)
+- Autoprueba aislada en RPCS3, cuatro trabajos fiel/HD: antes, `hd_last` difería una ULP en voz 1/trabajo 2 y voz 0/trabajo 3; después, muestras 0, estado 0, memoria 0 y salida 0. Holgura del SPE de audio: 171 072 B (mínimo 8192).
+- Banco host reproducible, producción 0,5: variante normal/larga, 664/332 uniones; flujo en empalmes 0,0102641→0,0079671 (×0,7762), CV medio de envolvente ×0,8455, nitidez de ataques ×0,9393. A producción 1,0: salida binariamente idéntica y 0 uniones en ambas.
+- Costo host del estirador por bloque de 10 ms: 11,825→19,266 µs a producción 0,5; solo indica orden relativo. El tono sintético queda en 997±3 Hz y no se remuestrea dentro de WSOLA.
+- Guion local `build/audio7/guion-ps3.txt`: PPE/SPE de NSMB y cinco aislamientos, más MKDS normal/largo. La identificación del ruido y todo costo del Cell quedan pendientes de esas capturas y mediciones reales.
+
+## 2026-10-26 — Mezcla rota de NSMB y verificación SPE/PPE
+- `grab-mezcla.wav` de PS3, 32728 Hz y 20 s: pico/media de segunda diferencia L/R 2,785/2,583, fase 330; H6 y H9 de 59,826 Hz sobresalen +15,72 y +13,40 dB. En el WAV host completo a 48 kHz: 1,845/1,649, fase 400; los puntos de captura y tasas son distintos.
+- Alineación por la derivada de la envolvente RMS: el host queda 2,1764 s después; PS3 2–8 s contra host 4,1764–10,1764 s, remuestreado linealmente a 32728,498 Hz, da correlación mono 0,98748.
+- En ese tramo de 6 s, pico/media L/R: PS3 19,990/30,620 y host 2,601/3,333; fases PS3 520/520 y host 70/350. La captura PS3 concentra discontinuidades unas 6–9 veces más, pero el host es posterior al FIR a 48 kHz: no es una comparación binaria ni de nivel.
+- `audio-verificar` medirá en PS3, por trabajo, el costo de tres copias de unos 4,1 MiB, una mezcla PPE y la comparación/aplicación; también líneas vivas cambiadas y diferencias de muestras/estado/captura. No se extrapolan tiempos del host ni de RPCS3.
+- Guion: NSMB nivel 1 durante 60 s con `audio-verificar` y, si hace falta, `audio-grabar`; conservar `nucleo.log` y la primera diferencia. Cero diferencias y sonido limpio con líneas cambiadas confirmaría la carrera; diferencias estables aislarían el campo del SPE.
+
+## 2026-10-26 — Tic por cuadro y régimen nominal del audio (host)
+- NSMB, 3300 cuadros, captura PCM16 previa al PPE: 3098 trabajos de 547 muestras, 200 de 548 y el primero parcial. Con la frontera antigua, pico/media de saltos L/R 1,961/2,527; conservando la línea SOUNDCAP de las voces 1/3, 1,240/1,196 (meta ≤ 1,5).
+- El residuo antigua−corregida tiene los doce primeros múltiplos de 59,826 Hz entre 14,0 y 20,8 dB sobre sus vecinos. Aislamiento por voz: conservar solo la 1 aplana L 3,03→1,30; conservar solo la 3 aplana R 3,78→1,27.
+- Simulación de 600 bloques de 480 pares con producción por cuadro de 799/800: salida exacta, 0 uniones, 0 pares insertados y 0 bloques WSOLA activos. Corrección de deriva del remuestreo ±0,25 %, suficiente para 59,94 frente a 59,826 Hz; falta confirmar contadores en PS3.
+- El host solo acredita comportamiento y orden relativo, no tiempos del Cell. Guion A/B local en `build/audio5/guion-ps3.txt`; medir en NSMB faltas, uniones, producción y la captura nativa con `tools/audio-frame-metric.py`.
+
+## 2026-10-26 — Audio HD opcional (audio-estirar)
+- Banco propio `tools/audio-hd-quality.c/.py`, host LE: PCM16 periódico, seno Fs/16, amplitudes 0,5 y 0,01; Fs efectiva 7998,56/16004,77/21990,80 Hz; ajuste senoidal entre 1 y 3 s, sin WSOLA (velocidad completa), debajo de la rodilla. Evidencia en `build/audio3/`.
+- Fiel de 16 bits → Hermite, Fs 8/16/22 kHz: SINAD 19,65/22,59/18,90 → 62,76/62,75/62,76 dB; mayor espurio superior −23,51/−29,53/−23,47 → −64,06/−64,06/−64,04 dBc. A 22 kHz domina una imagen plegada a 12,11 kHz; la imagen directa Fs−f ya era rechazada por el FIR fiel.
+- SNR tras excluir continua, armónicos 2–10 e imagen Fs−f: 21,96/23,58/18,91 → 68,69/68,68/68,69 dB; residuo −31,05/−32,67/−28,00 → −77,72/−77,71/−77,72 dBFS RMS (incluye otros espurios, no solo ruido blanco). THD2–10 0,0330/0,2143/0,4968 → 0,00216 %.
+- Silencio: cero exacto en las tres rutas, RMS −∞ dBFS; SNR no definida. Señal débil a 8 kHz: THD2–10 0,110 % (16 bits), 8,601 % (10 bits), 0,0978 % (HD). La cuantización a 10 bits exige `original = si`; no explica por sí sola el ruido de la salida habitual.
+- 16 voces en host: fiel 0,0542 → HD 0,1328 ms/cuadro; no son tiempos del SPE. Banco de arranque `DATO audio-hd-banco`: 120 cuadros por ruta, PCM16 a 8/16/22 kHz, media/máximo del decrementador; referencia histórica en juego 0,31 ms/cuadro, nueva medida PS3 pendiente.
+- `audio-hd` en el directorio de datos, apagado por omisión; host `--audio-hd`. Hermite causal retrasa dos muestras por voz, reloj racional, mezcla flotante y compensación de parada de 32 pares; limitador existente al final. Decodificación, SOUNDCAP y lectura del juego conservan la ruta fiel.
+- Se conserva Hermite sin sinc de ocho puntos: el costo host ya aumenta y falta el margen SPE real. No elimina cuantización de origen PCM8/ADPCM ni todo alias; atenúa cerca de Nyquist por voz. No se justifica activarlo por omisión sin escucha y costo PS3.
+- Guion único `build/audio3/guion-ps3.txt`: Metroid (intro/menú/voces) y MKDS (demostración/carrera), mismos tramos con `audio-hd.off` y `audio-hd`; oír siseo, aspereza y clics; comparar banco de 16 voces y `DATO audio`. Salir SELECT+START y O, conservar ambos logs; no borrar interruptores.
+
 ## 2026-10-25 — Lectura local de planos por lote (cand-v004)
 - Base PS3 aportada, MKDS pesado, 159 ventanas: armado ≈ 4,6 ms/cuadro; lectura 1,92, atributos 1,29, recorte 0,80, ensamblado 0,41 y salida 0,20; DMA ≈ 0,03. Meta ≤ 2,5 y espera PPE ≤ 1 ms, aún sin acreditar.
 - El descarte fuera del volumen ya precedía a la copia de atributos; «atributos» incluye proyección/cara/profundidad. No se adelanta la cara al recorte entero: sus redondeos pueden alterar el área.
@@ -121,3 +309,24 @@ siguen devolviendo FFh FFh. No impiden cargar el mapa; IR/Pokéwalker no están 
 Evidencia local en `build/hg/`: trazas completas, conversaciones resumidas, capturas y comprobación de todos los bytes.
 Carga de la partida original, guardado desde el menú del juego y reapertura en otro proceso comprobados. Pendiente medir
 en la consola el paquete exacto, repetir partida nueva y verificar otros juegos que inicialicen el dispositivo local.
+
+## 2026-10-26 — Audio con solape y rodilla suave (host; pendiente PS3)
+- Señales sintéticas con producción 25/50/75/100 % y transición 100→50→0→100: sin faltas; senoide de 997 Hz medida 997–999,33 Hz, salto máximo 0,06554 frente a 0,06521 original; copia bit a bit a 100 %. Barrido 200–13 400 Hz, ruido y estéreo en cuadratura incluidos; detalles locales en `build/audio/unit-final.log`.
+- Métrica de unión: energía de la segunda diferencia (filtro de altas frecuencias, módulo `4 sin²(ω/2)`) en los ocho primeros pares del salto y ±8 del final del solape, dividida por la del interior. No mide audibilidad: senoide ≈0,99–1,00; ruido ≤1,13; sin impulso adicional en las uniones.
+- Limitador, senoide de 1 kHz a 0 dBFS: THD (armónicos 2–15) 0→3,12228 %; H3 2,863 %, H5 1,226 %. Con amplitud 1,4 y recorte duro de referencia: THD 13,16084→12,64385 %, H5 2,784→1,559 %. Identidad binaria comprobada bajo −3,01 dBFS; techo 0,98 y monotonía comprobados. No elimina la distorsión previa ni garantiza menos THD para cualquier pico.
+- Metroid, 900 cuadros en host: 721 073 pares, 15,02 s, pico previo al WAV +0,5 dBFS. Reproducción del WAV con ráfagas de 800 pares a 30 Hz: 718 560 añadidos, cero faltas, energía relativa de unión 1,10478; los silencios propios del juego se conservan. A 60 Hz: cero añadidos y comparación binaria exacta.
+- Host, solo núcleo de extensión en esa reproducción: 15,58 µs/grano al 50 % y 0,53 µs al 100 %; no son tiempos PS3. Consumidor real con servicios simulados y ASan/UBSan: 256 000 pares exactos, nivel del control de razón idéntico, vueltas del anillo, déficit, pausa y reapertura correctos (`build/audio/platform-check.log`).
+- Guion PS3 (una ronda): instalar «SalsaDS Audio» aparte; Metroid intro 30 s, menú 30 s y juego 60 s; MKDS título/demostración 60 s y carrera 60 s. Repetir con `audio-sin-estirar`; comparar los mismos pasajes, tono, clics y ritmo. Renombrar a `.off` y reiniciar la aplicación al cambiar interruptores; no borrar archivos.
+- En pasajes fuertes, repetir con solo `audio-sin-limitador`: escuchar aspereza de transitorios y volumen, sin atribuir los huecos al limitador. Exigir faltas nuevas 0 durante juego, sin bloques tarde, sin audio residual en selector; comparar diferencias de µs acumulados/tiempo reproducido y máximo/grano, fps y mezcla SPE frente a la ejecución anterior. Salir con SELECT+START y luego O antes de recoger el log.
+- Riesgos pendientes de escucha/medición real: repetición de ataques/voz en déficit extremo, coloración del solape y de la rodilla, costo del hilo PPE y latencia del grano (hasta 10 ms de datos pendientes). El SPE no cambia; holguras del paquete: 9056/178384/8432/17856/144032 B, todas ≥8192. No se envió nada a la consola.
+
+## 2026-10-26 — Audio musical continuo, segunda ronda (audio-estirar)
+- PS3, primera ronda (`build/ps3-audio/p1.log`): 0 faltas/silencio, pico −0,38 dBFS, 36 % activo, 2 409 120 pares añadidos y 2 338 194 µs de extensión; mejor sonido, pero coloración en acordes. Esta segunda ronda todavía no está medida en consola.
+- WSOLA en el hilo de audio: grano 40 ms, salto 30 ms, solape 10 ms; `STRETCH2_HOP=960` permite 30/20/10 ms (ambos probados). Ventanas complementarias `w=3u²−2u³`, suma unidad; el audio conserva sus muestras, sin interpolación ni cambio del límite de deriva ±2 %.
+- Producción estimada en ventanas de 100 ms, polo `r←r+0,4(p−r)` y realimentación de reserva; salto de análisis fraccionario. Búsqueda hasta 20 ms, dos polos de ≈750 Hz cada uno, decimación 8 y refinamiento a una muestra; error estéreo `Σ(dLP²+0,08d²)`. Reserva suficiente para alinear graves; ataques detectados también en la búsqueda se copian localmente 1:1 para no duplicarlos.
+- Banco propio de acordes con armónicos y percusión (`tools/audio-quality.c/.py`), extensión exacta 25/50 %: flujo en empalmes −42,7/−24,6 %, CV medio por bandas −26,4/−21,7 %, nitidez +3,8/+16,5 %; ancho de ataque 7,5→7,33/7,20 ms. Empalmes en 20 s: 788→663 y 1189→664; salida al 100 % idéntica, sin faltas.
+- Métricas: Hann 2048, paso 120; flujo = norma cuadrática de la diferencia de espectros normalizados en empalmes registrados, excluyendo ataques; CV de envolventes RMS en 80–250/250–500/500–1000/1000–4000 Hz. Ataques: Hann 512, banda >6 kHz, ancho a media potencia y pico/energía en ±50 ms. Son indicadores, no audibilidad; guardas ≥10 % de mejora musical, ancho ≤+10 %, nitidez ≥90 % de v1. Pasan: no se incorpora vocoder en esta ronda.
+- Host, núcleo de extensión por 10 ms: v1→v2 7,56→10,94 µs (+25 % de duración), 11,72→10,99 µs (+50 %) y 0,90→0,56 µs nominal; no son tiempos PS3. Estéreo en cuadratura, senoides 73,416/997 Hz, barrido, ruido, transiciones y sanitizadores: 14 309 451 comprobaciones por configuración, 0 fallos; limitador intacto.
+- Copia nominal y control cerrado del anillo: 3 067 904 pares comprobados sin extensión ni diferencias; pausa/reapertura y vueltas del anillo correctas. Reproducción de la captura local de Metroid al 50 % sin faltas; los silencios propios de la captura se conservan. SPE sin cambios: holguras 9056/178384/8432/17856/144032 B; mínimo 8192.
+- PS3: mismo Metroid (intro 30 s, menú 30 s, juego 60 s) y MKDS (demo/carrera 60 s cada uno), repetir con `audio-estirar-v1`, reiniciando y renombrando a `.off`; conservar `audio-sin-estirar` y `audio-sin-limitador`. Escuchar agua/peine, tono grave, ataques dobles; exigir faltas/silencio 0, comparar uniones/s, µs, bloques tarde y fps. Guion: `build/audio2/guion-ps3.txt`; salir SELECT+START y O antes del log.
+- Riesgos: coloración residual, percusión densa y déficit extremo; mayor reserva (precarga 85 frente a 43 ms) y ≈105 KiB adicionales en el PPE. `% tiempo estirando` puede subir por el control continuo: no equivale a muestras añadidas. La mejora perceptiva y el costo real requieren el A/B de consola; no se envió nada.

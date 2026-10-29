@@ -31,7 +31,7 @@ static void bus_store(void *ctx, uint32_t addr, const uint8_t *src, uint32_t n)
 
 static const snd_bus bus = { NULL, bus_fetch, bus_store };
 
-static snd_ent log_buf[64];
+static snd_ent log_buf[128];
 static uint32_t nlog;
 
 static void w16(uint32_t off, uint32_t v)
@@ -77,7 +77,7 @@ static void test_model(void)
 	reset();
 	for (uint32_t i = 0; i < 128; i++)
 		wr16le(mem + 0x100 + 2 * i, 0x4000);
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	w16(0x100, 0x807F);
 	chan(0, CNT(127, 0, 64, 1, 1), 0x02000100u, P512, 0, 64);
 	run(&st, 20, nat);
@@ -92,7 +92,7 @@ static void test_model(void)
 	reset();
 	for (uint32_t i = 0; i < 128; i++)
 		wr16le(mem + 0x100 + 2 * i, (uint16_t)(int16_t)-16384);
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	w16(0x100, 0x807F);
 	chan(0, CNT(37, 1, 77, 1, 1), 0x02000100u, P512, 0, 64);
 	run(&st, 10, nat);
@@ -103,7 +103,7 @@ static void test_model(void)
 	reset();
 	for (uint32_t i = 0; i < 128; i++)
 		wr16le(mem + 0x100 + 2 * i, 0x4000);
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	w16(0x100, 0x807F);
 	chan(0, CNT(127, 0, 0, 1, 1), 0x02000100u, P512, 0, 64);
 	chan(1, CNT(127, 0, 127, 1, 1), 0x02000100u, P512, 0, 64);
@@ -115,7 +115,7 @@ static void test_model(void)
 	reset();
 	for (uint32_t i = 0; i < 128; i++)
 		wr16le(mem + 0x100 + 2 * i, 0x7FFF);
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	w16(0x100, 0x807F);
 	for (unsigned c = 0; c < 6; c++)
 		chan(c, CNT(127, 0, 0, 1, 1), 0x02000100u, P512, 0, 64);
@@ -126,7 +126,7 @@ static void test_model(void)
 	reset();
 	for (uint32_t i = 0; i < 16; i++)
 		wr16le(mem + 0x100 + 2 * i, 0x2000);
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	w16(0x100, 0x807F);
 	chan(0, CNT(127, 0, 0, 2, 1), 0x02000100u, P512, 0, 8);
 	run(&st, 8, nat);
@@ -139,7 +139,7 @@ static void test_model(void)
 	reset();
 	for (uint32_t i = 0; i < 16; i++)
 		wr16le(mem + 0x100 + 2 * i, (uint16_t)(i * 100));
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	w16(0x100, 0x807F);
 	chan(0, CNT(127, 0, 0, 1, 1), 0x02000100u, P512, 2, 4); /* 6 palabras = 12 muestras; el bucle empieza en la 4 */
 	run(&st, 40, nat);
@@ -154,7 +154,7 @@ static void test_model(void)
 
 	/* ruido: la secuencia del LFSR de 15 bits (primeros pasos con todo en uno) y PSG: ciclo de 8 pasos */
 	reset();
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	w16(0x100, 0x807F);
 	chan(14, CNT(127, 0, 0, 0, 3), 0, P512, 0, 0);
 	chan(8, CNT(127, 0, 127, 0, 3) | (3u << 24), 0, P512, 0, 0);
@@ -176,7 +176,7 @@ static void test_model(void)
 	reset();
 	for (uint32_t i = 0; i < 128; i++)
 		wr16le(mem + 0x100 + 2 * i, 0x4000);
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	w16(0x100, 0x8040);
 	chan(0, CNT(127, 0, 0, 1, 1), 0x02000100u, P512, 0, 64);
 	run(&st, 10, nat);
@@ -184,7 +184,7 @@ static void test_model(void)
 	w16(0x100, 0x0040);
 	nlog = 0;
 	w16(0x100, 0x0040);
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	run(&st, 4, nat);
 	CHECK_EQ(nat[0], 0);
 }
@@ -197,7 +197,7 @@ static void test_capture(void)
 	reset();
 	for (uint32_t i = 0; i < 128; i++)
 		wr16le(mem + 0x100 + 2 * i, 0x4000);
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	w16(0x100, 0x807F);
 	chan(0, CNT(127, 0, 64, 1, 1), 0x02000100u, P512, 0, 64);
 	w32(0x110, 0x02001000u);
@@ -215,7 +215,7 @@ static void test_capture(void)
 	reset();
 	for (uint32_t i = 0; i < 128; i++)
 		wr16le(mem + 0x100 + 2 * i, 0x4000);
-	snd_reset(&st);
+	snd_reset(&st); st.mode = SND_MODE_CORE_OLD;
 	nlog = 0;
 	w16(0x100, 0x807F);
 	chan(0, CNT(127, 0, 64, 1, 1), 0x02000100u, P512, 0, 64);
@@ -228,8 +228,36 @@ static void test_capture(void)
 	CHECK_EQ(mem[0x1000 + 8], 0);
 }
 
+static void test_capture_playback_boundary(void)
+{
+	static snd_state keep, old;
+	static int16_t first[100], a[8], b[8];
+
+	reset();
+	for (uint32_t i = 0; i < 64; i++)
+		wr16le(mem + 0x100 + 2 * i, 0x2000);
+	snd_reset(&keep); keep.mode = SND_MODE_CORE_OLD;
+	w16(0x100, 0x807F);
+	chan(1, CNT(127, 0, 0, 1, 1), 0x02000100u, P512, 0, 32);
+	run(&keep, 20, first);
+	old = keep;
+	old.mode = SND_MODE_FRAME_CACHE_OLD | SND_MODE_CORE_OLD;
+	nlog = 0;
+	/* SOUNDCAP rellena esta línea mientras la voz 1 sigue leyéndola. La
+	 * instantánea nueva se toma al volver al bucle, no en la frontera del
+	 * trabajo. El modo de diagnóstico reproduce el salto anterior. */
+	for (uint32_t i = 0; i < 64; i++)
+		wr16le(mem + 0x100 + 2 * i, 0x6000);
+	run(&keep, 4, a);
+	run(&old, 4, b);
+	CHECK_EQ(a[0], 0x2000);
+	CHECK_EQ(b[0], 0x6000);
+	run(&keep, 50, first);
+	CHECK_EQ(first[2 * 49], 0x6000); /* el bucle ya refrescó la línea */
+}
+
 /* Partir el trabajo en trozos da lo mismo que correrlo entero (muestras, estado y salida a 48 kHz). */
-static void test_split(void)
+static void test_split(uint32_t mode, float adj)
 {
 	static snd_state a, b;
 	static int16_t nat_a[2 * SND_TICKS_MAX], nat_b[2 * SND_TICKS_MAX];
@@ -243,9 +271,12 @@ static void test_split(void)
 		mem[0x400 + i] = (uint8_t)(i * 37);
 	snd_reset(&a);
 	snd_reset(&b);
+	a.mode = b.mode = mode;
+	a.ratio_adj = b.ratio_adj = adj;
 	w16(0x100, 0x805A);
 	chan(0, CNT(90, 1, 20, 1, 1), 0x02000100u, 0x10000u - 700u, 0, 128);
 	chan(1, CNT(120, 0, 100, 1, 0), 0x02000400u, P512, 4, 12);
+	chan(2, CNT(77, 0, 65, 1, 2), 0x02000400u, 0xFC00u, 1, 3);
 	chan(9, CNT(127, 0, 64, 0, 3) | (5u << 24), 0, 0xFF00u, 0, 0);
 	chan(15, CNT(80, 0, 90, 0, 3), 0, 0xFFC0u, 0, 0);
 	(void)snd_run(&a, log_buf, nlog, 500, &bus, nat_a, out_a, SND_OUT_MAX, &na);
@@ -267,7 +298,7 @@ static void test_split(void)
 	CHECK_EQ(a.tick, b.tick);
 	CHECK_EQ(a.busy, b.busy);
 	/* 500 muestras de 32,7 kHz son 733,5 de 48 kHz */
-	CHECK(na >= 732 && na <= 735);
+	CHECK(fabsf((float)na - 500.0f*SND_RATE_OUT/(SND_RATE_NATIVE*(1.0f+adj))) < 2.0f);
 }
 
 static void test_resample(void)
@@ -313,10 +344,140 @@ static void test_resample(void)
 	}
 }
 
+/* HD debe conservar decodificación, temporizadores y capturas incluso con paros,
+ * reinicios, recargas, rutas 1/3, saturación y RAM de captura como fuente. */
+static void test_hd_native(uint32_t mode)
+{
+	static snd_state a, b;
+	static uint8_t saved[MEM_SIZE], reference[MEM_SIZE];
+	static int16_t na[2*SND_TICKS_MAX], nb[2*SND_TICKS_MAX];
+	static float out[2*SND_OUT_MAX];
+	uint32_t seed = 4917, produced;
+	reset(); snd_reset(&a); snd_reset(&b); a.mode = mode; b.mode = mode | SND_MODE_HD;
+	for (unsigned i = 0; i < MEM_SIZE; i++) mem[i] = (uint8_t)(i*37);
+	for (unsigned frame = 0; frame < 96; frame++) {
+		nlog = 0;
+		w16(0x100, 0x8000u | ((frame*997u) & 0x3F7Fu));
+		unsigned ci = frame % 16, fmt = frame / 16 % 4;
+		seed = seed*1664525u + 1013904223u;
+		chan(ci, CNT(90, frame%4, frame%128, frame%3, fmt), 0x02000100,
+		     65536u - (1u + seed%3000u), frame%3, 8);
+		w32(0x110, 0x02000100); w16(0x114, 32); w16(0x108, 0x80 | (frame%16));
+		/* Parar otra voz a mitad del trabajo. */
+		w16(((ci+3)%16)*16+2, 0); log_buf[nlog-1].tick = (uint32_t)a.tick+25;
+		for (unsigned i=0; i+1<nlog; i++) log_buf[i].tick = (uint32_t)a.tick;
+		memcpy(saved, mem, MEM_SIZE);
+		snd_run(&a, log_buf, nlog, 120, &bus, na, out, SND_OUT_MAX, &produced);
+		memcpy(reference, mem, MEM_SIZE); memcpy(mem, saved, MEM_SIZE);
+		snd_run(&b, log_buf, nlog, 120, &bus, nb, out, SND_OUT_MAX, &produced);
+		CHECK_EQ(memcmp(na, nb, 240*sizeof *na), 0);
+		CHECK_EQ(memcmp(reference, mem, MEM_SIZE), 0);
+		CHECK_EQ(memcmp(a.ch, b.ch, sizeof a.ch), 0);
+		CHECK_EQ(memcmp(a.cap, b.cap, sizeof a.cap), 0);
+		CHECK_EQ(a.busy, b.busy); CHECK_EQ(a.peak, b.peak);
+		for (unsigned i=0; i<2*produced; i++) CHECK(isfinite(out[i]));
+	}
+}
+
+static void test_hd_edges(void)
+{
+	static snd_state st;
+	float out[2*SND_OUT_MAX];
+	uint32_t n;
+	reset(); snd_reset(&st); st.mode = SND_MODE_HD;
+	for (unsigned i=0; i<128; i++) wr16le(mem+0x100+2*i, 0x4000);
+	w16(0x100, 0x807F);
+	chan(0, CNT(127, 0, 0, 1, 1), 0x02000100, P512, 0, 64);
+	snd_run(&st, log_buf, nlog, 120, &bus, NULL, out, SND_OUT_MAX, &n);
+	CHECK(fabsf(out[2*(n-1)]-0.5f)<1e-6f);
+	/* El apagado conserva el último valor y cae a cero en 32 pares. */
+	nlog=0; w32(0, 0); log_buf[0].tick=log_buf[1].tick=(uint32_t)st.tick-1;
+	snd_run(&st, log_buf, nlog, 120, &bus, NULL, out, SND_OUT_MAX, &n);
+	CHECK(fabsf(out[0]-0.5f)<1e-6f);
+	for (unsigned i=1; i<n; i++) CHECK(fabsf(out[2*i]-out[2*(i-1)]) <= 0.5f/32+1e-6f);
+	CHECK_EQ(out[64], 0); CHECK_EQ(st.busy, 0);
+	/* La mezcla HD mantiene margen flotante y no recorta antes del limitador. */
+	nlog=0; snd_reset(&st); st.mode=SND_MODE_HD;
+	w16(0x100, 0x807F);
+	for (unsigned c=0; c<4; c++) chan(c, CNT(127,0,0,1,1),0x02000100,P512,0,64);
+	snd_run(&st, log_buf, nlog, 120, &bus, NULL, out, SND_OUT_MAX, &n);
+	CHECK(fabsf(out[2*(n-1)]-2.0f)<1e-6f);
+}
+
+/* Un seno PCM16 de 500 Hz a 7998,56 Hz (TMR 2095) mezclado a SOUNDCAP0 y reproducido por la voz 1 a la frecuencia
+ * nativa: así enruta NSMB toda su música (SOUNDCNT 0x917F). Mide, en la salida HD de 48 kHz, el tono y su imagen a
+ * Fs−f (7498,65 Hz). Sin el espejo interpolado la imagen queda grabada en la captura (≈ −23,5 dBc); con él debe caer
+ * al menos 20 dB. Las muestras nativas, los canales y las capturas son idénticos en los dos modos. */
+static float tone_db(const double *sum, uint32_t n)
+{
+	return (float)(10.0 * log10((sum[0] * sum[0] + sum[1] * sum[1]) / ((double)n * n) + 1e-30));
+}
+
+static void test_hd_capture_mirror(void)
+{
+	static snd_state a, b;
+	static int16_t na[2*SND_TICKS_MAX], nb[2*SND_TICKS_MAX];
+	static float out[2*SND_OUT_MAX];
+	static uint8_t saved[MEM_SIZE];
+	const double pi = 3.14159265358979323846;
+	const double fs_voice = 16756991.0 / 2095.0, f_tone = fs_voice / 16.0, f_image = fs_voice - f_tone;
+	double sum[2][4] = {{0}}; /* por modo: tono sin/cos, imagen sin/cos (canal L, tras asentarse) */
+	uint32_t counted[2] = {0, 0}, produced;
+	snd_state *st[2] = {&a, &b};
+
+	reset(); snd_reset(&a); snd_reset(&b);
+	a.mode = SND_MODE_HD; b.mode = SND_MODE_HD | SND_MODE_HD_CAP_OFF;
+	for (unsigned i = 0; i < 32; i++)
+		wr16le(mem + 0x100 + 2*i, (uint16_t)(int16_t)(16000.0 * sin(2*pi*i/16.0) + (i % 16 < 8 ? 0.5 : -0.5)));
+	w16(0x100, 0x917F); /* L = voz 1 (excluida de la mezcla), R = mezcla */
+	chan(0, CNT(127, 0, 64, 1, 1), 0x02000100, 65536u - 2095u, 0, 16);
+	w32(0x110, 0x02000800); w16(0x114, 512); w16(0x108, 0x80); /* mezcla L → anillo PCM16 de 2048 B */
+	chan(1, CNT(127, 0, 64, 1, 1), 0x02000800, P512, 0, 512);
+	for (unsigned job = 0; job < 240; job++) {
+		for (int m = 0; m < 2; m++) {
+			const double n0 = (double)counted[m];
+			if (m == 0) memcpy(saved, mem, MEM_SIZE); else memcpy(mem, saved, MEM_SIZE);
+			snd_run(st[m], log_buf, job ? 0 : nlog, 547, &bus, m ? nb : na, out, SND_OUT_MAX, &produced);
+			if (job < 48) continue; /* el anillo da la primera vuelta y Hermite se asienta */
+			for (uint32_t i = 0; i < produced; i++) {
+				const double t = (n0 + i) / 48000.0;
+				sum[m][0] += out[2*i] * sin(2*pi*f_tone*t);  sum[m][1] += out[2*i] * cos(2*pi*f_tone*t);
+				sum[m][2] += out[2*i] * sin(2*pi*f_image*t); sum[m][3] += out[2*i] * cos(2*pi*f_image*t);
+			}
+			counted[m] += produced;
+		}
+		CHECK_EQ(memcmp(na, nb, 2*547*sizeof *na), 0);
+	}
+	CHECK_EQ(memcmp(a.ch, b.ch, sizeof a.ch), 0);
+	CHECK_EQ(memcmp(a.cap, b.cap, sizeof a.cap), 0);
+	CHECK_EQ(a.hdcap_written[0], 1024u);
+	CHECK_EQ(b.hdcap_written[0], 0u);
+	{
+		const float img_mirror = tone_db(sum[0] + 2, counted[0]) - tone_db(sum[0], counted[0]);
+		const float img_plain = tone_db(sum[1] + 2, counted[1]) - tone_db(sum[1], counted[1]);
+		CHECK(img_plain > -30.0f);              /* la imagen de la voz de origen sigue en la captura PCM */
+		CHECK(img_mirror < img_plain - 20.0f);  /* el espejo la quita */
+		CHECK(fabsf(tone_db(sum[0], counted[0]) - tone_db(sum[1], counted[1])) < 0.5f); /* mismo nivel del tono */
+	}
+}
+
+void test_snd_core(void);
+
 void test_snd(void)
 {
+	test_hd_capture_mirror();
+	test_hd_edges();
+	test_snd_core();
+	test_hd_native(0);
+	test_hd_native(SND_MODE_CORE_OLD);
+	test_split(SND_MODE_CORE_OLD, 0);
+	test_split(SND_MODE_CORE_OLD | SND_MODE_HD, 0);
 	test_model();
 	test_capture();
-	test_split();
+	test_capture_playback_boundary();
+	test_split(0, 0);
+	test_split(SND_MODE_HD, 0);
+	test_split(SND_MODE_HD, -0.02f);
+	test_split(SND_MODE_HD, 0.02f);
 	test_resample();
 }

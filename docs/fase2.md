@@ -143,8 +143,8 @@ de la PS3 dan lo mismo (la ROM da igual en little-endian, big-endian, y con sani
 - `src/platform/ps3/audio_out.c`: el puerto de audio de la PS3 (2 canales, 48 kHz, bloques de 256 muestras, hilo de prioridad 100),
   un anillo de 16 384 muestras (340 ms), antes de empezar a sonar se juntan 2048 (43 ms); si faltan datos se completa con silencio y
   se cuenta; el hilo de la emulación consulta `audio_out_ratio_adj()` antes de cada cuadro (control proporcional de la razón de
-  remuestreo, ±2 %, para mantener ≈ 64 ms en el anillo). Si el puerto no se abre, el núcleo sigue sin sonido.
-- Autoprueba al arrancar (en RPCS3 y en la PS3): el mismo trabajo en el SPE y en el PPE sobre una memoria de prueba propia, dos
+  remuestreo, ±0,25 %, para mantener ≈ 64 ms en el anillo). Si el puerto no se abre, el núcleo sigue sin sonido.
+- Autoprueba al arrancar (en RPCS3 y en la PS3): el mismo trabajo en el SPE y en el PPE sobre una memoria de prueba propia, cuatro
   trabajos seguidos, con las muestras de 16 bits, el estado y lo capturado idénticos y la salida flotante con tolerancia (el
   SPU redondea distinto): RPCS3 da 0 diferencias. Si falla, mezcla el PPE.
 
@@ -191,7 +191,7 @@ polifásico** (`snd_resample` en `src/audio/snd_mix.c`; tabla en `src/audio/snd_
 sinc con ventana de Kaiser (β = 7), 32 coeficientes, corte (-6 dB) a 15 kHz, 64 fases con interpolación lineal entre filas
 (filas normalizadas a suma 1: una continua sale intacta). Mira 15 muestras antes y 16 después de cada posición: la salida va
 retrasada 16 muestras nativas (~0,5 ms) y el estado que arrastra entre trabajos son las últimas 32 muestras nativas por canal
-(`snd_state.hist`) y `frac`. En el SPE el producto es vectorial (4 coeficientes por vector, desplazamiento con `spu_shuffle`;
+(`snd_state.hist`) y `resample_phase` en Q0.32. En el SPE el producto es vectorial (4 coeficientes por vector, desplazamiento con `spu_shuffle`;
 suma por carriles junta como (0+1)+(2+3), igual que el C); pila de `snd_run` 8,9 KB, holgura 178 KB. Medido en el host con un
 tono PCM16 (95 % de la banda nativa, nivel respecto del tono ideal; imagen = 32,73 kHz − f, plegada a 48 kHz):
 
@@ -298,3 +298,89 @@ Documentos relacionados: `docs/memory-budget.md`, `docs/perf-log.md`, `docs/esta
   este orden: ¿esa zona es de la capa 3D (la regla de empates de 3.5)?, ventanas (WIN0/WIN1/OBJ), vuelta vertical del mapa de un
   fondo de texto de 256 × 512, BGxVOFS cambiado por línea, mezcla alfa. `tools/gfx-bisect.py` y `tools/melonds-shot.py` sirven
   para aislar la capa.
+
+## Audio: verificación del mezclador SPE en juego (2026-10-26)
+- El archivo `audio-verificar` en el directorio de datos activa una ruta de diagnóstico costosa; se consulta al abrir el juego. Sin él, el reparto y la mezcla no cambian.
+- Antes de cada trabajo se copian RAM principal, WRAM compartida y WRAM del ARM7 a tres instantáneas: origen, SPE y PPE. Ambos mezcladores parten del mismo `snd_state`, registro de escrituras y bytes de muestra.
+- El SPE lee solo su instantánea, pero por cada lectura DMA de 128 B trae también la línea viva y cuenta si cambió algún byte que no haya escrito antes SOUNDCAP. El PPE ejecuta `snd_run` sobre su copia después de recoger el trabajo.
+- Las capturas escriben en las copias privadas. Tras comparar memoria, se trasladan a la RAM real únicamente los tramos cambiados por el SPE y se invalidan como escritura de código; esto evita que el RMW alineado de 16 B pise una escritura vecina del ARM7 durante el diagnóstico.
+- Se comparan enteros de la mezcla exactamente, las 16 voces (incluida línea de caché), ambas capturas y el estado global; fase e historia flotantes admiten hasta 0,0005. La primera diferencia y cada 120 trabajos distintos dejan una línea detallada.
+- Cada ventana registra trabajos, diferencias por clase, lecturas y líneas de RAM que cambiaron, desbordes del registro de capturas y microsegundos por trabajo de copia, segunda mezcla y comparación/aplicación. El costo real solo puede medirse en la consola.
+- Lecturas cambiantes con dos resultados iguales y sonido limpio apuntan a RAM viva; diferencias con entrada congelada apuntan a aritmética o estado del SPE; cero diferencias con ruido obliga a buscar fuera de la mezcla.
+
+## Audio: paridad de estado y aislamiento de la salida (2026-10-27)
+- El diagnóstico de los cuatro trabajos localizó las dos diferencias en la última salida HD de las voces 1 y 0, en trabajos consecutivos: un ULP por la contracción FMA distinta. `hd_last`, que solo será ancla de una rampa, se persiste como muestra entera; la señal actual conserva toda su precisión.
+- La fase del remuestreador se acumula en Q0.32 y se compara exactamente; su razón nominal y el control de deriva de ±0,25 % se conservan. La autoprueba aislada PPE/SPE da 0 diferencias en mezcla nativa, estado, SOUNDCAP/memoria y salida flotante.
+- `audio-mezcla-ppe` fuerza solo el ejecutor después de una autoprueba correcta. Los archivos `audio-sin-hd`, `audio-sin-remuestrear` (sustituye FIR por lineal), `audio-sin-estirar`, `audio-sin-limitador` y `audio-sin-ganancia` permiten comparar una etapa por pasada.
+- `tools/audio-stage-compare.py` alinea los WAV PS3/host por correlación y entrega SNR, saltos agrupados por fase de cuadro, modulación de envolvente y energía por cinco bandas. La etapa responsable del residuo requiere las nuevas grabaciones de consola; no se deduce de capturas con puntos o tramos distintos.
+- El estimador WSOLA usa 50 ms y, a producción ≥0,98 con un anillo sano, entrega copia exacta sin unión. Para producción ≈0,5, `audio-estirar-largo` usa grano de 80 ms, solape de 20 ms y búsqueda de 40 ms; el modo normal no cambia y ambos preservan el tono.
+
+## Audio: extensión temporal y margen de salida (2026-10-26)
+- El hilo de audio ejecuta WSOLA por inserción: grano de 720 pares (15 ms), salto de 480 (10 ms), solape de 240 (5 ms), historia de 1920 (40 ms). Con menos de 720 disponibles busca un grano anterior; no consume entrada al repetirlo. La recuperación consume entrada a razón normal, sin acelerar ni bajar el tono.
+- Minimiza el error cuadrático estéreo (correlación con penalización de energía), con búsqueda cada cuatro muestras y refinamiento unitario; ambos canales usan el mismo desplazamiento. Ventanas complementarias `w=u²(3−2u)` tienen suma uno y derivadas nulas en los extremos: evitan escalones de amplitud y pendiente sin amplificar el solape.
+- Con abastecimiento suficiente no hay solape: copia exacta. El nivel usado por el control de deriva incluye los pares pendientes del grano, para conservar la razón anterior de ±2 %. No se cambia el FIR Kaiser ni el recorte entero previo: este último pertenece a la mezcla/captura de la DS; no puede reparar un sobretiro posterior al FIR.
+- Tras el solape, aún en el hilo de audio, la rodilla está en `k=1/√2` (−3,01 dBFS): `y=x` debajo; para magnitud `a>k`, `y=a−(a−k)²/[4(0,98−k)]` hasta `a=k+2(0,98−k)`, y luego 0,98 (−0,175 dBFS). Curva impar, monótona, C¹, sin detector/envolvente ni bombeo; el margen queda reservado en los picos, sin atenuar las muestras bajo el umbral.
+- No recupera distorsión ya presente en la mezcla. Como toda no linealidad estática añade armónicos a una senoide limpia de gran amplitud; no se promete THD menor a cualquier nivel. La comparación cuantitativa está en `perf-log.md`.
+- `audio-sin-estirar` y `audio-sin-limitador`, archivos vacíos en `/dev_hdd0/salsads/`, se leen al abrir la aplicación; ambos juntos recuperan la salida anterior durante el juego. `DATO audio-estirar` registra pares añadidos, porcentaje de pares entregados con solape (incluye recuperación), faltas, µs acumulados, máximo por grano y µs del hilo completo; el costo incluye mantener la historia en la ruta exacta.
+- Sin entrada nueva puede repetir indefinidamente con solape; no inventa silencio. Con voz, ruido o transitorios puede oírse repetición/coloración. El selector/cierre pide pausa explícita, funde 256 pares y confirma el vaciado de historia; el nuevo juego vuelve al prellenado habitual. Estado y búferes añaden unos 27 KiB de memoria principal; ningún byte al local store SPE ni reserva dinámica en reproducción.
+
+
+## 2026-10-28 — Núcleo de sonido basado en DeSmuME
+
+La descripción de Fase 2.2 anterior queda como historial del modo
+`audio-nucleo-anterior`. Por omisión se usa la adaptación de `SPU.cpp`/`SPU.h`
+del commit `fc504ee0bc9ac3434cafcaae7b129c025499a609`; avisos y licencia en
+`THIRD_PARTY.md` y en los archivos de sonido.
+
+| Área | Núcleo anterior | Nuevo |
+|---|---|---|
+| Avance PCM8/PCM16 | Lee muestra 0 al tercer desbordamiento | Tres posiciones negativas; el siguiente lee 0. Se recorren todas las muestras y se conserva la última del disparo único |
+| ADPCM | Tres sumandos truncados, recorte a −32767, recuperación implícita | `paso*(2*n+1)/8`, recorte a −32768, predictor/índice explícitos del bucle; PNT=0 recupera cabecera |
+| Bucles | También repiten los modos 0/3 | Repite solo el modo 1; longitud nula y ADPCM menor de cuatro palabras no leen indefinidamente |
+| PSG/ruido | Fase inicial 0; onda PSG alta al final del período | Fase −1; secuencia PSG de DeSmuME, LFSR con los mismos 15 bits y polinomio |
+| Volumen/pan | Un solo desplazamiento al final | Multiplicación por volumen, divisor y paneo por separado, 127 como unidad; lado izquierdo con `127-pan` |
+| Saturación | Recorta suma antes del maestro | Aplica maestro y recorta después; captura sigue recortando antes del maestro |
+| SOUNDCAP | Un dato por tick; fuente directa 1/3 con volumen; sin bit ADD | Temporizador independiente con TMR de 1/3; fuente directa 0/2 o suma 0+1/2+3, con divisor, sin volumen/pan |
+| Realimentación | Datos agrupados hasta 1024 bytes y líneas de lectura antiguas | FIFO de 16 muestras y reenvío de escrituras pendientes; al vaciar se actualizan las líneas ya cargadas |
+
+La FIFO de captura adapta el procedimiento de DeSmuME para aproximar la lectura
+anticipada del hardware. No es un modelo de buses a precisión de ciclo. Se
+mantiene el reloj entero de 512 ciclos por tick nativo, con recarga tras el
+desbordamiento también en captura: escribir TMR no convierte de golpe el resto
+del período anterior en cientos de muestras. Una escritura de captura activa
+reinicia su reloj/FIFO, como `ProbeCapture`.
+
+Diferencias deliberadas respecto del código de origen: se conserva el predictor
+ADPCM de la cabecera en una variable distinta de la salida durante las posiciones
+negativas y los ocho nibbles de cabecera (no se pierde al escribir ceros en la
+historia); índice inválido limitado a 88; parada de captura de una sola pasada;
+longitudes sin cuerpo acotadas; SOUNDBIAS implementado explícitamente, mientras
+DeSmuME lo ignora. En modo nativo de 16 bits, `(bias-512)*64` se agrega tras el
+maestro y antes del recorte. El modo original añade la cuantización de 10 bits.
+HD sigue siendo una opción de escucha flotante, no un DAC físico.
+
+`tests/unit/test_snd_core.c` usa números calculados aparte: predictor ADPCM 1000,
+índice 8 y tres posiciones de bucle; saturación y cabecera inválida; PCM8/16,
+volumen/pan/maestro/sesgo; ocho duties y un registro de bits para ruido; captura
+PCM8/16 a tres períodos, ambas fuentes directas con ADD, cambio de TMR; impulso
+de 8192 con eco 4096/2048/1024 cada 67 ticks. Este último debe ser idéntico con
+bloques de 1, 17, 111 y 239 ticks. Las pruebas históricas y `snd.golden` siguen
+comprobando explícitamente el núcleo anterior. HD/fiel comparan muestras,
+memoria y estado para ambos núcleos. Las autopruebas PPE/SPE, integrada y aislada,
+ahora cubren ocho trabajos y los dos núcleos.
+
+Diagnóstico del host: `SND_TRACE=prefijo SND_TRACE_FROM=tick` escribe voces crudas,
+con volumen/pan y estado (formato, posición, timer, predictor, índice, sesgo y
+capturas); `tools/audio-voice-report.py` las separa en WAV y mide energía por
+bandas y segunda diferencia. `--save-read` carga un guardado sin escribirlo.
+La instrumentación se compila solo en el corredor del host. No hay asignaciones
+ni archivos en el bucle del mezclador PPE/SPE.
+
+Prueba de consola: crear o renombrar `/dev_hdd0/salsads/audio-nucleo-anterior`
+antes de abrir el juego. Sin él se usa el núcleo nuevo. Se conservan
+`audio-mezcla-ppe`, `audio-verificar`, `audio-grabar`, `audio-frontera-antigua`,
+`audio-hd`, `audio-sin-hd`, `audio-hd-sin-captura` (HD anterior: las voces 1/3
+oyen la captura PCM sin su espejo interpolado), `audio-sin-remuestrear`,
+`audio-sin-estirar`, `audio-sin-limitador` y `audio-sin-ganancia`. El modo se
+fija al abrir el juego.
+La cuantificación del defecto y sus límites están en `perf-log.md`.

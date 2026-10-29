@@ -20,7 +20,7 @@ all: $(OUT)/salsads-cpurun $(OUT)/armbench $(OUT)/salsads-ciclos $(OUT)/salsads-
 $(OUT)/salsads-cpurun: cpurun.c jitrun.c $(CORE_SRCS) $(CPU_SRCS) $(HDRS)
 	@mkdir -p $(OUT)
 	@echo "  CC      salsads-cpurun"
-	@$(CC) $(CFLAGS) cpurun.c jitrun.c $(CORE_SRCS) $(CPU_SRCS) -o $@ -lm
+	@$(CC) $(CFLAGS) -DSND_DIAGNOSTIC cpurun.c jitrun.c $(CORE_SRCS) $(CPU_SRCS) -o $@ -lm
 
 $(OUT)/salsads-ciclos: ciclos.c jitrun.c $(CORE_SRCS) $(CPU_SRCS) $(HDRS)
 	@mkdir -p $(OUT)
