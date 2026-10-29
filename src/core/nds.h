@@ -255,6 +255,7 @@ struct nds_math {
 #define NDS_VPAGES 41     /* páginas de 16 KB de los 656 KB de VRAM */
 
 struct nds_vset {
+	uint64_t vram_version[NDS_VPAGES]; /* identidad de la instantánea, por página física */
 	uint8_t vram[G2D_VRAM_SIZE + G2D_VRAM_ZERO] __attribute__((aligned(128))); /* + 128 bytes en cero al final */
 	uint8_t pal[2][1024] __attribute__((aligned(128)));
 	uint8_t oam[2][1024] __attribute__((aligned(128)));
@@ -264,6 +265,7 @@ struct nds_vset {
 	uint32_t img3d[R3D_W * R3D_H] __attribute__((aligned(128))); /* capa 3D del cuadro (Fase 3.2): BG0 del motor A */
 	r3d_job r3d;      /* el trabajo del render 3D de este cuadro (lo arma la línea 0) */
 	int has3d;        /* el motor A muestra la capa 3D y hay que rasterizar */
+	uint32_t captured; /* DISPCAPCNT de la captura que este cuadro realizó de verdad (0 si no capturó) */
 	uint16_t powcnt1; /* al final del cuadro */
 	uint32_t dropped; /* cambios que no cupieron */
 };
@@ -315,6 +317,7 @@ struct nds_capture_stats {
 
 struct nds_video {
 	struct nds_vset set[2];
+	uint64_t identity_dirty, vram_version[NDS_VPAGES];
 	uint64_t dirty[2]; /* páginas de VRAM cambiadas desde la última instantánea de cada juego */
 	int cur;           /* juego que graba el cuadro en curso */
 	int recording;     /* 1 entre la línea 0 y la 192 */

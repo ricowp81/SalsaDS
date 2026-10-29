@@ -958,3 +958,77 @@ llegue a la línea 262, la espera del evento de línea baja a casi nada (la part
 Paquete `salsads-r3dreparto.pkg`: MKDS carrera pesada (`DATO raster3d`: SPE0/SPE1, «texturas», «bloques o celdas decodificados», líneas de VRAM; `DATO raster3d-latencia`: línea
 aplazada, modo de texturas, composición de la A; `DATO desglose` y `DATO eventos`: «línea»), NSMB en un nivel y SM64DS (que no empeoren: modo de bloques); comparar con `texturas-bloques`,
 `r3d-sin-aplazar` y `reparto-sin-historia` en la misma escena. Si en NSMB o SM64DS las celdas ganan, bajar el umbral de 0,3 de `r3d_texpol_feed`.
+
+# Niebla final en el RSX (2026-10-28)
+
+Implementación nueva, pendiente de comparar gráficamente en consola. El color
+se mezcla primero sin niebla. Se repite la lista y sus pruebas de alfa,
+profundidad e ID para producir una textura de atributos: R:G contienen los
+15 bits de profundidad usados por la niebla; alfa contiene la bandera.
+Los opacos reemplazan los atributos. Los translúcidos toman el mínimo de
+las banderas booleanas (AND) y conservan profundidad salvo con `PA_TDEPTH`,
+incluso con mezcla de color desactivada o destino transparente.
+
+La pasada final lee color, atributos y LUT; conserva el cálculo entero de
+`r3d_fog_density` (offset, shift, interpolación y 127→128), RGB6/alfa5 y
+solo alfa. El borrado pasa por la misma operación final. Se hace de forma
+independiente a 1× y a la escala HD; no se lee el resultado desde el PPE.
+Las dos imágenes auxiliares se reservan al iniciar y se reutilizan en orden
+de FIFO. El stencil conserva su reparto anterior.
+
+`3d-rsx-niebla-anterior` restaura la ruta por fragmento de hd-10 y su caída
+al SPE con translúcidos. Con él, `3d-rsx-niebla-translucidos` sigue siendo
+una aproximación sin paridad. Se mantienen los respaldos por combinación
+con toon/sombra, imagen de borrado, bordes y capacidad de IDs; resolver la
+niebla no elimina esos límites.
+
+Las 512 escenas dirigidas se comparten entre host y autoprueba RSX. Prueban
+Z/W, profundidad independiente en dos translúcidos, todas las banderas,
+solo alfa, rechazo de ID repetido y un fondo con/sin opaco. El host calcula aparte los colores del
+centro y comprueba paridad completa referencia/bandas, LE y BE. La consola
+debe aceptar RGB6 ±2 y alfa exacta, además de conservar las 18 pruebas de
+LUT y las pruebas de respaldo 6/7. Compilar no acredita esa paridad gráfica.
+
+Corrección tras la primera prueba de consola: cgcomp asigna `COLOR` a R0
+sin proteger temporales. `fog_final` escribía RGB antes de calcular alfa
+en R0.x; `fog_attr` escribía G en R0.y antes de usarlo como byte alto de Z.
+Ambos pasan ahora por el corrector de salida, igual que la variante W.
+El build interpreta el ensamblado fp40 con este alias y prueba también
+la sonda de etapas. La autoprueba gráfica añade muestras de color previo,
+atributos, constantes/LUT leídas por la GPU y destino final, con desglose
+de error por canal. Pendiente validar la corrección en la PS3 real.
+
+La segunda prueba PS3 aísla otro alias: DEPTH sale por R1.z. El corrector
+reservaba R1 para COLOR en `fog_attr_w`; su escritura azul borraba W y
+rechazaba los translúcidos siguientes. Se reserva ahora R1 cuando hay
+DEPTH y se comprueba también la profundidad exportada en el intérprete
+fp40. La secuencia anterior explica exactamente las 60 escenas finales
+fallidas de las 512, con sus combinaciones de AND, TDEPTH e ID repetido.
+
+Las pruebas antiguas 0/8/10 pierden una unidad de Z al reconstruirla desde
+WPOS en algunos planos. Toda su diferencia RGB/alfa coincide con Z−1 al
+cruzar un borde de la tabla. Para Z constante en todos los vértices, la
+pasada de atributos recibe Z>>9 entera mediante fc.xy (valor e indicador);
+para Z inclinada mantiene la reconstrucción WPOS. No modifica visibilidad
+ni ensancha tolerancias. Las comprobaciones cubren ambos lados del borde,
+el indicador apagado y W desplazada; la autoprueba diagnostica ahora
+cualquier fallo entre las 18 escenas antiguas. Pendiente repetir en PS3.
+
+La ronda 3 quedó validada después en PS3 a 1×/2×: 18 pruebas antiguas,
+512 escenas finales y respaldos 6/7 sin fallos. La ronda 4 reduce las
+pasadas de stencil conservando los mismos shaders y su orden lógico:
+opacos LESS sin puerta temporal, ID translúcido rechazado directamente,
+vacíos reemplazados antes de mezclar y atributos translúcidos escritos
+en una pasada (AND de bandera tanto en destino ocupado como vacío).
+La ruta ampliada conserva la puerta para igualdad y translúcidos; los
+opacos ordinarios consultan directamente profundidad/cara. Los lotes
+de color no se separan por las constantes exclusivas de atributos.
+
+El plan común está en `rsx_passes.h`, comprobado contra las reglas
+escalares en 3 717 120 estados LE/BE por orden. No sustituye la ejecución
+RSX: autoprueba y rendimiento de ronda 4 siguen pendientes de consola.
+`3d-rsx-pasadas-ronda3` restaura las secuencias validadas anteriores;
+`DATO rsx3d pasadas` separa costo GPU/PPE de color, atributos y posproceso,
+nativo/HD y modo simple/ampliado, en ventanas de 120 etiquetas completas.
+El muestreo no añade esperas ni marcas cuando no hay niebla. No cambia
+capacidad de IDs ni soporte de máscaras W traseras.

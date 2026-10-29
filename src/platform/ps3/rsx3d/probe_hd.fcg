@@ -1,0 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Diagnóstico: cuatro palabras de metadatos y una muestra RGBA del 3D. */
+void main(float4 uv : TEXCOORD0, float4 scale : TEXCOORD1,
+          uniform sampler2D image : TEXUNIT0, uniform sampler2D metadata : TEXUNIT1,
+          out float4 result : COLOR)
+{
+    float2 pos=floor(uv.xy);
+    float4 m=tex2D(metadata,float2(pos.x*4.0+0.5+scale.y,pos.y+0.5));
+    float4 s=tex2D(image,uv.xy*scale.x);
+    result=lerp(m,s,step(4.0,scale.y));
+}

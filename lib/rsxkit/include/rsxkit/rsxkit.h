@@ -170,6 +170,7 @@ typedef enum rsxkit_format {
 	RSXKIT_RGB565,    /* 16 bits: R[15:11] G[10:5] B[4:0] */
 	RSXKIT_RGBA8888,  /* 32 bits: bytes R, G, B, A */
 	RSXKIT_XRGB8888,  /* 32 bits: bytes X, R, G, B */
+	RSXKIT_ARGB8888, /* bytes A, R, G, B; conserva alfa en posprocesado */
 	RSXKIT_FORMAT_COUNT
 } rsxkit_format;
 
@@ -234,10 +235,13 @@ void rsxkit_fence_wait(uint32_t fence);
 /* ---- Destinos de render ------------------------------------------------------ */
 
 typedef struct rsxkit_target rsxkit_target;  /* color X8R8G8B8, memoria local */
+typedef struct rsxkit_program rsxkit_program;
 typedef struct rsxkit_depth rsxkit_depth;    /* profundidad Z24S8, memoria local */
 
 /* NULL si no hay memoria. El color nace negro y la profundidad en 1. */
 rsxkit_target *rsxkit_target_create(uint32_t width, uint32_t height);
+/* Variante con alfa conservado (A8R8G8B8). */
+rsxkit_target *rsxkit_target_create_rgba(uint32_t width, uint32_t height);
 void rsxkit_target_destroy(rsxkit_target *t);
 void rsxkit_target_size(const rsxkit_target *t, uint32_t *width, uint32_t *height);
 rsxkit_depth *rsxkit_depth_create(uint32_t width, uint32_t height);
@@ -270,9 +274,11 @@ void rsxkit_bind_frame(float lw, float lh);
 
 #define RSXKIT_CLEAR_COLOR 0x1u
 #define RSXKIT_CLEAR_DEPTH 0x2u
+#define RSXKIT_CLEAR_ALPHA 0x4u /* incluye el byte alto de rgb */
 /* Borra en el destino ligado el rectángulo lógico (x0, y0, x1, y1), o todo
  * si rect es NULL. depth en [0, 1]. */
 void rsxkit_clear(uint32_t flags, uint32_t rgb, float depth, const float rect[4]);
+void rsxkit_clear_stencil(uint8_t value);
 
 /* Presenta en el cuadro en curso la región `src` del destino (píxeles del
  * destino; NULL = todo), acomodada como una imagen de img_w × img_h con
@@ -284,7 +290,9 @@ void rsxkit_target_present(rsxkit_target *t, const rsxkit_rect *src, uint32_t im
 
 /* Vértice de 32 bytes: posición homogénea en el espacio lógico (x/w, y/w en
  * píxeles lógicos, z/w en [0, 1], w > 0 delante), coordenadas de textura y
- * color RGBA de 8 bits. */
+ * color RGBA de 8 bits. `pad` puede llevar un segundo color RGBA de 8 bits
+ * que sustituye a `rgba` en los dibujos siguientes a
+ * rsxkit_vertices_color_aux(1) (datos por vértice para un programa propio). */
 typedef struct rsxkit_vertex {
 	float pos[4];
 	float st[2];
@@ -326,6 +334,9 @@ typedef enum rsxkit_blend {
 	RSXKIT_BLEND_ALPHA,  /* src·a + dst·(1 − a) */
 	RSXKIT_BLEND_ADD,    /* src·a + dst */
 	RSXKIT_BLEND_NONE,   /* no escribe color */
+	RSXKIT_BLEND_ALPHA_MAX, /* RGB: src*a+dst*(1-a); alfa: máximo */
+	RSXKIT_BLEND_REPLACE_MIN_ALPHA, /* RGB: reemplaza; alfa: mínimo */
+	RSXKIT_BLEND_KEEP_MIN_ALPHA,    /* RGB: conserva destino; alfa: mínimo */
 } rsxkit_blend;
 
 typedef enum rsxkit_cull {
@@ -342,7 +353,10 @@ typedef enum rsxkit_cull {
  * que dos dibujos con la misma z dan la misma en cada píxel y la prueba
  * LEQUAL deja pasar al último (orden de pintor con z-buffer). */
 #define RSXKIT_DEPTH_CONST  0x8u
+#define RSXKIT_DEPTH_GEQUAL 0x20u /* la prueba es >= */
+#define RSXKIT_DEPTH_ALWAYS 0x40u /* escribir tras una prueba separada */
 #define RSXKIT_DEPTH_LESS   0x10u /* la prueba es < en vez de ≤ (con la misma z no pasa) */
+#define RSXKIT_DEPTH_EQUAL  0x80u /* la prueba es == (solo pasa la misma z) */
 
 /* Lo que evalúa el RSX por píxel, con
  *   X_j = k[j][0] + k[j][1]·C + k[j][2]·C.aaaa    (C = color del vértice)
@@ -363,6 +377,15 @@ enum { RSXKIT_K_T0, RSXKIT_K_T0A, RSXKIT_K_T1, RSXKIT_K_T1A, RSXKIT_K_ONE, RSXKI
 #define RSXKIT_K_FACTORS RSXKIT_FP_MAX_FACTORS
 
 typedef struct rsxkit_draw {
+	/* Programa opcional: entradas de rsxkit_lincomb.vcg. NULL conserva la combinación. */
+	rsxkit_program *program;
+	/* Stencil: 0 apagado, 1 siempre, 2 distinto, 3 igual.
+	 * op: 0 reemplazar, 1 invertir, 2 conservar. Máscaras explícitas si está activo. */
+	uint8_t stencil, stencil_ref, stencil_compare_mask, stencil_write_mask, stencil_op;
+	/* Operación al fallar profundidad: 0 conservar, 1 reemplazar, 2 poner a cero. */
+	uint8_t stencil_zfail;
+	/* Operación al fallar la prueba de stencil: 0 conservar, 1 reemplazar, 2 poner a cero. */
+	uint8_t stencil_sfail;
 	uint8_t blend;      /* rsxkit_blend */
 	uint8_t cull;       /* rsxkit_cull */
 	uint8_t depth;      /* RSXKIT_DEPTH_* */
@@ -406,7 +429,16 @@ void rsxkit_vertices(uint32_t offset, uint8_t location);
  * dibujos siguientes ponen cada vértice en prev + (pos − prev)·t (t = 1: donde
  * está). Hasta el próximo rsxkit_vertices, que lo apaga. */
 void rsxkit_vertices_prev(uint32_t offset, uint8_t location, float t);
+/* 1: los dibujos siguientes leen COLOR0 de la palabra `pad` de cada vértice
+ * en vez de `rgba`; 0 (inicial) vuelve a `rgba`. Vale hasta que se cambie. */
+void rsxkit_vertices_color_aux(int aux);
 /* Triángulos sueltos: vértices first .. first + count − 1 del arreglo. */
+/* Optativo: 1 envía solo constantes/stencil cambiados; 0 (inicial) envía completos. */
+void rsxkit_3d_incremental(int enabled);
+/* Optativo: 1 recarga el programa de rsxkit_draw.program y escribe su
+ * etiqueta de uso en cada dibujo; 0 (inicial) solo al cambiar de programa,
+ * al salir del 3D (pasadas, blits) y antes de destruirlo. */
+void rsxkit_3d_program_sync(int per_draw);
 void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count);
 
 /* ---- Un destino como textura y de vuelta a la memoria principal --------------

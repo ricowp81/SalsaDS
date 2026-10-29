@@ -1,0 +1,30 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+float3 bright(float3 c, float code)
+{
+    float f = code - floor(code / 32.0) * 32.0;
+    if (code >= 64.0) return floor((2.0*c - floor((2.0*c*f + 7.0)/16.0))/2.0);
+    if (code >= 32.0) return floor((2.0*c + floor(((63.0-2.0*c)*f + 8.0)/16.0))/2.0);
+    return c;
+}
+void main(float4 uv : TEXCOORD0, float4 scale : TEXCOORD1,
+          uniform sampler2D image : TEXUNIT0, uniform sampler2D metadata : TEXUNIT1,
+          out float4 result : COLOR)
+{
+    float2 pos = floor(uv.xy), m = float2(pos.x * 4.0 + 0.5, pos.y + 0.5);
+    float4 absent = floor(tex2D(metadata, m).argb*255.0+0.5);
+    float4 operand = floor(tex2D(metadata, m+float2(1,0)).argb*255.0+0.5);
+    float4 fx = floor(tex2D(metadata, m+float2(2,0)).argb*255.0+0.5);
+    float4 extra = floor(tex2D(metadata, m+float2(3,0)).argb*255.0+0.5);
+    float sx = uv.x + fx.a + 256.0*extra.r;
+    sx -= floor(sx/512.0)*512.0;
+    float4 sample = tex2D(image, float2(sx, uv.y)*scale.x);
+    float3 rgb = clamp(floor(sample.rgb*255.0+0.5)-16.0,0.0,63.0);
+    float a = max(floor(sample.a*32.0+0.5)-1.0,0.0);
+    float3 c = operand.rgb, s = floor(rgb/2.0);
+    if (absent.a == 2.0) c = s;
+    if (absent.a == 3.0) c = floor(floor((rgb*(a+1.0)+2.0*c*(31.0-a)+16.0)/32.0)/2.0);
+    if (absent.a == 4.0) c = floor(min(floor((2.0*c*operand.a+2.0*s*fx.r+8.0)/16.0),63.0)/2.0);
+    c = bright(bright(c,fx.g),fx.b);
+    if (a == 0.0 || sx >= 256.0 || absent.a == 0.0) c = absent.rgb;
+    result = float4(c / 31.0, 1.0);
+}

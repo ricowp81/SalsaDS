@@ -17,6 +17,8 @@ bios9.bin
 biosdsi7.bin
 biosdsi9.bin
 firmware.bin
+# Instantáneas de geometría y VRAM para reproducción local
+*.rsx
 # salvo las ROMs de prueba libres, con su fuente
 !tests/roms/homebrew/**
 

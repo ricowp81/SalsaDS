@@ -21,6 +21,10 @@
 #include "gpu3d/gx_loop.h"
 #include "gpu3d/r3d.h"
 #include "gpu3d/r3d_px.h"
+#include "gpu3d/rsx_replay.h"
+#include "gpu3d/rsx_modes.h"
+#include "gpu3d/rsx_passes.h"
+#include "gpu3d/rsx_batch.h"
 #include "host/jitrun.h"
 #include "jit/arec.h"
 #include "util/endian.h"
@@ -383,6 +387,148 @@ static void gx_dump(const char *path)
 	fclose(o);
 }
 
+/* --rsx-lotes: cuántos dibujos manda el RSX por una reproducción .rsx con el plan de la ronda 6 (puerta con
+ * borrado y rechazo de ID aparte, atributos por constantes, 3D ampliado sin lotes) y con el plan actual (puerta
+ * compacta, atributos por vértice, lotes también en 3D ampliado). Misma clave de lote y mismo plan de pasadas que el
+ * PPE (gpu3d/rsx_batch.h, gpu3d/rsx_passes.h); sin sombras (conservan su secuencia propia). Son conteos, no tiempos. */
+static unsigned rsx_plan_pass(const rsx_batch_key *k, unsigned n, unsigned extended, unsigned attributes, unsigned blend,
+			      unsigned occupied, unsigned flags, int merge, int compact, unsigned *groups)
+{
+	unsigned draws = 0, prior_back = 0, g = 0;
+
+	for (unsigned i = 0; i < n;) {
+		unsigned j = i + 1;
+
+		if (merge)
+			while (j < n && rsx_batch_equal(&k[i], &k[j], flags))
+				j++;
+		for (unsigned q = i; q < (merge ? i + 1 : j); q++) {
+			rsx_pass_input in = { k[q].id, 0, 0, 0, k[q].front, k[q].trans, k[q].alpha == 31, k[q].tdepth, k[q].equal,
+					      extended, blend, occupied, attributes, prior_back };
+			rsx_pass out[9];
+
+			draws += rsx_color_passes_mode(&in, out, compact);
+			if (!merge)
+				prior_back |= !k[q].front && (k[q].alpha == 31 || k[q].tdepth);
+		}
+		for (unsigned q = i; q < j; q++)
+			prior_back |= !k[q].front && (k[q].alpha == 31 || k[q].tdepth);
+		g++;
+		i = j;
+	}
+	if (groups)
+		*groups = g;
+	return draws;
+}
+
+static int rsx_plan(const char *path)
+{
+	static gx_frame frame;
+	static uint8_t vram[R3D_VRAM_ZERO_OFF + 128];
+	static uint16_t order[GX_MAX_POLYS], sorted[GX_MAX_POLYS];
+	static uint32_t keys[GX_MAX_POLYS];
+	static rsx_batch_key k[GX_MAX_POLYS];
+	FILE *io = fopen(path, "rb");
+	r3d_job j;
+
+	if (!io || !r3d_replay_io(io, &frame, &j, vram, 1)) {
+		fprintf(stderr, "%s: no se pudo leer la reproducción\n", path);
+		if (io)
+			fclose(io);
+		return 1;
+	}
+	fclose(io);
+	r3d_rstate rs;
+	r3d_rstate_init(&rs, &frame, j.flags);
+	uint32_t modes = rsx_modes(&frame, j.flags);
+	unsigned fog = !!(modes & (1u << RSX_FOG)), equal = !!(modes & (1u << RSX_EQUAL)), nonzero = 0;
+
+	for (unsigned i = 0; i < 32; i++)
+		nonzero |= rs.fog_table[i];
+	if (!nonzero)
+		fog = 0;
+	if (modes & ((1u << RSX_SHADOW_MASK) | (1u << RSX_SHADOW))) {
+		fprintf(stderr, "%s: con sombras; sus pasadas no se cuentan aquí\n", path);
+		return 1;
+	}
+	for (uint32_t i = 0; i < frame.npolys; i++) {
+		keys[i] = r3d_sort_key(&frame.poly[i], frame.swap_params & 1u);
+		order[i] = (uint16_t)i;
+	}
+	for (unsigned shift = 0; shift < 24; shift += 8) {
+		uint32_t count[256] = { 0 }, sum = 0;
+
+		for (uint32_t i = 0; i < frame.npolys; i++)
+			count[(keys[order[i]] >> shift) & 255u]++;
+		for (unsigned i = 0; i < 256; i++) {
+			const uint32_t c = count[i];
+
+			count[i] = sum;
+			sum += c;
+		}
+		for (uint32_t i = 0; i < frame.npolys; i++)
+			sorted[count[(keys[order[i]] >> shift) & 255u]++] = order[i];
+		memcpy(order, sorted, frame.npolys * sizeof *order);
+	}
+	unsigned n = 0, ntrans = 0, nequal = 0, nback = 0;
+
+	for (uint32_t i = 0; i < frame.npolys; i++) {
+		const gx_poly *gp = &frame.poly[order[i]];
+		r3d_poly p;
+		int ymin = 0x7FFF, ymax = -0x7FFF;
+
+		memset(&p, 0, sizeof p);
+		p.n = gp->nverts;
+		p.attr = gp->attr;
+		p.mode = PA_MODE(gp->attr);
+		p.alpha = PA_ALPHA(gp->attr);
+		p.id = PA_ID(gp->attr);
+		p.wshift = gp->wshift;
+		for (int v = 0; v < p.n; v++) {
+			const int sy = frame.vtx[gp->vidx[v]].sy;
+
+			ymin = sy < ymin ? sy : ymin;
+			ymax = sy > ymax ? sy : ymax;
+		}
+		if (ymax < 0 || ymin >= R3D_H)
+			continue;
+		p.textured = (rs.d3 & D3_TEXTURE) && ((gp->texparam >> 26) & 7u);
+		rsx_batch_key_init(&k[n], gp, &p, &frame, &rs);
+		ntrans += k[n].trans;
+		nequal += k[n].equal;
+		nback += !k[n].front;
+		n++;
+	}
+	const unsigned extended = equal, blend = !!(rs.d3 & D3_BLEND), occupied = R3D_PX_A(rs.clear_px) != 0;
+	const unsigned ext_flags = extended ? RSX_BATCH_EXTENDED : 0;
+	unsigned groups = 0;
+	/* Ronda 6: en 3D ampliado no hay lotes; si no, los lotes de color ignoran la Z plana y la bandera de niebla y los
+	 * de atributos las exigen iguales. Actual: misma clave en ambas pasadas, también en 3D ampliado. */
+	const unsigned old_color = rsx_plan_pass(k, n, extended, 0, blend, occupied, 0, !extended, 0, NULL);
+	const unsigned old_attr = fog ? rsx_plan_pass(k, n, extended, 1, blend, occupied, RSX_BATCH_ATTR_CONST, !extended, 0, NULL) : 0;
+	const unsigned new_color = rsx_plan_pass(k, n, extended, 0, blend, occupied, ext_flags, 1, 1, &groups);
+	const unsigned new_attr = fog ? rsx_plan_pass(k, n, extended, 1, blend, occupied, ext_flags, 1, 1, NULL) : 0;
+
+	printf("reproducción %s: cuadro %u, %u polígonos dibujables (%u translúcidos, %u traseros, %u con igualdad); W %u niebla %u "
+	       "3D ampliado %u mezcla %u borrado opaco %u\n",
+	       path, frame.seq, n, ntrans, nback, nequal, rs.wbuf, fog, extended, blend, occupied);
+	printf("dibujos ronda 6: color %u + atributos %u = %u; actual: color %u + atributos %u = %u (%u lotes); cambio %+.1f %%\n",
+	       old_color, old_attr, old_color + old_attr, new_color, new_attr, new_color + new_attr, groups,
+	       old_color + old_attr ? 100.0 * ((double)(new_color + new_attr) - (double)(old_color + old_attr)) / (double)(old_color + old_attr) : 0.0);
+	return 0;
+}
+
+static void rsx_dump(const char *path)
+{
+	if (M.vid.last < 0) return;
+	struct nds_vset *s = &M.vid.set[M.vid.last];
+	if (!s->has3d || !s->r3d.frame_ea || (s->r3d.flags & R3D_F_BLANK)) return;
+	FILE *o = fopen(path, "wb");
+	if (!o || !r3d_replay_io(o, (gx_frame *)(uintptr_t)s->r3d.frame_ea, &s->r3d, s->vram, 0))
+		fprintf(stderr, "no se pudo guardar la reproducción 3D\n");
+	if (o) fclose(o);
+}
+
 /* Salida de audio a 48 kHz (estéreo): se junta en memoria y se escribe como WAV de 16 bits al terminar. */
 static float *wav_buf;
 static size_t wav_n, wav_cap;
@@ -701,6 +847,11 @@ int main(int argc, char **argv)
 	int gx_clock = 0, r3d_stats_on = 0, holes_on = 0, gx_defer = 0, gx_lento = 0, geom_plain = 0, geom_scalar = 0;
 	const char *holes_dump = NULL, *fdump_prefix = NULL;
 	uint64_t fdump_frame = 0;
+	const char *rsx_max_path = NULL;
+	const char *rsx_plan_path = NULL;
+	uint32_t rsx_max_polys = 0;
+	const char *rsx_census_path = NULL, *video_trace_path = NULL;
+	FILE *rsx_census = NULL, *video_trace = NULL;
 	const char *img3d_path = NULL;
 	struct { uint64_t frame; uint32_t keys, x, y; } press[16384];
 	struct { uint64_t frame; const char *file; } shot[32];
@@ -781,6 +932,14 @@ int main(int argc, char **argv)
 			fdump_prefix = *e == ':' ? e + 1 : "cuadro";
 		} else if (!strcmp(argv[i], "--img3d") && i + 1 < argc)
 			img3d_path = argv[++i];
+		else if (!strcmp(argv[i], "--rsx-censo") && i + 1 < argc)
+			rsx_census_path = argv[++i];
+		else if (!strcmp(argv[i], "--video-trace") && i + 1 < argc)
+			video_trace_path = argv[++i]; /* por cuadro: DISPCNT, DISPCAPCNT, captura, VRAMCNT, 3D e intercambio */
+		else if (!strcmp(argv[i], "--rsx-max") && i + 1 < argc)
+			rsx_max_path = argv[++i]; /* cuadro con más polígonos dentro de --r3d-win */
+		else if (!strcmp(argv[i], "--rsx-lotes") && i + 1 < argc)
+			rsx_plan_path = argv[++i]; /* reproducción .rsx: cuenta los dibujos RSX del plan anterior y del actual, sin ROM */
 		else if (!strcmp(argv[i], "--gx-dump") && i + 1 < argc)
 			gxdump_path = argv[++i];
 		else if (!strcmp(argv[i], "--audio-hd"))
@@ -951,6 +1110,8 @@ int main(int argc, char **argv)
 		else
 			rom_path = argv[i];
 	}
+	if (rsx_plan_path)
+		return rsx_plan(rsx_plan_path);
 	if (!rom_path) {
 		fprintf(stderr, "uso: salsads-cpurun [--cycles N] [--frames N] [--quantum N] [--stats] [--arm7] "
 				"[--keys HEX] [--touch X,Y] [--screens FILE.ppm] [--ref] [--vs-ref] [--expect] [--same-ab] [--unmapped] [--peek ADDR] [--save-cfg FILE] [--save FILE | --save-size N] ROM.nds\n");
@@ -1205,6 +1366,19 @@ int main(int argc, char **argv)
 		}
 		return 0;
 	}
+	if (rsx_census_path) {
+		if (!frames) { fprintf(stderr, "--rsx-censo requiere --frames\n"); return 1; }
+		rsx_census = fopen(rsx_census_path, "w");
+		if (!rsx_census) { perror("censo RSX"); return 1; }
+		fprintf(rsx_census, "cuadro,secuencia,poligonos,modos");
+		for (unsigned k = 0; k < RSX_MODE_COUNT; k++) fprintf(rsx_census, ",%s", rsx_mode_names[k]);
+		fputc('\n', rsx_census);
+	}
+	if (video_trace_path) {
+		video_trace = fopen(video_trace_path, "w");
+		if (!video_trace) { perror("traza de video"); return 1; }
+		fprintf(video_trace, "cuadro,set,has3d,polys,dispcntA,dispcapcnt,capturas,dispcntB,powcnt1,vramcnt,bgcntA,bldcntA,bldalphaA,mbrightA\n");
+	}
 	t0 = now();
 	if (frames) {
 		const char *who;
@@ -1224,6 +1398,39 @@ int main(int argc, char **argv)
 				gx_dump(path);
 			}
 			run_frame();
+			if (video_trace && M.vid.last >= 0) {
+				const struct nds_vset *s = &M.vid.set[M.vid.last];
+				const gpu2d_engine *ea = &s->frame.eng[0], *eb = &s->frame.eng[1];
+				const gx_frame *gf = (const gx_frame *)(uintptr_t)s->r3d.frame_ea;
+				fprintf(video_trace, "%llu,%d,%d,%u,%08x,%04x%04x,%llu,%08x,%04x,", (unsigned long long)f, M.vid.last, s->has3d,
+					s->has3d && gf ? gf->npolys : 0u, g2d_dispcnt(ea), ea->regs[G2D_R_DISPCAP + 1], ea->regs[G2D_R_DISPCAP],
+					(unsigned long long)M.vid.cap.frames, g2d_dispcnt(eb), s->powcnt1);
+				for (int k = 0; k < 9; k++) fprintf(video_trace, "%02x", M.vramcnt[k]);
+				fprintf(video_trace, ",%04x/%04x/%04x/%04x,%04x,%04x,%04x\n", ea->regs[G2D_R_BGCNT], ea->regs[G2D_R_BGCNT + 1],
+					ea->regs[G2D_R_BGCNT + 2], ea->regs[G2D_R_BGCNT + 3], ea->regs[G2D_R_BLDCNT], ea->regs[G2D_R_BLDCNT + 1],
+					ea->regs[G2D_R_MASTER_BRIGHT]);
+			}
+			if (rsx_census && M.vid.last >= 0 && f >= M.vid.r3d_win0 &&
+			    (!M.vid.r3d_win1 || f < M.vid.r3d_win1)) {
+				struct nds_vset *s = &M.vid.set[M.vid.last];
+				const gx_frame *gf = (const gx_frame *)(uintptr_t)s->r3d.frame_ea;
+				if (s->has3d && gf && !(s->r3d.flags & R3D_F_BLANK)) {
+					uint32_t modes = rsx_modes(gf, s->r3d.flags);
+					fprintf(rsx_census, "%llu,%u,%u,%u", (unsigned long long)f, gf->seq, gf->npolys, modes);
+					for (unsigned k = 0; k < RSX_MODE_COUNT; k++) fprintf(rsx_census, ",%u", (modes >> k) & 1u);
+					fputc('\n', rsx_census);
+				}
+			}
+			if (rsx_max_path && M.vid.last >= 0 && f >= M.vid.r3d_win0 &&
+			    (!M.vid.r3d_win1 || f < M.vid.r3d_win1)) {
+				struct nds_vset *s = &M.vid.set[M.vid.last];
+				const gx_frame *gf = (const gx_frame *)(uintptr_t)s->r3d.frame_ea;
+				if (s->has3d && gf && !(s->r3d.flags & R3D_F_BLANK) && gf->npolys > rsx_max_polys) {
+					rsx_max_polys = gf->npolys;
+					rsx_dump(rsx_max_path);
+					printf("reproducción 3D: cuadro %llu, %u polígonos\n", (unsigned long long)f, rsx_max_polys);
+				}
+			}
 			arec_prof_frame((uint32_t)f, (uint32_t)M.a9.icount, (uint32_t)M.a7.icount);
 			gx_hash_poll();
 			if (lockstep && hj_fail())
@@ -1235,6 +1442,9 @@ int main(int argc, char **argv)
 				save_img3d(path);
 				if (getenv("HOLES_COVER"))
 					explain_holes();
+				/* Misma instantánea que consumió el rasterizador; reproducción sin CPUs. */
+				snprintf(path, sizeof path, "%s.rsx", fdump_prefix);
+				rsx_dump(path);
 			}
 			if (holes_on) {
 				const uint32_t h = count_holes();
@@ -1323,6 +1533,7 @@ int main(int argc, char **argv)
 			save_img3d(img3d_path);
 		if (r3d_stats_on || M.vid.vs_ref3d)
 			print_r3d_stats();
+		if (rsx_census && fclose(rsx_census)) { perror("censo RSX"); rc_gfx = 1; }
 		if (holes_on)
 			printf("agujeros 3D: %u píxeles en %u cuadros de %llu; el peor, %u en el cuadro %u\n", holes_total, holes_frames,
 			       (unsigned long long)frames, holes_worst, holes_worst_frame);

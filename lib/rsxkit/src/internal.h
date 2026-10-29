@@ -48,6 +48,9 @@ struct rsxkit_state {
 
 extern struct rsxkit_state rsxkit_g;
 
+int rsxkit_program_bind_3d(rsxkit_program *p);
+void rsxkit_program_used_3d(rsxkit_program *p);
+
 /* Destino ligado con rsxkit_bind (target.c). */
 struct rsxkit_bound {
 	struct rsxkit_target *target;
@@ -83,6 +86,8 @@ void rsxkit_fb_shutdown(void);
 /* Antes de dibujar en modo inmediato con otros programas: apaga los
  * arreglos de vértices del 3D y olvida su estado. */
 void rsxkit_leave_3d(void);
+/* Escribe la etiqueta de uso del programa 3D con dibujos pendientes. */
+void rsxkit_3d_flush_use(void);
 /* Olvida todo el estado del RSX que rsxkit da por puesto (arreglos de
  * vértices, programas, estado fijo y constantes del 3D, superficie): el
  * próximo dibujo lo manda de nuevo. Después de cada flip (frame_end). */

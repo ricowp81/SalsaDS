@@ -1,0 +1,47 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Imagen ya mezclada; atributos R:G = profundidad >>9, A = niebla.
+ * La LUT y las constantes pertenecen al mismo cuadro, también en HD. */
+void main(float4 uv : TEXCOORD0, float4 fc : TEXCOORD1, float4 fp : TEXCOORD2,
+#ifdef RSX3D_FOG_PROBE
+          float4 probe : TEXCOORD3,
+#endif
+          uniform sampler2D image : TEXUNIT0, uniform sampler2D attrs : TEXUNIT1,
+          uniform sampler2D table : TEXUNIT2, out float4 result : COLOR)
+{
+#ifdef RSX3D_FOG_PROBE
+    float column = uv.z;
+    uv.xy = probe.xy;
+#endif
+    float4 src = tex2D(image, uv.xy);
+    float4 at = floor(tex2D(attrs, uv.xy) * 255.0 + 0.5);
+    float kk = at.r * 256.0 + at.g - floor(fp.x + 0.5);
+    float sh = floor(fp.y + 0.5);
+    float i = clamp(floor(kk / sh), 0.0, 31.0);
+    float t0 = floor(tex2D(table, float2(i + 0.5, 0.5)).r * 255.0 + 0.5);
+    float t1 = floor(tex2D(table, float2(min(i + 1.0, 31.0) + 0.5, 0.5)).r * 255.0 + 0.5);
+    float density = t0 + floor((t1 - t0) * (kk - i * sh) / sh);
+    density += (t0 - density) * step(kk, -0.5);
+    density += (t1 - density) * step(31.0, i);
+    density += step(126.5, density) * step(density, 127.5);
+    density *= step(0.5, at.a);
+    float3 rgb = clamp(floor(src.rgb * 255.0 + 0.5) - 16.0, 0.0, 63.0);
+    float a = max(floor(src.a * 32.0 + 0.5) - 1.0, 0.0);
+    float4 fogcolor = floor(fc + 0.5);
+    rgb = lerp(floor((fogcolor.rgb * density + rgb * (128.0 - density)) / 128.0), rgb, floor(fp.z + 0.5));
+    a = floor((fogcolor.a * density + a * (128.0 - density)) / 128.0);
+    /* Mantener el cero real del destino vacío: pack y presentación HD
+     * usan (a+1)/32 solo para alfas distintas de cero. */
+    result = float4((rgb + 16.0) / 255.0, ((a + 1.0) / 32.0) * step(0.5, a));
+#ifdef RSX3D_FOG_PROBE
+    /* Dos píxeles RGB: RGB y A00. La lectura XRGB no conserva alfa.
+     * Se usa el mismo cálculo y las mismas constantes que la pasada final. */
+    float4 value = src;
+    value = lerp(value, at / 255.0, step(1.5, probe.z));
+    value = lerp(value, fogcolor / 255.0, step(2.5, probe.z));
+    value = lerp(value, float4(t0, t1, density, i) / 255.0, step(3.5, probe.z));
+    value = lerp(value, float4(fp.x - floor(fp.x / 256.0) * 256.0, floor(fp.x / 256.0), fp.z, 0.0) / 255.0, step(4.5, probe.z));
+    value = lerp(value, result, step(5.5, probe.z));
+    value = lerp(value, float4(fp.y - floor(fp.y / 256.0) * 256.0, floor(fp.y / 256.0), fp.z, 0.0) / 255.0, step(6.5, probe.z));
+    result = float4(lerp(value.rgb, float3(value.a, 0.0, 0.0), step(0.5, column)), 1.0);
+#endif
+}

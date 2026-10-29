@@ -22,7 +22,7 @@
 
 struct rsxkit_target {
 	int used;
-	uint32_t w, h, pitch, offset;
+	uint32_t w, h, pitch, offset, rgba;
 	void *mem;
 };
 
@@ -125,6 +125,13 @@ rsxkit_target *rsxkit_target_create(uint32_t width, uint32_t height)
 	return NULL;
 }
 
+rsxkit_target *rsxkit_target_create_rgba(uint32_t w, uint32_t h)
+{
+	rsxkit_target *t = rsxkit_target_create(w, h);
+	if (t) t->rgba = 1;
+	return t;
+}
+
 void rsxkit_target_destroy(rsxkit_target *t)
 {
 	if (!t || !t->used)
@@ -203,7 +210,7 @@ int rsxkit_bind(rsxkit_target *t, rsxkit_depth *d, float lw, float lh)
 
 	gcmSurface sf;
 	memset(&sf, 0, sizeof sf);
-	sf.colorFormat = GCM_SURFACE_X8R8G8B8;
+	sf.colorFormat = t->rgba ? GCM_SURFACE_A8R8G8B8 : GCM_SURFACE_X8R8G8B8;
 	sf.colorTarget = GCM_SURFACE_TARGET_0;
 	sf.colorLocation[0] = GCM_LOCATION_RSX;
 	sf.colorOffset[0] = t->offset;
@@ -307,12 +314,23 @@ void rsxkit_clear(uint32_t flags, uint32_t rgb, float depth, const float rect[4]
 	rsxkit_bound.scissor_valid = 0;
 	if (depth < 0.0f) depth = 0.0f;
 	if (depth > 1.0f) depth = 1.0f;
-	rsxSetClearColor(g->ctx, rgb & 0x00FFFFFFu);
+	rsxSetClearColor(g->ctx, (flags & RSXKIT_CLEAR_ALPHA) ? rgb : rgb & 0x00FFFFFFu);
 	rsxSetClearDepthStencil(g->ctx, (uint32_t)(depth * 16777215.0f) << 8);
 	rsxSetColorMask(g->ctx, GCM_COLOR_MASK_B | GCM_COLOR_MASK_G | GCM_COLOR_MASK_R | GCM_COLOR_MASK_A);
 	rsxSetDepthWriteEnable(g->ctx, GCM_TRUE);
 	rsxClearSurface(g->ctx, mask);
 	g->state_valid = 0;
+}
+
+void rsxkit_clear_stencil(uint8_t value)
+{
+	if (!rsxkit_bound.target || !rsxkit_bound.depth) return;
+	rsxkit_reserve(32);
+	rsxSetScissor(rsxkit_g.ctx, 0, 0, rsxkit_bound.w, rsxkit_bound.h);
+	rsxSetStencilMask(rsxkit_g.ctx, 255);
+	rsxSetClearDepthStencil(rsxkit_g.ctx, value);
+	rsxClearSurface(rsxkit_g.ctx, GCM_CLEAR_S);
+	rsxkit_g.state_valid = 0;
 }
 
 void rsxkit_target_texture(const rsxkit_target *t, uint32_t y0, uint32_t rows, rsxkit_texture *out)
@@ -327,7 +345,7 @@ void rsxkit_target_texture(const rsxkit_target *t, uint32_t y0, uint32_t rows, r
 	out->width = (uint16_t)t->w;
 	out->height = (uint16_t)rows;
 	out->location = RSXKIT_MEM_LOCAL;
-	out->format = RSXKIT_XRGB8888;
+	out->format = t->rgba ? RSXKIT_ARGB8888 : RSXKIT_XRGB8888;
 }
 
 void rsxkit_texture_sync(void)
@@ -457,7 +475,7 @@ int rsxkit_target_copy(rsxkit_target *dst, const rsxkit_target *src)
 	rsxSetWaitForIdle(ctx);
 	rsxInvalidateTextureCache(ctx, GCM_INVALIDATE_TEXTURE);
 	rsxkit_rect full = { 0, 0, dst->w, dst->h };
-	rsxkit_blit_to(src->offset, RSXKIT_MEM_LOCAL, src->pitch, src->w, src->h, 0.0f, 0.0f, 1.0f, 1.0f, RSXKIT_XRGB8888,
+	rsxkit_blit_to(src->offset, RSXKIT_MEM_LOCAL, src->pitch, src->w, src->h, 0.0f, 0.0f, 1.0f, 1.0f, src->rgba ? RSXKIT_ARGB8888 : RSXKIT_XRGB8888,
 		       &full, dst->w, dst->h, RSXKIT_FILTER_NEAREST);
 	rsxkit_g.state_valid = 0;
 	return RSXKIT_OK;

@@ -124,6 +124,7 @@ typedef struct gpu2d_change {
 
 /* Bandera del descriptor. */
 #define G2D_F_ENGINE_B 1u
+#define G2D_F_HD_SCALAR 2u /* comparación del exportador de presentación */
 
 /* Descriptor de un motor para un cuadro. Las direcciones son efectivas (EA) en memoria principal; en el host,
  * punteros convertidos. 16 bytes de alineación (DMA) y múltiplo de 16 de tamaño. */
@@ -134,6 +135,7 @@ typedef struct gpu2d_engine {
 	uint64_t chg_ea;     /* nchg × gpu2d_change */
 	uint64_t out_ea;     /* GPU2D_W × GPU2D_H medias palabras */
 	uint64_t mmem_ea;    /* modo 3: GPU2D_H líneas de 512 bytes (BGR555); 0 si no hay */
+	uint64_t hd_ea;      /* presentación opcional: metadatos nativos; 0 desactiva */
 	uint64_t img3d_ea;   /* motor A: la capa 3D (Fase 3.2, src/gpu3d/r3d.h: 256 × 192 palabras de 32 bits); 0 = vacía */
 	uint32_t nchg;
 	uint32_t flags;      /* G2D_F_* */

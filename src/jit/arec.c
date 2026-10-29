@@ -154,8 +154,15 @@ static uint64_t h_rd(struct acore *c, uint32_t a, uint32_t kind)
 		break;
 	}
 	c->abort = 0;
-	if (j->pub.tick)
-		j->pub.st.t_rd_by[rg] += j->pub.tick() - t0;
+	if (j->pub.tick) {
+		const uint64_t dt = j->pub.tick() - t0;
+
+		j->pub.st.t_rd_by[rg] += dt;
+		if (a - 0x04000000u < 0x1000u)
+			j->pub.st.io_rd_t[(a >> 2) & 1023u] += dt;
+	}
+	if (a - 0x04000000u < 0x1000u)
+		j->pub.st.io_rd_n[(a >> 2) & 1023u]++;
 	if (must_exit(c, j)) {
 		j->pub.st.mem_exits++;
 		return (uint64_t)1 << 32 | v;
@@ -208,8 +215,15 @@ static uint32_t h_wr(struct acore *c, uint32_t a, uint32_t v, uint32_t kind)
 		break;
 	}
 	c->abort = 0;
-	if (j->pub.tick)
-		j->pub.st.t_wr_by[rg] += j->pub.tick() - t0;
+	if (j->pub.tick) {
+		const uint64_t dt = j->pub.tick() - t0;
+
+		j->pub.st.t_wr_by[rg] += dt;
+		if (a - 0x04000000u < 0x1000u)
+			j->pub.st.io_wr_t[(a >> 2) & 1023u] += dt;
+	}
+	if (a - 0x04000000u < 0x1000u)
+		j->pub.st.io_wr_n[(a >> 2) & 1023u]++;
 	if (must_exit(c, j)) {
 		j->pub.st.mem_exits++;
 		return 1;

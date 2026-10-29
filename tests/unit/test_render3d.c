@@ -13,6 +13,7 @@
 #include "gpu3d/r3d.h"
 #include "gpu3d/r3d_core.h"
 #include "gpu3d/r3d_scene.h"
+#include "gpu3d/rsx_fog_test.h"
 
 #define R3D_GOLDEN_SEED7 0x17867ed0209a5afbull /* calculado en LE; BE tiene que dar lo mismo (cambia si cambian las reglas de r3d_px.h) */
 
@@ -139,6 +140,41 @@ static void test_palette_pairs(void)
 	}
 }
 
+static void test_fog_translucent(void)
+{
+	static gx_frame f;
+	uint32_t ts[R3D_TEX_SLOTS] = {0}, ps[R3D_PAL_SLOTS] = {0};
+	for (unsigned test=0;test<RSX_FOG_TESTS;test++) {
+		rsx_fog_test_scene(&f,test);
+		r3d_render_ref(&f,vram,ts,ps,0,ref);
+		/* Cálculo independiente: primero dos mezclas enteras, después niebla
+		 * a profundidad del último escritor, y solo si las tres banderas son 1. */
+		unsigned r=(7*14+63*18)>>5, g=(57*14+11*18)>>5, b=(19*14+27*18)>>5, a=31;
+		if (test & 128) { r=7; g=57; b=19; a=13; }
+		if (!(test & 256)) {
+			r=(31*20+r*12)>>5; g=(5*20+g*12)>>5; b=(63*20+b*12)>>5;
+			if (a<19) a=19;
+		}
+		/* El segundo ID repetido no escribe color, profundidad ni bandera. */
+		unsigned fogmask=(test & 256) ? 48 : 112;
+		if ((test & fogmask) == fogmask) {
+			unsigned d=(!(test & 256) && (test & 4)) ? 12 : (test & 2) ? 28 : (test & 128) ? 126 : 44;
+			if (!(test & 8)) { r=(63*d+r*(128-d))>>7; g=(g*(128-d))>>7; b=(63*d+b*(128-d))>>7; }
+			a=(7*d+a*(128-d))>>7;
+		}
+		CHECK_EQ(ref[96*R3D_W+128],R3D_PX(r,g,b,a));
+		/* CLEAR_DEPTH cae un escalón antes del extremo: densidad 126. */
+		CHECK_EQ(ref[0],(test & 16) ? ((test & 8) ? R3D_PX(0,0,0,6) : R3D_PX(62,0,62,6)) : 0);
+		for (unsigned k=0;k<2;k++) {
+			r3d_stats st;
+			use_bal=0;
+			CHECK_EQ(render_core(&f,ts,ps,k ? 8 : 16,k ? 2 : 1,0,&st),0);
+			CHECK(first_diff()<0);
+		}
+	}
+	printf("niebla final: %u escenas Z/W, AND, profundidad translúcida y solo alfa; referencia y bandas idénticas\n",RSX_FOG_TESTS);
+}
+
 void test_render3d(void);
 void test_render3d(void)
 {
@@ -203,6 +239,7 @@ void test_render3d(void)
 		CHECK_EQ(h0, R3D_GOLDEN_SEED7);
 	test_palette_jobs();
 	test_palette_pairs();
+	test_fog_translucent();
 #ifdef R3D_VERIFY_DECODE
 	CHECK_EQ(r3d_decode_errors, 0);
 #endif

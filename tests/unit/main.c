@@ -41,6 +41,10 @@ void test_wifi(void);
 void test_video_capture(void);
 void test_vram7(void);
 
+void test_rsx_export(void);
+void test_rsx_passes(void);
+void test_rsx_cost(void);
+
 int main(int argc, char **argv)
 {
 	const uint16_t probe = 0x0102;
@@ -49,6 +53,18 @@ int main(int argc, char **argv)
 	printf("host: %s\n", order);
 	if (getenv("UNIT_ONLY") && !strcmp(getenv("UNIT_ONLY"), "sonido")) {
 		test_snd();
+		printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);
+		return check_failed ? 1 : 0;
+	}
+    if (argc > 1 && !strcmp(argv[1], "gpu2d")) {
+        test_gpu2d();
+        printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);
+        return check_failed ? 1 : 0;
+    }
+	if (argc > 1 && !strcmp(argv[1], "rsx")) {
+		test_rsx_export();
+		test_rsx_passes();
+		test_rsx_cost();
 		printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);
 		return check_failed ? 1 : 0;
 	}
@@ -73,6 +89,9 @@ int main(int argc, char **argv)
 		return check_failed ? 1 : 0;
 	}
 	test_endian();
+	test_rsx_export();
+	test_rsx_passes();
+	test_rsx_cost();
 	test_ppe_bench();
 	test_gpu2d();
 	test_dspad();

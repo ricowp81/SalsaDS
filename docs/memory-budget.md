@@ -91,3 +91,28 @@ datos, búferes de DMA y pila; la holgura de la pila se mide al enlazar con
 Inicialización local Wi-Fi (2026-10-28): `struct nds_wifi` añade 9218 B dentro del núcleo (8192 de RAM, 768 de registros,
 256 de BB y 2 del generador), más el ajuste de alineación del contenedor y un byte de configuración. Sin asignaciones
 dinámicas ni cambios al local store de los SPE. No incluye colas, buffers de red ni una implementación del MAC.
+
+## Render 3D experimental en RSX
+
+Ronda 12: dos campos de 32 bits por comando (cara e igualdad), 16 KiB adicionales en XDR estática; sin nuevos destinos de color/profundidad ni reservas SPE.
+
+Arena XDR de 24 MiB: caché RGBA8 0–16 MiB, vértices de las dos ranuras en
+16–18 y 21–23 MiB, exportaciones de 192 KiB en 18 MiB y 18,25 MiB,
+instantánea de identidad en 19 MiB y dos tablas toon de 128 B en 20 MiB.
+No aumenta la arena al solapar; las autopruebas añaden 768 KiB de imágenes.
+Texturas compartidas protegidas por la última etiqueta; salidas y estadísticas
+permanecen reservadas hasta que captura o compositor retiren cada trabajo.
+
+## Presentación HD optativa del RSX
+- XDR: 24 MiB previos + 4 MiB para dos salidas de metadatos y dos copias de publicación; total 28 MiB, bajo el tope de 32. Cada salida útil mide 768 KiB + 128 B de estado; nunca se lee un plano HD desde Cell.
+- GDDR3 adicional: cuatro colores RGBA8 (dos de raster, dos de presentación) y una profundidad Z24S8: 3,75 MiB a 2×, 8,4375 MiB a 3× y 15 MiB a 4×; pitch alineado a 64 B, sin relleno adicional en estas dimensiones.
+- Se conservan color/profundidad nativos (0,375 MiB). A 720p, reservar profundidad para 4× añade 0,234375 MiB; a 1080p ya cabe. Total incremental inferior a 64 MiB, sin texturas residentes nuevas.
+- SPE 2D de esta variante: bloques DMA de 16 cambios, misma capacidad del registro y mismos mapas; reutiliza la línea temporal para exportar por bloques iguales. Holgura enlazada 8336 B; mínimo global 8336 B, ≥8192.
+- Banco aislado HD: una superficie RGBA8 temporal adicional, 0,75/1,6875/3 MiB a 2×/3×/4×; se libera tras cada escena. No se reserva en juego.
+- Autopruebas HD: aproximadamente 1092 KiB temporales adicionales para escenas 2D, liberados al terminar; reutilizan las imágenes y VRAM del reproductor; 768 KiB comparan los metadatos por bloques contra los escalares.
+
+- Diagnóstico HD de solapamiento: 192 KiB XDR extra para el cuadro previo; dos destinos RGBA8 nativos (384 KiB GDDR3), solo en autoprueba experimental. Uno cambia el descriptor de exportación de la ranura 1; otro evita borrar el destino nativo durante la lectura de composición.
+
+- Niebla final RSX: dos destinos RGBA8 transitorios por resolución (color sin niebla y atributos), compartidos por las dos ranuras y protegidos por el orden del FIFO. 384 KiB GDDR3 a 1×; con HD, `384 × (1 + escala²)` KiB en total (1920 KiB a 2×, 6528 KiB a 4×). Sin nuevo búfer XDR ni profundidad adicional; la tabla reutiliza 128 B por ranura, excluyente con toon. Se reservan al iniciar; `3d-rsx-niebla-anterior` omite los destinos auxiliares.
+- Exportación reducida y selección por costo: sin nuevas reservas de imagen en juego; los destinos nativos siguen disponibles para capturas exactas. Historia, etiquetas y contadores adicionales: menos de 512 B estáticos. La prueba de muestreo reserva y libera una superficie RGBA8 HD completa (0,75/1,6875/3 MiB a 2×/3×/4×), sin coincidir con el banco HD anterior. Solo esa prueba lee sus muestras desde Cell.
+- Sonda de niebla de autoprueba: 192 KiB XDR estáticos para la referencia sin niebla y un fragment program reservado al primer diagnóstico. Reutiliza la exportación nativa de la ranura 1 para leer dos píxeles; no añade destinos GDDR3. Se llama después de retirar ambos trabajos, nunca en el bucle del juego.

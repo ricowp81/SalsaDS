@@ -1,0 +1,104 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* k: textura, alfa del polígono, modo decal, tipo de pasada.
+ * q.x: referencia alfa. Pasadas: 0 opacos, 1 mezcla, 2 reemplazo translúcido. */
+void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
+          float4 color : COLOR0, uniform sampler2D image : TEXUNIT0,
+#if defined(RSX3D_TOON) || defined(RSX3D_FOG)
+          uniform sampler2D table : TEXUNIT1,
+#endif
+#if defined(RSX3D_FOG) || defined(RSX3D_FOG_ATTR)
+          float4 fc : TEXCOORD3, float4 fp : TEXCOORD4,
+#endif
+#if defined(RSX3D_W) || defined(RSX3D_FOG) || defined(RSX3D_FOG_ATTR)
+          float4 pos : WPOS,
+#endif
+#ifdef RSX3D_W
+          out float depth : DEPTH,
+#endif
+          out float4 result : COLOR)
+{
+#ifdef RSX3D_W
+    depth = min(floor(1.0 / pos.w) * q.y, 1.0);
+#endif
+    float4 t = floor(tex2D(image, uv.xy) * 255.0 + 0.5);
+    float3 v = min(floor(color.rgb * 255.0 + 0.875), 63.0);
+#ifdef RSX3D_TOON
+    float3 tc = floor(tex2D(table, float2((floor(v.r / 2.0) + 0.5) / 32.0, 0.5)).rgb * 255.0 + 0.5);
+    float3 base = lerp(tc, v.rrr, q.z);
+    float3 c = lerp(base, floor(((t.rgb + 1.0) * (base + 1.0) - 1.0) / 64.0), k.x);
+    c = min(c + tc * q.z, 63.0);
+    float a = lerp(k.y, floor(((t.a + 1.0) * (k.y + 1.0) - 1.0) / 32.0), k.x);
+#else
+    float3 mod = floor(((t.rgb + 1.0) * (v + 1.0) - 1.0) / 64.0);
+    float a = floor(((t.a + 1.0) * (k.y + 1.0) - 1.0) / 32.0);
+    float3 decal = floor((t.rgb * t.a + v * (31.0 - t.a)) / 32.0);
+    decal = lerp(decal, v, 1.0 - step(0.5, t.a));
+    decal = lerp(decal, t.rgb, step(30.5, t.a));
+    float3 c = lerp(v, lerp(mod, decal, k.z), k.x);
+    a = lerp(k.y, lerp(a, k.y, k.z), k.x);
+#endif
+    clip(a - q.x - 0.5);
+    float translucent = 1.0 - step(30.5, a);
+#ifdef RSX3D_SHADOW
+    translucent = 1.0;
+#endif
+    float want = step(0.5, k.w);
+    clip(0.5 - abs(translucent - want));
+#ifdef RSX3D_FOG_ATTR
+    /* Dos bytes de profundidad >>9 y un alfa booleano. Se repiten las
+     * pruebas de color/ID/Z; la mezcla de atributos conserva profundidad
+     * si no hay PA_TDEPTH y hace AND de niebla en los translúcidos. */
+#ifdef RSX3D_W
+    float fogdepth = min(floor(1.0 / pos.w + 0.5) * floor(q.w + 0.5), 16777215.0);
+#else
+    float fogdepth = floor(pos.z * 16777215.0 + 0.5);
+#endif
+    float z15 = floor(fogdepth / 512.0);
+    /* fc llega entero por polígono o por vértice (segundo color del vértice
+     * escalado por 255): x,y = Z>>9 en dos bytes, z bandera de plano, w
+     * bandera de niebla del polígono. */
+    float4 pf = floor(fc + 0.5);
+#ifndef RSX3D_W
+    /* Z constante llega entera desde el PPE. Reconstruirla desde WPOS
+     * puede dar Z-1 justo en un borde de LUT, incluso en un plano.
+     * Los inclinados conservan WPOS. */
+    z15 = lerp(z15, pf.x * 256.0 + pf.y, step(0.5, pf.z));
+#endif
+    float hi = floor(z15 / 256.0);
+    result = float4(hi / 255.0, (z15 - hi * 256.0) / 255.0, 0.0, pf.w);
+#else
+#ifdef RSX3D_FOG
+    /* Densidad por fragmento como la DS: profundidad entera de 24 bits
+     * (Z del fragmento o W por fragmento desplazado), >>9, menos el
+     * desplazamiento, índice de la tabla de 32 entradas con la fracción
+     * interpolada. fp: x desplazamiento, y bits de fracción, z solo alfa,
+     * w niebla activa en el polígono. La tabla va en TEXUNIT1 (R = densidad). */
+    /* Sin ramas: el corrector de shaders solo admite un END. fp.y ya es 2^(bits de fracción). */
+#ifdef RSX3D_W
+    /* Redondeo: 1/pos.w llega como w-ε en polígonos planos; la DS trunca su interpolación entera (±1 unidad). */
+    float fogdepth = min(floor(1.0 / pos.w + 0.5) * floor(q.w + 0.5), 16777215.0);
+#else
+    float fogdepth = floor(pos.z * 16777215.0 + 0.5);
+#endif
+    float kk = floor(fogdepth / 512.0) - floor(fp.x + 0.5);
+    float sh = floor(fp.y + 0.5);
+    float i = clamp(floor(kk / sh), 0.0, 31.0);
+    float t0 = floor(tex2D(table, float2((i + 0.5) / 32.0, 0.5)).r * 255.0 + 0.5);
+    float t1 = floor(tex2D(table, float2((min(i + 1.0, 31.0) + 0.5) / 32.0, 0.5)).r * 255.0 + 0.5);
+    float fr = kk - i * sh;
+    float density = t0 + floor((t1 - t0) * fr / sh);
+    density = density + (t0 - density) * step(kk, -0.5);
+    density = density + (t1 - density) * step(31.0, i);
+    density = density + step(126.5, density) * step(density, 127.5);
+    density = density * step(0.5, fp.w);
+    float4 fogcolor = floor(fc + 0.5);
+    c = floor(c + 0.5);
+    a = floor(a + 0.5);
+    c = lerp(floor((fogcolor.rgb * density + c * (128.0 - density)) / 128.0), c, floor(fp.z + 0.5));
+    a = floor((fogcolor.a * density + a * (128.0 - density)) / 128.0);
+#endif
+    float weight = (a + 1.0) / 32.0;
+    float bias = step(0.5, k.w) * (1.0 - step(1.5, k.w));
+    result = float4((c + 16.0 - bias * 0.501 / weight) / 255.0, weight);
+#endif
+}

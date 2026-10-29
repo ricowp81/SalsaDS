@@ -1,0 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Dos límites inclusivos para la puerta de profundidad DS. */
+void main(float4 pos : WPOS, float4 q : TEXCOORD2,
+          out float depth : DEPTH, out float4 result : COLOR)
+{
+#ifdef RSX3D_W
+    float d = min(floor(1.0 / pos.w) * q.y, 1.0);
+#else
+    float d = pos.z;
+#endif
+    depth = clamp(d + q.z, 0.0, 1.0);
+    result = float4(0.0, 0.0, 0.0, 0.0);
+}

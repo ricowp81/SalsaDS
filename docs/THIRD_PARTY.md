@@ -9,6 +9,22 @@ SalsaDS es **GPL-2.0-or-later** (copyright de ricowp81); `lib/rsxkit/` y `lib/sp
 No se copia código de melonDS ni de NooDS (GPL-3.0, incompatible con GPL-2.0-o-posterior);
 de DeSmuME (GPL-2.0-o-posterior) sí se podría, registrándolo aquí antes.
 
+## Consulta de profundidad 3D (2026-10-26)
+DeSmuME, [`desmume/src/rasterize.cpp`](https://github.com/TASEmulators/desmume/blob/master/desmume/src/rasterize.cpp), GPL-2.0-or-later: consultada la comparación de igualdad con tolerancia; no se copió código. La implementación RSX y sus pruebas usan como contrato el rasterizador de referencia local (Z ±512, W ±255); sin cambio a ese contrato. Los estados genéricos de profundidad de `rsxkit` son código propio MIT.
+
+## Consulta de niebla final (2026-10-28)
+
+DeSmuME, el mismo `rasterize.cpp`, copyright 2009–2025 DeSmuME team,
+GPL-2.0-or-later: consultadas la actualización de `isFogged` y profundidad
+por fragmento y la pasada final `RenderEdgeMarkingAndFog()`. No se copió código.
+Se contrastó la regla de bandera opaca/translúcida y los registros con
+[GBATEK, DS 3D Toon, Edge, Fog, Alpha-Blending, Anti-Aliasing](https://problemkaputt.de/gbatek.htm#ds3dtoonedgefogalphablendingantialiasing).
+El contrato de interpolación entera sigue siendo `r3d_px.h`; se conserva
+su tratamiento de FOG_SHIFT 11–15. Los shaders y la repetición de pruebas
+de profundidad/ID son propios, GPL-2.0-or-later. Las mezclas genéricas de
+alfa mínimo y la salida de posproceso a un destino son código propio MIT
+en `rsxkit`, sin reglas ni código de la DS.
+
 ## Bibliotecas propias (subtree)
 
 | Carpeta | Origen | Licencia | Notas |

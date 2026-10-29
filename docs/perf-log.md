@@ -193,6 +193,332 @@ extracción reproducible con `SND_TRACE` y `tools/audio-voice-report.py`.
 - Se conserva Hermite sin sinc de ocho puntos: el costo host ya aumenta y falta el margen SPE real. No elimina cuantización de origen PCM8/ADPCM ni todo alias; atenúa cerca de Nyquist por voz. No se justifica activarlo por omisión sin escucha y costo PS3.
 - Guion único `build/audio3/guion-ps3.txt`: Metroid (intro/menú/voces) y MKDS (demostración/carrera), mismos tramos con `audio-hd.off` y `audio-hd`; oír siseo, aspereza y clics; comparar banco de 16 voces y `DATO audio`. Salir SELECT+START y O, conservar ambos logs; no borrar interruptores.
 
+## 2026-10-28 — Presupuesto para preferir HD [PS3 rondas 4/5 recibidas; política en host]
+
+Análisis reproducible en `build/niebla-final/diag-6/logs.py` y `logs.txt`.
+`nsmb-niebla4.log` contiene `juegos-niebla4.log`: se analizan por separado,
+sin sumar sus cuadros. Se separa cada juego al abrir su ROM.
+
+| Consola / selección de ventanas | Ventanas | Servicio aproximado p25 / mediana / p75 (ms) |
+|---|---:|---:|
+| Ronda 4, NSMB, 120/120 RSX | 55 | 12,838 / 13,631 / 14,242 |
+| Ronda 4, Metroid, 120/120 RSX | 18 | 13,914 / 22,466 / 27,405 |
+| Ronda 5, NSMB, con 3D | 37 | 6,948 / 9,341 / 10,455 |
+| Ronda 5, Metroid, con 3D | 63 | 7,901 / 14,966 / 19,044 |
+
+Servicio aproximado = media del intervalo menos media de la espera del flip;
+las medias pertenecen a la misma ventana, pero no a una captura emparejada
+por cuadro. Las ventanas completas RSX de Metroid incluyen escenas ligeras
+y pesadas: para el tramo desde 120 s siguen siendo válidas las 13 ventanas
+del análisis anterior. No comparar sus medianas con las de otros tramos
+como un A/B estricto.
+
+NSMB ronda 5: 368 cuadros RSX y 3414 SPE (90,3 % SPE) en las ventanas con 3D.
+El costo crudo menor del SPE pierde HD aun cuando ambos caben. Metroid:
+1912 RSX y 4882 SPE (71,9 % SPE) en esas ventanas; conservar la posibilidad
+de bajar en los tramos pesados. Los umbrales 16,0/16,667 ms dejan a NSMB
+margen respecto de su p75 de 14,242 ms con la ruta anterior y distinguen
+las ventanas RSX pesadas de Metroid. El margen de retorno es 0,667 ms;
+la mejora mínima del cuadro es 5 % + 0,5 ms para filtrar diferencias pequeñas.
+Son decisiones de política, pendientes de ajuste mediante A/B en consola.
+
+La ronda 6 mide trabajo PPE por cuadro sin flip y usa como carga el máximo
+de su media y el costo 3D de la ruta. HD se conserva si cabe; sobre 16,667 ms
+solo se baja cuando el costo 3D RSX supera SPE ×1,10 + 0,5 ms **y** su carga
+supera SPE ×1,05 + 0,5 ms. El retorno con margen y la ausencia de ganancia SPE
+exigen dos ventanas de confirmación; la banda 16,0–16,667 ms conserva HD o
+prolonga el sondeo. No se ejecutan ambas rutas en un mismo cuadro.
+
+Síntesis en host con el código real (`diag-6/politica.c`), 10 000 decisiones:
+NSMB 9440 HD / 560 SPE; Metroid pesado 632 HD / 9368 SPE; CPU saturada sin
+mejora del cuadro 9440 HD / 560 SPE; raster GPU lento oculto al PPE 632 HD /
+9368 SPE. Incluyen calibración y sondeos. No son tiempos ni fps de PS3.
+
+Límites: las dos rutas se miden en momentos distintos; cambios de escena,
+composición/presentación GPU y esperas retiradas junto al flip pueden alterar
+el intervalo real respecto de la carga. El costo 3D evita esconder un raster
+lento, pero no constituye una medición del plazo GPU completo. Validar con
+`rutas`, `costo cambio`, `cuadro` y `HD costos` en Metroid y NSMB; el paquete 6
+no tiene mediciones nuevas de consola.
+
+## 2026-10-28 — Nativa desde HD y costo adaptativo [PS3 ronda 4; host corrección de ronda 5]
+
+Datos recibidos de consola, sin sumarlos dos veces: `nsmb-niebla4.log` contiene
+`juegos-niebla4.log`. Separar en la apertura de cada juego; para Metroid en
+juego tomar las ventanas a partir de 120 s. Script y resumen reproducibles:
+`build/niebla-final/diag-5/logs.py` y `logs.txt`.
+
+- Metroid en juego, 13 ventanas completas RSX: p25/mediana/p75 del intervalo
+  23,318 / 25,807 / 42,190 ms. No se incluyen los menús de 16,7 ms en esa cifra.
+- NSMB: 67 ventanas con 3D, 55 con intervalo ≤17,5 ms, cuatro entre 17,5–20,
+  ocho entre 20–25 y ninguna >25; 7383 cuadros RSX y cuatro SPE.
+- Grupos de Metroid con niebla final ampliada (20 por escala, 1882 cuadros):
+  medianas GPU nativa color 6,113 / auxiliar 5,099 / final 0,186 ms;
+  HD 9,304 / 8,083 / 0,704 ms. Mediana del total de cada resolución:
+  11,399 y 17,976 ms; máximos 23,245 y 33,187. Los grupos tienen su propia
+  media y tamaño, no son muestras individuales ni un A/B nuevo. La reducción
+  elimina el grupo nativo solo cuando no hay captura; no se deduce una ganancia
+  de fps sumando medianas de ventanas distintas.
+- NSMB, niebla sin ruta ampliada (58 grupos, 6862 cuadros): medianas del total
+  nativo 1,950 y HD 2,823 ms. Se conserva el detalle de otros modos en el resumen.
+- Se detectaron 947 presentaciones omitidas por captura a doble pantalla en
+  Metroid. Eso no cuenta todas las capturas: el bit DISPCAPCNT de la instantánea
+  decide la necesidad exacta, de forma conservadora incluso con banco no LCDC.
+
+**Ronda 5, conteos previstos, sin tiempos nuevos de PS3:**
+
+- Sin captura: dos resoluciones → una rasterización de escena. Con niebla,
+  cuatro pasadas de geometría → dos (color/atributos HD); dos quads de niebla
+  → uno. Sigue un único quad de exportación, ahora leyendo HD directamente.
+  Banco de 256 placas: 514 → 257 dibujos a 2×; con `3d-rsx-pasadas-ronda3`,
+  1024 → 512. La ruta exacta conserva los conteos de la ronda 4.
+- Reducción por muestra `(x*s+s/2, y*s+s/2)` entera, filtro nearest,
+  RGB6/A5 en una sola conversión. Para escalas pares se añade medio texel a
+  las coordenadas del quad, evitando seleccionar por redondeo entre dos texeles.
+  No es paridad universal con el raster 1×: la cobertura y la interpolación
+  pueden cambiar. Por eso nunca alimenta una captura ni una comparación exacta.
+- Selector: ventanas de ocho muestras. SPE empieza midiendo ocho trabajos;
+  RSX entra tras dos ventanas con `RSX + 500 us <= SPE * 0,85`. Una ventana
+  que no cumple durante el sondeo vuelve al SPE. En RSX, dos ventanas con
+  `RSX > SPE * 1,10 + 500 us` fuerzan el SPE. SPE permanece 120 muestras y
+  vuelve a sondear; RSX renueva su base SPE tras 120 muestras. Generaciones
+  descartan hasta dos trabajos anteriores todavía en vuelo; marcas cero,
+  invertidas o muestras >1 s no se utilizan.
+- Tramo estable caro: 120 muestras SPE por ocho de sondeo RSX (93,75 % SPE).
+  Tramo estable barato: 136 RSX por ocho SPE de renovación (94,44 % RSX).
+  Son cuentas de la política, sin respaldos por funciones no admitidas y sin
+  las muestras tardías del cambio. El sondeo no dibuja la escena por ambas rutas.
+- Métrica RSX: suma de color/auxiliar/final en ambas resoluciones realmente
+  emitidas, exportación y preparación PPE. Métrica SPE: mayor duración de
+  ambos trabajos, leída del decrementador al retirarlos. No suma espera del
+  PPE o emisión que pueda solaparse con GPU. No mide el costo total del cuadro
+  ni garantiza tiempos de PS3; comprobar intervalo, composición y cambios HD/nativo.
+
+Validación **host**, sin mediciones de velocidad de consola: 882 231
+comprobaciones dirigidas finales por orden LE/SAN y BE/qemu, cero fallos;
+entre ellas 32 comprobaciones del contrato de captura y secuencias de
+10 000 muestras sintéticas para comprobar permanencia y recuperación.
+La suite completa conserva únicamente los 34 fallos BE conocidos del anillo
+JIT; ROMs, gráficos, sonido, 32 hashes y 16 lockstep correctos. Los 19 shaders
+son idénticos a ronda 4. La ejecución gráfica nueva queda pendiente: RPCS3
+aborta antes de arrancar incluso con `--help`.
+
+Sin nuevas reservas GDDR3/XDR, shaders ni cambios de stencil en juego. Solo
+la autoprueba reserva una superficie temporal para leer HD completa. A/B:
+`3d-rsx-nativa-ronda4`, `3d-rsx-sin-costo`; ambos restauran las decisiones de
+la ronda 4. La secuencia anterior de dibujos sigue en `3d-rsx-pasadas-ronda3`.
+
+## 2026-10-28 — Pasadas de niebla [PS3 ronda 3; host solo corrección de ronda 4]
+
+Log acumulado `build/niebla-final/ps3/mkds-niebla3.log`: Metroid antes de 290 s,
+NSMB entre 290 y 900 s, MKDS después. Análisis reproducible en
+`build/niebla-final/diag-4/logs.py`. No son escenas emparejadas para A/B.
+
+| Juego / muestras PS3 | N | Mediana de polígonos | Dibujos totales | Raster nativo ms | Preparación ms |
+|---|---:|---:|---:|---:|---:|
+| Metroid, motivo niebla final | 25 | 280 | 4480 | 9,949 | 0,688 |
+| Metroid, Z sin niebla | 17 | 169 | 1656 | 7,783 | 0,470 |
+| NSMB, motivo niebla final | 28 | 316 | 1164 | 4,138 | 0,704 |
+| NSMB, W sin niebla | 7 | 757 | 818 | 5,483 | 1,468 |
+
+- Ventanas completas de Metroid 120/120 RSX (15): medianas intervalo 30,509,
+  emulación 28,276, preparación 0,699, envío 8,592 y raster nativo 9,697 ms.
+  NSMB 120/120 RSX (41): 17,922 / 14,421 / 0,739 / 1,962 / 3,938 ms.
+  Preparar datos no explica por sí solo la caída; emitir/ejecutar dibujos domina
+  en Metroid. El envío puede incluir presión del FIFO: no se suma al raster
+  como si ambos fueran trabajos independientes.
+- Metroid a 103,166 s: 705 polígonos, 12 420 dibujos, raster 25,620 ms y
+  preparación 1,660 ms. El contador «dibujos 1005 -> 12420» compara una
+  estimación simple de una sola rasterización con todos los dibujos reales;
+  no mide el costo aislado de atributos. 1005 = 705 + 4×75 translúcidos.
+  La ruta ampliada usa 3–4 dibujos por opaco y cuatro más por translúcido;
+  3105 por rasterización × color/atributos × nativo/HD = 12 420.
+  Los quads finales no se contabilizan ahí.
+- hd-10 NSMB: 49 muestras Z, medianas 313 polígonos / 56 dibujos / 0,410 ms;
+  dos muestras W, 751 / 804 / 5,406 ms. El tramo W de ~5,5 ms ya existía.
+  Los ~0,4 ms son Z sin niebla, mientras la ronda 3 admite nuevos cuadros con
+  niebla. Sin una reproducción idéntica no se atribuye toda la diferencia a
+  regresión. Sí se identifica que Z plana por polígono fragmenta los lotes
+  de color aunque ese shader no la consume.
+
+Ronda 4, **reducción de operaciones, sin tiempos nuevos de PS3**:
+
+- Opaco ampliado sin igualdad: 3–4 dibujos → 1–2. Se consulta la cara anterior
+  solo cuando pudo existir un escritor trasero. La igualdad conserva sus dos
+  límites inclusivos y la escritura posterior.
+- Translúcido simple: cinco → uno con borrado ocupado, dos con borrado vacío
+  y mezcla; añadir uno si la textura también puede producir alfa 31.
+  Atributos: una pasada translúcida (más la opaca si procede), independientemente
+  del alfa previo. En la ruta ampliada se conservan puerta y rechazo de ID;
+  las tres pasadas de atributos se reducen a una.
+- Lotes de color opaco con niebla: se comparan solo las constantes que lee
+  `shade`/`shade_w`. Atributos conserva su Z plana y bandera por polígono.
+  En el banco de 256 planos se esperan 1 dibujo de color y 256 de atributos
+  por resolución, frente a 256+256; la consola debe confirmar el contador.
+- Cifras anteriores son conteos de código. No se promete una reducción
+  proporcional de ms ni que se haya alcanzado al SPE. GPU auxiliar y
+  posproceso, envío y preparación se registran por separado en
+  `DATO rsx3d pasadas`, incluyendo motivos poco frecuentes dentro de cada
+  ventana de 120 etiquetas. Las marcas HD se leen solo tras su propia etiqueta;
+  sin niebla se aprovechan las marcas existentes.
+- Paridad host LE/SAN y BE/qemu: 3 717 120 estados por orden, sin diferencias;
+  incluye descarte alfa, destino transparente, ID repetido, caras, TDEPTH,
+  mezcla, atributos y ambos bordes de igualdad Z/W. El ensamblado de shaders
+  no cambia. Falta ejecutar autoprueba gráfica 1×/2× y A/B con
+  `3d-rsx-pasadas-ronda3`, midiendo las mismas escenas de Metroid y NSMB.
+
+Se difieren las dos ampliaciones de cobertura. El límite de IDs de Metroid
+afecta 21 ventanas/1580 cuadros; sin sombras, cuatro bits podrían representar
+hasta 15 IDs, pero hay que comprobar el remapeo y la frontera de rechazo.
+La cara trasera W de MKDS afecta 104 ventanas/12 386 cuadros; exige resolver
+los empates de máscaras ya fallidos en dos variantes anteriores. Ningún límite
+se abre sin paridad gráfica.
+
+## 2026-10-28 — Profundidad exportada y bordes de niebla [PS3: diagnóstico; host: ensamblado]
+
+- Paquete `salsads-niebla-final-2`, PS3 aislada 1×: 452/512 escenas finales aceptadas, 60 fallos y 1 474 560 píxeles fuera de tolerancia; pruebas antiguas 0/8/10 con 384/8832/7680 diferencias. Los 60 fallos corresponden exactamente a exportar W=0 en la pasada de atributos por colisión COLOR/DEPTH con R1.z. Los tres fallos antiguos coinciden con reconstruir Z−1 en bordes de LUT.
+- Corrección comprobada en host: 13 656 casos fp40 con ambos alias de salida, descartes y bordes; las tres imágenes corregidas coinciden con los PPM de referencia (49 152 píxeles cada una). No son ejecuciones ni tiempos del RSX. Atributos Z añade cinco instrucciones; W usa un registro más para separar COLOR de DEPTH. Sin destinos nuevos ni lecturas durante el juego. Medir raster nativo/HD y cuadros >20 ms en consola, después de validar autopruebas 1×/2×; comparación con `3d-rsx-niebla-anterior` en la misma escena.
+
+## 2026-10-28 — Salidas parciales de niebla [PS3: diagnóstico anterior; host: ensamblado]
+
+- Consola, paquete de niebla final anterior, autoprueba aislada 1×: 512/512 escenas rechazadas, 18 874 368 píxeles fuera de tolerancia. Las 18 pruebas anteriores también fallan. PPM 5: distintos R/G/B = 46 080/0/0; PPM 16 = 47 424/46 464/42 816. Dos colisiones de salida con R0 explican rojo sobrescrito y profundidad Z mutilada. La comprobación del ensamblado corregido da 11 556 casos sin fallos en host; no mide rendimiento RSX.
+- Sin nuevas mediciones de PS3 para el arreglo. La sonda y sus lecturas están limitadas a autoprueba y no sirven para medir tiempos de juego. Repetir 1×/2× antes de medir Metroid, NSMB y MKDS; comparar `3d-rsx-niebla-anterior` en la misma escena. Sin cambios de reservas GDDR3 ni de pasadas durante el juego.
+
+## 2026-10-28 — Niebla final y diagnóstico del compositor [PS3 hd-10; host solo corrección]
+
+- Niebla final nueva sin medir en PS3. Repite el raster para producir profundidad/bandera y añade una pasada de pantalla completa; ese costo está incluido en las marcas existentes de raster nativo/HD. Comparación con `3d-rsx-niebla-anterior`, misma escena y escala. No se deduce una ganancia con los tiempos del host.
+- Relectura de logs hd-10, ventanas de 120 cuadros, medianas de etapas de A agrupadas por censo previo: NSMB con ≥100 RSX (40 ventanas), compone 10,33, capas 2,34, final 7,93 ms; con >60 SPE (6), 4,835 / 2,335 / 2,425 ms. MKDS con ≥100 RSX (46), 7,05 / 0,98 / 6,02 ms; con >60 SPE (9), 2,78 / 0,98 / 1,75 ms. Son grupos de escenas distintas, no una medición A/B por cuadro.
+- NSMB, tramo 77–83 s: 77,454 s: 112 RSX/9 SPE, final 7,93; 79,456 s: 54/66, final 2,43; 81,459 s: 36/83, final 2,42; 83,461 s: 120/0, final 7,92. Capas 2,33–2,34 y espera 0,00. La mediana cambia de ruta al cambiar la mayoría de cuadros. B permanece en ~2,40 ms de final. `compose_graphics` llama a `hd_export` solo con `hd_ea`: la exportación adicional es la explicación compatible con estos datos, no una espera del raster dentro de «final». No se aísla todavía selección de capas, transposición o DMA del exportador; no se aplica arreglo al compositor.
+- Host LE con ASan/UBSan: 512 escenas dirigidas, color calculado aparte y paridad referencia/bandas. No sustituye la comparación RSX de consola, pendiente por falta de acceso a RPCS3.
+
+## 2026-10-27 — RSX ronda 15 [PS3 hd-9 sin aplazar; RPCS3 solo corrección]
+- MKDS 2× sin aplazamiento (hd-9 + r3d-sin-aplazar): 869/7080 cuadros >20 ms (12 %), emulación mediana 13,6 ms; con aplazamiento la imagen HD no se renovaba (0/120). Niebla por fragmento y rescate PPE de texturas: medir en consola el censo RSX/SPE de Metroid y «RGBA8» por cuadro.
+
+## 2026-10-26 — RSX ronda 14 [PS3 hd-8 analizada]
+- MKDS 2× con hd-8: compositor A «(final)» 6,0–7,0 ms en carrera (antes 13,2; meta ≤3 no alcanzada), compositor A 8,7 ms; la espera del 3D se aplaza (líneas 88–160) y la pantalla A se congela: A/B en `build/rsx3d-hd-9/guion-ps3.txt` con `DATO rsx3d HD cambio`.
+
+## 2026-10-26 — RSX ronda 13 [PS3 ronda 12 analizada; RPCS3 solo corrección]
+- MKDS 2× (hd-7): cuadros >20 ms 26,7/120; RSX preparación 0,5–1,5 envío 0,6–1,0 etiqueta 0,004 raster 2–3 ms; compositor A 15,0 (carrera) y 30,0 ms (escena previa, 254 polígonos) con «(final)» 13,2/28,2 ms = exportación de metadatos HD; Metroid menú 40,9 ms. Nuevo exportador vectorial, meta ≤3 ms: medir en PS3 (`DATO spe-etapas` A «(final)»).
+
+## 2026-10-26 — RSX ronda 12 parcial [RPCS3, no PS3]
+- Sombras Z dirigidas: 24–25 dibujos/escena, mediana raster 0,096 ms (12 muestras); cuatro escenas con muchos OID Z/W: 61–62 dibujos, mediana 1,115 ms, incluido primer uso de W de 11,751 ms. Son pasadas adicionales, no una ganancia de tiempo acreditada.
+- Igualdad: 8 dibujos opacos o 12 con mezcla; mediana raster 0,064 ms en 76 muestras tras excluir los primeros usos de cada grupo. A 2× se dibuja además el destino HD; tiempos de RPCS3 no extrapolables.
+- Sondeo de texturas, 14 lotes: 14 vencen el plazo de 250 µs y luego coinciden al retirarlos; máximo observado en validación final 275 µs a 1× y 273 µs a 2×. Se comprueba también la ruta de lote ya completado; no acredita rescates en juego.
+- Empates Z aislados: primera prueba falla 3/8; corregir la lectura de orientación no inicializada permite 8/8 exactos, sin modificar la conversión de vértices.
+- Parada: TID ampliado deja 24576 diferencias tras ambas variantes; cara trasera W deja 24576 en cuatro dirigidas tras ambas variantes. Se mantienen en SPE; Z y remapeo OID admitidos solo tras paridad.
+- 1×/2×/interruptores apagados: 0 fallos, 16 cuadros exactos y 177 mapas iguales. Evidencia y guion único en `build/rsx3d-hd-7/`; medir % RSX/HD, motivos y coste en PS3 real.
+
+## 2026-10-26 — HD en juego, ronda 11
+- PS3 real, `build/ps3-hd-diag/d-mkds-2x.log`: 6294 retiradas RSX, 901 SPE; 6294/8520 presentaciones HD. Hay cuadros sin 3D; el porcentaje total no mide pérdidas de rasters aceptados.
+- 48 ventanas con ≥100 retiradas RSX: medianas intervalo 39,623, emulación 25,862, compositor A 39,305, B 7,472, etiqueta/reutilización 0,004 y recogida final 0,005 ms. Incluyen distintas escenas; no sustituyen el recorte de pista del autor.
+- PS3, ventanas ≥100 RSX: eventos de línea 2,380 ms a 1× frente a 15,345 a 2× (≈12,965 ms extra); geometría 2,30 frente a 2,57. El compositor A termina antes de presentar porque `vid_wait` lo espera al reutilizar la instantánea dentro de `nds_run_frame`; la recogida final pequeña no incluye esa espera.
+- Cambio dirigido: metadatos repetidos por ocho píxeles, conservando prioridades/ventanas/mezclas y ambas alternativas de alfa 3D. No hay tiempos nuevos de PS3; los del SPE bajo RPCS3 no predicen consola.
+- Flip HD esperado después de emular y antes de tocar pantalla; A/B `3d-rsx-hd-flip-temprano`. Permite solapar composición RSX de N con emulación N+1; 1× conserva su orden.
+- `3d-rsx-hd-metadatos-escalares` conserva el recorrido previo; nuevas esperas PPE por etapa y causas de caída en cada ventana. No sumar «instantánea» a SPE: es un subconjunto.
+- RPCS3, juego propio Gouraud: 118/120 HD en la primera ventana (dos cuadros sin capa 3D), 240 cuadros y resultado correcto; alambre vuelve al SPE. No acredita velocidad ni ausencia de retención en PS3.
+- Costos raster HD leídos tras su etiqueta, nunca tras la etiqueta nativa temprana: elimina restas de marcas aún no publicadas. Evidencia y guion en `build/rsx3d-hd-6/`.
+
+## 2026-10-26 — Diagnóstico HD solapado, ronda 10
+- RPCS3, secuencia original: descriptores originales 1 exacto/15 anteriores/0 otros; distintos 0/15/1 (primer cuadro). Protocolo sin fallos en ambos; 177 mapas iguales a hd-3.
+- La variante cambia solo el destino nativo de la ranura 1 y su descriptor de exportación; la preparación DS no cambia. No se promueve a juego.
+- Sin tiempos nuevos de PS3: mañana corresponde reproductor 2×, diagnóstico experimental, MKDS 1× y solo con exactitud original MKDS 2×, misma pista dos minutos.
+- RPCS3, composición leída entre parejas: 16 exactos en ambas variantes; nativo 7/8/1 y 8/8/0. Esa espera altera la reproducción: no sustituye el banco original ni certifica el solapamiento en juego.
+- Evidencia y guion en `build/rsx3d-hd-diag/`; los costos HD con etiqueta nativa temprana no certifican el tiempo total GPU.
+
+## 2026-10-26 — Ronda 9 HD: localización del cuadro anterior (RPCS3)
+- Base ronda 7: 16/16 solapados exactos a 2×. Parche ronda 8: 15/16 incorrectos, ambos tras compilación completa.
+- Error en x=32..223, y=32..159: 192×128=24576 píxeles, repartidos 12288/12288 entre las mitades superior e inferior.
+- Comparación contra los 16 cuadros: salida n igual a referencia n−1 para n=1..15, incluido fondo; no coincide con n+1. Ranura n%2, exportaciones XDR a 18 MiB + ranura×256 KiB.
+- Descartada la banda única; causa de la retención completa pendiente. Se restaura el código; evidencia en `build/rsx3d-hd-5/`. Sin tiempos PS3 ni validación de juego HD.
+
+## 2026-10-26 — Ronda 8 HD: exactitud bloqueante (RPCS3)
+- Dos intentos con exportación nativa antes del raster HD: ambos fallan 15/16 cuadros solapados; cada fallo afecta 24576 píxeles. El segundo renueva también el sampler nativo, sin mejora.
+- 177 mapas síncronos sin cambios; 32 contratos, línea cambiante y seis escenas SPE exactos. No se toman tiempos como resultado válido ni se extrapolan a PS3.
+- Experimento revertido; logs y parche en `build/rsx3d-hd-4/`. No se midió MKDS en juego HD ni se certifican 60 fps.
+
+## 2026-10-26 — Composición HD renovada (RPCS3, no PS3)
+- Misma instantánea 3D; destino completo 512×384/768×576/1024×768. Metadatos 2D sintéticos prearmados; excluye emulación, generación SPE y flip.
+- Copia/composición: media de ocho pasadas tras dos de calentamiento. Total GPU suma esas medias al último raster nativo+HD+exportación caliente; no es tiempo de cuadro de un juego.
+- Orden MKDS/SM64DS/NSMB/pesado, ms composición / total GPU:
+- 2×: 0,076/1,455 · 0,086/0,974 · 0,073/1,701 · 0,071/2,805.
+- 3×: 0,082/1,642 · 0,072/1,039 · 0,080/1,952 · 0,072/2,845.
+- 4×: 0,095/1,783 · 0,096/1,208 · 0,085/1,993 · 0,082/3,001.
+- Publicación PPE 0,155–0,207 ms; 177 mapas nativos sin cambios por escala. Recarga activa: contratos y seis escenas SPE exactos; apagada retiene datos.
+- No acredita 60 fps ni el presupuesto de PS3; consola pendiente. Logs y contraste de las cuatro hipótesis en `build/rsx3d-hd-3/`.
+
+## 2026-10-26 — RSX ronda 6, diagnóstico de composición (RPCS3, no PS3)
+- Hipótesis 1, entrada retenida: línea cambiante sin SPE, 722/768 píxeles distintos; patrón idéntico tras tres publicaciones.
+- Hipótesis 2, lectura de destino ligado: desligado y borrado en otro destino permiten distinguir la sonda; 3/3 muestras RGBA del 3D exactas, 9/12 palabras de metadatos incorrectas.
+- Resultado final de la mínima: 731 diferencias (722 píxeles + 9 sondas); seis escenas SPE siguen con 48200–49151 píxeles distintos y nativo/metadatos exactos. Parada por tope; causa última no demostrada.
+- 1× conserva 177 mapas, autoprueba y solapamiento. No hay medición HD con composición ni conclusión de velocidad PS3; guion y volcados en `build/rsx3d-hd-2/`.
+
+## 2026-10-25 — RSX fase 2, cuarta ronda
+- **PS3 recibida, ronda 3:** MKDS misma pista, RSX 90 %; intervalo mediana 16,68 ms, 58/71 ventanas a 60; SPE 59/66. Emulación 11,36/10,37 ms y cuadros >20 ms 22,9/12,6 por 120.
+- Preparación mediana/p90 1,13/2,73 ms, envío 0,59/1,0; pesado «vértices» 1,68 ms incluía estados; RGBA8 frío 34–41 ms PPE.
+- **Cambio:** VMX conserva la división Z; perfil separa estados/vértices y autoprueba compara ambas rutas sobre 16 384 vértices. RGBA8 por lotes de 65 536 texeles en el SPE, tras el raster de respaldo; constantes y stencil solo si cambian.
+- **Política fría:** ningún sondeo espera al decodificador; el cuadro completo vuelve al SPE hasta completar sus texturas. Instantánea y arena protegidas; el siguiente raster puede encontrar trabajo pendiente.
+- **Validación host/RPCS3:** dirigidas LE/BE 871 923 por orden sin fallos; LE/SAN, ROMs/hashes/lockstep BE correctos, solo 34 fallos conocidos. Autoprueba 0 fallos, 16 cuadros exactos; 176 mapas ronda 3 y 177 A/B iguales. Sonda de texel aislado 512: mismas 24 090 diferencias DS con ambas rutas; no es regresión ni paridad global.
+- Arena RSX 24 MiB, descriptores 64 KiB y metadatos adicionales ≈15 KiB; reserva local compartida, doble salida de 4 KiB, holgura 13 840 B. Banco RPCS3 16 384 vértices: escalar 301 µs/VMX 191 µs en una corrida; no acredita mejora en PS3.
+- **Guion PS3:** autoprueba aislada; MKDS misma pista 2 min con `3d-rsx` y 2 min con `3d-spe`; salir antes de recoger logs. Resumidor y detalle en `build/rsx3d-fase2-4/`.
+- **Decisión pendiente:** preparación+envío ≤0,3 ms mediana y emulación no peor que SPE; una vuelta medida por parte. Si no baja, conservar su interruptor anterior y seguir; no extrapolar RPCS3 ni declarar paridad global RSX/DS.
+
+## 2026-10-25 — Juego RSX solapado (base PS3 recibida; nueva ruta sin medir)
+- Base recibida, MKDS carrera: 6590 RSX/730 SPE, intervalo 33,3 ms; raster+exportación mediana 2,36, p90 3,06, máximo 4,49 ms. Aislado pesado 4,24 ms, autoprueba sin fallos.
+- Relectura local: 53 muestras RSX, preparación mediana 2,232, copia 0,247, total PPE 5,485 ms; residual envío+espera 2,854. 72 ventanas: emulación 16,59 y frame_begin 14,295 ms. No sumar medianas como si fueran el mismo cuadro.
+- Código anterior: la etiqueta 3D se espera dentro de emulación; frame_begin espera el flip. Inferencia: superar el plazo de presentación pierde un vsync; el log anterior no separa envío de etiqueta.
+- Estimación caliente orientativa: 16,5 − 0,9 de identidad − 2,4 de espera raster/exportación ≈ 13,2 ms de emulación; compatible con intervalo 16,7, por debajo del tope 25 ms. No es medida del nuevo binario ni garantía en carrera.
+- `DATO rsx3d cuadro`: medias por 120 cuadros, tiempos PPE incluidos en emulación; raster/exportación y compositor se solapan, no sumarlos al total. Retiradas RSX y envíos SPE pueden cruzar una ventana.
+- A/B: MKDS carrera 2 min con `3d-rsx`, sin prueba aislada; luego 2 min sin RSX. Comparación adicional con `3d-rsx-sin-solapar` si hace falta; perfil de preparación optativo e idéntico en ambos lados.
+- RPCS3: 16 cuadros con dos exportaciones pendientes y retirada alternada exactos; autoprueba aislada 0 fallos, 176 mapas iguales a la ronda previa. No se midió velocidad PS3.
+- Exigir autoprueba sin fallos y paridad sin regresión; objetivo intervalo 16,7 ms y ~90 % RSX. Si sigue >25 ms, parar con el desglose. Persisten RGBA8 frío en PPE y diferencias RSX de cobertura/interpolación previamente documentadas.
+
+## 2026-10-25 — RSX fase 2, ronda 2 (PS3 recibida; cambios pendientes de medir)
+- PS3, base `bc84e66`: pesado caliente raster 4,987–4,993 + exportación 0,197–0,198 ms, 652 dibujos/estados; supera 4 ms. MKDS carrera admitido por RSX, 1,57 ms; Metroid conserva SPE por igualdad.
+- Mapas PS3: 11 fallos de niebla, 384–8832 píxeles; rectángulos completos de 192 píxeles, sin diferencias de cobertura. Error RGB6 máximo 11 en prueba 8 y 1 en las restantes; PPM solo indica presencia, no magnitud del error alfa. Falta la referencia 0 entre los 157 mapas: contraste con la referencia previa y el conteo del log.
+- Host: 38 rectángulos RGB admiten densidad un nivel menor, 45 admiten Z un entero menor antes de `>>9`; el restante pierde azul 63→62. Hay 39 rectángulos sin PA_FOG con error alfa. Son dos mecanismos compatibles con los mapas, no una lectura de los bits internos del interpolador.
+- Densidad entera antes del interpolador y recuperación de constantes pequeñas antes de mezclar; 528384 mezclas host con perturbación de un ULP correctas. Z/W variable con niebla queda en SPE.
+- Sombras: consumo inmediato permite lotes estables del mismo ID/estado sin textura ni descarte; 110592 secuencias host conservan stencil/profundidad/escrituras. RPCS3 pesado: 652→436 dibujos/estados (−33,1 %); 176 mapas iguales con lotes apagados/remapeo general, 158 comunes iguales a la ronda anterior. No hay tiempos nuevos de PS3 ni garantía del límite 4 ms.
+- Guion local `build/rsx3d-fase2-2/guion-ps3.txt`: mismos cuadros y banderas, sin recargar `.rsx`; comparar con `3d-rsx-sombra-sin-lotes` solo si hace falta. No continuar a juego ni aprobar la ruta si pesado supera 4 ms.
+
+## 2026-10-25 — RSX fase 2 parcial (host/RPCS3; nueva ruta sin medir en PS3)
+- Base `c23c56e`, PS3 real aportada por el autor: raster+exportación MKDS 2,06 ms, SM64DS 2,24, NSMB 1,88, pesado 3,93; preparación caliente MKDS ~1,8/pesado ~2,5 ms, identidad ~0,9 ms y decodificación fría 34–37 ms. Es la base, no una medida de esta entrega.
+- Censo host por trabajo 3D: MKDS carrera, ventana 5000:8000, 2938/3000 con máscara+sombra; resto de modos 0. Muestra anterior MKDS 800/800 con sombras; SM64DS título y NSMB, 800 cada uno, sin modos pendientes. Metroid en juego, ventana 14000:18000: niebla e igualdad 4000/4000, resto 0; referencia host idéntica y reproductor RPCS3 devuelve el original íntegro por igualdad. No extrapolar a otros niveles ni confundir título con juego.
+- RPCS3, conteo de dibujos pesado: base filtrada sin sombras 403; original con sombras general 968, optimizado 652. MKDS carrera original: general 152 → optimizado 108. Los 158 mapas coinciden entre remapeos y con/sin lotes. No equivalen a tiempo PS3: comprobar raster+exportación ≤4 ms antes de continuar.
+- RPCS3, mapa MKDS carrera completo contra referencia: diferencias cobertura/RGB/alfa 0/10289/0. En muestras antiguas, incluir sombras cambia 3 píxeles de referencia/3 RSX en MKDS y 25/44 en pesado; no atribuir todos los residuos a estos modos ni certificar paridad global.
+- Niebla: primera hipótesis W falló 8 casos por normalización y precisión cerca de límites; segunda usa W normalizada constante explícita, 16/16 correctos. W variable y mezclas vuelven al SPE. Clear image carece de referencia implementada; bordes necesitan atributos vecinos, igualdad tiene margen DS y alambre exige cobertura de aristas originales: no se sustituyen por aproximaciones nativas.
+- Datos, capturas solo locales y mapas en `build/rsx3d-fase2/`; interruptores SPE independientes para sombra/toon/niebla y `3d-rsx-sombra-general` para comparar. La LUT reserva 128 B en 20 MiB; sin tocar caché, RGBA8, identidad ni conversión de vértices.
+- Validación: LE 8 740 377 comprobaciones sin fallos; unidad BE 8 744 107 con los 34 fallos conocidos del anillo. SAN correcto; compilación del ejecutor BE detenida tras dos caídas del gcc emulado, por lo que ROMs/hashes/lockstep BE no se validaron en esta corrida.
+
+## 2026-10-25 — Identidad incremental del RSX (host/RPCS3)
+- Base c23c56e: resultado comunicado de PS3 real raster+exportación MKDS/SM64DS/NSMB/pesado 2,06/2,24/1,88/3,93 ms; pesado aprobado bajo 4 ms.
+- Host, 500 repeticiones calientes por cuadro grabado: preparación 75,750→57,090 / 27,854→7,846 / 99,290→80,390 / 124,556→107,330 µs. Flujos idénticos; 100 invalidaciones por escena contra decodificación completa.
+- RPCS3, media de tres repeticiones, identidad completa→incremental: 327→2 / 332→2 / 337→2 / 322→3 µs. No son tiempos del PPE real.
+- VMX, misma vuelta RPCS3, vértices escalar→vector: 180→272 / 19→29 / 263→333 / 321→253 µs; descartado, sin segunda ronda.
+- Caché con generaciones únicas tras reiniciar, propagadas con la instantánea; páginas escritas conservan la comparación exacta de 1 KiB. Sin metadatos se usa la comparación completa.
+- A/B PS3: mismos cuadros y banderas `3d-rsx` + `3d-rsx-prueba`, alternar `3d-rsx-identidad-completa`; leer `DATO rsx3d costo` frío y `DATO rsx3d caliente`. En juego, `3d-rsx-perfil` registra las etapas.
+- SPE descartado tras una vuelta RPCS3: lotes de hasta 64 KiB en geometría libre; preparación PPE máxima MKDS/pesado 0,378/2,293 ms frente a 17,032/18,960, pero RGBA8 SPE 138,307/48,159 ms frente a 16,531/18,132 y lote frío máximo 67,096 ms. Incluye coste de ejecución/compilación del emulador; no justifica compartir geometría en consola. Paridad: 39 mapas iguales, geometría intercalada exacta y 710 940 comprobaciones ASan/UBSan.
+- Detalle, guion y resultados crudos locales: `build/rsx3d-prep/` (SPE retirado en `prototipo/`); paquete de entrega `build/salsads-rsx3d-prep.pkg` (SalsaDS RSX, SLDS00030).
+
+## 2026-10-25 — RSX ronda 3: costo por lotes (host/RPCS3, base PS3 aportada)
+- PS3 anterior MKDS/SM64DS/NSMB/pesado, raster+exportación: 4,177/2,427/4,644/7,542 ms. Dibujos 596/55/972/1101 → 185/33/211/403; estados lógicos sin cambio: 185/31/211/403.
+- Host nativo, 500 cuadros calientes sin GPU ni reloj de etapas: 120,318/26,376/197,012/312,858 → 76,824/26,932/101,088/121,936 µs; frío MKDS 2141→2468, pesado 2429→2776 µs. No son tiempos PPE.
+- RPCS3 pesado, medianas de tres: raster 2,020→0,975 ms, preparación 2,823→1,657; MKDS preparación 1,066→2,823, SM64DS 0,363→0,527: variabilidad y ausencia de mejora uniforme; no convertir a tiempos PS3.
+- Calibración prudente con NSMB PS3 sin textura: 4,420/964=4,585 µs/dibujo; conserva el residual. Estima raster+exportación 2,29/2,33/1,15/4,34 ms; con MKDS sin textura, pesado 3,17. Intervalo cruza 4 ms: parada.
+- Preparación PS3 orientativa, sin garantía: caliente MKDS 1,6–2,5 ms, SM64DS 1,0–1,2, NSMB 1,8–3,7, pesado 1–3 (sin base caliente propia); frío MKDS/pesado 20–30. Pendiente medir, no promesa de ahorro.
+- Reproductor: mismos cuatro `.rsx`, `3d-rsx` + `3d-rsx-prueba`, sin `3d-spe`; sale solo. Leer `DATO rsx3d costo/caliente` tras cerrar. La subida es visibilidad de XDR, no copia adicional de textura; las etapas no cubren toda la preparación.
+- A/B por archivos: `3d-rsx-sin-lotes`, `3d-rsx-preparacion-anterior`, `3d-rsx-cache-gruesa`; renombrar a `.off` para desactivar. `3d-rsx-perfil` mide etapas en juego; prueba aislada siempre las mide.
+- Guion completo, comparaciones y estimación en `build/rsx3d-ronda3/`; pesado omite 167 sombras, MKDS en juego sigue usando SPE por efectos. Caché llena conserva el respaldo; sin fase 2 ni envío a consola.
+
+## 2026-10-25 — RSX 1×, ronda 2 (host/RPCS3; sin medida PS3)
+- Etiqueta de fence previa 322420947/enviada 1: centro 00000000 antes de `finish`, 1f003f00 después. Inicializar etiquetas corrige la primera exportación; compilación síncrona no la corregía.
+- Misma lista con Z/W: RGB MKDS 23523/23526, SM64DS 359/359; UV constantes en W dejan 499/57. NSMB: 214 diferencias de cobertura, 145 sin texturas/mezcla (56 comunes); no son categorías disjuntas.
+- Modulación/decal y empaquetado constantes exactos; mezcla RGBA8 pierde un nivel incluso entre blancos iguales. Interpolación por líneas, aristas, cuantización y mezcla exacta siguen pendientes; no se añadió copia por polígono.
+- Pesado: 1248 originales, 167 sombras omitidas, 1081 polígonos/1101 dibujos, 44 texturas/1015808 B en frío; área ponderada ≈88296 fragmentos. W usa 58 instrucciones y exportación 12.
+- Sensibilidad sin calibrar: 3–6 millones de instrucciones/ms, 1000–3000 dibujos/ms y exportación 0,3–1 ms → 1,52–3,81 ms; preparación/copia PPE aparte. RPCS3 no valida ese presupuesto ni el cuadro completo.
+- Diagnóstico PS3: `3d-rsx-prueba` y `3d-rsx`, instantáneas `rsx3d-{mkds,sm64ds,nsmb,pesado}.rsx` en el directorio de datos; cada comparación aparece 3 s (referencia izquierda). Sin `3d-rsx`, ambas mitades son referencia; sale solo.
+- Juego: renombrar la prueba a `.off`; MKDS pesado 2 min apagado/encendido, misma demostración, salir SELECT+START y O. Mirar aristas, texeles, translucidez, profundidad y primer cuadro; `DATO rsx3d` da modo/motivo, pasadas, bytes y costes.
+- Con sombras el juego vuelve al SPE: medir RSX en el reproductor y no confundir respaldo con mejora. Parar si raster+exportación supera 4 ms; atribución residual y paridad siguen sin aprobar. Detalle local: `build/rsx3d-ronda2/diagnostico.txt`.
+
 ## 2026-10-25 — Lectura local de planos por lote (cand-v004)
 - Base PS3 aportada, MKDS pesado, 159 ventanas: armado ≈ 4,6 ms/cuadro; lectura 1,92, atributos 1,29, recorte 0,80, ensamblado 0,41 y salida 0,20; DMA ≈ 0,03. Meta ≤ 2,5 y espera PPE ≤ 1 ms, aún sin acreditar.
 - El descarte fuera del volumen ya precedía a la copia de atributos; «atributos» incluye proyección/cara/profundidad. No se adelanta la cara al recorte entero: sus redondeos pueden alterar el área.
@@ -202,6 +528,15 @@ extracción reproducible con `SND_TRACE` y `tools/audio-voice-report.py`.
 - A/B: `geometria-lectura-escalar` en el directorio de datos (host: `--geometria-lectura-escalar`); conserva la caché de proyección. `geometria-sin-reuso` fuerza también lectura escalar; mantenerlo apagado para aislar este cambio.
 - Guion PS3: MKDS pesado 2 min con `geometria-perfil`, repetir con lectura escalar; misma carga y opciones, comparar lectura-local, armado total, SPE y espera PPE por polígonos/cuadro. Renombrar interruptores a `.off`; salir con SELECT+START y O antes de recoger el log.
 
+
+## 2026-10-25 — RSX 1×: estimación parcial, sin medición PS3
+- Host, MKDS, máximo de polígonos en cuadros 2200–2499: cuadro 2384, 1248 polígonos; 300 cuadros idénticos a la referencia.
+- Subconjunto Z: 167 polígonos no soportados excluidos, 1101 dibujos, 44 texturas, 1015808 B RGBA8 en frío; área proyectada ponderada por pasadas ≈88296 fragmentos.
+- Shader: 53 instrucciones y una lectura; exportación: 12 instrucciones y 192 KiB. Ninguna copia de pantalla por polígono; una copia XDR final para el compositor.
+- Estimación de sensibilidad del subconjunto: 1,4–3,7 ms si se sostienen 3–6 millones de instrucciones/ms, 1000–3000 dibujos/ms y exportación 0,3–1 ms. Son supuestos sin calibrar, no tiempos PS3 ni prueba del umbral de 4 ms para el cuadro completo.
+- `DATO rsx3d`: polígonos/dibujos/texturas/bytes/aciertos, stamps raster/exportación y tiempos PPE de preparación/copia/total. La caché invalida toda la arena ante cualquier cambio de VRAM.
+- Parada por primera exportación vacía repetida en RPCS3; siete escenas siguientes exactas. W, igualdad y efectos pendientes; los mapas clasifican cobertura, RGB en intersección y alfa, sin aislar profundidad de interpolación.
+- Guion PS3 aplazado: tras resolver las pruebas, misma demostración MKDS 2 min apagado/encendido; exigir modo efectivo RSX y registrar raster+exportación ≤4 ms, preparación, copia y coste completo. Sin envío a consola.
 
 ## 2026-10-23 — Perfil del armado de geometría (pendiente PS3)
 - Evidencia PS3 aportada: MKDS pesado, armado 6,93 ms/cuadro a los 60–64 s; host ≈ 0,17 ms no reproduce ese costo. No se optimiza.
@@ -330,3 +665,10 @@ en la consola el paquete exacto, repetir partida nueva y verificar otros juegos 
 - Copia nominal y control cerrado del anillo: 3 067 904 pares comprobados sin extensión ni diferencias; pausa/reapertura y vueltas del anillo correctas. Reproducción de la captura local de Metroid al 50 % sin faltas; los silencios propios de la captura se conservan. SPE sin cambios: holguras 9056/178384/8432/17856/144032 B; mínimo 8192.
 - PS3: mismo Metroid (intro 30 s, menú 30 s, juego 60 s) y MKDS (demo/carrera 60 s cada uno), repetir con `audio-estirar-v1`, reiniciando y renombrando a `.off`; conservar `audio-sin-estirar` y `audio-sin-limitador`. Escuchar agua/peine, tono grave, ataques dobles; exigir faltas/silencio 0, comparar uniones/s, µs, bloques tarde y fps. Guion: `build/audio2/guion-ps3.txt`; salir SELECT+START y O antes del log.
 - Riesgos: coloración residual, percusión densa y déficit extremo; mayor reserva (precarga 85 frente a 43 ms) y ≈105 KiB adicionales en el PPE. `% tiempo estirando` puede subir por el control continuo: no equivale a muestras añadidas. La mejora perceptiva y el costo real requieren el A/B de consola; no se envió nada.
+
+## 2026-10-26 — HD: diagnóstico detenido (host/RPCS3)
+- Base PS3 recibida bcd37c1: raster pesado ≈4 ms y preparación PPE mediana 0,89 ms; no hay medición nueva de consola.
+- RPCS3 ejecuta raster nativo y HD a 2×; sus tiempos por volcado están en `build/rsx3d-hd/`. No acreditan rendimiento PS3 ni p95 ≤16,7 ms.
+- SPE→RSX falla dos veces con seis escenas; nativo y metadatos exactos, composición final distinta. No se miden ni promueven 3×/4×; HD bloqueado en juego.
+- Sensibilidad teórica con raster nativo R≈4 ms: a 2×, doble pasada ≈8–20 ms según fracción de llenado, antes de composición/presentación. No permite afirmar 60 fps.
+- Publicación experimental: copia PPE de 768 KiB de metadatos, sin devolver HD. No corrigió la discrepancia; coste real pendiente y ninguna ganancia atribuida.

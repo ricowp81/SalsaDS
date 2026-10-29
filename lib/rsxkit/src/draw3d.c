@@ -60,8 +60,20 @@ struct vprog {
 	int block;  /* constantes consecutivas: se suben de una vez */
 };
 
+static int incremental;
+void rsxkit_3d_incremental(int enabled) { incremental = !!enabled; }
+/* 1: recargar el programa y escribir su etiqueta de uso en cada dibujo (lo
+ * de antes); 0 (inicial): solo al cambiar de programa y al salir del 3D. */
+static int program_sync_per_draw;
+void rsxkit_3d_program_sync(int per_draw) { program_sync_per_draw = !!per_draw; }
+
 static struct {
+	int stencil_valid;
+	uint64_t stencil_key;
 	int ready;
+	rsxkit_program *cur_program; /* programa del usuario cargado (NULL: ninguno o precompilado) */
+	int program_pending;         /* dibujos con cur_program sin etiqueta de uso */
+	int color_aux;               /* COLOR0 desde la palabra `pad` del vértice */
 	struct vprog prog[2];   /* 0: el de siempre; 1: con posiciones interpoladas */
 	rsxFragmentProgram *fp[3];
 	u32 fp_offset[3];
@@ -148,9 +160,20 @@ void rsxkit_forget_state(void)
 	rsxkit_bound.scissor_valid = 0;
 }
 
+/* Etiqueta de uso del programa con dibujos pendientes: antes de cambiar de
+ * programa, al salir del 3D y antes de destruir un programa. */
+void rsxkit_3d_flush_use(void)
+{
+	if (d3.program_pending && d3.cur_program)
+		rsxkit_program_used_3d(d3.cur_program);
+	d3.program_pending = 0;
+}
+
 void rsxkit_leave_3d(void)
 {
 	struct rsxkit_state *g = &rsxkit_g;
+	rsxkit_3d_flush_use();
+	d3.cur_program = NULL;
 	if (g->arrays_bound) {
 		rsxkit_reserve(80);
 		for (int i = 0; i < 16; i++)
@@ -179,6 +202,14 @@ void rsxkit_vertices(uint32_t offset, uint8_t location)
 	d3.tex[0].valid = d3.tex[1].valid = 0;
 }
 
+void rsxkit_vertices_color_aux(int aux)
+{
+	aux = !!aux;
+	if (d3.color_aux != aux)
+		rsxkit_g.arrays_bound = 0;
+	d3.color_aux = aux;
+}
+
 void rsxkit_vertices_prev(uint32_t offset, uint8_t location, float t)
 {
 	if (!d3.prev_set || d3.prev_offset != offset || d3.prev_location != location)
@@ -197,7 +228,8 @@ static void bind_arrays(void)
 	const u8 stride = sizeof(rsxkit_vertex);
 	rsxBindVertexArrayAttrib(g->ctx, GCM_VERTEX_ATTRIB_POS, 0, o + 0, stride, 4, GCM_VERTEX_DATA_TYPE_F32, loc);
 	rsxBindVertexArrayAttrib(g->ctx, GCM_VERTEX_ATTRIB_TEX0, 0, o + 16, stride, 2, GCM_VERTEX_DATA_TYPE_F32, loc);
-	rsxBindVertexArrayAttrib(g->ctx, GCM_VERTEX_ATTRIB_COLOR0, 0, o + 24, stride, 4, GCM_VERTEX_DATA_TYPE_U8, loc);
+	rsxBindVertexArrayAttrib(g->ctx, GCM_VERTEX_ATTRIB_COLOR0, 0, o + (d3.color_aux ? 28 : 24), stride, 4,
+				 GCM_VERTEX_DATA_TYPE_U8, loc);
 	if (d3.prev_set) {
 		u8 ploc = d3.prev_location == RSXKIT_MEM_MAIN ? GCM_LOCATION_CELL : GCM_LOCATION_RSX;
 		rsxBindVertexArrayAttrib(g->ctx, GCM_VERTEX_ATTRIB_TEX1, 0, d3.prev_offset, 16, 4,
@@ -217,6 +249,7 @@ static void fixed_state(void)
 	struct rsxkit_state *g = &rsxkit_g;
 	gcmContextData *ctx = g->ctx;
 	rsxSetColorMaskMrt(ctx, 0);
+	rsxSetDitherEnable(ctx, GCM_FALSE);
 	rsxSetShadeModel(ctx, GCM_SHADE_MODEL_SMOOTH);
 	rsxSetZMinMaxControl(ctx, GCM_FALSE, GCM_TRUE, GCM_FALSE);
 	rsxSetDepthFunc(ctx, GCM_LEQUAL);
@@ -228,6 +261,7 @@ static void fixed_state(void)
 	/* Forzar que el primer dibujo ponga todo. */
 	d3.blend = d3.cull = d3.depth = d3.alpha_ref = 0xFF;
 	d3.line_width = 0;
+	d3.stencil_valid = 0;
 	d3.tex[0].valid = d3.tex[1].valid = 0;
 	rsxkit_bound.scissor_valid = 0;
 	g->state_valid = 1;
@@ -239,8 +273,17 @@ static void set_blend(uint8_t blend)
 	if (blend == d3.blend)
 		return;
 	d3.blend = blend;
+	rsxSetBlendEquation(ctx, GCM_FUNC_ADD, blend == RSXKIT_BLEND_ALPHA_MAX ? GCM_FUNC_MAX :
+		(blend == RSXKIT_BLEND_REPLACE_MIN_ALPHA || blend == RSXKIT_BLEND_KEEP_MIN_ALPHA) ? GCM_FUNC_MIN : GCM_FUNC_ADD);
 	u32 mask = GCM_COLOR_MASK_B | GCM_COLOR_MASK_G | GCM_COLOR_MASK_R | GCM_COLOR_MASK_A;
 	switch (blend) {
+	case RSXKIT_BLEND_REPLACE_MIN_ALPHA:
+	case RSXKIT_BLEND_KEEP_MIN_ALPHA:
+		rsxSetBlendEnable(ctx, GCM_TRUE);
+		rsxSetBlendFunc(ctx, blend == RSXKIT_BLEND_KEEP_MIN_ALPHA ? GCM_ZERO : GCM_ONE,
+			blend == RSXKIT_BLEND_KEEP_MIN_ALPHA ? GCM_ONE : GCM_ZERO, GCM_ONE, GCM_ONE);
+		break;
+	case RSXKIT_BLEND_ALPHA_MAX:
 	case RSXKIT_BLEND_ALPHA:
 		rsxSetBlendEnable(ctx, GCM_TRUE);
 		rsxSetBlendFunc(ctx, GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA, GCM_ZERO, GCM_ONE);
@@ -271,7 +314,8 @@ static void set_depth(uint8_t depth)
 	rsxSetDepthTestEnable(ctx, (depth & RSXKIT_DEPTH_TEST) ? GCM_TRUE : GCM_FALSE);
 	rsxSetDepthWriteEnable(ctx, (depth & RSXKIT_DEPTH_WRITE) ? GCM_TRUE : GCM_FALSE);
 	rsxSetPolygonOffsetFillEnable(ctx, (depth & RSXKIT_DEPTH_OFFSET) ? GCM_TRUE : GCM_FALSE);
-	rsxSetDepthFunc(ctx, (depth & RSXKIT_DEPTH_LESS) ? GCM_LESS : GCM_LEQUAL);
+	rsxSetDepthFunc(ctx, (depth & RSXKIT_DEPTH_ALWAYS) ? GCM_ALWAYS : (depth & RSXKIT_DEPTH_EQUAL) ? GCM_EQUAL :
+			     (depth & RSXKIT_DEPTH_GEQUAL) ? GCM_GEQUAL : (depth & RSXKIT_DEPTH_LESS) ? GCM_LESS : GCM_LEQUAL);
 }
 
 /* z < 0: la de los vértices (el viewport que puso rsxkit_bind). */
@@ -337,6 +381,7 @@ static void texture_format(uint8_t fmt, u8 *gcm, u32 *remap)
 		*remap = REMAP(GCM_TEXTURE_REMAP_COLOR_A, GCM_TEXTURE_REMAP_COLOR_R, GCM_TEXTURE_REMAP_COLOR_G,
 			       GCM_TEXTURE_REMAP_COLOR_B);
 		break;
+	case RSXKIT_ARGB8888:
 	case RSXKIT_XRGB8888:
 		*gcm = GCM_TEXTURE_FORMAT_A8R8G8B8;
 		*remap = REMAP(GCM_TEXTURE_REMAP_COLOR_A, GCM_TEXTURE_REMAP_COLOR_R, GCM_TEXTURE_REMAP_COLOR_G,
@@ -431,16 +476,21 @@ static void set_constants(const rsxkit_draw *d, const struct vprog *p)
 		if (fog_term >= 0)
 			c[C_FOGSEL + fog_term / 4][fog_term % 4] = 1.0f;
 	}
-	if (d3.c_valid && !memcmp(c, d3.c, sizeof c))
-		return;
-	memcpy(d3.c, c, sizeof c);
+	unsigned first = 0, end = NCONST;
+	if (d3.c_valid) {
+		while (first < end && !memcmp(c[first], d3.c[first], sizeof c[0])) first++;
+		if (first == end) return;
+		while (end > first && !memcmp(c[end-1], d3.c[end-1], sizeof c[0])) end--;
+	}
+	if (!incremental) { first = 0; end = NCONST; }
+	memcpy(d3.c + first, c + first, (end - first) * sizeof c[0]);
 	d3.c_valid = 1;
 	if (p->block) {
-		/* No rsxSetVertexProgramConstants: en PSL1GHT f649a08 avanza el
-		 * búfer de comandos dos veces (docs/rsx-notes.md). */
-		rsxLoadVertexProgramParameterBlock(ctx, p->const_start + p->consts[0]->index, NCONST, &c[0][0]);
+		/* Un tramo contiguo, con los mismos valores y registros del bloque completo. */
+		rsxLoadVertexProgramParameterBlock(ctx, p->const_start + p->consts[first]->index,
+		                                   end - first, &c[first][0]);
 	} else {
-		for (int i = 0; i < NCONST; i++)
+		for (unsigned i = first; i < end; i++)
 			rsxSetVertexProgramParameter(ctx, p->vp, p->consts[i], c[i]);
 	}
 }
@@ -459,7 +509,7 @@ void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
 		return;
 	/* Lo más que escribe un dibujo: programa de vértices (~140), constantes
 	 * (~140), programa de fragmentos (~22), texturas, estado y el dibujo. */
-	rsxkit_reserve(RSXKIT_RESERVE_DRAW);
+	rsxkit_reserve(RSXKIT_RESERVE_DRAW + 64u);
 	if (!g->state_valid)
 		fixed_state();
 	/* prog_3d: 1 el de siempre, 2 el interpolado (las constantes de uno
@@ -490,12 +540,25 @@ void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
 		hdr = &fc->hdr;
 		offset = fc->offset;
 	}
-	if (g->fp_3d < 0 || d3.cur_fp != want || d3.cur_fp_gen != rsxkit_fp_generation()) {
-		rsxLoadFragmentProgramLocation(ctx, hdr, offset, GCM_LOCATION_RSX);
-		g->fp_3d = 1;
-		d3.cur_fp = want;
-		d3.cur_fp_gen = rsxkit_fp_generation();
-		rsxkit_fp_count_load();
+	if (d->program) {
+		/* Cargar el programa solo al cambiar: recargarlo en cada dibujo
+		 * vuelve a traer el microcódigo y escribe su etiqueta de uso, una
+		 * barrera del back end por dibujo. */
+		if (program_sync_per_draw || d3.cur_program != d->program) {
+			rsxkit_3d_flush_use();
+			if (rsxkit_program_bind_3d(d->program) != RSXKIT_OK) return;
+			d3.cur_program = d->program;
+		}
+		g->fp_3d = -1;
+	} else {
+		if (d3.cur_program) { rsxkit_3d_flush_use(); d3.cur_program = NULL; }
+		if (g->fp_3d < 0 || d3.cur_fp != want || d3.cur_fp_gen != rsxkit_fp_generation()) {
+			rsxLoadFragmentProgramLocation(ctx, hdr, offset, GCM_LOCATION_RSX);
+			g->fp_3d = 1;
+			d3.cur_fp = want;
+			d3.cur_fp_gen = rsxkit_fp_generation();
+			rsxkit_fp_count_load();
+		}
 	}
 	if (!g->arrays_bound)
 		bind_arrays();
@@ -507,6 +570,21 @@ void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
 		set_zconst(d->depth & RSXKIT_DEPTH_CONST ? (d->z < 0.0f ? 0.0f : d->z > 1.0f ? 1.0f : d->z) : -1.0f);
 	set_cull(d->cull);
 	set_alpha(d->alpha_ref);
+	uint64_t sk = (uint64_t)d->stencil | ((uint64_t)d->stencil_ref << 8) |
+	              ((uint64_t)d->stencil_compare_mask << 16) | ((uint64_t)d->stencil_write_mask << 24) |
+	              ((uint64_t)d->stencil_op << 32) | ((uint64_t)d->stencil_zfail << 40) |
+	              ((uint64_t)d->stencil_sfail << 48);
+	if (!incremental || !d3.stencil_valid || d3.stencil_key != sk) {
+		rsxSetStencilTestEnable(ctx, d->stencil ? GCM_TRUE : GCM_FALSE);
+		if (d->stencil) {
+			rsxSetStencilMask(ctx, d->stencil_write_mask);
+			rsxSetStencilFunc(ctx, d->stencil == 2 ? GCM_NOTEQUAL : d->stencil == 3 ? GCM_EQUAL : GCM_ALWAYS, d->stencil_ref, d->stencil_compare_mask);
+			rsxSetStencilOp(ctx, d->stencil_sfail == 2 ? GCM_ZERO : d->stencil_sfail ? GCM_REPLACE : GCM_KEEP,
+			                d->stencil_zfail == 2 ? GCM_ZERO : d->stencil_zfail ? GCM_REPLACE : GCM_KEEP,
+			                d->stencil_op == 2 ? GCM_KEEP : d->stencil_op ? GCM_INVERT : GCM_REPLACE);
+		}
+		d3.stencil_key = sk; d3.stencil_valid = 1;
+	}
 	for (int i = 0; i < ntex; i++)
 		set_texture(i, &d->tex[i]);
 	set_constants(d, vp);
@@ -539,4 +617,8 @@ void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
 		rsxSetPolygonOffset(ctx, -1.0f, -2.0f);  /* el de las calcomanías (fixed_state) */
 	}
 	rsxDrawVertexArray(ctx, GCM_TYPE_TRIANGLES, first, count);
+	if (d->program) {
+		if (program_sync_per_draw) rsxkit_program_used_3d(d->program);
+		else d3.program_pending = 1;
+	}
 }

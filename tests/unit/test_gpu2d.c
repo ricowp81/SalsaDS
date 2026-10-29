@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "check.h"
+#include "gpu2d/gpu2d_hd.h"
 #include "gpu2d/gpu2d_compose.h"
 #include "gpu2d/gpu2d_scene.h"
 
@@ -54,6 +55,7 @@ static void scene_free(t_scene *s)
 
 /* Compara la referencia con el compositor en los dos motores; devuelve las diferencias. */
 static int skipped;
+static void check_hd(gpu2d_ctx *ctx, t_scene *s);
 
 static int compare(gpu2d_ctx *ctx, t_scene *s, int scene, uint32_t seed, uint64_t *hash, int with3d)
 {
@@ -82,6 +84,7 @@ static int compare(gpu2d_ctx *ctx, t_scene *s, int scene, uint32_t seed, uint64_
 				printf("  primera diferencia: escena %d semilla 0x%x motor %d en (%d,%d): compositor 0x%04x, "
 				       "referencia 0x%04x\n", scene, seed, e, i % GPU2D_W, i / GPU2D_W, s->out[e][i], s->ref[e][i]);
 		}
+		if (!e && with3d) check_hd(ctx, s);
 		CHECK_EQ(gpu2d_compose_engine_ppe(ctx, &s->frame.eng[e]), 0);
 		for (int i = 0; i < GPU2D_W * GPU2D_H; i++) {
 			if (s->out[e][i] != s->ref[e][i] && diffs++ == 0)
@@ -92,6 +95,36 @@ static int compare(gpu2d_ctx *ctx, t_scene *s, int scene, uint32_t seed, uint64_
 	if (hash)
 		*hash = gpu2d_hash_image(s->ref[0]) ^ (gpu2d_hash_image(s->ref[1]) * 31u);
 	return diffs;
+}
+
+static void check_hd(gpu2d_ctx *ctx, t_scene *s)
+{
+    gpu2d_engine *e = &s->frame.eng[0];
+    g2d_hd_pixel *pixels = amalloc(G2D_HD_BYTES + 128);
+    memset(pixels, 0, G2D_HD_BYTES + 128);
+    e->hd_ea = (uint64_t)(uintptr_t)pixels;
+    CHECK_EQ(gpu2d_compose_engine(ctx, e), 0);
+    if (!*(uint32_t *)((uint8_t *)pixels + G2D_HD_BYTES)) {
+        unsigned bad = 0;
+        for (unsigned y = 0; y < 192; y++) for (unsigned x = 0; x < 256; x++) {
+            const g2d_hd_pixel *p = &pixels[y*256+x];
+            unsigned sx = (x + p->b[11] + 256u*p->b[12]) & 511;
+            uint32_t sample = e->img3d_ea && sx < 256 ? s->img3d[y*256+sx] : 0;
+            uint16_t result = gpu2d_to_5551(g2d_hd_eval(p, sample));
+            if (result != s->out[0][y*256+x]) bad++;
+        }
+        CHECK_EQ(bad, 0);
+    }
+    g2d_hd_pixel *scalar = amalloc(G2D_HD_BYTES + 128);
+    memset(scalar, 0, G2D_HD_BYTES + 128);
+    e->hd_ea = (uint64_t)(uintptr_t)scalar;
+    e->flags |= G2D_F_HD_SCALAR;
+    CHECK_EQ(gpu2d_compose_engine(ctx, e), 0);
+    CHECK_EQ(memcmp(pixels, scalar, G2D_HD_BYTES + 128), 0);
+    e->flags &= ~G2D_F_HD_SCALAR;
+    e->hd_ea = 0;
+    free(scalar);
+    free(pixels);
 }
 
 /* Objetivos ausentes, fondo como destino, semitransparencia y ventanas que
@@ -128,6 +161,7 @@ static void test_effect_policy(gpu2d_ctx *ctx, t_scene *s)
 						gpu2d_ref_engine(e, s->ref[0]);
 						CHECK_EQ(gpu2d_compose_engine(ctx, e), 0);
 						CHECK_EQ(ctx->stats.map_dropped, 0);
+						check_hd(ctx, s);
 						CHECK(memcmp(s->out[0], s->ref[0], sizeof s->ref[0]) == 0);
 						CHECK_EQ(gpu2d_compose_engine_ppe(ctx, e), 0);
 						CHECK(memcmp(s->out[0], s->ref[0], sizeof s->ref[0]) == 0);
@@ -166,6 +200,7 @@ static void test_3d_only(gpu2d_ctx *ctx, t_scene *s)
 					e->regs[G2D_R_MASTER_BRIGHT] = masters[m];
 					gpu2d_ref_engine(e, s->ref[0]);
 					CHECK_EQ(gpu2d_compose_engine(ctx, e), 0);
+                    check_hd(ctx, s);
 					CHECK(memcmp(s->out[0], s->ref[0], sizeof s->ref[0]) == 0);
 					CHECK_EQ(gpu2d_compose_engine_ppe(ctx, e), 0);
 					CHECK(memcmp(s->out[0], s->ref[0], sizeof s->ref[0]) == 0);
@@ -190,7 +225,9 @@ static void test_3d_only(gpu2d_ctx *ctx, t_scene *s)
 		e->nchg = count;
 		gpu2d_ref_engine(e, s->ref[0]);
 		CHECK_EQ(gpu2d_compose_engine(ctx, e), 0);
+                    check_hd(ctx, s);
 		CHECK_EQ(ctx->stats.map_dropped, 0);
+						check_hd(ctx, s);
 		CHECK(memcmp(s->out[0], s->ref[0], sizeof s->ref[0]) == 0);
 		CHECK_EQ(gpu2d_compose_engine_ppe(ctx, e), 0);
 		CHECK(memcmp(s->out[0], s->ref[0], sizeof s->ref[0]) == 0);

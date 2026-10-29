@@ -136,6 +136,9 @@ struct arec_stats {
 	/* con `tick`: tiempo dentro del código generado (contando lo que llama: accesos lentos e intérprete), en las llamadas al
 	 * intérprete y en arec_run entero (despachador, servicio de interrupciones y traducción incluidos) */
 	uint64_t t_code, t_call, t_run;
+	/* accesos lentos a los registros de E/S (0x04000000–0x04000FFF) por palabra (dirección >> 2) y, con `tick`, su
+	 * tiempo: para saber qué registros pagan la ruta lenta */
+	uint64_t io_rd_n[1024], io_wr_n[1024], io_rd_t[1024], io_wr_t[1024];
 };
 
 /* Región de un acceso lento para las estadísticas: 0 = GXFIFO y puertos de órdenes del motor de geometría
