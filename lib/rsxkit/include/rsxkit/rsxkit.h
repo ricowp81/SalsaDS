@@ -290,7 +290,9 @@ void rsxkit_target_present(rsxkit_target *t, const rsxkit_rect *src, uint32_t im
 
 /* Vértice de 32 bytes: posición homogénea en el espacio lógico (x/w, y/w en
  * píxeles lógicos, z/w en [0, 1], w > 0 delante), coordenadas de textura y
- * color RGBA de 8 bits. */
+ * color RGBA de 8 bits. `pad` puede llevar un segundo color RGBA de 8 bits
+ * que sustituye a `rgba` en los dibujos siguientes a
+ * rsxkit_vertices_color_aux(1) (datos por vértice para un programa propio). */
 typedef struct rsxkit_vertex {
 	float pos[4];
 	float st[2];
@@ -354,6 +356,7 @@ typedef enum rsxkit_cull {
 #define RSXKIT_DEPTH_GEQUAL 0x20u /* la prueba es >= */
 #define RSXKIT_DEPTH_ALWAYS 0x40u /* escribir tras una prueba separada */
 #define RSXKIT_DEPTH_LESS   0x10u /* la prueba es < en vez de ≤ (con la misma z no pasa) */
+#define RSXKIT_DEPTH_EQUAL  0x80u /* la prueba es == (solo pasa la misma z) */
 
 /* Lo que evalúa el RSX por píxel, con
  *   X_j = k[j][0] + k[j][1]·C + k[j][2]·C.aaaa    (C = color del vértice)
@@ -381,6 +384,8 @@ typedef struct rsxkit_draw {
 	uint8_t stencil, stencil_ref, stencil_compare_mask, stencil_write_mask, stencil_op;
 	/* Operación al fallar profundidad: 0 conservar, 1 reemplazar, 2 poner a cero. */
 	uint8_t stencil_zfail;
+	/* Operación al fallar la prueba de stencil: 0 conservar, 1 reemplazar, 2 poner a cero. */
+	uint8_t stencil_sfail;
 	uint8_t blend;      /* rsxkit_blend */
 	uint8_t cull;       /* rsxkit_cull */
 	uint8_t depth;      /* RSXKIT_DEPTH_* */
@@ -424,9 +429,16 @@ void rsxkit_vertices(uint32_t offset, uint8_t location);
  * dibujos siguientes ponen cada vértice en prev + (pos − prev)·t (t = 1: donde
  * está). Hasta el próximo rsxkit_vertices, que lo apaga. */
 void rsxkit_vertices_prev(uint32_t offset, uint8_t location, float t);
+/* 1: los dibujos siguientes leen COLOR0 de la palabra `pad` de cada vértice
+ * en vez de `rgba`; 0 (inicial) vuelve a `rgba`. Vale hasta que se cambie. */
+void rsxkit_vertices_color_aux(int aux);
 /* Triángulos sueltos: vértices first .. first + count − 1 del arreglo. */
 /* Optativo: 1 envía solo constantes/stencil cambiados; 0 (inicial) envía completos. */
 void rsxkit_3d_incremental(int enabled);
+/* Optativo: 1 recarga el programa de rsxkit_draw.program y escribe su
+ * etiqueta de uso en cada dibujo; 0 (inicial) solo al cambiar de programa,
+ * al salir del 3D (pasadas, blits) y antes de destruirlo. */
+void rsxkit_3d_program_sync(int per_draw);
 void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count);
 
 /* ---- Un destino como textura y de vuelta a la memoria principal --------------

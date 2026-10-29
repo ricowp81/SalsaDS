@@ -32,6 +32,7 @@
 #include "gpu3d/rsx_modes.h"
 #include "gpu3d/rsx_vertex.h"
 #include "gpu3d/rsx_passes.h"
+#include "gpu3d/rsx_batch.h"
 #include "gpu3d/rsx_cost.h"
 #include "spu/rsxprep/job.h"
 #include "spu/raster3d/job.h"
@@ -41,7 +42,8 @@ _Static_assert(sizeof(rsx3d_vertex) == sizeof(rsxkit_vertex), "formato de vérti
 _Static_assert((int)RP_OFF == (int)RSXKIT_BLEND_OFF && (int)RP_NONE == (int)RSXKIT_BLEND_NONE &&
                (int)RP_BLEND == (int)RSXKIT_BLEND_ALPHA_MAX && RP_TEST == RSXKIT_DEPTH_TEST &&
                RP_WRITE == RSXKIT_DEPTH_WRITE && RP_LESS == RSXKIT_DEPTH_LESS &&
-               RP_GEQUAL == RSXKIT_DEPTH_GEQUAL && RP_ALWAYS == RSXKIT_DEPTH_ALWAYS,
+               RP_GEQUAL == RSXKIT_DEPTH_GEQUAL && RP_ALWAYS == RSXKIT_DEPTH_ALWAYS &&
+               RP_EQUAL == RSXKIT_DEPTH_EQUAL,
                "estados del plan de pasadas RSX");
 
 #define ARENA (24u * 1024u * 1024u)
@@ -410,6 +412,10 @@ void rsx3d_identity_versions(uint64_t vram_ea, const uint64_t *versions)
 }
 static int ready;
 static int unbatched, old_prepare, coarse_cache, profile, scalar_vertices;
+/* Lotes y pasadas (A/B por archivo): atributos de niebla por constantes y
+ * un dibujo por polígono; 3D ampliado sin lotes; puerta de la ronda 6;
+ * programa y etiqueta de uso en cada dibujo. */
+static int attr_const, extended_unbatched, gate_previous, program_sync;
 static uint64_t tick_hz;
 static uint64_t ticks(void)
 {
@@ -511,7 +517,10 @@ static void decode_plan(void)
     memcpy(decode_job.texslot, old_slots, 16); memcpy(decode_job.palslot, old_slots+4, 24);
 }
 static struct cache_entry *decoding;
-static struct command { rsxkit_draw d; uint32_t first, count, id, tdepth, trans, mode, front, equal; } command[GX_MAX_POLYS];
+static struct command {
+    rsxkit_draw d; uint32_t first, count, id, tdepth, trans, mode, front, equal;
+    rsx_batch_key key;      /* lo que fija el dibujo por polígono: decide los lotes */
+} command[GX_MAX_POLYS];
 static uint16_t order[GX_MAX_POLYS];
 static uint32_t keys[GX_MAX_POLYS];
 static uint16_t sorted[GX_MAX_POLYS];
@@ -684,6 +693,16 @@ int rsx3d_init(void)
     shadow_ids_spe = stat("/dev_hdd0/salsads/3d-rsx-sombra-ids-spe", &flag) == 0;
     shadow_spe = stat("/dev_hdd0/salsads/3d-rsx-sombra-spe", &flag) == 0;
     toon_spe = stat("/dev_hdd0/salsads/3d-rsx-toon-spe", &flag) == 0;
+    attr_const = stat("/dev_hdd0/salsads/3d-rsx-atributos-por-poligono", &flag) == 0;
+    extended_unbatched = stat("/dev_hdd0/salsads/3d-rsx-ampliado-sin-lotes", &flag) == 0;
+    gate_previous = stat("/dev_hdd0/salsads/3d-rsx-puerta-ronda6", &flag) == 0;
+    program_sync = stat("/dev_hdd0/salsads/3d-rsx-programa-por-dibujo", &flag) == 0;
+    rsxkit_3d_program_sync(program_sync);
+    salsads_log("rsx3d lotes: atributos de niebla %s; 3D ampliado %s; puerta translúcida %s; programa de fragmentos %s",
+                attr_const ? "por constantes (un dibujo por polígono)" : "por vértice (mismos lotes que el color)",
+                extended_unbatched ? "sin lotes" : "opacos por lotes (espaldas antes que frentes)",
+                gate_previous ? "ronda 6 (borrado y rechazo de ID aparte)" : "compacta (puerta decidida en su pasada)",
+                program_sync ? "cargado y etiquetado en cada dibujo" : "cargado al cambiar, etiqueta al salir");
     salsads_log("rsx3d preparación: vértices %s, RGBA8 %s, envío %s; presupuesto %u texeles",
                 scalar_vertices || old_prepare ? "escalar PPE" : "VMX PPE",
                 decode_ppe ? "PPE" : textures_rescue ? "SPE por lotes con rescate PPE" : "SPE por lotes", incremental_issue ? "incremental" : "anterior", RSX_DECODE_PIXELS);
@@ -791,14 +810,29 @@ static void draw(struct command *c, uint8_t test, uint8_t ref, uint8_t compare, 
     d->stencil_write_mask = write; d->stencil_op = op;
     d->blend = blend; d->depth = z; d->k[0][0][3] = pass;
     rsxkit_program *program = d->program;
-    if (fog_attribute_pass && (program == shade || program == shade_w)) {
+    float saved_fc[2][4];
+    int attributes = fog_attribute_pass && (program == shade || program == shade_w);
+    if (attributes) {
         d->program = program == shade_w ? fog_attr_w : fog_attr;
         if (blend != RSXKIT_BLEND_NONE && pass != 0)
             d->blend = c->tdepth ? RSXKIT_BLEND_REPLACE_MIN_ALPHA : RSXKIT_BLEND_KEEP_MIN_ALPHA;
+        /* fc = (Z>>9 alto, bajo, plano, niebla): por constantes del polígono
+         * (un dibujo por polígono) o por vértice, desde la palabra auxiliar
+         * del vértice escalada por 255 (lotes como los del color). */
+        memcpy(saved_fc, d->k[2], sizeof saved_fc);
+        if (attr_const) {
+            d->k[2][0][0] = (float)(c->key.flatz >> 8); d->k[2][0][1] = (float)(c->key.flatz & 255u);
+            d->k[2][0][2] = (float)c->key.flat; d->k[2][0][3] = (float)c->key.fog;
+            memset(d->k[2][1], 0, sizeof d->k[2][1]);
+        } else {
+            memset(d->k[2][0], 0, sizeof d->k[2][0]);
+            d->k[2][1][0] = d->k[2][1][1] = d->k[2][1][2] = d->k[2][1][3] = 255.0f;
+        }
     }
     if (!last_valid || memcmp(&last_draw, d, sizeof *d)) st->state_changes++;
     last_draw = *d; last_valid = 1;
     rsxkit_draw_triangles(d, c->first, c->count); st->draws++;
+    if (attributes) memcpy(d->k[2], saved_fc, sizeof saved_fc);
     d->program = program;
 }
 static void draw_color_compact(struct command *c, const r3d_rstate *rs,
@@ -808,7 +842,7 @@ static void draw_color_compact(struct command *c, const r3d_rstate *rs,
         c->front, c->trans, c->d.k[0][0][1] == 31, c->tdepth, c->equal,
         shadow_extended, !!(rs->d3 & D3_BLEND), R3D_PX_A(rs->clear_px) != 0,
         fog_attribute_pass, prior_back};
-    rsx_pass passes[9]; unsigned n=rsx_color_passes(&in,passes);
+    rsx_pass passes[9]; unsigned n=rsx_color_passes_mode(&in,passes,!gate_previous);
     rsxkit_program *color=c->d.program;
     float saved=c->d.k[1][0][2];
     for (unsigned i=0;i<n;i++) {
@@ -816,21 +850,21 @@ static void draw_color_compact(struct command *c, const r3d_rstate *rs,
         c->d.program=p->program == RP_COLOR ? color : p->program == RP_MASK ?
             (rs->wbuf ? mask_w : mask) : (rs->wbuf ? range_w : range_z);
         c->d.k[1][0][2]=p->range ? p->range * (rs->wbuf ? 255.0f : 512.0f) / 16777215.0f : saved;
-        c->d.stencil_zfail=p->zfail;
+        c->d.stencil_zfail=p->zfail; c->d.stencil_sfail=p->sfail;
         draw(c,p->test,p->ref,p->compare,p->write,p->op,p->blend,p->depth,p->pass,st);
     }
-    c->d.stencil_zfail=0; c->d.k[1][0][2]=saved; c->d.program=color;
+    c->d.stencil_zfail=0; c->d.stencil_sfail=0; c->d.k[1][0][2]=saved; c->d.program=color;
 }
-static int color_batch_equal(const struct command *a, const struct command *b)
+/* Lote entre comandos contiguos de las pasadas de color y de atributos: la
+ * clave portable (rsx_batch.h) cubre textura 0, k.xyz, q.xy, pruebas e IDs;
+ * la Z plana y la bandera de niebla van por vértice (o, por constantes,
+ * también forman parte de la clave). En 3D ampliado la cara también. */
+static int color_batch_equal(const struct command *a, const struct command *b, unsigned attribute_pass)
 {
-    /* Solo shade/shade_w: leen textura 0, k.xyz y q.xy. La Z plana y la
-     * bandera de niebla pertenecen a atributos y no rompen un lote de color.
-     * Los demás estados son comunes al cuadro o los fija draw(). */
-    return !a->trans && !b->trans && a->id==b->id && a->tdepth==b->tdepth &&
-        (a->d.program==shade || a->d.program==shade_w) && a->d.program==b->d.program &&
-        !memcmp(a->d.k[0][0],b->d.k[0][0],3*sizeof(float)) &&
-        !memcmp(a->d.k[1][0],b->d.k[1][0],2*sizeof(float)) &&
-        !memcmp(&a->d.tex[0],&b->d.tex[0],sizeof a->d.tex[0]);
+    unsigned flags = (shadow_extended ? RSX_BATCH_EXTENDED : 0) |
+                     (attribute_pass && attr_const ? RSX_BATCH_ATTR_CONST : 0);
+    return (a->d.program==shade || a->d.program==shade_w) && a->d.program==b->d.program &&
+        rsx_batch_equal(&a->key,&b->key,flags);
 }
 /* Puerta por polígono: conserva Z y su cara mientras se consultan los IDs.
  * El bit alto guarda el resultado temporal sin perder la ocupación. */
@@ -1233,16 +1267,12 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
             d->k[2][0][0] = R3D_PX_R(fc); d->k[2][0][1] = R3D_PX_G(fc);
             d->k[2][0][2] = R3D_PX_B(fc); d->k[2][0][3] = R3D_PX_A(fc);
             d->k[3][0][2] = !!(rs.d3 & D3_FOG_ALPHA);
-            if (!fog_previous && !rs.wbuf) {
-                /* La pasada de atributos no necesita FOG_COLOR. Evitar
-                 * la pérdida de una unidad al reconstruir Z desde WPOS
-                 * en polígonos planos, sin alterar la prueba de profundidad. */
-                unsigned flat = 1;
-                for (int k=1;k<p.n;k++) flat &= vv[k]->z == vv[0]->z;
-                d->k[2][0][0] = (float)(vv[0]->z >> 9);
-                d->k[2][0][1] = (float)flat;
-            }
+            /* La pasada de atributos no necesita FOG_COLOR: draw() pone en
+             * k[2] la Z plana (evita perder una unidad al reconstruirla
+             * desde WPOS) y la bandera de niebla, por constantes o desde
+             * la palabra auxiliar de cada vértice (c->key). */
         }
+        rsx_batch_key_init(&c->key, gp, &p, f, &rs);
         if (p.mode == 2) {
             d->program = rs.wbuf ? toon_w : toon; d->ntex = 2;
             d->k[1][0][2] = !!(rs.d3 & D3_HIGHLIGHT);
@@ -1262,11 +1292,15 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
         t0 = ticks();
         rsx3d_vertex pv[GX_POLY_MAXV];
         int count = old_prepare ? (p.n - 2) * 3 : p.n;
+        /* Palabra auxiliar del vértice (segundo color para la pasada de
+         * atributos): Z>>9 en dos bytes, bandera de plano y de niebla. */
+        const uint8_t aux[4] = { (uint8_t)(c->key.flatz >> 8), (uint8_t)c->key.flatz, c->key.flat, c->key.fog };
         for (int a = 0; a < count; a++) {
             int ix = old_prepare ? (a % 3 ? a / 3 + a % 3 : 0) : a;
             const gx_vertex *g = vv[ix]; rsx3d_vertex *b = old_prepare ? &v[nv++] : &pv[ix];
             if (scalar_vertices || old_prepare) rsx3d_vertex_scalar(b, g, p.v[ix].w);
             else rsx3d_vertex_vector(b, g, p.v[ix].w);
+            if (rs.d3 & D3_FOG) memcpy(&b->pad, aux, 4);
         }
         if (!old_prepare) for (int k = 1; k + 1 < p.n; k++) {
             v[nv++] = pv[0]; v[nv++] = pv[k]; v[nv++] = pv[k+1];
@@ -1288,7 +1322,10 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
         struct command *prev = batches ? &command[batches-1] : NULL;
         /* No mover primitivas: ni empates Z/W ni IDs repetidos cambian ganador.
          * Las cinco pasadas translúcidas permanecen juntas por polígono. */
+        /* Con atributos por constantes, la Z plana vive en la clave (ya no en d): no unir polígonos con otra Z plana. */
         if (!unbatched && !shadow_extended && prev &&
+            (!attr_const || !(rs.d3 & D3_FOG) || fog_previous ||
+             (prev->key.flat == c->key.flat && prev->key.flatz == c->key.flatz && prev->key.fog == c->key.fog)) &&
             ((!prev->trans && !c->trans && prev->mode != 3 && c->mode != 3) ||
              (prev->mode == 3 && c->mode == 3 &&
               ((!prev->id && !c->id) || (single_shadow && !shadow_unbatched &&
@@ -1345,15 +1382,20 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
     rsxkit_clear(RSXKIT_CLEAR_COLOR | RSXKIT_CLEAR_DEPTH | RSXKIT_CLEAR_ALPHA, encoded, rs.clear_depth / 16777215.0f, NULL);
     rsxkit_clear_stencil((shadows || shadow_extended) ? ((ca ? (shadow_extended ? 16 : 128) : 0) | oid[AT_OID(rs.clear_attr)]) : (ca ? 64 : 255));
     rsxkit_vertices(offset + VERT_OFF(slot), RSXKIT_MEM_MAIN);
+    rsxkit_vertices_color_aux(attribute_pass && !attr_const);
     unsigned prior_back=0;
     for (uint32_t i = 0; i < ncmd; i++) {
         struct command *c = &command[i];
         struct command batch;
-        if (final_fog && !attribute_pass && !passes_previous && !unbatched &&
-            !shadow_extended && !shadows && i+1<ncmd && color_batch_equal(c,&command[i+1])) {
+        /* Lotes de opacos normales en color y atributos (clave portable);
+         * también en 3D ampliado, donde el plan emite las dos pasadas
+         * frontales por lote. Sin niebla ni ampliado ya los unió el bucle
+         * previo con el estado completo. */
+        if ((final_fog || shadow_extended) && !passes_previous && !unbatched && !shadows &&
+            !(shadow_extended && extended_unbatched) && i+1<ncmd && color_batch_equal(c,&command[i+1],attribute_pass)) {
             batch=*c;
             while (i+1<ncmd && batch.first+batch.count==command[i+1].first &&
-                   color_batch_equal(&batch,&command[i+1])) batch.count+=command[++i].count;
+                   color_batch_equal(&batch,&command[i+1],attribute_pass)) batch.count+=command[++i].count;
             c=&batch;
         }
         uint8_t z = RSXKIT_DEPTH_TEST | RSXKIT_DEPTH_LESS;
@@ -1472,6 +1514,7 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
     rsxkit_stamp(58 + slot * 3);
     if (hd_game && hd_scale > 1) flight[slot].fence = rsxkit_fence();
     }
+    rsxkit_vertices_color_aux(0);
     texture_fence = rsxkit_fence();
     if (hd_scale>1) hd_raster_fence[slot]=texture_fence;
     if (!hd_game || hd_scale == 1) flight[slot].fence = texture_fence;

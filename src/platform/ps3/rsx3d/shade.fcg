@@ -54,14 +54,18 @@ void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
     float fogdepth = floor(pos.z * 16777215.0 + 0.5);
 #endif
     float z15 = floor(fogdepth / 512.0);
+    /* fc llega entero por polígono o por vértice (segundo color del vértice
+     * escalado por 255): x,y = Z>>9 en dos bytes, z bandera de plano, w
+     * bandera de niebla del polígono. */
+    float4 pf = floor(fc + 0.5);
 #ifndef RSX3D_W
     /* Z constante llega entera desde el PPE. Reconstruirla desde WPOS
      * puede dar Z-1 justo en un borde de LUT, incluso en un plano.
-     * fc.xy = Z>>9 y bandera de plano; los inclinados conservan WPOS. */
-    z15 = lerp(z15, floor(fc.x + 0.5), step(0.5, fc.y));
+     * Los inclinados conservan WPOS. */
+    z15 = lerp(z15, pf.x * 256.0 + pf.y, step(0.5, pf.z));
 #endif
     float hi = floor(z15 / 256.0);
-    result = float4(hi / 255.0, (z15 - hi * 256.0) / 255.0, 0.0, fp.w);
+    result = float4(hi / 255.0, (z15 - hi * 256.0) / 255.0, 0.0, pf.w);
 #else
 #ifdef RSX3D_FOG
     /* Densidad por fragmento como la DS: profundidad entera de 24 bits

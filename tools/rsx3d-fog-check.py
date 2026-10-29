@@ -108,8 +108,10 @@ def check_attributes(attr, attr_w):
             inputs = {"fragment.texcoord[0]": [0.5]*4,
                       "fragment.texcoord[1]": [0, alpha, 0, render_pass],
                       "fragment.texcoord[2]": [0, (1<<shift)/16777215, 0, 1<<shift],
-                      "fragment.texcoord[3]": [z>>9, 1, 0, 0],
-                      "fragment.texcoord[4]": [0, 1024, 0, flag],
+                      # fc: Z>>9 en dos bytes, bandera de plano y bandera de
+                      # niebla, por constantes o por vértice (mismo formato).
+                      "fragment.texcoord[3]": [(z>>9)//256, (z>>9)%256, 1, flag],
+                      "fragment.texcoord[4]": [0, 1024, 0, 0],
                       # WPOS Z-1 reproduce el error medido en planos; la
                       # constante debe conservar ambos lados del borde.
                       "fragment.position": [0, 0, (z-1)/16777215, 1/vertex_w]}
@@ -130,7 +132,7 @@ def check_attributes(attr, attr_w):
             else:
                 # Con el indicador de plano apagado se sigue usando WPOS,
                 # aunque la constante contenga un valor muy diferente.
-                inputs["fragment.texcoord[3]"] = [32767, 0, 0, 0]
+                inputs["fragment.texcoord[3]"] = [127, 255, 0, flag]
                 fallback = program.run(inputs, {0: lambda uv: [31/255]*4})
                 raster_z = fp32(fp32((z-1)/16777215)*16777215 + 0.5)
                 expected_z15 = math.floor(raster_z)//512
@@ -149,7 +151,8 @@ def check(attr, attr_w, final, probe=None):
                 inputs = {"fragment.texcoord[0]": [0.5]*4,
                           "fragment.texcoord[1]": [0, 31, 0, 0],
                           "fragment.texcoord[2]": [0, 1/16777215, 0, 1],
-                          "fragment.texcoord[4]": [0, 1024, 0, flag],
+                          "fragment.texcoord[3]": [0, 0, 0, flag],
+                          "fragment.texcoord[4]": [0, 1024, 0, 0],
                           "fragment.position": [0, 0, z/16777215, 1/z]}
                 result, depth = program.run(inputs, {0: lambda uv: [31/255]*4}, with_depth=True)
                 if w:

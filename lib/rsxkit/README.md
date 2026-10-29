@@ -207,7 +207,18 @@ rsxkit_draw_triangles(&d, first, count);
   dibujos coplanares se pisarían al azar.
 - `rsxkit_vertices` invalida las cachés de vértices y texturas del RSX:
   llamarlo cada vez que cambió lo que hay en memoria.
-- rsxkit recuerda el estado y solo reenvía lo que cambió.
+- **Segundo color por vértice**: la palabra `pad` del vértice puede llevar
+  otro RGBA de 8 bits; con `rsxkit_vertices_color_aux(1)` los dibujos
+  siguientes lo leen como COLOR0 en lugar de `rgba` (datos por vértice para
+  un programa propio sin otro arreglo ni constantes por dibujo).
+- **Stencil**: prueba (siempre, distinto, igual) con referencia y máscaras,
+  y operaciones separadas al pasar (`stencil_op`), al fallar la profundidad
+  (`stencil_zfail`) y al fallar el stencil (`stencil_sfail`): conservar,
+  reemplazar o poner a cero. La profundidad admite también `RSXKIT_DEPTH_EQUAL`.
+- rsxkit recuerda el estado y solo reenvía lo que cambió. Un programa propio
+  (`rsxkit_draw.program`) se carga solo al cambiar de programa y su etiqueta
+  de uso se escribe al cambiarlo, al salir del 3D o antes de destruirlo;
+  `rsxkit_3d_program_sync(1)` vuelve a cargarlo y etiquetarlo en cada dibujo.
 
 ### Generador de fragment programs
 

@@ -1652,6 +1652,7 @@ static void log_stats(void)
 			{
 				static uint32_t prev_idle9, prev_idle7;
 				static uint64_t prev_dma_w, prev_dma_b, prev_cpu_w;
+				unsigned es_top[8];
 				char gx[320];
 				const uint64_t ngx = js->gx_wr - p->gx_wr;
 				uint64_t dw, db, cw;
@@ -1680,6 +1681,47 @@ static void log_stats(void)
 					    "bucles de espera saltados por cuadro: ARM9 %u, ARM7 %u",
 					    o ? sl : "ninguno", gx, nds->gx_lento ? " [gx-lento: nada por las rutas cortas]" : "",
 					    (unsigned)((nds->a9.jit_idle - prev_idle9) / n), (unsigned)((nds->a7.jit_idle - prev_idle7) / n));
+				/* Qué registros de E/S pagan la ruta lenta: los ocho de más tiempo (o de más accesos sin jit-tiempos). */
+				{
+					char es[400];
+					size_t eo = 0;
+					uint64_t total_t = 0, total_n = 0;
+
+					for (unsigned top = 0; top < 8 && eo < sizeof es - 48; top++) {
+						unsigned best = 1024;
+						uint64_t best_v = 0;
+
+						for (unsigned r = 0; r < 1024; r++) {
+							const uint64_t cnt = (js->io_rd_n[r] - p->io_rd_n[r]) + (js->io_wr_n[r] - p->io_wr_n[r]);
+							const uint64_t tt = (js->io_rd_t[r] - p->io_rd_t[r]) + (js->io_wr_t[r] - p->io_wr_t[r]);
+							const uint64_t v = jit_times ? tt : cnt;
+							unsigned taken = 0;
+
+							for (unsigned q = 0; q < top; q++)
+								taken |= es_top[q] == r;
+							if (!taken && cnt && v > best_v) {
+								best = r;
+								best_v = v;
+							}
+						}
+						if (best == 1024)
+							break;
+						es_top[top] = best;
+						{
+							const uint64_t cnt = (js->io_rd_n[best] - p->io_rd_n[best]) + (js->io_wr_n[best] - p->io_wr_n[best]);
+							const uint64_t tt = (js->io_rd_t[best] - p->io_rd_t[best]) + (js->io_wr_t[best] - p->io_wr_t[best]);
+
+							total_t += tt;
+							total_n += cnt;
+							eo += (size_t)snprintf(es + eo, sizeof es - eo, "%s%03x %llu (%.2f ms)", eo ? ", " : "", best << 2,
+									       (unsigned long long)(cnt / n), (double)tt * us / 1000.0 / (double)n);
+						}
+					}
+					if (eo)
+						salsads_log("DATO jit-lentos-es: ARM9, registros de E/S (0x04000xxx) con más %s por la ruta lenta, accesos por cuadro y ms por cuadro: %s; "
+							    "esos ocho suman %llu accesos y %.2f ms por cuadro",
+							    jit_times ? "tiempo" : "accesos", es, (unsigned long long)(total_n / n), (double)total_t * us / 1000.0 / (double)n);
+				}
 				prev_idle9 = nds->a9.jit_idle;
 				prev_idle7 = nds->a7.jit_idle;
 				prev_dma_w = nds->st.gx_dma_words;

@@ -264,6 +264,7 @@ void rsxkit_program_destroy(rsxkit_program *p)
 {
 	if (!p || !p->used)
 		return;
+	rsxkit_3d_flush_use();
 	wait_use(p->last_use);
 	rsxkit_fp_untrack(p->buf);
 	rsxFree(p->buf);
