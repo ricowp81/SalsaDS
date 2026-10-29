@@ -1,5 +1,20 @@
 # Registro de rendimiento
 
+## 2026-10-29 — E/S lenta del ARM9 por registro (PS3, logs de la ronda anterior) y caminos rápidos (host)
+- Fuente: logs de la PS3 del paquete «SalsaDS rend fable» 2 con `jit-tiempos` (`DATO jit-lentos-es`, ventanas de 120 cuadros): Metroid Prime Hunters de la intro a la zona pesada (102 ventanas) y SM64DS (157). Agregado por registro, ms por cuadro (accesos × µs por acceso):
+
+| Registro | Metroid, media de las 102 ventanas | Metroid, zona pesada (126–175 s) | SM64DS, tramo lento (275–280 s) |
+|---|---|---|---|
+| DMA3CNT `0DC` | 130 × 13,4 µs = 1,75 | 245–395 × 13–15 µs = 3,8–5,9 | 133–152 × 22 µs = 3,0–3,4 |
+| matemáticas `280`–`2BC` | ~4 500 × 0,25–0,34 µs = 1,3 | ~5 000 = 1,3–1,6 | ~2 500 = 0,6–0,8 |
+| ROMCTRL `1A4` | 1 536 × 0,27 µs = 0,41 (menús: 3 900 = 1,0) | — | 2 300 × 0,27 = 0,6 |
+| VRAMCNT `240` | 3 × 161 µs = 0,48 (17–27 s: 0,7–0,9) | < 1 × 100–200 µs | — |
+| ruta lenta entera (`jit-tiempo`) | 1,3–2 | 6,4–8,1 | 5–6,6 |
+
+- Palabra a GXFIFO: por DMA en modo inmediato ≈ 0,2 µs (dentro de `0DC`); por la ruta corta de la CPU 0,70–0,73 µs con el reloj puesto (`jit-lentos`). El vaciado del ARM7 por VRAMCNT_C/D: 5 662 en 126 s (el ARM9: 9).
+- Host (Mac, intérprete, sin valor para la PS3): con las rutas nuevas, en 2 400 cuadros sin tocar, unidades de DMA por bloques por cuadro: Metroid 669 (+821 palabras a GXFIFO inmediato), SM64DS 985 (+294), NSMB 506, MKDS 681, White 2 9 063; por el bus quedan 0,1 (NSMB 169: HBlank hacia la E/S). Hashes de estado iguales con y sin `--dma-lento --es-lenta --vram7-vaciar-siempre` en los 7 juegos. Tiempos del host iguales (±1 %): la DMA no pesa en la Mac.
+- Pendiente de medir en la PS3 (paquete «SalsaDS ARM9»): A/B de cada interruptor en Metroid (intro → zona pesada), SM64DS (mismo tramo) y NSMB 1-1.
+
 ## 2026-10-28 — Tramo del planificador del JIT: 1024 → 512 ciclos del ARM9
 - PS3 real, Sonic Rush Adventure (intro y título, sin tocar), emulación por cuadro (mediana por ventana de 120): 1024 ≈ 21 ms con 4–20 cuadros del motor B preparados tarde y parpadeo; 512 ≈ 21,6–22,2 ms (+3 %), 0 tarde, sin parpadeo; 128 ≈ 23,6 ms (+12 %), 0 tarde.
 - Metroid Prime Hunters con 512, 2 min de menús y juego: 9–13,5 ms por cuadro, presentación a 16,7 ms casi siempre; sin parpadeo. Sin A/B estricto contra 1024 en la misma escena.

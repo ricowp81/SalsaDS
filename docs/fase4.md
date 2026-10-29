@@ -463,6 +463,62 @@ siguiente paso es el costo propio por orden (`gx_advance_run`: anotar en el regi
 - La caché `dma9_gxw` depende de que todo cambio de `cnt`/`latched` de un canal del ARM9 la rehaga (`sched.c`); `gxparidad` la
   compara con el recorrido de los canales después de cada paso.
 
+## Quinta ronda (rama arm9-es): la E/S lenta del ARM9
+
+Medido en la PS3 con `jit-tiempos` (paquete «SalsaDS rend fable» 2, Metroid Prime Hunters de la intro a la zona pesada y Super
+Mario 64 DS; `DATO jit-lentos-es`, 102 + 157 ventanas de 120 cuadros): la ruta lenta del ARM9 cuesta 1–2 ms por cuadro en las
+escenas ligeras y **6,4–8,1 ms en la zona pesada de Metroid** (de los 20–24 ms de emulación de sus cuadros impares). Lo que paga cada
+registro, agregando todas las ventanas (accesos por cuadro × µs por acceso, con el reloj puesto):
+
+| Registro (0x04000xxx) | Qué es | Metroid, todas las ventanas | Metroid, zona pesada (126–175 s) | SM64DS, tramo lento (275–280 s) |
+|---|---|---|---|---|
+| `0DC` | DMA3CNT: la escritura ejecuta la transferencia entera | 130 arranques × 13,4 µs = 1,75 ms | 245–395 × 13–15 µs = **3,8–5,9 ms** | 133–152 × 22 µs = **3,0–3,4 ms** |
+| `280`–`2BC` | división y raíz: DIVCNT, operandos, cociente, resto, SQRT | ~4 500 × 0,25–0,34 µs = 1,3 ms | ~5 000 = **1,3–1,6 ms** | ~2 500 = 0,6–0,8 ms |
+| `1A4` | ROMCTRL (sondeo del cartucho) | 1 536 × 0,27 µs = 0,41 ms (hasta 3 900 = 1,0 ms en los menús) | — | 2 300 × 0,27 = 0,6 ms |
+| `240`/`244` | VRAMCNT | 3 × **161 µs** = 0,48 ms (0,7–0,9 ms a los 17–27 s) | < 1 × 100–200 µs | — |
+| `208`, `600`, `0C4`, `0D4`… | IME, GXSTAT, DMA0/1/2 | 0,05–0,2 ms | 0,1 ms | `208` 0,1–0,5 ms (2 330 lecturas) |
+
+Qué hay detrás de cada cifra (host, `--dbg 256` traza cada DMA; cuadros 1–600 de la intro):
+
+- La **DMA3** de Metroid es, en su mayoría, **modo inmediato hacia GXFIFO** (6 838 de 8 556 transferencias, 72 palabras de media:
+  el juego manda las listas de la geometría por DMA, no en modo 7) más rellenos de 1 KB desde `DMA3FILL` (1 016), copias de 1 KB a la
+  OAM (504) y a la VRAM por LCDC (124). SM64DS: OAM 1 058, FILL 790, GXFIFO 1 580 (321 palabras). Cada unidad pagaba `nds_bus_read`
+  (búsqueda de región) y `nds_bus_write` → reparto por región → `nds_io_write`/`vram_write` → `NDS_CODE_WRITE` o aviso del vídeo. A
+  0,2 µs por palabra a GXFIFO (frente a 0,7 µs de una palabra que escribe la CPU por la ruta corta, con su reloj) lo que cuesta de más
+  es sobre todo `gx_fifo_write`, que no es de la E/S: el techo de esta ronda en la DMA es el reparto (≈ 25–40 % de `0DC`: 1–2 ms del
+  cuadro pesado de Metroid; en SM64DS, con más OAM y FILL, ≈ 40 %: 1,2–1,4 ms).
+- **VRAMCNT_C/D**: cada cambio vaciaba la caché del recompilador del ARM7 (`reset_tables` + 128 KB de tabla + retraducción): 5 662
+  vaciados del ARM7 en 126 s de Metroid (el ARM9: 9). Metroid alterna C y D entre LCDC (0x80), texturas (0x83, 0x8B) y fondos del
+  motor B (0x84): nunca los da al ARM7.
+- **Matemáticas**: cada lectura montaba el valor byte a byte (`byte_of` × 4, con `nds_cpu_now` en cada uno) y cada escritura de un
+  operando volvía a dividir (dos o tres divisiones de 64 bits por uso).
+- **ROMCTRL**: cada lectura armaba la imagen de 32 bytes de los registros del cartucho (`memset` + 4 campos) para sacar 4 bytes.
+- El acceso lento en sí: `ent_rd` → `h_rd` → `ld_word` → `mem_rd32` (dos TCM) → `bus->read32` (región) → `nds_bus_read` (región otra
+  vez, `switch`) → `nds_io_read`. Dos llamadas y dos tablas que no hacen falta para 0x04000000–0x04000FFF.
+
+### Cambios (cada uno con su interruptor, archivo en el directorio de datos; en el host, la opción del mismo nombre)
+
+| Cambio | Dónde | Apaga | Exactitud |
+|---|---|---|---|
+| **DMA por bloques** (`dma_block`): tramos contiguos del host (RAM, WRAM, VRAM de un banco, LCDC; paleta y OAM del ARM9 con su registro de cambios por media palabra después de cada tramo) con `memcpy` o relleno; `DMAxFILL` o fuente fija en memoria como relleno; los avisos de código por líneas de 64 B (`nds_code_write_range`) y las páginas sucias de la VRAM una vez por página. **GXFIFO en modo inmediato**: palabras desde el puntero a `nds_gx_fifo_write_n` (lo mismo que por el bus, sin `nds_bus_*`/`nds_io_write`). Lo que no cumple (decrementos, fuente y destino solapados en el host, E/S como destino, bancos solapados, ranura de GBA, puertos de órdenes, trazas de E/S) sigue unidad a unidad desde donde el bloque se paró. | `sched.c`, `mem.c` (`nds_dma_span`), `geom.c` | `dma-lento` / `--dma-lento` | byte a byte el mismo resultado y el mismo registro de cambios; prueba `test_dma` (34 transferencias en dos máquinas, una con la forma anterior) |
+| **VRAMCNT_C/D** vacía la caché del ARM7 solo si el banco estaba o queda en su mapa (MST 2 con el bit 7) | `mem.c` | `vram7-vaciar-siempre` | la identidad física del código del ARM7 en 0x06xxxxxx solo depende de esos bancos; `test_vram7` |
+| **Matemáticas** por palabra (`group_image`: una imagen de 8 bytes por grupo) y **división perezosa** (se calcula en la primera lectura del cociente, el resto o DIVCNT; la bandera de ocupado sigue fijándose al escribir) | `math.c` | `es-lenta` / `--es-lenta` | mismos bytes en todas las lecturas (prueba con 4 000 juegos de operandos, bytes, medias y palabras); `div_pending` en `nds_math` |
+| **ROMCTRL** entero sin la imagen de 32 bytes | `cart.c` | `es-lenta` | `test_dma` (`test_romctrl`) |
+| **E/S directa del recompilador** (`arec_cfg.io_rd/io_wr`): los accesos lentos a 0x04000000–0x04000FFF fuera de las TCM van a `nds_io_read`/`nds_io_write` sin `mem_rd32`/`bus`/`nds_bus_read` (misma alineación y rotación que `ld_word`/`ld_half`/`ld_shalf`) | `arec.c`, `jit.c` | `es-lenta` | la región de E/S no tiene puntero en el mapa; `--lockstep` compara con el intérprete, que sigue por el bus |
+
+En el host (`salsads-cpurun --state-hash`, 2 400 cuadros sin tocar) Metroid, SM64DS, NSMB, MKDS, HeartGold, White 2 y Plants vs.
+Zombies dan los mismos tres hashes (CPUs, memoria, pantallas) con y sin las tres banderas; `--lockstep` pone la referencia siempre con
+las formas anteriores, así que también compara las rutas nuevas con las viejas. Con las rutas nuevas, en la intro de Metroid el
+99,9 % de las unidades de DMA van por bloques (697 por cuadro en 2,9 transferencias + 820 palabras a GXFIFO); en SM64DS 869 + 211.
+`DATO dma` en el log de la PS3 y la línea «DMA» de `--stats` lo dicen por cuadro.
+
+### Qué medir en la PS3 (paquete «SalsaDS ARM9», SLDS00042)
+
+Metroid de la intro a la zona pesada y SM64DS en el mismo tramo, con `jit-tiempos`: `DATO jit-lentos-es` (`0DC` y las matemáticas
+por cuadro), `DATO jit-tiempo` (accesos lentos) y `DATO rsx3d cuadro` (emulación, cuadros > 20 ms); A/B con `dma-lento`, `es-lenta` y
+`vram7-vaciar-siempre` uno a uno. Techo con lo medido: cuadro pesado de Metroid −1 a −2,5 ms (de 20–24), SM64DS lento −1,5 a −2 ms;
+la intro de Metroid −1 ms más por VRAMCNT. Si `0DC` sigue en 3–5 ms, lo que queda es `gx_fifo_write` (la geometría), no la E/S.
+
 ## Paquete «SalsaDS JIT núcleo» (SLDS00009)
 
 `tools/build.sh -C tests/phase4/nucleo-jit pkg` → `build/salsads-nucleo-jit/salsads-nucleo-jit.pkg`. Es «SalsaDS núcleo»
