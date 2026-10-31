@@ -412,7 +412,10 @@ struct nds {
 	struct acore a9, a7;
 
 	/* memoria */
-	uint8_t itcm[ACORE_ITCM_SIZE], dtcm[ACORE_DTCM_SIZE];
+	/* Base física del JIT (src/core/jit.c): la ITCM alineada como la RAM para que no haya relleno entre la DTCM y la RAM y
+	 * cada memoria empiece en una página de 16 KB contada desde aquí. */
+	uint8_t itcm[ACORE_ITCM_SIZE] __attribute__((aligned(128)));
+	uint8_t dtcm[ACORE_DTCM_SIZE];
 	uint8_t ram[NDS_RAM_SIZE] __attribute__((aligned(128)));    /* alineadas: el SPE de audio las lee por DMA */
 	uint8_t swram[NDS_SWRAM_SIZE] __attribute__((aligned(128)));
 	uint8_t wram7[NDS_WRAM7_SIZE] __attribute__((aligned(128)));

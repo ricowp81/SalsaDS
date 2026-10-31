@@ -15,10 +15,24 @@
  *
  * Código propio (GPL-2.0-or-later).
  */
+#include <stddef.h>
 #include <string.h>
 
 #include "core/nds_priv.h"
 #include "jit/arec.h"
+
+/* arec_map_set asocia cada página guest de 16 KB a una sola página física (desplazamiento desde `itcm`). Un relleno entre
+ * memorias deja el final de la página guest en la página física siguiente: una escritura por la ruta rápida a ese tramo no
+ * invalida el código traducido (Plants vs. Zombies reescribe así un overlay y ejecutaba el bloque viejo). */
+#define JIT_PAGE_ALIGNED(member) \
+	_Static_assert(((offsetof(struct nds, member) - offsetof(struct nds, itcm)) & ((1u << AREC_PAGE_SHIFT) - 1u)) == 0, \
+		       "pagina fisica del JIT desalineada: " #member)
+JIT_PAGE_ALIGNED(dtcm);
+JIT_PAGE_ALIGNED(ram);
+JIT_PAGE_ALIGNED(swram);
+JIT_PAGE_ALIGNED(wram7);
+JIT_PAGE_ALIGNED(vram);
+#undef JIT_PAGE_ALIGNED
 
 /* Espacio físico: de `itcm` al final de `swram` (ARM9) o de `vram` (ARM7). */
 static uint32_t phys_size9(const struct nds *n)
