@@ -18,7 +18,8 @@
  * BG1), 12 prueba de profundidad «igual», 13 y 14 triángulos al azar (cobertura y Gouraud) para ajustar el modelo,
  * 15 coordenadas de textura generadas (modos 1 a 3 de TEXIMAGE_PARAM), 16 y 17 interpolación del color a lo largo
  * de la línea y de las aristas, 20 a 34 aristas x-mayores, profundidad y mapa de NSMB (docs/fase3.md, 3.4 y 3.5), 35 y 36 el tallo
- * de una plataforma de hongo de NSMB (3.6), 37 el parche de tierra del mapa con la cámara en movimiento (3.6).
+ * de una plataforma de hongo de NSMB (3.6), 37 el parche de tierra del mapa con la cámara en movimiento (3.6), 46 a 49 las aristas
+ * x-mayores de abajo con el tamaño completo (polígonos de la recta de salida de Mario Kart DS).
  */
 #include "../gfx/gfx.h"
 
@@ -1354,10 +1355,77 @@ static void s_dirt3(void)
 	cmd(SWAP, 2u);
 }
 
+
+/* 46 a 49: aristas x-mayores de abajo con el tamaño completo (GBATEK, «Polygon Size»). Polígonos de la recta de salida de Mario Kart DS
+ * (pantalla y w de cada vértice, tomados de un cuadro del juego; W-buffer): pares de cuadriláteros y triángulos que comparten una arista
+ * casi horizontal (la de abajo del de arriba es su izquierda x-mayor hacia la derecha) y, abajo, el espejo horizontal (la de abajo es la
+ * derecha x-mayor hacia la izquierda). Textura directa con s y t en el rojo y el verde (el de arriba con t de 0 a 10, el de abajo de 16
+ * a 25): cada píxel dice qué polígono lo dibujó y con qué coordenadas. 46 con edge marking (todos con el id 0, como el borrado: sin
+ * bordes de color), 47 con antialiasing, 48 sin ninguno de los dos (polígonos chicos), 49 como la 46 en la proyección ortográfica
+ * (w iguales, Z-buffer). En SalsaDS el tamaño completo de la rama
+ * heartgold-huecos dibujaba la fila de la arista de abajo con los atributos del final del tramo: líneas claras sobre la pista. */
+static void s_kart(uint32_t d3, int orto)
+{
+	static const struct {
+		int n, t0;
+		int32_t v[4][3];
+	} poly[] = {
+	{ 4, 0, { { 113, 45, 597019 }, { 113, 47, 599428 }, { 124, 48, 532626 }, { 124, 45, 530216 } } },
+	{ 4, 16, { { 113, 47, 599428 }, { 113, 49, 601278 }, { 124, 50, 534475 }, { 124, 48, 532626 } } },
+	{ 4, 0, { { 124, 45, 530216 }, { 124, 48, 532626 }, { 134, 49, 451792 }, { 134, 45, 449382 } } },
+	{ 4, 16, { { 124, 48, 532626 }, { 124, 50, 534475 }, { 134, 51, 453641 }, { 134, 49, 451792 } } },
+	{ 4, 0, { { 151, 44, 233749 }, { 151, 51, 236159 }, { 201, 54, 75318 }, { 204, 33, 72908 } } },
+	{ 4, 16, { { 199, 69, 77150 }, { 201, 54, 75318 }, { 151, 51, 236159 }, { 150, 56, 238009 } } },
+	{ 3, 0, { { 165, 70, 73333 }, { 11, 70, 73115 }, { 170, 72, 65929 } } },
+	{ 4, 16, { { 170, 72, 65929 }, { 11, 70, 73115 }, { 1, 72, 66740 }, { 1, 73, 65714 } } },
+	};
+	static const int32_t m[16] = { 0x1000 * 48, 0, 0, 0, 0, 0x1555 * 48, 0, 0, 0, 0, -0x1000 * 24, -0x1000 * 48, 0, 0, 0, 0 };
+
+	ident_all();
+	REG16(R_DISP3DCNT) = (uint16_t)d3;
+	if (!orto) {
+		cmd(MTX_MODE, 0);
+		for (int i = 0; i < 16; i++)
+			GXP(MTX_LOAD_4x4) = (uint32_t)m[i];
+		cmd(MTX_MODE, 2);
+		cmd(MTX_IDENTITY, 0);
+	}
+	use_tex(texparam(T_DIRECT, 2, 2, 7, 0, 0, 0), 0);
+	cmd(POLY_ATTR, ATTR(0, 31, 0));
+	for (int mir = 0; mir < 2; mir++)
+		for (unsigned p = 0; p < sizeof poly / sizeof poly[0]; p++) {
+			int xmin = 255, xmax = 0, ymin = 191, ymax = 0, ts;
+
+			for (int k = 0; k < poly[p].n; k++) {
+				xmin = poly[p].v[k][0] < xmin ? poly[p].v[k][0] : xmin;
+				xmax = poly[p].v[k][0] > xmax ? poly[p].v[k][0] : xmax;
+				ymin = poly[p].v[k][1] < ymin ? poly[p].v[k][1] : ymin;
+				ymax = poly[p].v[k][1] > ymax ? poly[p].v[k][1] : ymax;
+			}
+			ts = (12 * 16) / (ymax - ymin); /* t: hasta 12 texeles de alto (2 por línea a lo más) */
+			ts = ts > 32 ? 32 : ts;
+			cmd(BEGIN, poly[p].n == 4 ? 1 : 0);
+			cmd(COLOR, WHITE);
+			for (int k = 0; k < poly[p].n; k++) {
+				const int x = poly[p].v[k][0], y = poly[p].v[k][1];
+				/* s: 1 a 29 texeles a lo ancho; t desde t0 */
+				const int32_t s16 = 16 + ((x - xmin) * 28 * 16) / (xmax - xmin), t16 = poly[p].t0 * 16 + (y - ymin) * ts;
+
+				cmd(TEXCOORD, ((uint32_t)s16 & 0xFFFFu) | ((uint32_t)t16 << 16));
+				if (orto) /* misma forma en la proyección ortográfica: w iguales, Z-buffer */
+					sv(mir ? 255 - x : x, mir ? y + 100 : y, 0);
+				else
+					wv48(mir ? 255 - x : x, mir ? y + 100 : y, poly[p].v[k][2]);
+			}
+			cmd(END, 0);
+		}
+	cmd(SWAP, orto ? 0u : 2u);
+}
+
 int main(void)
 {
 	scene = *(volatile uint32_t *)0x027FFE0Cu & 0xFFFFu;
-	if (scene > 45)
+	if (scene > 49)
 		scene = 0;
 	sds_init_quiet();
 	REG16(R_POWCNT1) = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 9) | (1 << 15);
@@ -1416,6 +1484,10 @@ int main(void)
 	case 44: s_stem_probe(0); break;
 	case 45: s_stem_probe(3); break;
 	case 40: s_dirt3(); break;
+	case 46: s_kart(1u | 8u | 32u, 0); break;
+	case 47: s_kart(1u | 8u | 16u, 0); break;
+	case 48: s_kart(1u | 8u, 0); break;
+	case 49: s_kart(1u | 8u | 32u, 1); break;
 	case 29: s_wdepth(1, 0); break;
 	}
 	if (scene < 26 && scene != 4 && scene != 5 && scene != 6)

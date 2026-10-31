@@ -125,6 +125,10 @@ static int geom_poly_plain, geom_read_scalar;
  * dibuja también su píxel; cierra los huecos de un píxel entre polígonos vecinos del mapa de HeartGold (docs/fase3.md). Con este archivo vuelve
  * la regla anterior (borde derecho exclusivo siempre), para comparar en la misma escena. */
 #define R3D_SIN_COMPLETO_FLAG SALSADS_DATA_DIR "/r3d-sin-completo"
+/* Con el tamaño completo, la fila de una arista x-mayor que va hacia adentro (la de abajo de un polígono) lleva los atributos de la arista en
+ * cada píxel (rama r3d-aristas-mkds: sin las líneas claras de Mario Kart DS). Con este archivo vuelve la regla de la v0.0.5-rc1 (atributos del
+ * final del tramo y la interpolación estirada), para comparar en la misma escena. */
+#define R3D_ARISTAS_RC1_FLAG SALSADS_DATA_DIR "/r3d-aristas-rc1"
 #define WIFI_OFF_FLAG SALSADS_DATA_DIR "/wifi-sin-inicio"
 /* Caminos rápidos de la E/S lenta del ARM9 (rama arm9-es; docs/fase4.md, «E/S lenta»): cada archivo vuelve a la forma anterior de
  * uno, para medir A/B en la misma escena. DMA_LENTO: la DMA unidad a unidad por el bus (sin copias por bloques a RAM, VRAM,
@@ -3608,8 +3612,14 @@ int main(void)
 
 		if (stat(R3D_SIN_COMPLETO_FLAG, &fst) == 0)
 			nds->vid.r3d_flags |= R3D_F_NOFULL;
+		if (stat(R3D_ARISTAS_RC1_FLAG, &fst) == 0)
+			nds->vid.r3d_flags |= R3D_F_FULLSTRETCH;
 		salsads_log("render 3D: polígonos a tamaño completo con edge marking, antialiasing o translúcidos %s",
 			    (nds->vid.r3d_flags & R3D_F_NOFULL) ? "desactivados (existe " R3D_SIN_COMPLETO_FLAG ")" : "activos");
+		if (!(nds->vid.r3d_flags & R3D_F_NOFULL))
+			salsads_log("render 3D: aristas x-mayores de abajo con %s",
+				    (nds->vid.r3d_flags & R3D_F_FULLSTRETCH) ? "la regla de la v0.0.5-rc1 (existe " R3D_ARISTAS_RC1_FLAG ")"
+									      : "los atributos de cada píxel");
 	}
 	if (spu_on) {
 		struct stat xst;

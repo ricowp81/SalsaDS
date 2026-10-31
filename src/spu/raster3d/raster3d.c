@@ -6,8 +6,9 @@
  * al arrancar. Dos SPE comparten un cuadro (docs/fase3.md, 3.2: reparto de SPE).
  *
  * Presupuesto del local store (256 KB; lo mide el enlace: `spu-size` y tools/spu-stack.py):
- *   habitual: texto 60 808 B, datos 800 B, bss 184 480 B; pila máxima 7 392 B, holgura 8 432 B.
- *   XDR: texto 62 888 B, datos 800 B, bss 172 960 B; pila máxima 7 440 B, holgura 17 856 B.
+ *   habitual: texto 60 856 B, datos 800 B, bss 184 480 B; pila máxima 7 424 B, holgura 8 400 B.
+ *   XDR: texto 62 936 B, datos 800 B, bss 172 960 B; pila máxima 7 472 B, holgura 17 824 B.
+ *   Va justa: en el SPE r3d_lin y r3d_zlerp van fuera de línea (R3D_LS, r3d_px.h).
  *   La variante XDR usa 448 celdas (28 KiB), cuatro vías, y conserva las líneas de VRAM y paletas.
  *   El programa habitual conserva 512 celdas y 64 bloques de 1 KiB, en memoria compartida entre modos.
  *   Dos programas elegidos al arrancar permiten reducir la reserva XDR sin encoger el modo apagado;

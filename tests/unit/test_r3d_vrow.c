@@ -198,11 +198,113 @@ static void test_tjunction_full(void)
 	printf("render 3D unión en T de HeartGold: %u líneas con hueco con la regla anterior, %u con el tamaño completo\n", old_gaps, new_gaps);
 }
 
+
+/* ---- tamaño completo en las aristas x-mayores de abajo (rama r3d-aristas-mkds): polígonos de la recta de salida de Mario Kart DS tal como
+ * los arma la escena 46 de gx3d (pantalla, w normalizada, s y t), con lo medido contra melonDS en esa escena y en la 49 (ortográfica) ---- */
+static int kart_row(const int32_t (*v)[5], int n, uint32_t full, int y, r3d_row *row)
+{
+	r3d_poly p;
+	int64_t area = 0;
+
+	memset(&p, 0, sizeof p);
+	p.n = n;
+	p.alpha = 31;
+	p.full = full;
+	p.ytop = 0x7FFFFFFF;
+	p.ybot = -0x7FFFFFFF;
+	for (int k = 0; k < n; k++) {
+		r3d_v *d = &p.v[k];
+
+		d->x = v[k][0];
+		d->y = v[k][1];
+		d->w = (uint32_t)v[k][2];
+		d->s = v[k][3];
+		d->t = v[k][4];
+		d->z = 1000;
+		d->r = d->g = d->b = 300;
+		if (d->y < p.ytop) {
+			p.ytop = d->y;
+			p.top = k;
+		}
+		if (d->y > p.ybot)
+			p.ybot = d->y;
+	}
+	for (int i = 0; i < n; i++)
+		area += (int64_t)p.v[i].x * p.v[(i + 1) % n].y - (int64_t)p.v[(i + 1) % n].x * p.v[i].y;
+	p.ldir = area < 0 ? 1 : -1;
+	return r3d_row_at(&p, y, row);
+}
+
+static void test_kart_full(void)
+{
+	/* el de arriba de la línea de salida: su arista de abajo, de (113,47) a (124,48), es la izquierda x-mayor hacia la derecha en la línea 47 */
+	static const int32_t q163[4][5] = { { 113, 45, 37311, 16, 0 }, { 113, 47, 37464, 16, 64 }, { 124, 48, 33288, 464, 96 }, { 124, 45, 33138, 464, 0 } };
+	static const int32_t q164[4][5] = { { 124, 45, 33138, 16, 0 }, { 124, 48, 33288, 16, 96 }, { 133, 49, 28236, 464, 128 }, { 133, 45, 28086, 464, 0 } };
+	static const int32_t q168[4][5] = { { 150, 44, 14607, 16, 99 }, { 150, 51, 14757, 16, 162 }, { 200, 54, 4707, 438, 189 }, { 203, 33, 4554, 464, 0 } };
+	static const int32_t t34[3][5] = { { 164, 70, 4581, 449, 0 }, { 11, 70, 4569, 16, 0 }, { 169, 72, 4119, 464, 64 } };
+	/* el espejo del de arriba: la de abajo es la derecha x-mayor hacia la izquierda */
+	static const int32_t q163m[4][5] = { { 141, 144, 37311, 16, 0 }, { 141, 146, 37464, 16, 64 }, { 130, 147, 33288, 464, 96 }, { 130, 144, 33138, 464, 0 } };
+	/* ortográfica (escena 49): X(171) = 164,5 exacto en la derecha hacia la izquierda */
+	static const int32_t t14[3][5] = { { 90, 170, 4096, 449, 0 }, { 244, 170, 4096, 16, 0 }, { 85, 172, 4096, 464, 64 } };
+	r3d_row row;
+
+	/* la fila de la arista lleva los atributos de la arista en cada píxel: en x = 113, los del vértice (113,47) */
+	CHECK(kart_row(q163, 4, 1, 47, &row));
+	CHECK_EQ(row.xl, 113);
+	CHECK_EQ(row.xr, 124);
+	CHECK_EQ(row.xo, 113);
+	CHECK_EQ(row.den, 11);
+	CHECK_EQ(row.l.s, 16);
+	CHECK_EQ(row.l.t, 64);
+	CHECK_EQ(row.l.w, 37464u);
+	/* la regla de la v0.0.5-rc1 (R3D_F_FULLSTRETCH) dejaba los del final del tramo: un solo texel y la w del extremo cercano */
+	CHECK(kart_row(q163, 4, 3, 47, &row));
+	CHECK_EQ(row.xl, 113);
+	CHECK_EQ(row.l.s, 464);
+	CHECK_EQ(row.l.w, 33288u);
+	/* cobertura medida contra melonDS: la última línea con la derecha vertical no gana el píxel 133 */
+	CHECK(kart_row(q164, 4, 1, 48, &row));
+	CHECK_EQ(row.xl, 124);
+	CHECK_EQ(row.xr, 133);
+	CHECK(kart_row(q164, 4, 3, 48, &row));
+	CHECK_EQ(row.xr, 134);
+	/* la derecha y-mayor dibuja su píxel salvo que la línea ya acabe más a la derecha por el tramo gordo de la izquierda (línea 33) */
+	CHECK(kart_row(q168, 4, 1, 33, &row));
+	CHECK_EQ(row.xr, 203);
+	CHECK(kart_row(q168, 4, 1, 53, &row));
+	CHECK_EQ(row.xl, 183);
+	CHECK_EQ(row.xr, 201);
+	CHECK(kart_row(q168, 4, 1, 40, &row));
+	CHECK_EQ(row.xr, 203); /* X(40) = 202,0: el píxel de la arista (202) sí */
+	/* la derecha x-mayor hacia afuera no crece: su tramo ya está */
+	CHECK(kart_row(t34, 3, 1, 70, &row));
+	CHECK_EQ(row.xl, 11);
+	CHECK_EQ(row.xr, 167);
+	CHECK(kart_row(t34, 3, 3, 70, &row));
+	CHECK_EQ(row.xr, 168);
+	/* la derecha x-mayor hacia la izquierda termina, exclusiva, en redondeo(X(y)), con los atributos de la arista ahí */
+	CHECK(kart_row(q163m, 4, 1, 146, &row));
+	CHECK_EQ(row.xl, 130);
+	CHECK_EQ(row.xr, 141);
+	CHECK_EQ(row.r.s, 16);
+	CHECK_EQ(row.r.w, 37464u);
+	CHECK(kart_row(q163m, 4, 3, 146, &row));
+	CHECK_EQ(row.xr, 142);
+	/* ortográfica: la mitad exacta hacia abajo y la interpolación hasta ahí (sin la regla 3.7 encima) */
+	CHECK(kart_row(t14, 3, 1, 171, &row));
+	CHECK_EQ(row.xr, 164);
+	CHECK_EQ(row.den, 164 - row.xo);
+	CHECK(kart_row(t14, 3, 3, 171, &row));
+	CHECK_EQ(row.xr, 166);
+	printf("render 3D aristas x-mayores de abajo con tamaño completo (Mario Kart DS): atributos en cada píxel y cobertura de melonDS\n");
+}
+
 void test_r3d_vrow(void);
 void test_r3d_vrow(void)
 {
 	test_mesh_gaps();
 	test_tjunction_full();
+	test_kart_full();
 	static uint32_t ca[R3D_W] __attribute__((aligned(16))), da[R3D_W] __attribute__((aligned(16))), aa[R3D_W] __attribute__((aligned(16)));
 	static uint32_t cb[R3D_W] __attribute__((aligned(16))), db[R3D_W] __attribute__((aligned(16))), ab[R3D_W] __attribute__((aligned(16)));
 	uint32_t bad = 0, rows = 0, lin_rows = 0, written = 0;
