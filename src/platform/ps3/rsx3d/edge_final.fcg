@@ -1,0 +1,35 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* RGB24 profundidad; A = OID6 y arista. El exterior es CLEAR_COLOR /
+ * CLEAR_DEPTH. Vecinos a un píxel DS también al ampliar la imagen. */
+float different_farther(float4 at, float4 neighbor)
+{
+    float id = at.a - floor(at.a / 64.0) * 64.0;
+    float nid = neighbor.a - floor(neighbor.a / 64.0) * 64.0;
+    /* Comparación lexicográfica: no perder low bits al restar Z24 en fp32. */
+    float3 delta = neighbor.rgb - at.rgb;
+    float3 same = 1.0 - step(0.5, abs(delta));
+    float far = step(0.5, delta.r) + same.r * step(0.5, delta.g)
+              + same.r * same.g * step(0.5, delta.b);
+    return step(0.5, abs(id - nid)) * far;
+}
+void main(float4 uv : TEXCOORD0, float4 size : TEXCOORD1, float4 clear : TEXCOORD2,
+          uniform sampler2D image : TEXUNIT0, uniform sampler2D attrs : TEXUNIT1,
+          uniform sampler2D colors : TEXUNIT2, out float4 result : COLOR)
+{
+    float4 src = tex2D(image, uv.xy);
+    float4 at = floor(tex2D(attrs, uv.xy) * 255.0 + 0.5);
+    float4 l = floor(tex2D(attrs, uv.xy - float2(size.z, 0.0)) * 255.0 + 0.5);
+    float4 r = floor(tex2D(attrs, uv.xy + float2(size.z, 0.0)) * 255.0 + 0.5);
+    float4 u = floor(tex2D(attrs, uv.xy - float2(0.0, size.z)) * 255.0 + 0.5);
+    float4 d = floor(tex2D(attrs, uv.xy + float2(0.0, size.z)) * 255.0 + 0.5);
+    l = lerp(clear, l, step(size.z, uv.x));
+    r = lerp(r, clear, step(size.x - size.z, uv.x));
+    u = lerp(clear, u, step(size.z, uv.y));
+    d = lerp(d, clear, step(size.y - size.z, uv.y));
+    float mark = min(1.0, different_farther(at, l) + different_farther(at, r)
+                        + different_farther(at, u) + different_farther(at, d));
+    float id = at.a - floor(at.a / 64.0) * 64.0;
+    float edge = floor(at.a / 64.0) - floor(at.a / 128.0) * 2.0;
+    float3 color = tex2D(colors, float2(floor(id / 8.0) + 0.5, 0.5)).rgb;
+    result = float4(lerp(src.rgb, color, edge * mark), src.a);
+}

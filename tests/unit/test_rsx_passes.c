@@ -3,6 +3,9 @@
 #include "gpu3d/rsx_passes.h"
 #include "gpu3d/rsx_modes.h"
 #include "gpu3d/r3d_px.h"
+#include "gpu3d/r3d_core.h"
+#include "gpu3d/rsx_edge.h"
+#include "gpu3d/rsx_edge_test.h"
 
 typedef struct sample {
     uint32_t color, depth, fogdepth, fog;
@@ -33,7 +36,13 @@ static sample execute_frag(sample s, const rsx_pass *p, unsigned attributes, uns
         return s;
     }
     if (p->blend!=RP_NONE) {
-        if (attributes) {
+        if (attributes==2) {
+            /* Atributos de bordes: RGB24 cambia con cada escritor de Z;
+             * el byte OID/arista solo se reemplaza con fragmentos opacos.
+             * f->fog transporta aquí ese byte, separado de la niebla. */
+            if (!p->pass || tdepth) s.fogdepth=depth;
+            if (!p->pass) s.fog=fog;
+        } else if (attributes) {
             if (!p->pass || tdepth) s.fogdepth=depth>>9;
             s.fog=p->pass ? (s.fog&fog) : fog;
         } else {
@@ -290,8 +299,177 @@ static unsigned batches(void)
     return cases;
 }
 
+/* Metadatos de bordes: vecinos, igualdad exacta de 24 bits y alfa intacta.
+ * La referencia recibe los atributos DS; la pasada recibe solo RGB24/OID6
+ * y la candidatura geométrica. Las banderas TID/niebla no son el OID. */
+static void edge_pixels(void)
+{
+    static uint32_t col[256], want[256], dep[3][256], att[3][256];
+    static const uint32_t depths[]={0,1,255,256,511,512,65535,65536,0x600000,0xfffffe,0xffffff};
+    r3d_rstate rs={0};
+    uint32_t seed=1;
+    unsigned different=0, marked=0, unchanged=0;
+    for (unsigned k=0;k<8;k++) rs.edge[k]=r3d_555((k*3967u)&0x7fff,31);
+    for (unsigned test=0;test<512;test++) {
+        rs.clear_attr=test&63; rs.clear_depth=depths[test%11]; rs.d3=(test&1) ? D3_AA : 0;
+        for (unsigned y=0;y<3;y++) for (unsigned x=0;x<256;x++) {
+            seed=seed*1664525u+1013904223u;
+            att[y][x]=(seed>>9)&0x1ffffu;
+            dep[y][x]=depths[(seed>>26)%11];
+            if (y==1) col[x]=R3D_PX((seed>>18)&63,(seed>>12)&63,(seed>>6)&63,seed&31);
+        }
+        memcpy(want,col,sizeof want);
+        const uint32_t *du=(test&2) ? NULL : dep[0], *au=(test&2) ? NULL : att[0];
+        const uint32_t *dd=(test&4) ? NULL : dep[2], *ad=(test&4) ? NULL : att[2];
+        r3d_edge_row(&rs,want,dep[1],att[1],du,au,dd,ad);
+        uint32_t clear=rsx_edge_encode(rs.clear_depth,rs.clear_attr);
+        for (unsigned x=0;x<256;x++) {
+            uint32_t center=rsx_edge_encode(dep[1][x],att[1][x]);
+            uint32_t neighbors[4]={x ? rsx_edge_encode(dep[1][x-1],att[1][x-1]) : clear,
+                x<255 ? rsx_edge_encode(dep[1][x+1],att[1][x+1]) : clear,
+                du ? rsx_edge_encode(du[x],au[x]) : clear,dd ? rsx_edge_encode(dd[x],ad[x]) : clear};
+            uint32_t got=rsx_edge_apply(&rs,col[x],center,neighbors);
+            different+=got!=want[x]; marked+=got!=col[x]; unchanged+=got==col[x];
+            CHECK_EQ(rsx_edge_depth(center),dep[1][x]);
+            CHECK_EQ(rsx_edge_meta_id(center),AT_OID(att[1][x]));
+            CHECK_EQ(R3D_PX_A(got),R3D_PX_A(col[x]));
+        }
+    }
+    CHECK_EQ(different,0); CHECK(marked>1000 && unchanged>1000);
+    /* Los nueve bits bajos cuentan: compartir z>>9 no es igualdad Z/W. */
+    for (unsigned id=0;id<64;id++) for (unsigned alpha=0;alpha<32;alpha++)
+    for (unsigned candidate=0;candidate<2;candidate++) for (unsigned direction=0;direction<4;direction++)
+    for (int delta=-1;delta<=1;delta++) {
+        uint32_t center=rsx_edge_encode(0x600100,id|(candidate ? AT_EDGE : 0));
+        uint32_t neighbors[4]={center,center,center,center};
+        neighbors[direction]=rsx_edge_encode(0x600100+delta,(id+1)&63);
+        uint32_t color=R3D_PX(2,4,6,alpha), got=rsx_edge_apply(&rs,color,center,neighbors);
+        uint32_t expected=candidate && delta>0 ? (rs.edge[id>>3]&0xffffffu)|(alpha<<24) : color;
+        CHECK_EQ(got,expected);
+    }
+    /* Un translúcido no publica su TID como OID, ni crea AT_EDGE. Su alfa
+     * auxiliar 255 con MIN conserva exactamente los siete bits del opaco;
+     * la niebla usa su propia pasada de atributos y no comparte este byte. */
+    for (unsigned oid=0;oid<64;oid++) for (unsigned edge=0;edge<2;edge++)
+    for (unsigned tid=0;tid<64;tid++) for (unsigned fog=0;fog<2;fog++) {
+        uint32_t a=oid|(edge ? AT_EDGE : 0)|AT_TRANS|(tid<<6)|(fog ? AT_FOG : 0);
+        uint32_t value=rsx_edge_encode(0x123456,a), byte=value>>24;
+        CHECK_EQ(byte,oid|(edge ? 64u : 0u));
+        CHECK_EQ(byte<255 ? byte : 255,byte);
+    }
+    printf("RSX bordes: 131072 píxeles contra r3d_edge_row, vecinos exteriores y 49152 fronteras de profundidad, 0 diferencias\n");
+}
+
+static void edge_attribute_passes(void)
+{
+    static const int delta[]={-513,-1,0,1,513};
+    static const unsigned alphas[]={0,15,31};
+    unsigned cases=0, different=0;
+    for (unsigned bits=0;bits<2048;bits++) for (unsigned ai=0;ai<3;ai++) for (unsigned zi=0;zi<5;zi++) {
+        unsigned front=bits&1, equal=(bits>>1)&1, tdepth=(bits>>2)&1, back=(bits>>3)&1;
+        unsigned repeat=(bits>>4)&1, trans=(bits>>5)&1, edge=(bits>>6)&1, oldedge=(bits>>7)&1;
+        unsigned alpha_ref=(bits&256) ? 15 : 0, w=(bits>>9)&1, blend=(bits>>10)&1, alpha=alphas[ai], depth=10000+delta[zi];
+        rsx_pass_input c={0};
+        c.id=repeat ? 2 : 3; c.tid=repeat ? 4 : 8; c.oid=1; c.trans_mask=12;
+        c.front=front; c.trans=1; c.opaque=1; c.tdepth=tdepth; c.equal=equal;
+        c.extended=1; c.blend=blend; c.occupied=1; c.attributes=2; c.prior_back=1;
+        sample s={R3D_PX(7,43,59,19),10000,10000,53|(oldedge ? 64u : 0u),32|16|2|(back ? 64u : 0u)|(trans ? 4u : 0u)};
+        unsigned metadata=c.id|(edge ? 64u : 0u);
+        sample got=execute(s,&c,alpha,alpha_ref,depth,metadata,w,1), want=s;
+        r3d_rstate rs={0}; rs.wbuf=w;
+        r3d_poly p={0}; p.front=front; p.attr=equal ? PA_DEQUAL : 0;
+        unsigned accepted=alpha>alpha_ref && r3d_depth_ok(&p,&rs,depth,s.depth,back ? AT_BACK : 0) &&
+            !(alpha<31 && trans && repeat);
+        if (accepted) {
+            if (alpha==31 || tdepth) want.depth=want.fogdepth=depth;
+            if (alpha==31) want.fog=metadata;
+        }
+        different+=got.depth!=want.depth || got.fogdepth!=want.fogdepth || got.fog!=want.fog;
+        cases++;
+    }
+    CHECK_EQ(different,0);
+    printf("RSX bordes: %u planes de atributos, TDEPTH, rechazo TID, opacos y empate frente/espalda Z/W, 0 diferencias\n",cases);
+}
+
+static void edge_spans(void)
+{
+    static gx_frame f;
+    unsigned different=0, covered=0, interior=0;
+    uint8_t spans[RSX_EDGE_ROW_BYTES];
+    for (unsigned shape=0;shape<12;shape++) {
+        rsx_edge_test_scene(&f,0);
+        gx_poly *gp=&f.poly[0];
+        if (shape&1) { f.vtx[0].sx=-23; f.vtx[1].sx=240; f.vtx[2].sx=180; f.vtx[3].sx=4; }
+        if (shape&2) { f.vtx[0].sy=-4; f.vtx[1].sy=53; f.vtx[2].sy=191; f.vtx[3].sy=150; }
+        if (shape&4) { gp->nverts=3; f.vtx[1].sx=255; f.vtx[2].sy=192; }
+        if (shape&8) f.vtx[1].z++;
+        const gx_vertex *vv[GX_POLY_MAXV];
+        for (unsigned k=0;k<gp->nverts;k++) vv[k]=&f.vtx[gp->vidx[k]];
+        r3d_rstate rs; r3d_rstate_init(&rs,&f,0);
+        r3d_poly p; CHECK(r3d_poly_setup(&p,gp,vv,&rs));
+        rsx_edge_spans(spans,&p);
+        CHECK_EQ(spans[RSX_EDGE_FLAT_TEXEL*4+3],!(shape&8));
+        for (int y=0;y<R3D_H;y++) {
+            r3d_row row; int active=r3d_row_at(&p,y,&row);
+            for (int x=0;x<R3D_W;x++) {
+                int expected=active && (row.alledge || x<row.xle || x>=row.xrs);
+                different+=rsx_edge_span_test(spans+y*4,x)!=expected;
+                if (active && x>=row.xl && x<row.xr) { covered++; interior+=!expected; }
+            }
+        }
+    }
+    CHECK_EQ(different,0); CHECK(covered>1000 && interior>1000);
+    printf("RSX bordes: 12 geometrías, 589824 candidatos de arista, incluidos recorte y pendientes, 0 diferencias\n");
+}
+
+static void edge_scenes(void)
+{
+    static gx_frame f;
+    static r3d_ctx ctx;
+    static uint8_t vram[R3D_VRAM_ZERO_OFF+128] __attribute__((aligned(128)));
+    static uint32_t ref[R3D_W*R3D_H] __attribute__((aligned(128)));
+    static uint32_t out[R3D_W*R3D_H] __attribute__((aligned(128)));
+    static uint32_t without[R3D_W*R3D_H];
+    uint32_t ts[4]={0}, ps[6]={0};
+    unsigned different=0, changed=0;
+    rsx_edge_test_vram(vram);
+    for (unsigned test=0;test<RSX_EDGE_TESTS;test++) {
+        rsx_edge_test_scene(&f,test);
+        CHECK_EQ(rsx_edge_group(&f,0),rsx_edge_test_group(test));
+        CHECK_EQ(rsx_edge_group(&f,R3D_F_NOFOG),rsx_edge_test_group(test)&3u);
+        r3d_render_ref(&f,vram,ts,ps,0,ref);
+        r3d_render_ref(&f,vram,ts,ps,R3D_F_NOEDGE,without);
+        for (unsigned k=0;k<R3D_W*R3D_H;k++) changed+=ref[k]!=without[k];
+        if (!test) {
+            CHECK_EQ(ref[8*R3D_W+8],R3D_PX(63,0,0,31));
+            CHECK_EQ(ref[9*R3D_W+9],R3D_PX(63,63,63,31));
+            CHECK_EQ(ref[104*R3D_W+200],R3D_PX(63,63,63,31)); /* ID63 contra fondo ID63 */
+        }
+        if (test==128) {
+            /* El texel visible junto al hueco es interior del polígono:
+             * no hereda color de borde por ver fondo en el vecino. */
+            CHECK_EQ(ref[96*R3D_W+101],R3D_PX(63,63,63,31));
+            CHECK_EQ(ref[96*R3D_W+128],0);
+        }
+        for (unsigned split=0;split<2;split++) {
+            r3d_job j={0};
+            j.frame_ea=(uint64_t)(uintptr_t)&f; j.vram_ea=(uint64_t)(uintptr_t)vram;
+            j.out_ea=(uint64_t)(uintptr_t)out; j.nunits=split ? 2 : 1; j.band=split ? 8 : 16;
+            memset(out,0xa5,sizeof out);
+            for (unsigned u=0;u<j.nunits;u++) { r3d_stats st; j.unit=u; CHECK_EQ(r3d_core_render(&ctx,&j,&st),0); }
+            if (memcmp(ref,out,sizeof ref)) { different++; printf("RSX bordes escena %u reparto %u difiere\n",test,split); }
+        }
+    }
+    CHECK_EQ(different,0); CHECK(changed>10000);
+    printf("RSX bordes: %u escenas Z/W, translúcidos, TDEPTH, sombras, niebla, AA, fondo, huecos y pendientes; referencia/bandas idénticas, %u píxeles marcados\n",RSX_EDGE_TESTS,changed);
+}
+
 void test_rsx_passes(void)
 {
+    edge_pixels();
+    edge_attribute_passes();
+    edge_spans();
+    edge_scenes();
     unsigned compact=sweep(1,12), previous=sweep(0,12), wide=sweep(1,15);
     CHECK(compact>100000 && previous==compact && wide==compact);
     unsigned lotes=batches();

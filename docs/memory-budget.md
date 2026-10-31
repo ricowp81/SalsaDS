@@ -8,6 +8,12 @@ una caché de código) se descuentan de ahí (medido en Salsa64 con HEN:
 Cifras en MB. **Previsto** = estimación de diseño (todavía no hay núcleo);
 **Medido** se llena en la PS3 real. Se actualiza en cada fase.
 
+## Bordes RSX (2026-10-31; cuenta de reservas, no medición en consola)
+
+- XDR adicional: 4 MiB mapeados, dos ranuras de 2048 × 1024 B para las aristas geométricas por fila y profundidad plana; se reservan al iniciar y se reutilizan tras la etiqueta del trabajo previo. Tabla EDGE_COLOR: dos líneas de 128 B dentro de la arena ya reservada.
+- GDDR3 adicional: dos destinos RGBA8 por escala (Z24/OID/arista y color anterior a niebla), 384 KiB × (1 + escala²) cuando hay HD: 384 KiB a 1×, 1920 KiB a 2×, 3840 KiB a 3× y 6528 KiB a 4×. Se reservan al iniciar, incluso sin niebla en el juego. Cinco fragment programs más; ninguna asignación durante el raster de un cuadro.
+- Con HD y ambos destinos de diagnóstico se ocupan 15 de los 16 destinos de rsxkit. No se cambia el local store ni el reparto de los SPE. La generación de filas en PPE añade trabajo que requiere medición real.
+
 ## Prototipo XDR de celdas (2026-10-23; no empaquetado)
 - Reserva estática al arrancar de 8 388 608 B, alineada a 128 B, fuera de `struct nds`: 2 × 32 768 entradas de 128 B (clave 64 B + 16 píxeles de 32 bits); sin asignaciones durante el juego.
 - Cada SPE solo accede a su mitad, incluso con dos cuadros en vuelo: trabajos secuenciales por unidad. No hay reutilización cruzada entre SPE; puede duplicarse contenido.

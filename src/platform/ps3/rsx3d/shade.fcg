@@ -8,6 +8,9 @@ void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
 #if defined(RSX3D_TOON) || defined(RSX3D_FOG)
           uniform sampler2D table : TEXUNIT1,
 #endif
+#ifdef RSX3D_EDGE_ATTR
+          uniform sampler2D edges : TEXUNIT1,
+#endif
 #if defined(RSX3D_FOG) || defined(RSX3D_FOG_ATTR)
           float4 fc : TEXCOORD3, float4 fp : TEXCOORD4,
 #endif
@@ -55,6 +58,30 @@ void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
 #else
     float fogdepth = floor(pos.z * 16777215.0 + 0.5);
 #endif
+#ifdef RSX3D_EDGE_ATTR
+    /* Tabla geométrica nativa por polígono: límites de arista por fila y
+     * Z plana completa. No contornear agujeros interiores de la textura. */
+    float4 ea = floor(fc + 0.5);
+    float polygon = ea.x * 256.0 + ea.y;
+    float2 pixel = floor(pos.xy / fp.x);
+    float4 row = floor(tex2D(edges, float2((pixel.y + 0.5) / 256.0,
+                                         (polygon + 0.5) / 2048.0)) * 255.0 + 0.5);
+    float4 plane = floor(tex2D(edges, float2(192.5 / 256.0,
+                                           (polygon + 0.5) / 2048.0)) * 255.0 + 0.5);
+#ifndef RSX3D_W
+    fogdepth = lerp(fogdepth, dot(plane.rgb, float3(65536.0, 256.0, 1.0)), step(0.5, plane.a));
+#endif
+    float left = row.r * 256.0 + row.g;
+    float right = row.b * 256.0 + row.a;
+    float edge = max(1.0 - step(left, pixel.x), step(right, pixel.x));
+    float opaque = ea.z + edge * 64.0;
+    /* MIN con 255 conserva OID y arista; la niebla lleva su propia pasada. */
+    float attr = lerp(opaque, 255.0, translucent);
+    fogdepth = clamp(fogdepth, 0.0, 16777215.0);
+    float hi = floor(fogdepth / 65536.0);
+    float mid = floor(fogdepth / 256.0) - hi * 256.0;
+    result = float4(hi, mid, fogdepth - floor(fogdepth / 256.0) * 256.0, attr) / 255.0;
+#else
     float z15 = floor(fogdepth / 512.0);
     /* fc llega entero por polígono o por vértice (segundo color del vértice
      * escalado por 255): x,y = Z>>9 en dos bytes, z bandera de plano, w
@@ -68,6 +95,7 @@ void main(float4 uv : TEXCOORD0, float4 k : TEXCOORD1, float4 q : TEXCOORD2,
 #endif
     float hi = floor(z15 / 256.0);
     result = float4(hi / 255.0, (z15 - hi * 256.0) / 255.0, 0.0, pf.w);
+#endif
 #else
 #ifdef RSX3D_FOG
     /* Densidad por fragmento como la DS: profundidad entera de 24 bits

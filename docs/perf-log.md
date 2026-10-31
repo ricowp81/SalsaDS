@@ -1,5 +1,18 @@
 # Registro de rendimiento
 
+## 2026-10-31 — Bordes del RSX [host Docker: conteos, sin tiempos de PS3]
+
+| Tramo HeartGold | Cuadros 3D | Rechazos SPE por modos antes → después | Dibujos color | Atributos bordes | Quads bordes |
+|---|---:|---:|---:|---:|---:|
+| Intro [0,3000), sin entrada | 1043 | 1031 → 0 | 296310 | 259581 | 1031 |
+| Torre Quemada [2150,2355) | 205 | 205 → 0 | 57729 | 49397 | 205 |
+
+- Fuente: `--rsx-censo`, con la preparación completa y los planes `rsx_passes.h`, resumido por `tools/rsx-censo.py`. Los 1031 cuadros con efecto llevan DISP3DCNT=0x3039: W, AA, translúcidos; sin niebla, sombra, igualdad ni escritores de espalda. Son candidatos por modos; no se ejecuta el RSX en el host ni se estima costo o disponibilidad de texturas.
+- 390059 polígonos dibujables, 248273 lotes; medianas por cuadro con bordes: 391 polígonos, 282 dibujos de color y 261 de atributos. Total 556922 dibujos y quads de bordes por escala, aparte 1043 quads de exportación. Antes, los cuadros con bordes iban al SPE: las columnas describen el trabajo nuevo admisible, no una reducción de dibujos RSX ya ejecutados. HD sin captura rasteriza una escala; captura y autoprueba 2×, dos.
+- Costo estructural: una tabla XDR de 1024 B por polígono (dos ranuras reservadas de 2 MiB), raster auxiliar de Z24/OID/arista y un quad de cuatro vecinos. Si hay niebla, también se rasterizan sus atributos y se ejecuta su quad final. Medir preparación PPE y raster/posproceso RSX en consola; no se atribuyen milisegundos ni ganancia a estos conteos.
+- Log previo de PS3, desde #4672: 18 ventanas suman 2160 cuadros 3D (352 RSX, 1808 SPE), 1773 con bordes. Las 17 ventanas de rutas suman 25 SPE por costo; no están alineadas exactamente con el censo. No son resultados del paquete nuevo.
+- Pueblo Primavera queda pendiente: el intento con la partida disponible de solo lectura no llegó al mapa. CSV, capturas y método en `build/rsx-bordes/censo/informe.md`. Paridad gráfica, autoprueba 1×/2× y medición A/B real pendientes.
+
 ## 2026-10-29 — Autoprueba en consola de rsx-sombras (2×) y niebla con toon [PS3: autoprueba; sin tiempos nuevos]
 
 - Paquete «SalsaDS sombras» a 2×: sombras 0–63 (36–51 con cara trasera en W y la W redondeada) 0 fallos; niebla+sombra 48/48 dentro de la tolerancia (24 576 distintos exactos de ±1); niebla final 512, reducción, composición HD y reproducciones OK. Niebla+toon/resaltado Z 27 840 y 27 744 fuera de tolerancia, W 48 960 y 48 768: TEXUNIT1 llevaba la tabla de niebla en los polígonos toon (ver `estado.md`).

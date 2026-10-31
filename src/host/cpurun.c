@@ -25,6 +25,7 @@
 #include "gpu3d/rsx_modes.h"
 #include "gpu3d/rsx_passes.h"
 #include "gpu3d/rsx_batch.h"
+#include "gpu3d/rsx_edge.h"
 #include "host/jitrun.h"
 #include "jit/arec.h"
 #include "util/endian.h"
@@ -419,6 +420,93 @@ static unsigned rsx_plan_pass(const rsx_batch_key *k, unsigned n, unsigned exten
 	if (groups)
 		*groups = g;
 	return draws;
+}
+
+/* Censo de admisión por modos y dibujos por escala, sin costo, caché de
+ * texturas ni resultado de la autoprueba gráfica. Con sombras o toon se
+ * informa la admisión portable, pero no se estima el número de dibujos:
+ * la unión previa de sus comandos usa otra clave. */
+static void rsx_census_plan(FILE *io, const gx_frame *f, uint32_t flags)
+{
+	static uint16_t order[GX_MAX_POLYS], sorted[GX_MAX_POLYS];
+	static uint32_t keys[GX_MAX_POLYS];
+	static rsx_batch_key batch[GX_MAX_POLYS];
+	r3d_rstate rs;
+	rsx_shadow_layout layout;
+	const char *other = "admitido";
+	unsigned edge = 0, fog = 0, n = 0, trans = 0, back = 0, edge_back = 0, color = 0, attr = 0, attr_after = 0, groups = 0;
+	uint32_t modes = rsx_modes(f, flags);
+	r3d_rstate_init(&rs, f, flags);
+	for (unsigned i = 0; i < 32; i++) fog |= rs.fog_table[i];
+	fog = !!fog && !!(modes & (1u << RSX_FOG));
+	for (unsigned i = 0; i < f->npolys; i++) {
+		const uint32_t a = f->poly[i].attr;
+		edge |= PA_MODE(a) != 3 && PA_ALPHA(a) == 31 && PA_ID(a) != AT_OID(rs.clear_attr);
+		edge_back |= !(f->poly[i].flags & GX_POLY_FRONT) && ((PA_MODE(a) != 3 && PA_ALPHA(a) == 31) || (a & PA_TDEPTH));
+	}
+	edge = !!edge && !!(modes & (1u << RSX_EDGE));
+	const unsigned shadows = !!(modes & ((1u << RSX_SHADOW_MASK) | (1u << RSX_SHADOW)));
+	const unsigned counted = !(modes & ((1u << RSX_SHADOW_MASK) | (1u << RSX_SHADOW) |
+					   (1u << RSX_TOON) | (1u << RSX_HIGHLIGHT)));
+	const unsigned equal = !!(modes & (1u << RSX_EQUAL));
+	unsigned extended = 0;
+	if (modes & (1u << RSX_CLEAR)) other = "imagen-borrado";
+	else if (modes & (1u << RSX_WIRE)) other = "alambre";
+	else if (shadows && equal) other = "igualdad con sombras";
+	else if (shadows || equal || (edge && edge_back)) {
+		rsx_shadow_layout_init(&layout, f, &rs, 0);
+		if (shadows && layout.translucents > 8) other = "3D ampliado: capacidad translúcida sin paridad";
+		else if (layout.needs_back || layout.needs_ids || equal) {
+			const char *why = rsx_shadow_layout_extend(&layout, f, &rs, shadows);
+			if (why) other = why;
+			extended = layout.extended;
+		}
+	}
+	for (unsigned i = 0; i < f->npolys; i++) {
+		keys[i] = r3d_sort_key(&f->poly[i], f->swap_params & 1u);
+		order[i] = (uint16_t)i;
+	}
+	for (unsigned shift = 0; shift < 24; shift += 8) {
+		uint32_t count[256] = { 0 }, sum = 0;
+		for (unsigned i = 0; i < f->npolys; i++) count[(keys[order[i]] >> shift) & 255u]++;
+		for (unsigned i = 0; i < 256; i++) { const uint32_t c = count[i]; count[i] = sum; sum += c; }
+		for (unsigned i = 0; i < f->npolys; i++) sorted[count[(keys[order[i]] >> shift) & 255u]++] = order[i];
+		memcpy(order, sorted, f->npolys * sizeof *order);
+	}
+	for (unsigned i = 0; i < f->npolys; i++) {
+		const gx_poly *gp = &f->poly[order[i]];
+		const gx_vertex *vv[GX_POLY_MAXV];
+		r3d_poly p;
+		int ymin = 0x7FFF, ymax = -0x7FFF;
+		memset(&p, 0, sizeof p);
+		p.n = gp->nverts; p.attr = gp->attr; p.mode = PA_MODE(gp->attr);
+		p.alpha = PA_ALPHA(gp->attr); p.id = PA_ID(gp->attr); p.wshift = gp->wshift;
+		for (int v = 0; v < p.n; v++) {
+			const int sy = f->vtx[gp->vidx[v]].sy;
+			vv[v] = &f->vtx[gp->vidx[v]];
+			if (sy < ymin) ymin = sy;
+			if (sy > ymax) ymax = sy;
+		}
+		if (ymax < 0 || ymin >= R3D_H) continue;
+		p.textured = (rs.d3 & D3_TEXTURE) && ((gp->texparam >> 26) & 7u);
+		if (edge && !r3d_poly_setup(&p, gp, vv, &rs)) continue;
+		rsx_batch_key_init(&batch[n], gp, &p, f, &rs);
+		trans += batch[n].trans; back += !batch[n].front; n++;
+	}
+	if (counted) {
+		unsigned bflags = extended ? RSX_BATCH_EXTENDED : 0;
+		color = rsx_plan_pass(batch, n, extended, 0, !!(rs.d3 & D3_BLEND), R3D_PX_A(rs.clear_px) != 0, bflags, 1, 1, &groups);
+		attr = rsx_plan_pass(batch, n, extended, 1, !!(rs.d3 & D3_BLEND), R3D_PX_A(rs.clear_px) != 0, bflags, 1, 1, NULL);
+		attr_after = edge ? attr : 0;
+		if (fog) attr_after += edge ? rsx_plan_pass(batch, n, extended, 1, !!(rs.d3 & D3_BLEND),
+			R3D_PX_A(rs.clear_px) != 0, bflags | RSX_BATCH_ATTR_CONST, 1, 1, NULL) : attr;
+	}
+	/* El borrado precede a bordes y alambre en el selector previo. */
+	const char *before = (modes & (1u << RSX_CLEAR)) ? "imagen-borrado" : edge ? "bordes" : other;
+	fprintf(io, ",%04x,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%s,%s",
+		f->regs.disp3dcnt, rs.wbuf, !!(rs.d3 & D3_AA), edge, fog, n, trans, back,
+		extended, rsx_edge_group(f, flags), counted, groups, color, fog ? attr : 0, attr_after, fog + edge,
+		before, other);
 }
 
 static int rsx_plan(const char *path)
@@ -1385,6 +1473,7 @@ int main(int argc, char **argv)
 		if (!rsx_census) { perror("censo RSX"); return 1; }
 		fprintf(rsx_census, "cuadro,secuencia,poligonos,modos");
 		for (unsigned k = 0; k < RSX_MODE_COUNT; k++) fprintf(rsx_census, ",%s", rsx_mode_names[k]);
+		fprintf(rsx_census, ",disp3dcnt,w,aa,bordes-activos,niebla-activa,dibujables,translucidos,traseros,ampliado,grupo-bordes,dibujos-contados,lotes,color,atributos-antes,atributos-bordes,posprocesos-bordes,respaldo-antes,respaldo-sin-bordes");
 		fputc('\n', rsx_census);
 	}
 	if (video_trace_path) {
@@ -1431,6 +1520,7 @@ int main(int argc, char **argv)
 					uint32_t modes = rsx_modes(gf, s->r3d.flags);
 					fprintf(rsx_census, "%llu,%u,%u,%u", (unsigned long long)f, gf->seq, gf->npolys, modes);
 					for (unsigned k = 0; k < RSX_MODE_COUNT; k++) fprintf(rsx_census, ",%u", (modes >> k) & 1u);
+					rsx_census_plan(rsx_census, gf, s->r3d.flags);
 					fputc('\n', rsx_census);
 				}
 			}

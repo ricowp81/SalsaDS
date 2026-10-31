@@ -58,6 +58,8 @@ SHADERS += ../../../src/platform/ps3/rsx3d/fog_attr.fcg ../../../src/platform/ps
 SHADERS += ../../../src/platform/ps3/rsx3d/fog_attr_shadow.fcg ../../../src/platform/ps3/rsx3d/fog_attr_shadow_w.fcg
 SHADERS += ../../../src/platform/ps3/rsx3d/range.fcg ../../../src/platform/ps3/rsx3d/range_w.fcg
 SHADERS += ../../../src/platform/ps3/rsx3d/compose_hd.fcg ../../../src/platform/ps3/rsx3d/probe_hd.fcg
+SHADERS += ../../../src/platform/ps3/rsx3d/edge_attr.fcg ../../../src/platform/ps3/rsx3d/edge_attr_w.fcg
+SHADERS += ../../../src/platform/ps3/rsx3d/edge_attr_shadow.fcg ../../../src/platform/ps3/rsx3d/edge_attr_shadow_w.fcg ../../../src/platform/ps3/rsx3d/edge_final.fcg
 CGCFLAGS := -Wcg,-nofastprecision
 
 include ../../../mk/ps3.mk
@@ -70,7 +72,7 @@ check-fog-shaders: $(OBJ)/fog_attr.fpo $(OBJ)/fog_attr_w.fpo $(OBJ)/fog_final.fp
 # La W por fragmento (wdepth.cgi) debe ensamblarse igual en todos los programas
 # que la escriben: los empates frente/espalda dependen de que dos programas den
 # el mismo valor de 24 bits para la misma W.
-W_PROGS := shade_w toon_w shadow_w mask_w range_w fog_w fog_attr_w fog_attr_shadow_w
+W_PROGS := shade_w toon_w shadow_w mask_w range_w fog_w fog_attr_w fog_attr_shadow_w edge_attr_w edge_attr_shadow_w
 .PHONY: check-w-depth
 all pkg: check-w-depth
 check-w-depth: $(addprefix $(OBJ)/,$(addsuffix .fpo,$(W_PROGS)))
@@ -160,6 +162,19 @@ $(OBJ)/range_w.fpo: $(ROOT)/src/platform/ps3/rsx3d/range_w.fcg $(ROOT)/src/platf
 	cgcomp -f -a $@.fixed $@
 
 $(OBJ)/range.fpo: $(ROOT)/src/platform/ps3/rsx3d/range.fcg $(ROOT)/tools/rsx3d-shader.py $(ROOT)/src/platform/ps3/rsx3d/wdepth.cgi
+	@mkdir -p $(dir $@)
+	cgcomp -f -d $(CGCFLAGS) $< $@
+	python3 $(ROOT)/tools/rsx3d-shader.py $@.dump $@.fixed
+	cgcomp -f -a $@.fixed $@
+
+# Bordes usa el mismo corrector de salidas y la misma W que el color.
+EDGE_PROGS := edge_attr edge_attr_w edge_attr_shadow edge_attr_shadow_w edge_final
+.PHONY: check-edge-shaders
+all pkg: check-edge-shaders
+check-edge-shaders: $(addprefix $(OBJ)/,$(addsuffix .fpo,$(EDGE_PROGS)))
+	python3 $(ROOT)/tools/rsx3d-edge-check.py $(addsuffix .fixed,$^)
+
+$(addprefix $(OBJ)/,$(addsuffix .fpo,$(EDGE_PROGS))): $(OBJ)/%.fpo: $(ROOT)/src/platform/ps3/rsx3d/%.fcg $(ROOT)/src/platform/ps3/rsx3d/edge_attr.fcg $(ROOT)/src/platform/ps3/rsx3d/shade.fcg $(ROOT)/src/platform/ps3/rsx3d/wdepth.cgi $(ROOT)/tools/rsx3d-shader.py
 	@mkdir -p $(dir $@)
 	cgcomp -f -d $(CGCFLAGS) $< $@
 	python3 $(ROOT)/tools/rsx3d-shader.py $@.dump $@.fixed

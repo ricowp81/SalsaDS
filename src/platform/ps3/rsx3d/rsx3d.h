@@ -5,6 +5,7 @@
 typedef struct rsx3d_stats {
     uint32_t polys, draws, textures, uploaded, cache_hits;
     uint32_t draws_before, state_changes;
+    uint32_t edge_posts; /* quads de marcado, además de los dibujos de geometría */
     uint64_t identity_us, vertex_us, state_us, lookup_us, decode_us, upload_us;
     uint64_t raster_ns, export_ns, hd_raster_ns;
     uint64_t prepare_us, copy_us, total_us, wait_us, reuse_us;
@@ -76,6 +77,9 @@ int rsx3d_fog_combined_spe(void);
 int rsx3d_fog_toon_spe(void);
 int rsx3d_fog_shadow_spe(void);
 void rsx3d_fog_degrade(int toon);
+/* Grupo: bit 0 W, bit 1 translúcidos/sombras, bit 2 niebla. */
+int rsx3d_edge_spe(unsigned group);
+void rsx3d_edge_degrade(unsigned group);
 int rsx3d_w_truncated(void);
 /* Solo autoprueba síncrona, tras render: lee etapas nativa y HD del píxel. */
 void rsx3d_fog_diagnose(const r3d_job *job, unsigned x, unsigned y);
