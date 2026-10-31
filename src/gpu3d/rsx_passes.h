@@ -19,6 +19,7 @@ typedef struct rsx_pass {
 typedef struct rsx_pass_input {
     unsigned id, tid, oid, trans_mask, front, trans, opaque, tdepth, equal;
     unsigned extended, blend, occupied, attributes, prior_back;
+    unsigned ids_mask; /* 0 conserva el reparto anterior de cuatro bits. */
 } rsx_pass_input;
 
 /* Con `compact` la puerta del bit 7 queda decidida por completo en sus
@@ -32,6 +33,8 @@ static inline unsigned rsx_color_passes_mode(const rsx_pass_input *c, rsx_pass o
 #define RP_ADD(t,r,cmp,wr,op,b,z,p,prog,zf,sf,rg) \
     (out[n++]=(rsx_pass){t,r,cmp,wr,op,b,z,p,prog,zf,sf,rg})
     const unsigned z=RP_TEST|RP_LESS, zw=z|(c->tdepth ? RP_WRITE : 0);
+    const unsigned ids=c->ids_mask ? c->ids_mask : 15;
+    const unsigned occupied=(ids&16) ? 0 : 16, opaque_write=ids|occupied|64;
     if (!c->extended) {
         if (c->opaque) RP_ADD(1,64,255,255,0,RP_OFF,z|RP_WRITE,0,RP_COLOR,0,0,0);
         if (c->trans) {
@@ -51,11 +54,11 @@ static inline unsigned rsx_color_passes_mode(const rsx_pass_input *c, rsx_pass o
          * varios polígonos frontales equivale al orden polígono a polígono
          * (una espalda ganada por uno deja un frente que el siguiente solo
          * supera con LESS, igual que en la secuencia original). */
-        unsigned ref=16|c->oid;
+        unsigned ref=occupied|c->oid;
         if (c->front && c->prior_back) {
-            RP_ADD(2,ref,64,95,0,RP_OFF,RP_TEST|RP_WRITE,0,RP_COLOR,0,0,0);
-            RP_ADD(3,ref,64,95,0,RP_OFF,z|RP_WRITE,0,RP_COLOR,0,0,0);
-        } else RP_ADD(1,ref|(c->front ? 0 : 64),0,95,0,RP_OFF,z|RP_WRITE,0,RP_COLOR,0,0,0);
+            RP_ADD(2,ref,64,opaque_write,0,RP_OFF,RP_TEST|RP_WRITE,0,RP_COLOR,0,0,0);
+            RP_ADD(3,ref,64,opaque_write,0,RP_OFF,z|RP_WRITE,0,RP_COLOR,0,0,0);
+        } else RP_ADD(1,ref|(c->front ? 0 : 64),0,opaque_write,0,RP_OFF,z|RP_WRITE,0,RP_COLOR,0,0,0);
     } else {
         unsigned back=c->front ? 0 : 64;
         /* Rechazo del mismo ID dentro de la puerta: solo si ningún texel
@@ -83,16 +86,16 @@ static inline unsigned rsx_color_passes_mode(const rsx_pass_input *c, rsx_pass o
             RP_ADD(gate_test,gate_ref|128,gate_cmp,128,0,RP_NONE,z,0,RP_MASK,2,2,0);
         } else RP_ADD(1,128,0,128,0,RP_NONE,z,0,RP_MASK,0,0,0);
         if (c->opaque)
-            RP_ADD(3,128|16|back|c->oid,128,95,0,RP_OFF,
+            RP_ADD(3,128|occupied|back|c->oid,128,opaque_write,0,RP_OFF,
                    RP_TEST|RP_WRITE|RP_ALWAYS,0,RP_COLOR,0,0,0);
         if (c->trans) {
             if (!fold) RP_ADD(3,c->tid,c->trans_mask,128,0,RP_NONE,0,0,RP_MASK,0,0,0);
             unsigned wz=c->trans_mask|(c->tdepth ? 64 : 0);
             unsigned dz=RP_TEST|RP_ALWAYS|(c->tdepth ? RP_WRITE : 0);
-            if (c->attributes || c->occupied || !c->blend) {
+            if (c->attributes || c->occupied || !occupied || !c->blend) {
                 /* El rechazo de ID ya apagó la puerta. Escribir ocupado,
                  * TID y (si procede) cara junto con color/atributos. */
-                RP_ADD(3,128|16|back|c->tid,128,wz|16,0,
+                RP_ADD(3,128|occupied|back|c->tid,128,wz|occupied,0,
                        c->blend ? RP_BLEND : RP_OFF,dz,c->blend ? 1 : 2,RP_COLOR,0,0,0);
             } else {
                 RP_ADD(3,128|16|back|c->tid,144,wz,0,RP_BLEND,dz,1,RP_COLOR,0,0,0);
@@ -125,6 +128,7 @@ static inline unsigned rsx_color_passes(const rsx_pass_input *c, rsx_pass out[9]
 typedef struct rsx_shadow_input {
     unsigned id, tid, oid, oid_test, trans_mask, opaque_mask;
     unsigned front, tdepth, equal, blend, single, consume, clear_alpha, extended;
+    unsigned ids_mask;
 } rsx_shadow_input;
 
 /* Reparto de IDs en el stencil para un cuadro con sombras o igualdad, el
@@ -139,6 +143,7 @@ typedef struct rsx_shadow_layout {
     uint8_t oid[64], tid[64], oid_test[64];
     unsigned trans_mask, opaque_mask, single, extended;
     unsigned needs_back, needs_ids, opaques, translucents;
+    unsigned ids_mask;
 } rsx_shadow_layout;
 
 static inline unsigned rsx_poly_translucent(uint32_t attr, uint32_t texparam, const r3d_rstate *rs)
@@ -190,6 +195,7 @@ static inline const char *rsx_shadow_layout_extend(rsx_shadow_layout *l, const g
 {
     uint8_t writers[64] = {0}, readers[64] = {0};
     unsigned no = 1, nt = 1, bits = 0;
+    l->ids_mask = 15;
     writers[AT_OID(rs->clear_attr)] = 1;
     memset(l->oid, 0, sizeof l->oid); memset(l->tid, 255, sizeof l->tid);
     memset(l->oid_test, 255, sizeof l->oid_test);
@@ -210,6 +216,56 @@ static inline const char *rsx_shadow_layout_extend(rsx_shadow_layout *l, const g
     if (nt > (16u >> bits)) return shadows ? "sombras: capacidad de IDs excedida" : "3D ampliado: más de 15 IDs translúcidos";
     l->opaques = no; l->translucents = nt;
     l->extended = 1;
+    return NULL;
+}
+
+/* Amplía solo un reparto que no cabe. Sin sombras no hace falta el bit 5;
+ * con borrado ocupado ningún fragmento aceptado vuelve a dejar alfa cero,
+ * por lo que tampoco hace falta el bit 4. La garantía es del color, incluso
+ * al repetir la geometría para atributos de niebla. No usar con niebla por
+ * polígono: su alfa puede cambiar después del descarte del fragmento.
+ * No cambia el orden de los polígonos ni agrega pasadas o destinos. */
+static inline unsigned rsx_id_scatter(unsigned value, unsigned mask)
+{
+    unsigned result=0;
+    for (unsigned bit=1; bit<64; bit<<=1) if (mask&bit) {
+        if (value&1) result|=bit;
+        value>>=1;
+    }
+    return result;
+}
+static inline const char *rsx_shadow_layout_capacity(rsx_shadow_layout *l, const gx_frame *f,
+                                                    const r3d_rstate *rs, int shadows)
+{
+    const char *why=rsx_shadow_layout_extend(l,f,rs,shadows);
+    if (!why) return NULL;
+    unsigned ids=15 | (shadows ? 0 : 32) | (R3D_PX_A(rs->clear_px) ? 16 : 0);
+    if (ids==15) return why;
+    uint8_t writers[64]={0}, readers[64]={0}, trans[64]={0};
+    unsigned no=1, nt=1, bits=0, available=0;
+    writers[AT_OID(rs->clear_attr)]=1;
+    for (unsigned i=0;i<f->npolys;i++) {
+        uint32_t a=f->poly[i].attr; unsigned id=PA_ID(a);
+        if (PA_MODE(a)==3 && !id) continue;
+        if (shadows && PA_MODE(a)==3) readers[id]=1;
+        if (PA_MODE(a)!=3 && PA_ALPHA(a)==31) writers[id]=1;
+        if (rsx_poly_translucent(a,f->poly[i].texparam,rs)) trans[id]=1;
+    }
+    for (unsigned id=0;id<64;id++) { no+=readers[id] && writers[id]; nt+=trans[id]; }
+    while ((1u<<bits)<no) bits++;
+    for (unsigned bit=1;bit<64;bit<<=1) available+=!!(ids&bit);
+    l->opaques=no; l->translucents=nt;
+    if (bits>available || nt>(1u<<(available-bits))) return why;
+    memset(l->oid,0,sizeof l->oid); memset(l->tid,255,sizeof l->tid);
+    memset(l->oid_test,255,sizeof l->oid_test);
+    l->opaque_mask=rsx_id_scatter((1u<<bits)-1,ids);
+    l->trans_mask=ids&~l->opaque_mask;
+    no=nt=1;
+    for (unsigned id=0;id<64;id++) {
+        if (readers[id] && writers[id]) l->oid_test[id]=l->oid[id]=rsx_id_scatter(no++,l->opaque_mask);
+        if (trans[id]) l->tid[id]=rsx_id_scatter(nt++,l->trans_mask);
+    }
+    l->ids_mask=ids; l->extended=1; l->single=0;
     return NULL;
 }
 
@@ -254,9 +310,15 @@ static inline unsigned rsx_shadow_passes(const rsx_shadow_input *c, rsx_pass out
         {
             const unsigned wz=c->trans_mask|(c->tdepth ? 64 : 0);
             const unsigned dz=RP_TEST|RP_ALWAYS|(c->tdepth ? RP_WRITE : 0);
+            if (c->ids_mask&16) {
+                /* Todo el destino está ocupado: bit 4 pertenece al TID/OID,
+                 * y basta un dibujo de color tras consultar la puerta. */
+                RP_ADD(3,128|back|c->tid,128,wz,0,mix,dz,mixpass,RP_COLOR,0,0,0);
+            } else {
             RP_ADD(3,128|16|back|c->tid,128|16,wz,0,mix,dz,mixpass,RP_COLOR,0,0,0);
             RP_ADD(3,128|back|c->tid,128|16,wz,0,RP_OFF,dz,2,RP_COLOR,0,0,0);
             RP_ADD(3,16|c->tid,c->trans_mask,16,0,RP_NONE,0,2,RP_COLOR,0,0,0);
+            }
         }
         RP_ADD(1,0,0,32,0,RP_NONE,0,0,RP_MASK,0,0,0);
     } else if (c->single) {

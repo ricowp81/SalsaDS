@@ -24,6 +24,7 @@
 #include "gpu3d/rsx_replay.h"
 #include "gpu3d/rsx_modes.h"
 #include "gpu3d/rsx_passes.h"
+#include "gpu3d/rsx_capacity.h"
 #include "gpu3d/rsx_batch.h"
 #include "host/jitrun.h"
 #include "jit/arec.h"
@@ -404,7 +405,7 @@ static unsigned rsx_plan_pass(const rsx_batch_key *k, unsigned n, unsigned exten
 				j++;
 		for (unsigned q = i; q < (merge ? i + 1 : j); q++) {
 			rsx_pass_input in = { k[q].id, 0, 0, 0, k[q].front, k[q].trans, k[q].alpha == 31, k[q].tdepth, k[q].equal,
-					      extended, blend, occupied, attributes, prior_back };
+					      extended, blend, occupied, attributes, prior_back, 0 };
 			rsx_pass out[9];
 
 			draws += rsx_color_passes_mode(&in, out, compact);
@@ -516,6 +517,148 @@ static int rsx_plan(const char *path)
 	       old_color, old_attr, old_color + old_attr, new_color, new_attr, new_color + new_attr, groups,
 	       old_color + old_attr ? 100.0 * ((double)(new_color + new_attr) - (double)(old_color + old_attr)) / (double)(old_color + old_attr) : 0.0);
 	return 0;
+}
+
+static uint32_t rsx_census_keys[GX_MAX_POLYS];
+static int rsx_census_order(const void *va, const void *vb)
+{
+	unsigned a = *(const uint16_t *)va, b = *(const uint16_t *)vb;
+	if (rsx_census_keys[a] != rsx_census_keys[b]) return rsx_census_keys[a] < rsx_census_keys[b] ? -1 : 1;
+	return a < b ? -1 : a != b;
+}
+
+static unsigned rsx_census_visible(const gx_frame *f, const gx_poly *p)
+{
+	int ymin = 0x7fff, ymax = -0x7fff;
+	for (unsigned v = 0; v < p->nverts; v++) {
+		int sy = f->vtx[p->vidx[v]].sy;
+		ymin = sy < ymin ? sy : ymin; ymax = sy > ymax ? sy : ymax;
+	}
+	return ymax >= 0 && ymin < R3D_H;
+}
+
+/* Conteo por polígono, sin unir lotes: es exacto para sombras ampliadas,
+ * donde el PPE tampoco une; en los demás casos es un límite superior. */
+static unsigned rsx_census_draws(const gx_frame *f, const r3d_rstate *rs, const rsx_shadow_layout *l,
+				 unsigned shadows, unsigned attributes)
+{
+	uint16_t order[GX_MAX_POLYS];
+	unsigned draws = 0, prior_back = 0;
+	for (unsigned i = 0; i < f->npolys; i++) {
+		rsx_census_keys[i] = r3d_sort_key(&f->poly[i], f->swap_params & 1u); order[i] = (uint16_t)i;
+	}
+	qsort(order, f->npolys, sizeof *order, rsx_census_order);
+	for (unsigned i = 0; i < f->npolys; i++) {
+		const gx_poly *p = &f->poly[order[i]];
+		unsigned id = PA_ID(p->attr), mode = PA_MODE(p->attr), alpha = PA_ALPHA(p->attr);
+		unsigned front = !!(p->flags & GX_POLY_FRONT), tdepth = !!(p->attr & PA_TDEPTH);
+		unsigned trans = rsx_poly_translucent(p->attr, p->texparam, rs);
+		if (!rsx_census_visible(f, p)) continue;
+		rsx_pass passes[12];
+		if (mode != 3 && (l->extended || !shadows)) {
+			rsx_pass_input in = {id, l->tid[id], l->oid[id], l->trans_mask, front, trans, alpha == 31, tdepth,
+				!!(p->attr & PA_DEQUAL), l->extended, !!(rs->d3 & D3_BLEND), R3D_PX_A(rs->clear_px) != 0,
+				attributes, prior_back, l->ids_mask};
+			draws += rsx_color_passes(&in, passes);
+		} else {
+			unsigned textured = (rs->d3 & D3_TEXTURE) && ((p->texparam >> 26) & 7u);
+			rsx_shadow_input in = {id, l->tid[id], l->oid[id], l->extended ? l->oid_test[id] : 255,
+				l->trans_mask, l->opaque_mask, front, tdepth, !!(p->attr & PA_DEQUAL), !!(rs->d3 & D3_BLEND),
+				l->single, l->single && !textured && alpha > ((rs->d3 & D3_ALPHATEST) ? rs->alpha_ref : 0),
+				R3D_PX_A(rs->clear_px) != 0, l->extended, l->ids_mask};
+			draws += mode != 3 ? rsx_shadow_color_passes(&in, trans, passes) :
+				id ? rsx_shadow_passes(&in, passes) : rsx_mask_passes(&in, passes);
+		}
+		prior_back |= !front && (alpha == 31 || tdepth);
+	}
+	return draws;
+}
+
+/* Censo de capacidad por trabajo 3D. Los IDs son los presentes en la lista,
+ * no una estimación de píxeles visibles; los límites incluyen el código cero
+ * de «ningún translúcido» y el OID compartido por los opacos no consultados. */
+static void rsx_capacity_census(FILE *out, const gx_frame *f, uint32_t flags)
+{
+	r3d_rstate rs;
+	rsx_shadow_layout layout, current;
+	uint8_t shadow[64] = {0}, trans[64] = {0}, writer[64] = {0};
+	unsigned ns = 0, nt = 0, no = 0, bits = 0, reject = 0;
+	const uint32_t modes = rsx_modes(f, flags);
+	const unsigned shadows = !!(modes & ((1u << RSX_SHADOW_MASK) | (1u << RSX_SHADOW)));
+	const unsigned equal = !!(modes & (1u << RSX_EQUAL));
+
+	r3d_rstate_init(&rs, f, flags);
+	writer[AT_OID(rs.clear_attr)] = 1;
+	for (unsigned i = 0; i < f->npolys; i++) {
+		const gx_poly *p = &f->poly[i];
+		const unsigned id = PA_ID(p->attr), mode = PA_MODE(p->attr);
+
+		if (mode == 3 && !id) continue;
+		if (mode == 3) shadow[id] = 1;
+		if (mode != 3 && PA_ALPHA(p->attr) == 31) writer[id] = 1;
+		if (rsx_poly_translucent(p->attr, p->texparam, &rs)) trans[id] = 1;
+	}
+	for (unsigned id = 0; id < 64; id++) {
+		ns += shadow[id]; nt += trans[id]; no += shadow[id] && writer[id];
+	}
+	while ((1u << bits) < no + 1) bits++;
+	rsx_shadow_layout_init(&layout, f, &rs, 0);
+	const unsigned extended = layout.needs_back || layout.needs_ids || equal;
+	if (shadows && equal) reject = 4;
+	else if (shadows || equal) {
+		if (shadows && layout.translucents > 8) reject = 1;
+		else if (extended && rsx_shadow_layout_extend(&layout, f, &rs, shadows)) reject = 2;
+	}
+	const unsigned fits4 = bits < 4 && nt + 1 <= (16u >> bits);
+	const unsigned fits5 = bits < 5 && nt + 1 <= (32u >> bits);
+	uint16_t order[GX_MAX_POLYS];
+	unsigned first[64], last[64] = {0}, peak = 0;
+	for (unsigned id = 0; id < 64; id++) first[id] = GX_MAX_POLYS;
+	for (unsigned i = 0; i < f->npolys; i++) {
+		rsx_census_keys[i] = r3d_sort_key(&f->poly[i], f->swap_params & 1u); order[i] = (uint16_t)i;
+	}
+	qsort(order, f->npolys, sizeof *order, rsx_census_order);
+	for (unsigned i = 0; i < f->npolys; i++) {
+		const gx_poly *p = &f->poly[order[i]];
+		unsigned id = PA_ID(p->attr);
+		if ((PA_MODE(p->attr) == 3 && !id) || !rsx_poly_translucent(p->attr, p->texparam, &rs)) continue;
+		if (first[id] == GX_MAX_POLYS) first[id] = i;
+		last[id] = i;
+	}
+	for (unsigned i = 0; i < f->npolys; i++) {
+		unsigned live = 0;
+		for (unsigned id = 0; id < 64; id++) live += first[id] <= i && last[id] >= i;
+		if (live > peak) peak = live;
+	}
+	unsigned slots = bits < 4 ? (16u >> bits) - 1 : 0;
+	int renew = peak > slots ? -1 : nt > slots ? (int)(nt - slots) : 0;
+	fprintf(out, ",%u,%u,%u,%u,%u,%u,%u,%u,%u,%u", ns, nt, no, bits,
+		R3D_PX_A(rs.clear_px), rs.wbuf, extended, reject, fits4, fits5);
+	fprintf(out, ",%u,%d", peak, renew);
+	rsx_shadow_layout_init(&current, f, &rs, 0);
+	unsigned current_reject = shadows && equal ? 4 : 0;
+	unsigned resets = 0;
+	if (!current_reject && (shadows || equal) && extended && rsx_shadow_layout_capacity(&current, f, &rs, shadows)) {
+		uint8_t reset[GX_MAX_POLYS];
+		if (rsx_capacity_schedule(&current, f, &rs, shadows, order, reset)) current_reject = 2;
+		else {
+			uint64_t pending = 0;
+			for (unsigned i = 0; i < f->npolys; i++) {
+				unsigned index = order[i];
+				if (reset[index]) pending |= UINT64_C(1) << reset[index];
+				if (!rsx_census_visible(f, &f->poly[index])) continue;
+				while (pending) { resets++; pending &= pending - 1; }
+			}
+		}
+	}
+	unsigned fog = !!(modes & (1u << RSX_FOG)), nonzero = 0;
+	for (unsigned i = 0; i < 32; i++) nonzero |= rs.fog_table[i];
+	fog &= nonzero != 0;
+	fprintf(out, ",%u,%u,%u,%d,%d,%d,%d", current_reject, current.ids_mask, resets,
+		reject ? -1 : (int)rsx_census_draws(f, &rs, &layout, shadows, 0),
+		reject ? -1 : fog ? (int)rsx_census_draws(f, &rs, &layout, shadows, 1) : 0,
+		current_reject ? -1 : (int)(resets + rsx_census_draws(f, &rs, &current, shadows, 0)),
+		current_reject ? -1 : fog ? (int)(resets + rsx_census_draws(f, &rs, &current, shadows, 1)) : 0);
 }
 
 static void rsx_dump(const char *path)
@@ -1385,6 +1528,9 @@ int main(int argc, char **argv)
 		if (!rsx_census) { perror("censo RSX"); return 1; }
 		fprintf(rsx_census, "cuadro,secuencia,poligonos,modos");
 		for (unsigned k = 0; k < RSX_MODE_COUNT; k++) fprintf(rsx_census, ",%s", rsx_mode_names[k]);
+		fprintf(rsx_census, ",ids_sombra,ids_translucidos,oid_relevantes,bits_oid,alfa_borrado,w,ampliado,rechazo_rc1,cabe_4_bits,cabe_5_bits");
+		fprintf(rsx_census, ",pico_intervalos_tid,recambios_tid_4_bits");
+		fprintf(rsx_census, ",rechazo_actual,mascara_ids_actual,limpiezas_tid_por_pasada,color_rc1_sin_lotes,atributos_rc1_sin_lotes,color_actual_sin_lotes,atributos_actual_sin_lotes");
 		fputc('\n', rsx_census);
 	}
 	if (video_trace_path) {
@@ -1431,6 +1577,7 @@ int main(int argc, char **argv)
 					uint32_t modes = rsx_modes(gf, s->r3d.flags);
 					fprintf(rsx_census, "%llu,%u,%u,%u", (unsigned long long)f, gf->seq, gf->npolys, modes);
 					for (unsigned k = 0; k < RSX_MODE_COUNT; k++) fprintf(rsx_census, ",%u", (modes >> k) & 1u);
+					rsx_capacity_census(rsx_census, gf, s->r3d.flags);
 					fputc('\n', rsx_census);
 				}
 			}

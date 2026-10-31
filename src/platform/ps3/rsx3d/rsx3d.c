@@ -36,6 +36,7 @@
 #include "gpu3d/rsx_passes.h"
 #include "gpu3d/rsx_batch.h"
 #include "gpu3d/rsx_cost.h"
+#include "gpu3d/rsx_capacity.h"
 #include "spu/rsxprep/job.h"
 #include "spu/raster3d/job.h"
 #include <spukit/spukit.h>
@@ -57,7 +58,7 @@ _Static_assert((int)RP_OFF == (int)RSXKIT_BLEND_OFF && (int)RP_NONE == (int)RSXK
 /* Tabla de niebla aparte de la de toon: un cuadro puede llevar las dos. */
 #define FOG_OFF(slot) (20u * 1024u * 1024u + 256u + (slot) * 128u)
 #define CACHE_N 256u
-_Static_assert(GX_MAX_POLYS * (GX_POLY_MAXV - 2u) * 3u * sizeof(rsxkit_vertex) <= 2u * 1024u * 1024u, "vértices por ranura");
+_Static_assert((GX_MAX_POLYS * (GX_POLY_MAXV - 2u) * 3u + 6u) * sizeof(rsxkit_vertex) <= 2u * 1024u * 1024u, "vértices por ranura");
 #define PAGE_SIZE 1024u
 #define PAGE_WORDS ((R3D_VRAM_ZERO_OFF / PAGE_SIZE + 31u) / 32u)
 _Static_assert(RSX_DECODE_PAGES == PAGE_WORDS, "máscara de páginas compartida");
@@ -410,6 +411,14 @@ static rsxkit_program *shadow, *shadow_w, *mask, *mask_w;
 static uint8_t oid[64], tid[64], oid_test[64];
 static int shadows, single_shadow, shadow_general, shadow_unbatched;
 static uint8_t trans_mask, opaque_mask;
+static unsigned ids_mask;
+static int capacity_previous, capacity_degraded;
+int rsx3d_capacity_previous(void) { return capacity_previous; }
+int rsx3d_capacity_set_previous(int previous)
+{
+    int old=capacity_previous; capacity_previous=previous; return old;
+}
+void rsx3d_capacity_degrade(void) { capacity_degraded=1; }
 static rsxkit_program *range_z, *range_w;
 static int equal_spe, textures_no_wait, fog_constant, textures_rescue, fog_translucent;
 static unsigned rescue_left, rescue_textures;
@@ -535,11 +544,33 @@ static void decode_plan(void)
 static struct cache_entry *decoding;
 static struct command {
     rsxkit_draw d; uint32_t first, count, id, tdepth, trans, mode, front, equal;
+    uint64_t reset;        /* códigos muertos que se limpian antes del lote */
     rsx_batch_key key;      /* lo que fija el dibujo por polígono: decide los lotes */
 } command[GX_MAX_POLYS];
 static uint16_t order[GX_MAX_POLYS];
 static uint32_t keys[GX_MAX_POLYS];
 static uint16_t sorted[GX_MAX_POLYS];
+static uint8_t capacity_reset[GX_MAX_POLYS];
+static int frame_order(const gx_frame *f)
+{
+    for (uint32_t i=0;i<f->npolys;i++) {
+        const gx_poly *p=&f->poly[i];
+        if (p->nverts<3 || p->nverts>GX_POLY_MAXV || p->wshift>28) return 0;
+        for (unsigned k=0;k<p->nverts;k++) if (p->vidx[k]>=f->nverts) return 0;
+        uint32_t key=r3d_sort_key(p,f->swap_params&1u), k=i;
+        while (old_prepare && k && keys[k-1]>key) { keys[k]=keys[k-1]; order[k]=order[k-1]; k--; }
+        keys[k]=key; order[k]=i;
+    }
+    /* Radix estable: conserva los empates y el orden DS. */
+    if (!old_prepare) for (unsigned shift=0;shift<24;shift+=8) {
+        uint32_t count[256]={0}, sum=0;
+        for (uint32_t i=0;i<f->npolys;i++) count[(keys[order[i]]>>shift)&255u]++;
+        for (unsigned i=0;i<256;i++) { uint32_t n=count[i]; count[i]=sum; sum+=n; }
+        for (uint32_t i=0;i<f->npolys;i++) sorted[count[(keys[order[i]]>>shift)&255u]++]=order[i];
+        memcpy(order,sorted,f->npolys*sizeof *order);
+    }
+    return 1;
+}
 static rsxkit_draw last_draw;
 static int last_valid;
 
@@ -709,6 +740,8 @@ int rsx3d_init(void)
     cost_disabled = stat("/dev_hdd0/salsads/3d-rsx-sin-costo", &flag) == 0;
     cost_stale_ok = stat("/dev_hdd0/salsads/3d-rsx-referencia-vieja", &flag) == 0; /* A/B: bajar al SPE con una referencia de otra escena */
     tid_limit8 = stat("/dev_hdd0/salsads/3d-rsx-ids-translucidos-8", &flag) == 0; /* A/B: tope anterior de 8 IDs translúcidos */
+    capacity_previous = stat("/dev_hdd0/salsads/3d-rsx-capacidad-anterior", &flag) == 0;
+    capacity_degraded = 0;
     rsx3d_cost_reset();
     /* Solo con niebla-anterior: aproximación opcional por polígono en
      * translúcidos, sin profundidad final ni AND de bandera. Sin paridad. */
@@ -805,7 +838,9 @@ int rsx3d_init(void)
     salsads_log("rsx3d niebla: %s", fog_previous ? "por fragmento anterior" : "pasada final con profundidad y bandera por píxel");
     salsads_log("rsx3d selector: referencia SPE de otra escena %s; IDs translúcidos en 3D ampliado %s",
                 cost_stale_ok ? "vale para bajar (ronda 6)" : "recalibra antes de bajar (más vieja que 120 cuadros)",
-                tid_limit8 ? "hasta 8 (tope anterior)" : "hasta 15 sin sombras (4 bits de TID)");
+                tid_limit8 ? "hasta 8 (tope anterior)" : "remapeo por cuadro");
+    salsads_log("rsx3d capacidad: %s; bit de máscara libre sin sombras y bit de ocupado libre con borrado alfa",
+                capacity_previous ? "topes rc1" : "ampliada; respaldo por capacidad y autoprueba");
     salsads_log("rsx3d pasadas: %s", passes_previous ? "ronda 3" : "opacos directos y atributos compactos");
     salsads_log("rsx3d sombras y niebla: niebla con sombra %s; niebla con toon o resaltado %s; cara trasera con W %s; W por fragmento %s",
                 fog_combined_spe || fog_previous ? "al SPE" : "en el RSX (tabla aparte, atributos de sombra)",
@@ -853,8 +888,8 @@ static void draw(struct command *c, uint8_t test, uint8_t ref, uint8_t compare, 
     d->stencil = test; d->stencil_ref = ref; d->stencil_compare_mask = compare;
     d->stencil_write_mask = write; d->stencil_op = op;
     d->blend = blend; d->depth = z; d->k[0][0][3] = pass;
-    /* Los destinos son A8R8G8B8 y el alfa es dato (IDs, RGB6/A5): sin mezcla
-     * queda el del fragmento, no 1 como deja rsxkit por omisión. */
+    /* Los destinos son A8R8G8B8 y el alfa guarda A5 (los IDs están en
+     * stencil): sin mezcla queda el del fragmento, no 1. */
     d->dst_alpha = RSXKIT_DSTA_FRAG;
     rsxkit_program *program = d->program;
     float saved_fc[2][4], saved_kz = d->k[0][0][2];
@@ -910,7 +945,7 @@ static void draw_color_compact(struct command *c, const r3d_rstate *rs,
     rsx_pass_input in = {c->id, tid[c->id], oid[c->id], trans_mask,
         c->front, c->trans, c->d.k[0][0][1] == 31, c->tdepth, c->equal,
         shadow_extended, !!(rs->d3 & D3_BLEND), R3D_PX_A(rs->clear_px) != 0,
-        fog_attribute_pass, prior_back};
+        fog_attribute_pass, prior_back, ids_mask};
     rsx_pass passes[9]; unsigned n=rsx_color_passes_mode(&in,passes,!gate_previous);
     draw_plan(c,rs,passes,n,st);
 }
@@ -922,7 +957,7 @@ static void draw_shadow_plan(struct command *c, const r3d_rstate *rs, rsx3d_stat
     rsx_shadow_input in = {c->id, tid[c->id], oid[c->id], shadow_extended ? oid_test[c->id] : 255,
         trans_mask, opaque_mask, c->front, c->tdepth, c->equal, !!(rs->d3 & D3_BLEND),
         single_shadow, single_shadow && !shadow_unbatched && !c->d.k[0][0][0] && c->d.k[0][0][1] > c->d.k[1][0][0],
-        R3D_PX_A(rs->clear_px) != 0, shadow_extended};
+        R3D_PX_A(rs->clear_px) != 0, shadow_extended, ids_mask};
     rsx_pass passes[12]; unsigned n;
     if (c->mode != 3) n=rsx_shadow_color_passes(&in,c->trans,passes);
     else n=c->id ? rsx_shadow_passes(&in,passes) : rsx_mask_passes(&in,passes);
@@ -936,7 +971,7 @@ static int color_batch_equal(const struct command *a, const struct command *b, u
 {
     unsigned flags = (shadow_extended ? RSX_BATCH_EXTENDED : 0) |
                      (attribute_pass && attr_const ? RSX_BATCH_ATTR_CONST : 0);
-    return (a->d.program==shade || a->d.program==shade_w) && a->d.program==b->d.program &&
+    return !b->reset && (a->d.program==shade || a->d.program==shade_w) && a->d.program==b->d.program &&
         rsx_batch_equal(&a->key,&b->key,flags);
 }
 /* Puerta por polígono: conserva Z y su cara mientras se consultan los IDs.
@@ -1057,6 +1092,8 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
     const gx_frame *f = (const gx_frame *)(uintptr_t)j->frame_ea;
     r3d_rstate rs;
     uint32_t ncmd = 0, nv = 0;
+    int ordered=0;
+    memset(capacity_reset,0,sizeof capacity_reset);
     memset(st, 0, sizeof *st);
     last_valid = 0;
     if (!ready || decode_error) { reason = "sin recursos o fallo de RGBA8"; return -1; }
@@ -1151,30 +1188,47 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
     }
     shadows = !!(modes & ((1u << RSX_SHADOW_MASK) | (1u << RSX_SHADOW)));
     shadow_extended = 0;
+    ids_mask = 0;
     if (shadows && (modes & (1u<<RSX_EQUAL))) { reason = "igualdad con sombras"; return 0; }
     if (shadows || (modes & (1u<<RSX_EQUAL))) {
         /* Reparto portable (rsx_passes.h), el mismo que ejecuta el banco del
          * host: una sola sombra, varias, o ampliado con puerta y cara. */
         rsx_shadow_layout layout;
         rsx_shadow_layout_init(&layout, f, &rs, shadow_general);
+        const int previous=capacity_previous || capacity_degraded || passes_previous ||
+                           (fog_previous && (rs.d3&D3_FOG));
         /* El empate W (frente gana a espalda con LEQUAL) exige la misma W
          * entera en todos los programas: redondeo de 1/pos.w y escala
          * entera (wdepth.cgi). Con la W truncada anterior no hay paridad. */
         if (layout.needs_back && rs.wbuf && (w_truncated || shadow_back_w_spe)) { reason = "sombras: cara trasera W sin paridad"; return 0; }
         if (layout.needs_back && shadow_back_spe) { reason = "sombras: profundidad de cara trasera"; return 0; }
         if (layout.needs_ids && shadow_ids_spe) { reason = "sombras: capacidad de IDs excedida"; return 0; }
-        /* Sin sombras el reparto ampliado deja 4 bits de TID (15 IDs); el
-         * tope de 8 solo se conserva como A/B. Con sombras lo decide el
-         * reparto de abajo. */
-        if (layout.translucents > 8 && (tid_limit8 || shadows)) { reason = "3D ampliado: capacidad translúcida sin paridad"; return 0; }
+        /* rc1 limita antes de repartir cuando hay sombras. La capacidad
+         * nueva intenta primero el mismo reparto, luego los bits libres y
+         * por último reutiliza códigos después del último uso de un ID. */
+        if (layout.translucents > 8 && (tid_limit8 || (shadows && previous))) {
+            reason = capacity_degraded ? "capacidad ampliada: degradada por la autoprueba" :
+                                        "3D ampliado: capacidad translúcida sin paridad";
+            return 0;
+        }
         if (layout.needs_back || layout.needs_ids || (modes & (1u<<RSX_EQUAL))) {
-            const char *why = rsx_shadow_layout_extend(&layout, f, &rs, shadows);
-            if (why) { reason = why; return 0; }
+            const char *why = previous ? rsx_shadow_layout_extend(&layout, f, &rs, shadows) :
+                                        rsx_shadow_layout_capacity(&layout, f, &rs, shadows);
+            if (why && !previous) {
+                if (!frame_order(f)) return -1;
+                ordered=1;
+                why=rsx_capacity_schedule(&layout,f,&rs,shadows,order,capacity_reset);
+            }
+            if (why) {
+                reason = capacity_degraded ? "capacidad ampliada: degradada por la autoprueba" : why;
+                return 0;
+            }
         }
         memcpy(oid, layout.oid, sizeof oid); memcpy(tid, layout.tid, sizeof tid);
         memcpy(oid_test, layout.oid_test, sizeof oid_test);
         trans_mask = layout.trans_mask; opaque_mask = layout.opaque_mask;
         single_shadow = layout.single; shadow_extended = layout.extended;
+        ids_mask = layout.ids_mask;
     }
     /* Decidir después de la admisión: los respaldos de paridad conservan su
      * motivo. No preparar texturas ni vértices de un cuadro elegido para SPE. */
@@ -1218,22 +1272,7 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
         __sync_synchronize();
 #endif
     }
-    for (uint32_t i = 0; i < f->npolys; i++) {
-        const gx_poly *p = &f->poly[i];
-        if (p->nverts < 3 || p->nverts > GX_POLY_MAXV || p->wshift > 28) return -1;
-        for (uint32_t k = 0; k < p->nverts; k++) if (p->vidx[k] >= f->nverts) return -1;
-        uint32_t key = r3d_sort_key(p, f->swap_params & 1u), k = i;
-        while (old_prepare && k && keys[k-1] > key) { keys[k] = keys[k-1]; order[k] = order[k-1]; k--; }
-        keys[k] = key; order[k] = i;
-    }
-    /* Radix estable: conserva exactamente los empates y el orden DS. */
-    if (!old_prepare) for (unsigned shift = 0; shift < 24; shift += 8) {
-        uint32_t count[256] = {0}, sum = 0;
-        for (uint32_t i = 0; i < f->npolys; i++) count[(keys[order[i]] >> shift) & 255u]++;
-        for (unsigned i = 0; i < 256; i++) { uint32_t n = count[i]; count[i] = sum; sum += n; }
-        for (uint32_t i = 0; i < f->npolys; i++) sorted[count[(keys[order[i]] >> shift) & 255u]++] = order[i];
-        memcpy(order, sorted, f->npolys * sizeof *order);
-    }
+    if (!ordered && !frame_order(f)) return -1;
     uint64_t t0 = ticks();
     uint32_t slots[10]; memcpy(slots, j->texslot, 16); memcpy(slots + 4, j->palslot, 24);
     if (!snapshot_valid || memcmp(old_slots, slots, sizeof slots)) {
@@ -1264,14 +1303,19 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
     st->identity_us = ticks() - t0;
     cur = j;
     rsx3d_vertex *v = (rsx3d_vertex *)(void *)(mem + VERT_OFF(slot));
+    uint64_t pending_reset=0;
     for (uint32_t i = 0; i < f->npolys; i++) {
         t0 = ticks();
         const gx_poly *gp = &f->poly[order[i]];
+        if (capacity_reset[order[i]]) pending_reset|=UINT64_C(1)<<capacity_reset[order[i]];
         const gx_vertex *vv[GX_POLY_MAXV]; r3d_poly p;
         if (old_prepare) memset(&p, 0, sizeof p);
         for (uint32_t k = 0; k < gp->nverts; k++) vv[k] = &f->vtx[gp->vidx[k]];
         if (!prepare_poly(&p, gp, vv, &rs)) continue;
         struct command *c = &command[ncmd++]; memset(c, 0, sizeof *c);
+        /* Un polígono fuera de pantalla puede contener el primer uso de un
+         * ID. Conservar su limpieza hasta el siguiente comando dibujable. */
+        c->reset=pending_reset; pending_reset=0;
         c->equal = !!(p.attr & PA_DEQUAL); c->front = !!(gp->flags & GX_POLY_FRONT); c->mode = p.mode; c->first = nv; c->count = (p.n - 2) * 3; c->trans = p.alpha < 31 || (p.mode != 1 && p.textured && (p.tex.fmt == 1 || p.tex.fmt == 6)); c->id = p.id; c->tdepth = !!(p.attr & PA_TDEPTH);
         rsxkit_draw *d = &c->d; d->program = rs.wbuf ? shade_w : shade; d->ntex = 1;
         d->scissor[2] = R3D_W; d->scissor[3] = R3D_H;
@@ -1356,6 +1400,26 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
         return 0;
     }
     st->polys = ncmd;
+    const unsigned reset_first=nv;
+    unsigned has_resets=0;
+    for (unsigned i=0;i<ncmd;i++) has_resets|=command[i].reset!=0;
+    if (has_resets) {
+        static const unsigned xy[6][2]={{0,0},{R3D_W,0},{0,R3D_H},{0,R3D_H},{R3D_W,0},{R3D_W,R3D_H}};
+        for (unsigned i=0;i<6;i++) {
+            rsx3d_vertex *b=&v[nv++]; memset(b,0,sizeof *b);
+            b->pos[0]=xy[i][0]; b->pos[1]=xy[i][1]; b->pos[3]=1;
+        }
+        /* Estos últimos vértices pueden seguir en la caché del PPE:
+         * publicarlos antes de que el RSX lea el rectángulo de limpieza. */
+#ifdef __powerpc__
+        for (uintptr_t p=(uintptr_t)&v[reset_first]&~(uintptr_t)127;
+             p<(uintptr_t)&v[nv]; p+=128)
+            __asm__ volatile("dcbf 0,%0" : : "r"(p) : "memory");
+        __asm__ volatile("sync" : : : "memory");
+#else
+        __sync_synchronize();
+#endif
+    }
     uint32_t batches = 0;
     for (uint32_t i = 0; i < ncmd; i++) {
         struct command *c = &command[i];
@@ -1365,7 +1429,7 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
         /* No mover primitivas: ni empates Z/W ni IDs repetidos cambian ganador.
          * Las cinco pasadas translúcidas permanecen juntas por polígono. */
         /* Con atributos por constantes, la Z plana vive en la clave (ya no en d): no unir polígonos con otra Z plana. */
-        if (!unbatched && !shadow_extended && prev &&
+        if (!unbatched && !shadow_extended && prev && !c->reset &&
             (!attr_const || !(rs.d3 & D3_FOG) || fog_previous ||
              (prev->key.flat == c->key.flat && prev->key.flatz == c->key.flatz && prev->key.fog == c->key.fog)) &&
             ((!prev->trans && !c->trans && prev->mode != 3 && c->mode != 3) ||
@@ -1422,13 +1486,24 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
     if (attribute_pass) encoded = ((rs.clear_attr & AT_FOG) ? 0xff000000u : 0u) |
         ((rs.clear_depth >> 17) << 16) | (((rs.clear_depth >> 9) & 255u) << 8);
     rsxkit_clear(RSXKIT_CLEAR_COLOR | RSXKIT_CLEAR_DEPTH | RSXKIT_CLEAR_ALPHA, encoded, rs.clear_depth / 16777215.0f, NULL);
-    rsxkit_clear_stencil((shadows || shadow_extended) ? ((ca ? (shadow_extended ? 16 : 128) : 0) | oid[AT_OID(rs.clear_attr)]) : (ca ? 64 : 255));
+    rsxkit_clear_stencil((shadows || shadow_extended) ?
+        ((ca ? (shadow_extended ? ((ids_mask&16) ? 0 : 16) : 128) : 0) |
+         oid[AT_OID(rs.clear_attr)]) : (ca ? 64 : 255));
     rsxkit_vertices(offset + VERT_OFF(slot), RSXKIT_MEM_MAIN);
     rsxkit_vertices_color_aux(attribute_pass && !attr_const);
     unsigned prior_back=0;
     for (uint32_t i = 0; i < ncmd; i++) {
         struct command *c = &command[i];
         struct command batch;
+        if (c->reset) {
+            struct command clear; memset(&clear,0,sizeof clear);
+            clear.first=reset_first; clear.count=6; clear.d.program=mask;
+            clear.d.scissor[2]=R3D_W; clear.d.scissor[3]=R3D_H;
+            /* INVERT solo los unos del código comparado lo convierte en
+             * cero sin tocar OID, máscara de sombra, cara ni ocupado. */
+            for (unsigned code=1;code<64;code++) if (c->reset&(UINT64_C(1)<<code))
+                draw(&clear,3,code,trans_mask,code,1,RSXKIT_BLEND_NONE,0,0,st);
+        }
         /* Lotes de opacos normales en color y atributos (clave portable);
          * también en 3D ampliado, donde el plan emite las dos pasadas
          * frontales por lote. Sin niebla ni ampliado ya los unió el bucle

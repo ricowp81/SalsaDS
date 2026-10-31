@@ -45,6 +45,10 @@ int rsx3d_hd_present(unsigned set, int x, int y, int w, int h);
 void rsx3d_presentation_begin(unsigned set);
 void rsx3d_presentation_end(unsigned set);
 int rsx3d_selftest(void);
+/* La autoprueba compara ambos repartos y conserva el respaldo por grupo. */
+int rsx3d_capacity_previous(void);
+int rsx3d_capacity_set_previous(int previous);
+void rsx3d_capacity_degrade(void);
 int rsx3d_reference_test(void);
 /* Opcional, válido solo para la siguiente llamada; 41 páginas físicas de 16 KiB.
  * Los sellos deben cambiar al escribir y no reutilizarse tras reiniciar el núcleo. */
