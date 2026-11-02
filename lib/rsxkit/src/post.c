@@ -473,6 +473,7 @@ int rsxkit_post_run(const rsxkit_post_pass *p)
 		if (p->in[i].surface && !p->in[i].surface->used)
 			return RSXKIT_EARG;
 	post_init();
+	rsxkit_trace_repeat("pasada", "%u en total; la última con %u entradas", 1, p->inputs, 0, 0);
 	rsxkit_reserve(RSXKIT_RESERVE_DRAW);
 	rsxkit_leave_3d();
 	uint32_t sw, sh;
@@ -567,6 +568,7 @@ int rsxkit_post_run_mesh(const rsxkit_post_pass *p, const rsxkit_post_mesh *m)
 		if (p->in[i].surface && !p->in[i].surface->used)
 			return RSXKIT_EARG;
 	post_init();
+	rsxkit_trace_repeat("pasada", "%u en total; la última con %u entradas", 1, p->inputs, 0, 0);
 	rsxkit_reserve(RSXKIT_RESERVE_DRAW);
 	rsxkit_leave_3d();
 	uint32_t sw, sh;

@@ -292,6 +292,7 @@ void rsxkit_blit_to(uint32_t offset, uint8_t location, uint32_t pitch, uint32_t 
 	gcmContextData *ctx = rsxkit_g.ctx;
 	if (init_programs() != RSXKIT_OK)
 		return;
+	rsxkit_trace_repeat("blit", "%u en total; el último de %u×%u a %u de ancho", 1, tex_w, tex_h, rp->w);
 	rsxkit_reserve(RSXKIT_RESERVE_DRAW);
 	rsxkit_rect r = *rp;
 	const struct fmt_info *fi = &formats[format];
