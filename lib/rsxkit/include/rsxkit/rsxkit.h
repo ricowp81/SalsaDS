@@ -21,6 +21,7 @@
 #define RSXKIT_RSXKIT_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "rsxkit/fpgen.h"
@@ -182,6 +183,73 @@ void rsxkit_debug_stall(void);
 /* Nombre de una etiqueta de rsxkit ("barrera", "rsxkit_finish"…). */
 const char *rsxkit_label_name(uint32_t index);
 
+/* ---- Diagnóstico de un RSX colgado y blindaje ----------------------------- */
+
+/* Todo lo de esta sección se puede llamar desde el gancho de las esperas y,
+ * salvo rsxkit_abandon, desde otro hilo: solo lee memoria del PPE y los
+ * registros de control del RSX. */
+
+/* Excepciones del RSX que avisó el sistema (gcmSetGraphicsHandler, que
+ * rsxkit_init registra): cuántas, el valor que pasó el sistema con la
+ * primera y con la última, cuándo (sysGetSystemTime) y GET y PUT al llegar
+ * la última. count 0: ninguna. */
+typedef struct rsxkit_rsx_error {
+	uint32_t count;
+	uint32_t first, last;
+	uint64_t first_us, last_us;
+	uint32_t get, put;
+} rsxkit_rsx_error;
+void rsxkit_rsx_errors(rsxkit_rsx_error *out);
+
+/* El búfer de comandos en offsets de E/S del RSX: dónde empieza la memoria
+ * mapeada que lo contiene (base) y cuánto mide (size), el segmento en curso
+ * (begin, end), dónde escribe rsxkit (current), y GET, PUT y REF del RSX.
+ * Y hasta dónde llegó el RSX: la última barrera (rsxkit_fence) y el último
+ * rsxkit_finish mandados y los que escribió. */
+typedef struct rsxkit_fifo_info {
+	uint32_t base, size;
+	uint32_t begin, end, current;
+	uint32_t get, put, ref;
+	uint32_t fence_sent, fence_done;
+	uint32_t finish_sent, finish_done;
+} rsxkit_fifo_info;
+void rsxkit_fifo_info_get(rsxkit_fifo_info *out);
+
+/* Rastro de las últimas operaciones de rsxkit, anotado en el PPE (no manda
+ * nada al RSX): qué fue, en qué offset del búfer de comandos empezó y sus
+ * números (`fmt` es un formato de printf para a, b, c y d). Los dibujos
+ * seguidos van en una sola entrada (n veces). Junto a GET, PUT y las
+ * etiquetas dice qué tenía el RSX delante al colgarse. */
+typedef struct rsxkit_trace_entry {
+	const char *op, *fmt;
+	uint32_t fifo;
+	uint32_t n;
+	uint32_t a, b, c, d;
+	uint64_t seq;  /* número de la operación desde rsxkit_init */
+} rsxkit_trace_entry;
+#define RSXKIT_TRACE_LEN 64
+/* Copia a `out` las últimas (hasta `max`), de la más vieja a la más nueva. */
+unsigned rsxkit_trace_get(rsxkit_trace_entry *out, unsigned max);
+/* «op números» de una entrada, para el log. */
+int rsxkit_trace_format(const rsxkit_trace_entry *e, char *buf, size_t n);
+
+/* Para salir con el RSX colgado: rsxkit deja de esperarlo (rsxkit_lost) y
+ * de mandarle órdenes, y si GET no apunta a lo que falta mandar (está
+ * dentro de la memoria del búfer y no más allá de PUT), pone PUT = GET para
+ * que el RSX no tenga nada pendiente. *get y *put_before: los de antes.
+ * Devuelve true si movió PUT. */
+bool rsxkit_abandon(uint32_t *get, uint32_t *put_before);
+
+/* Blindaje: lo que rsxkit ajusta para no mandarle al RSX algo que en la PS3
+ * real lo dejó sin avanzar. Todo encendido por omisión.
+ *   RSXKIT_SAFE_SIFM_EVEN: rsxkit_depth_load (motor de imagen escalada) con
+ *   ancho de entrada par (lee un texel más por fila, que no llega a la
+ *   salida). */
+#define RSXKIT_SAFE_SIFM_EVEN 0x1u
+#define RSXKIT_SAFE_ALL       0x1u
+void rsxkit_set_safe(uint32_t flags);
+uint32_t rsxkit_safe(void);
+
 /* Búfer de color en que se está dibujando (X8R8G8B8), para pruebas: leerlo
  * desde el PPE es lento. Llamar a rsxkit_finish antes. */
 const uint32_t *rsxkit_back_buffer(uint32_t *pitch_bytes);
@@ -277,12 +345,11 @@ typedef struct rsxkit_depth rsxkit_depth;    /* profundidad Z24S8, memoria local
  * textura con transparencia: una imagen RGBA5551 de una consola de 16 bits).
  * Nace con alfa 0. Lo que lo escribe:
  *  - rsxkit_clear: el byte alto de `rgb` es el alfa;
- *  - rsxkit_draw: cada píxel escrito queda con alfa 1 (la mezcla de alfa
- *    del dibujo no toca el canal), o con el alfa del fragmento si
- *    rsxkit_draw.dst_alpha = RSXKIT_DSTA_FRAG y blend es RSXKIT_BLEND_OFF
- *    (relleno con un color de alfa 0/1, copias de textura sin mezcla); las
- *    mezclas RSXKIT_BLEND_ALPHA_MAX, _REPLACE_MIN_ALPHA y _KEEP_MIN_ALPHA
- *    traen su propia cuenta del alfa (máximo o mínimo con el del destino);
+ *  - rsxkit_draw: lo que diga rsxkit_draw.dst_alpha en cada píxel escrito
+ *    (RSXKIT_DSTA_*: 1, el alfa del fragmento, el del destino sin cambiar o
+ *    el mayor de los dos), con cualquier mezcla del color; las mezclas
+ *    RSXKIT_BLEND_ALPHA_MAX, _REPLACE_MIN_ALPHA y _KEEP_MIN_ALPHA traen su
+ *    propia cuenta del alfa (máximo o mínimo con el del destino);
  *  - rsxkit_target_fill / _fill_rows: el alfa de la imagen (el bit de alfa
  *    de RSXKIT_RGBA5551);
  *  - rsxkit_target_copy: se copia el alfa si el origen también lo tiene.
@@ -291,8 +358,9 @@ typedef struct rsxkit_depth rsxkit_depth;    /* profundidad Z24S8, memoria local
  * 2D, los blits y las pasadas de posprocesado lo leen solo de ARGB8888 (de
  * XRGB8888 toman 1). Sin alfa, la lectura trae lo que el RSX deje en el
  * byte alto de X8R8G8B8 (opaco).
- * Un destino con alfa mezcla en cada dibujo (ONE / ZERO en los opacos):
- * conviene para los que se leen como textura, no para el cuadro principal. */
+ * En un destino con alfa, RSXKIT_DSTA_ONE cuesta una pasada más por dibujo
+ * cuyo alfa no es 1 y MAX mezcla siempre: conviene para los que se leen
+ * como textura, no para el cuadro principal. */
 #define RSXKIT_TARGET_ALPHA 0x1u
 rsxkit_target *rsxkit_target_create(uint32_t width, uint32_t height);
 rsxkit_target *rsxkit_target_create_ex(uint32_t width, uint32_t height, uint32_t flags);
@@ -419,6 +487,10 @@ typedef enum rsxkit_blend {
 	RSXKIT_BLEND_ALPHA_MAX, /* RGB: src*a+dst*(1-a); alfa: máximo */
 	RSXKIT_BLEND_REPLACE_MIN_ALPHA, /* RGB: reemplaza; alfa: mínimo */
 	RSXKIT_BLEND_KEEP_MIN_ALPHA,    /* RGB: conserva destino; alfa: mínimo */
+	RSXKIT_BLEND_MUL,        /* dst·a (oscurece lo dibujado según el alfa) */
+	RSXKIT_BLEND_ADD_MUL,    /* src + dst·a */
+	RSXKIT_BLEND_ALPHA_INV,  /* src·(1 − a) + dst·a */
+	RSXKIT_BLEND_ADD_ONE,    /* src + dst (suma sin peso) */
 } rsxkit_blend;
 
 typedef enum rsxkit_cull {
@@ -458,11 +530,46 @@ enum { RSXKIT_K_T0, RSXKIT_K_T0A, RSXKIT_K_T1, RSXKIT_K_T1A, RSXKIT_K_ONE, RSXKI
 #define RSXKIT_K_TERMS   RSXKIT_FP_MAX_TERMS
 #define RSXKIT_K_FACTORS RSXKIT_FP_MAX_FACTORS
 
-/* rsxkit_draw.dst_alpha, solo en destinos con RSXKIT_TARGET_ALPHA. No
- * cuenta con las mezclas que traen su propia cuenta del alfa
- * (RSXKIT_BLEND_ALPHA_MAX, _REPLACE_MIN_ALPHA, _KEEP_MIN_ALPHA). */
-#define RSXKIT_DSTA_ONE  0  /* los píxeles escritos quedan con alfa 1 */
-#define RSXKIT_DSTA_FRAG 1  /* con blend OFF: el alfa del fragmento; con ALPHA o ADD, igual que ONE */
+/* rsxkit_draw.dst_alpha: el alfa que queda en cada píxel escrito de un
+ * destino con RSXKIT_TARGET_ALPHA, con cualquier mezcla del color (la del
+ * color no toca el alfa). No cuenta con las mezclas que traen su propia
+ * cuenta del alfa (RSXKIT_BLEND_ALPHA_MAX, _REPLACE_MIN_ALPHA,
+ * _KEEP_MIN_ALPHA). Hasta 2026-10-31 RSXKIT_DSTA_ONE dejaba en realidad el
+ * alfa del fragmento (la mezcla de alfa ONE / ZERO lo copia): quien dependa
+ * de eso pasa a RSXKIT_DSTA_FRAG.
+ * La mezcla del RSX no da una constante (el alfa sale de As·fs + Ad·fd y
+ * todos los factores multiplican), así que RSXKIT_DSTA_ONE se hace con dos
+ * pasadas cuando el alfa del fragmento no es 1 en todo el dibujo: primero
+ * una solo en el canal alfa, con el mismo programa, la misma prueba de
+ * profundidad (sin escribirla) y el alfa llevado a 1 o más (escalado por
+ * 1/ref con prueba de alfa, para descartar los mismos fragmentos; más 1 sin
+ * ella), y después el dibujo con RSXKIT_DSTA_KEEP. Con un programa propio
+ * (rsxkit_draw.program), o sin lugar para un término constante, queda el
+ * alfa del fragmento (rsxkit_dsta_stats lo cuenta). */
+#define RSXKIT_DSTA_ONE  0  /* alfa 1 (en dos pasadas si hace falta) */
+#define RSXKIT_DSTA_FRAG 1  /* el alfa del fragmento */
+#define RSXKIT_DSTA_KEEP 2  /* el del destino, sin cambiar (máscara de color sin el alfa) */
+#define RSXKIT_DSTA_MAX  3  /* el mayor entre el del fragmento y el del destino (ecuación MAX) */
+
+#define RSXKIT_DSTA_PASS 4  /* interno: la pasada del alfa (solo el canal alfa, sin mezcla) */
+
+
+/* Dibujos con RSXKIT_DSTA_ONE en un destino con alfa desde el arranque: los
+ * que llevaron la pasada del alfa, los de una sola pasada (el alfa del
+ * fragmento ya era 1) y los que quedaron con el del fragmento. */
+void rsxkit_dsta_stats(uint32_t *passes, uint32_t *single, uint32_t *failed);
+
+/* Autoprueba de dst_alpha en el RSX: en un destino con alfa borrado con
+ * alfa 0x60 dibuja un cuadrado por caso con el alfa del fragmento en 0x20
+ * (0xA0 en el último) y lee el alfa que quedó: RSXKIT_DSTA_ONE sin mezcla,
+ * con la mezcla RSXKIT_BLEND_ALPHA, con una prueba de alfa que pasa (ref
+ * 0x10) y con una que descarta (ref 0x40); FRAG; KEEP; MAX bajo y MAX alto.
+ * rsxkit_dsta_expected es lo que deben dar (FF FF FF 60 20 60 60 A0). Usa
+ * memoria local propia, espera al RSX y deja sin destino ligado y sin
+ * vértices (llamar fuera del dibujo, p. ej. al arrancar). 0 o RSXKIT_E*. */
+#define RSXKIT_DSTA_TEST_N 8
+extern const uint8_t rsxkit_dsta_expected[RSXKIT_DSTA_TEST_N];
+int rsxkit_dsta_selftest(uint8_t out[RSXKIT_DSTA_TEST_N]);
 
 typedef struct rsxkit_draw {
 	/* Programa opcional: entradas de rsxkit_lincomb.vcg. NULL conserva la combinación. */
@@ -499,6 +606,13 @@ typedef struct rsxkit_draw {
 	float k[RSXKIT_K_TERMS][3][4];
 } rsxkit_draw;
 
+/* La pasada del alfa de RSXKIT_DSTA_ONE (lib/rsxkit/src/dsta.c, sin
+ * PSL1GHT: se prueba en el host). rsxkit_dsta_alpha_is_one: el alfa del
+ * fragmento es 1 en todo el dibujo (basta una pasada). rsxkit_dsta_alpha_pass
+ * arma en `b` la pasada del alfa de `d`; false si no se puede. */
+bool rsxkit_dsta_alpha_is_one(const rsxkit_draw *d);
+bool rsxkit_dsta_alpha_pass(const rsxkit_draw *d, rsxkit_draw *b);
+
 /* Programas generados: cuántos distintos hay en la caché, cuántos se
  * generaron en total (con los desalojos, si la caché se llenó) y cuántas
  * veces se cargó un programa distinto del anterior (incluidos los
@@ -529,6 +643,15 @@ void rsxkit_3d_incremental(int enabled);
  * al salir del 3D (pasadas, blits) y antes de destruirlo. */
 void rsxkit_3d_program_sync(int per_draw);
 void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count);
+/* Sombreado lineal en pantalla: los términos X_j (color del vértice, su
+ * alfa y la niebla) se interpolan sin corrección de perspectiva, como el
+ * sombreado Gouraud del RDP de la N64 y de otras consolas de la época; las
+ * coordenadas de textura siguen con perspectiva. El vertex program
+ * multiplica cada X_j por w y los fragment programs lo leen con el bit del
+ * RSX que entrega la entrada dividida entre w (docs/rsx-notes.md): no cuesta
+ * instrucciones por píxel. Apagado al iniciar; vale para los dibujos
+ * siguientes. */
+void rsxkit_affine_shade(int on);
 
 /* ---- Un destino como textura y de vuelta a la memoria principal --------------
  * Render a textura: lo dibujado en un destino se puede leer en un dibujo 3D
@@ -546,7 +669,9 @@ void rsxkit_texture_sync(void);
 /* Copia a la memoria principal (mapeada con rsxkit_map_main) la región
  * `src` del destino (NULL: todo), reducida a img_w × img_h píxeles con
  * filtro lineal (o copiada tal cual si ya miden lo mismo:
- * rsxkit_target_read_exact), en `format` (RSXKIT_RGB565 o RSXKIT_XRGB8888) y con
+ * rsxkit_target_read_exact), en `format` (RSXKIT_RGB565, RSXKIT_XRGB8888 o
+ * RSXKIT_ARGB8888: este último con el alfa de un destino creado con
+ * RSXKIT_TARGET_ALPHA, filtrado como el color, y 1 si no tiene) y con
  * `dst_pitch` bytes por fila (múltiplo de 64; offset alineado a 128). Lo
  * hace el RSX con el pipeline 3D sobre una superficie en memoria
  * principal: encola el trabajo y vuelve; rsxkit_fence/rsxkit_fence_wait
