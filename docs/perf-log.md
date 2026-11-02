@@ -1,5 +1,11 @@
 # Registro de rendimiento
 
+## 2026-11-02 — Ritmo con el 3D en el SPE [PS3 rc2: el antes; el después, pendiente]
+
+- Sonic Rush Adventure, mismas ventanas (mismas instrucciones por cuadro) en los logs de la rc2. App normal: emulación sin reloj de perfil 17,4–18,1 ms (mediana), intervalo 33,3; `frame_begin` 13,8–15,2. App RSX sin archivos (3D en el SPE): emulación 16,3–17,1, intervalo 33,3; `frame_begin` 15,1–16,1. App RSX con HD (flip esperado después de emular): emulación 18,5–20,4, intervalo 19,1–21,0, `frame_begin` 0,00; con 112 de 120 cuadros por el SPE, 19,8.
+- Metroid, app normal: con 14–16 ms de emulación (mediana) ya hay ventanas con intervalo mediano 33,2–33,4; con la espera antes de emular, el trabajo que cabe en un refresco queda en unos 14–15 ms.
+- Con la espera después de emular (`ritmo-spe`) se espera: intervalo ≈ trabajo de la vuelta cuando pasa de un refresco y, en pantalla, una mezcla de 1 y 2 VBlanks por cuadro (`DATO ritmo`). Medir en la PS3 con y sin `flip-temprano`.
+
 ## 2026-11-02 — Capacidad y bordes juntos: comprobaciones host, sin medición PS3
 
 - La unión conserva el orden de los polígonos y el OID original de bordes. Cada código TID reciclado añade un dibujo de limpieza por pasada y escala; los bordes mantienen su raster auxiliar y su quad, además de los de niebla cuando corresponde.

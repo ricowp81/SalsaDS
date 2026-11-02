@@ -143,6 +143,7 @@ static void cost_publish(unsigned slot)
 }
 int rsx3d_hd_scalar(void) { return hd_scalar; }
 int rsx3d_hd_late_flip(void) { return hd_game && hd_scale>1 && !hd_early_flip; }
+int rsx3d_hd_early_flip(void) { return hd_game && hd_scale>1 && hd_early_flip; }
 static rsxkit_target *hd_diag_target, *hd_diag_scratch;
 int rsx3d_hd_experimental(void) { return hd_game && hd_scale > 1; }
 int rsx3d_hd_descriptors(int distinct)

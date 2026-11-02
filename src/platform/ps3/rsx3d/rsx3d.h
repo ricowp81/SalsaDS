@@ -22,6 +22,8 @@ int rsx3d_init(void);
 unsigned rsx3d_scale(void);
 int rsx3d_hd_scalar(void);
 int rsx3d_hd_late_flip(void);
+/* HD en juego con 3d-rsx-hd-flip-temprano: el flip anterior se espera antes de emular. */
+int rsx3d_hd_early_flip(void);
 int rsx3d_hd_experimental(void);
 /* Solo autoprueba; restaurar descriptores originales antes del reproductor. */
 int rsx3d_hd_descriptors(int distinct);

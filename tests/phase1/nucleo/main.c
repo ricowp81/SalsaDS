@@ -58,6 +58,7 @@
 #include <sys/thread.h>
 #include <sysutil/sysutil.h>
 #include <sysutil/video.h>
+#include <rsx/gcm_sys.h>
 
 #include "core/nds.h"
 #include "core/nds_priv.h"
@@ -144,6 +145,13 @@ static int geom_poly_plain, geom_read_scalar;
  * a doble pantalla (menús e introducción de Metroid Prime Hunters) las pantallas salían cruzadas uno o dos cuadros. Con este archivo
  * vuelve la lectura al presentar (la forma anterior), para comparar en la misma escena. */
 #define PANTALLAS_SWAP_ANTERIOR_FLAG SALSADS_DATA_DIR "/pantallas-swap-anterior"
+/* Dónde se espera el flip del cuadro anterior (rsxkit_frame_begin). Por omisión, después de emular y justo antes de dibujar en la
+ * pantalla: el PPE emula el cuadro siguiente mientras el flip espera su VBlank, y un cuadro que se pasa de un refresco sale en el
+ * siguiente (como la HD del RSX desde la ronda 11). Antes de emular, la forma anterior, cada vuelta arrancaba justo en un VBlank:
+ * un cuadro que tardaba algo más de un refresco ya no llegaba al siguiente y la tele lo mostraba dos (30 fps exactos con 17 ms de
+ * emulación). Con este archivo vuelve la forma anterior; la HD del RSX conserva su espera después de emular (salvo con
+ * 3d-rsx-hd-flip-temprano, como antes). */
+#define FLIP_TEMPRANO_FLAG SALSADS_DATA_DIR "/flip-temprano"
 #define AUDIO_VERIFY_FLAG SALSADS_DATA_DIR "/audio-verificar"
 #define AUDIO_PPE_FLAG SALSADS_DATA_DIR "/audio-mezcla-ppe"
 
@@ -1747,6 +1755,7 @@ enum {
 	M_R3D0,   /* render 3D: duración en el SPE 0 del 3D (decrementador) */
 	M_R3D1,   /* ídem, SPE 1 */
 	M_R3DW,   /* el PPE esperando al render 3D en el VBlank */
+	M_FLIPIV, /* intervalo en pantalla: entre los dos últimos flips (gcmGetLastFlipTime) */
 	M_COUNT
 };
 static uint32_t buf[M_COUNT][STATS_FRAMES];
@@ -1773,6 +1782,13 @@ static uint64_t acc_r3d_pre_us, acc_r3d_lat_us[2];
 static uint32_t acc_r3d_early;
 static int r3d_defer;        /* 1: aplazar la espera del 3D (nds->vid.r3d_defer_line) */
 static int swap_anterior;     /* pantallas-swap-anterior: POWCNT1.15 leído al presentar */
+static int flip_temprano;     /* flip-temprano: la espera del flip anterior antes de emular (forma anterior) */
+/* Ritmo en pantalla, por ventana: cuántos cuadros esperaron el flip después de emular; los VBlanks de la tele entre un flip
+ * programado y el siguiente (contador al programarlo: el flip sale en el primer VBlank después de que el RSX llega a él); y el
+ * tiempo del último flip que da el sistema (el intervalo exacto, si la consola lo da). */
+static uint32_t acc_late_flips, acc_vb_n, acc_vb_gap[3], acc_flip_bad;
+static uint64_t acc_vb_sum, acc_vb_us, vb_prev, vb_prev_us;
+static int64_t flip_time_prev;
 static uint32_t acc_swap_shown, acc_swap_cross; /* cuadros presentados y, de ellos, con el bit de la instantánea ya distinto */
 static uint32_t compA_us_ema; /* composición 2D de la pantalla A (la del 3D), suavizada (µs): fija hasta dónde se puede aplazar el 3D */
 
@@ -1828,6 +1844,27 @@ static void log_stats(void)
 		    "instrucciones por cuadro: ARM9 %u, ARM7 %u; cuadros de la DS %u",
 		    n, MS(pct(M_EMU, 50)), MS(pct(M_EMU, 95)), MS(pct(M_EMU, 100)), MS(pct(M_IV, 50)), MS(pct(M_IV, 95)),
 		    over20, (unsigned)((i9 - prev_i9) / n), (unsigned)((i7 - prev_i7) / n), (unsigned)nds->frames);
+	{
+		/* Lo que muestra la tele, no lo que tarda la vuelta del programa: con la espera del flip después de emular el intervalo
+		 * de arriba es la vuelta (puede ser 19 ms) y cada cuadro sale en el VBlank siguiente a terminarlo (16,7 o 33,3 ms). */
+		const double secs = (double)acc_vb_us / 1e6;
+		const double vb_us = acc_vb_sum ? (double)acc_vb_us / (double)acc_vb_sum : 16683.0;
+		uint32_t held = 0;
+
+		for (uint32_t i = 0; i < nbuf[M_FLIPIV]; i++)
+			held += (double)buf[M_FLIPIV][i] > vb_us * 1.5;
+		salsads_log("DATO ritmo: espera del flip después de emular en %u de %u cuadros%s; en pantalla, entre flips (tiempo del "
+			    "sistema): mediana %u.%02u ms, p95 %u.%02u, mostrados dos refrescos o más %u de %u%s; VBlanks entre flips "
+			    "programados: 1 en %u, 2 en %u, 3 o más en %u, media %.2f (tele a %.2f Hz: %.1f cuadros/s)",
+			    (unsigned)acc_late_flips, n, flip_temprano ? " (flip-temprano)" : "", MS(pct(M_FLIPIV, 50)),
+			    MS(pct(M_FLIPIV, 95)), (unsigned)held, (unsigned)nbuf[M_FLIPIV],
+			    acc_flip_bad ? " (hay intervalos fuera de rango)" : "", (unsigned)acc_vb_gap[0], (unsigned)acc_vb_gap[1],
+			    (unsigned)acc_vb_gap[2], acc_vb_n ? (double)acc_vb_sum / (double)acc_vb_n : 0.0,
+			    secs > 0 ? (double)acc_vb_sum / secs : 0.0, secs > 0 ? (double)acc_vb_n / secs : 0.0);
+		acc_late_flips = acc_vb_n = acc_flip_bad = 0;
+		acc_vb_sum = acc_vb_us = 0;
+		memset(acc_vb_gap, 0, sizeof acc_vb_gap);
+	}
 	if (acc_swap_cross)
 		salsads_log("DATO pantallas: %u de %u cuadros presentados con POWCNT1.15 de la instantánea distinto al de su entrega "
 			    "(la lectura al presentar los cruzaba); se presentan %s", (unsigned)acc_swap_cross, (unsigned)acc_swap_shown,
@@ -2728,11 +2765,13 @@ static void render_frame(void)
 	const int profiled = (int)(frame_no & 1u);
 	struct sds_rect r[2];
 	uint64_t i9a, i7a, tb0, tb1, tb2, tb3, tb4, tb5, tb6, tb7, flip_ticks;
+	/* La espera del flip anterior (FLIP_TEMPRANO_FLAG): después de emular salvo con flip-temprano, que deja la forma anterior
+	 * (antes de emular, menos la HD del RSX). 3d-rsx-hd-flip-temprano sigue pidiéndola antes de emular con la HD. */
 #ifdef NUCLEO_RSX
-    const int late_flip=rsx3d_on && rsx3d_hd_late_flip();
+    const int late_flip=flip_temprano ? rsx3d_on && rsx3d_hd_late_flip() : !(rsx3d_on && rsx3d_hd_early_flip());
     const uint32_t cost_frame_ticket=rsx3d_cost_frame_begin();
 #else
-    const int late_flip=0;
+	const int late_flip = !flip_temprano;
 #endif
 
 	sysUtilCheckCallback();
@@ -2893,12 +2932,13 @@ static void render_frame(void)
 				swap = (nds->vid.set[nds->vid.last].powcnt1 & 0x8000u) != 0;
 		}
 		tb5 = tb_clock();
-        /* El RSX puede componer N y esperar su flip mientras se emula N+1.
+        /* El flip de N espera su VBlank (y el RSX compone N) mientras se emula N+1.
          * Hasta aquí solo se usaron destinos fuera de pantalla. */
         if (late_flip) {
             uint64_t t=tb_clock();
             rsxkit_frame_begin(CLEAR_RGB);
             flip_ticks += tb_clock()-t;
+            acc_late_flips++;
         }
 		tb6 = tb_clock();
 		sds_layout_compute(layout, SDS_SCALE_FIT, cur_w, cur_h, r);
@@ -2919,7 +2959,35 @@ static void render_frame(void)
 			last_dset = dset;
 	}
 	tb7 = tb_clock();
+	{
+		/* Ritmo en pantalla (DATO ritmo). Aquí ya pasó el flip del cuadro anterior (rsxkit_frame_begin lo esperó) y el de este
+		 * todavía no se programó: el último flip del sistema es el anterior. */
+		const int64_t ft = rsxkit_lost() ? 0 : gcmGetLastFlipTime();
+
+		if (ft > 0 && flip_time_prev > 0 && ft != flip_time_prev) {
+			if (ft > flip_time_prev && ft - flip_time_prev < 1000000)
+				put(M_FLIPIV, (uint32_t)(ft - flip_time_prev));
+			else
+				acc_flip_bad++;
+		}
+		if (ft > 0)
+			flip_time_prev = ft;
+	}
 	rsxkit_frame_end();
+	{
+		const uint64_t vb = rsxkit_vblank_count(), t = now_us();
+
+		if (vb_prev_us && vb >= vb_prev) {
+			const uint64_t gap = vb - vb_prev;
+
+			acc_vb_gap[gap <= 1 ? 0 : gap == 2 ? 1 : 2]++;
+			acc_vb_sum += gap;
+			acc_vb_us += t - vb_prev_us;
+			acc_vb_n++;
+		}
+		vb_prev = vb;
+		vb_prev_us = t;
+	}
 #ifdef NUCLEO_RSX
     /* Incluye emulación, espera del raster y recogida/presentación. La espera
      * del flip anterior solo rellena el VSync y no consume presupuesto PPE. */
@@ -3016,6 +3084,10 @@ static void stats_reset(void)
 	stat_n = 0;
 	last_begin_us = 0;
 	memset(&cur_stats, 0, sizeof cur_stats);
+	acc_late_flips = acc_vb_n = acc_flip_bad = 0;
+	acc_vb_sum = acc_vb_us = vb_prev = vb_prev_us = 0;
+	memset(acc_vb_gap, 0, sizeof acc_vb_gap);
+	flip_time_prev = 0;
 	acc_gx_ticks = acc_gx_cycles = acc_gx_polys = acc_gx_verts = acc_gx_swaps = acc_frames = 0;
 	acc_slices = acc_jumps = acc_events = acc_i9 = acc_i7 = acc_emu_ticks = acc_a9_ticks = acc_a7_ticks = acc_prof_n = 0;
 	acc_i9p = acc_i7p = 0;
@@ -3535,6 +3607,11 @@ int main(void)
 		swap_anterior = stat(PANTALLAS_SWAP_ANTERIOR_FLAG, &gst) == 0;
 		salsads_log("pantallas: el motor de arriba (POWCNT1.15) %s (%s)",
 			    swap_anterior ? "se lee al presentar, forma anterior" : "es el del cuadro entregado", PANTALLAS_SWAP_ANTERIOR_FLAG);
+		flip_temprano = stat(FLIP_TEMPRANO_FLAG, &gst) == 0;
+		salsads_log("presentación: el flip del cuadro anterior se espera %s (%s)",
+			    flip_temprano ? "antes de emular, forma anterior: un cuadro que se pasa de un refresco espera dos"
+					  : "después de emular: un cuadro que se pasa de un refresco sale en el siguiente",
+			    FLIP_TEMPRANO_FLAG);
 		salsads_log("E/S lenta del ARM9: DMA %s (%s); E/S del recompilador, matemáticas y ROMCTRL %s (%s); VRAMCNT_C/D %s (%s)",
 			    nds->dma_lento ? "unidad a unidad por el bus" : "por bloques y GXFIFO inmediato por la ruta corta", DMA_LENTO_FLAG,
 			    nds->es_lenta ? "por la forma anterior" : "directas", ES_LENTA_FLAG,
