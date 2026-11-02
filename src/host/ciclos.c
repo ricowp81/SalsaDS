@@ -12,7 +12,11 @@
  *
  * Código propio (GPL-2.0-or-later).
  */
+#ifdef __APPLE__
+#include <malloc/malloc.h>
+#else
 #include <malloc.h>
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,13 +60,24 @@ static int file_rd(void *user, uint64_t off, uint8_t *dst, size_t len)
 /* Heap en uso (bytes) y tamaño de la arena (lo que pidió al sistema) */
 static void heap_now(size_t *used, size_t *arena)
 {
-#if defined(__GLIBC__) && (__GLIBC__ > 2 || __GLIBC_MINOR__ >= 33)
+#ifdef __APPLE__
+	/* La zona por omisión contiene las reservas hechas por este proceso. */
+	malloc_statistics_t mi;
+
+	malloc_zone_statistics(malloc_default_zone(), &mi);
+	*used = mi.size_in_use;
+	*arena = mi.size_allocated;
+#elif defined(__GLIBC__) && (__GLIBC__ > 2 || __GLIBC_MINOR__ >= 33)
 	const struct mallinfo2 mi = mallinfo2();
-#else
-	const struct mallinfo mi = mallinfo();
-#endif
+
 	*used = (size_t)mi.uordblks + (size_t)mi.hblkhd; /* hblkhd: bloques grandes por mmap */
 	*arena = (size_t)mi.arena + (size_t)mi.hblkhd;
+#else
+	const struct mallinfo mi = mallinfo();
+
+	*used = (size_t)mi.uordblks + (size_t)mi.hblkhd; /* hblkhd: bloques grandes por mmap */
+	*arena = (size_t)mi.arena + (size_t)mi.hblkhd;
+#endif
 }
 
 /* Un ciclo: abrir, correr, cerrar. paged: 0 ROM entera, 1 por fragmentos. */

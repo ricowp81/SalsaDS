@@ -134,6 +134,12 @@ static int geom_poly_plain, geom_read_scalar;
 #define DMA_LENTO_FLAG SALSADS_DATA_DIR "/dma-lento"
 #define ES_LENTA_FLAG SALSADS_DATA_DIR "/es-lenta"
 #define VRAM7_VACIAR_SIEMPRE_FLAG SALSADS_DATA_DIR "/vram7-vaciar-siempre"
+/* Qué motor va arriba (POWCNT1.15) se guarda al entregar el 2D, junto con la instantánea que compone el SPE. Con el 3D encendido el
+ * cuadro N se entrega en la línea 262 (o en la aplazada del N+1) y se presenta al terminar la pasada siguiente, cuando el núcleo ya
+ * reutilizó esa instantánea para el cuadro N+2: leer el bit ahí daba el del N+2, y cuando el juego rompe la alternancia de la captura
+ * a doble pantalla (menús e introducción de Metroid Prime Hunters) las pantallas salían cruzadas uno o dos cuadros. Con este archivo
+ * vuelve la lectura al presentar (la forma anterior), para comparar en la misma escena. */
+#define PANTALLAS_SWAP_ANTERIOR_FLAG SALSADS_DATA_DIR "/pantallas-swap-anterior"
 #define AUDIO_VERIFY_FLAG SALSADS_DATA_DIR "/audio-verificar"
 #define AUDIO_PPE_FLAG SALSADS_DATA_DIR "/audio-mezcla-ppe"
 
@@ -297,6 +303,7 @@ static int spu_on;
 static spukit_worker *wk[2];
 static struct {
 	int valid, set, vset; /* juego de texturas, juego de instantáneas del núcleo */
+	int swap;             /* POWCNT1.15 del cuadro entregado (la instantánea se reutiliza antes de presentarlo) */
 	uint32_t seq[2];
 	job_result res[2];
 	int done;
@@ -988,6 +995,7 @@ static void vid_begin_sub(int vset)
 	sub.done = 0;
 	sub.set = set;
 	sub.vset = vset;
+	sub.swap = (nds->vid.set[vset].powcnt1 & 0x8000u) != 0;
 }
 
 /* Cierre del cuadro (línea 192; la 262 o más tarde con el 3D): las dos pantallas van a dos SPE y la salida cae directo en las
@@ -1760,6 +1768,8 @@ static uint32_t acc_r3d_frames;
 static uint64_t acc_r3d_pre_us, acc_r3d_lat_us[2];
 static uint32_t acc_r3d_early;
 static int r3d_defer;        /* 1: aplazar la espera del 3D (nds->vid.r3d_defer_line) */
+static int swap_anterior;     /* pantallas-swap-anterior: POWCNT1.15 leído al presentar */
+static uint32_t acc_swap_shown, acc_swap_cross; /* cuadros presentados y, de ellos, con el bit de la instantánea ya distinto */
 static uint32_t compA_us_ema; /* composición 2D de la pantalla A (la del 3D), suavizada (µs): fija hasta dónde se puede aplazar el 3D */
 
 static void sort_u32(uint32_t *a, uint32_t n)
@@ -1814,6 +1824,10 @@ static void log_stats(void)
 		    "instrucciones por cuadro: ARM9 %u, ARM7 %u; cuadros de la DS %u",
 		    n, MS(pct(M_EMU, 50)), MS(pct(M_EMU, 95)), MS(pct(M_EMU, 100)), MS(pct(M_IV, 50)), MS(pct(M_IV, 95)),
 		    over20, (unsigned)((i9 - prev_i9) / n), (unsigned)((i7 - prev_i7) / n), (unsigned)nds->frames);
+	if (acc_swap_cross)
+		salsads_log("DATO pantallas: %u de %u cuadros presentados con POWCNT1.15 de la instantánea distinto al de su entrega "
+			    "(la lectura al presentar los cruzaba); se presentan %s", (unsigned)acc_swap_cross, (unsigned)acc_swap_shown,
+			    swap_anterior ? "cruzados (pantallas-swap-anterior)" : "con el de la entrega");
 	/* Desglose: el tiempo de emulación con el reloj de perfil se reparte entre el ARM9, el ARM7, los eventos y el
 	 * resto (el planificador: elegir el tramo, comprobar eventos y HALT, saltos ociosos). Medianas de cuadros
 	 * impares; el resto es lo que no cae en ninguna de las cuatro. */
@@ -2217,6 +2231,7 @@ static void log_stats(void)
 	acc_gx_ticks = acc_gx_cycles = acc_gx_polys = acc_gx_verts = acc_gx_swaps = acc_frames = 0;
 	acc_slices = acc_jumps = acc_events = acc_i9 = acc_i7 = acc_emu_ticks = acc_a9_ticks = acc_a7_ticks = acc_prof_n = 0;
 	acc_i9p = acc_i7p = 0;
+	acc_swap_shown = acc_swap_cross = 0;
 	memset(acc_evn, 0, sizeof acc_evn);
 	memset(acc_evt, 0, sizeof acc_evt);
 	memset(acc_evn_all, 0, sizeof acc_evn_all);
@@ -2825,7 +2840,13 @@ static void render_frame(void)
 			if (show) {
 				vid_collect(&prev);
 				dset = prev.set;
-				swap = (nds->vid.set[prev.vset].powcnt1 & 0x8000u) != 0;
+				{
+					const int live = (nds->vid.set[prev.vset].powcnt1 & 0x8000u) != 0;
+
+					swap = swap_anterior ? live : prev.swap;
+					acc_swap_shown++;
+					acc_swap_cross += live != prev.swap;
+				}
 				for (int e = 0; e < 2; e++) {
 					const uint32_t *pp = (const uint32_t *)(const void *)&prev.res[e].prof;
 
@@ -2994,6 +3015,7 @@ static void stats_reset(void)
 	acc_gx_ticks = acc_gx_cycles = acc_gx_polys = acc_gx_verts = acc_gx_swaps = acc_frames = 0;
 	acc_slices = acc_jumps = acc_events = acc_i9 = acc_i7 = acc_emu_ticks = acc_a9_ticks = acc_a7_ticks = acc_prof_n = 0;
 	acc_i9p = acc_i7p = 0;
+	acc_swap_shown = acc_swap_cross = 0;
 	memset(acc_evn, 0, sizeof acc_evn);
 	memset(acc_evt, 0, sizeof acc_evt);
 	memset(acc_evn_all, 0, sizeof acc_evn_all);
@@ -3506,6 +3528,9 @@ int main(void)
 		nds->dma_lento = stat(DMA_LENTO_FLAG, &gst) == 0;
 		nds->es_lenta = stat(ES_LENTA_FLAG, &gst) == 0;
 		nds->vram7_vaciar_siempre = stat(VRAM7_VACIAR_SIEMPRE_FLAG, &gst) == 0;
+		swap_anterior = stat(PANTALLAS_SWAP_ANTERIOR_FLAG, &gst) == 0;
+		salsads_log("pantallas: el motor de arriba (POWCNT1.15) %s (%s)",
+			    swap_anterior ? "se lee al presentar, forma anterior" : "es el del cuadro entregado", PANTALLAS_SWAP_ANTERIOR_FLAG);
 		salsads_log("E/S lenta del ARM9: DMA %s (%s); E/S del recompilador, matemáticas y ROMCTRL %s (%s); VRAMCNT_C/D %s (%s)",
 			    nds->dma_lento ? "unidad a unidad por el bus" : "por bloques y GXFIFO inmediato por la ruta corta", DMA_LENTO_FLAG,
 			    nds->es_lenta ? "por la forma anterior" : "directas", ES_LENTA_FLAG,

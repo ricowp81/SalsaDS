@@ -6,7 +6,8 @@
  *   salsads-cpurun [--wav FILE.wav] [--wav-native FILE.wav] [--snd-original] [--audio-hd] [--audio-hd-sin-captura]
  *                  [--audio-lineal]
  *                  [--cycles N] [--frames N] [--quantum N] [--stats] [--arm7] [--keys HEX] [--touch X,Y]
- *                  [--screens FILE.ppm] [--ref] [--vs-ref] [--expect] [--same-ab] [--unmapped] [--peek ADDR]... [--trace N [--trace7]] ROM.nds
+ *                  [--screens FILE.ppm] [--ref] [--vs-ref] [--expect] [--same-ab] [--unmapped] [--peek ADDR]... [--trace N [--trace7]]
+ *                  [--presentacion ARCHIVO.csv [--presentacion-ppm PREFIJO]] ROM.nds
  *
  * Código de salida: 0 = OK, 1 = FALLO, 2 = sin veredicto, 3 = una CPU cayó en un vector de excepción de la BIOS
  * sin manejador. Con --frames corre ese número de cuadros y termina con 0 (para sacar imágenes).
@@ -175,6 +176,117 @@ static void fk_submit2d(void *ctx, int set, gpu2d_frame *f)
 	(void)ctx;
 	(void)set;
 	(void)f;
+}
+
+/* --presentacion ARCHIVO: el orden de entrega y presentación del programa de la consola (tests/phase1/nucleo/main.c) con el 3D
+ * encendido. El núcleo entrega el 2D del cuadro N en la línea 262 (o en la línea aplazada del N+1); el programa lo recoge y lo dibuja
+ * al terminar la pasada siguiente, cuando el cuadro N+2 ya cerró su línea 192 en la misma instantánea (son dos). Por cada pasada se
+ * anota qué cuadro se presenta, su POWCNT1.15 (el de la DS), el que leía el programa al presentar («vivo», la forma anterior) y el
+ * que se guarda al entregar. Con --presentacion-ppm PREFIJO vuelca, en los cuadros en que la forma anterior cruza las pantallas, lo
+ * que se veía (izquierda) junto a lo que muestra la DS (derecha). */
+static FILE *pres_file;
+static const char *pres_ppm;
+static unsigned pres_ppm_n;
+static struct pres_sub {
+	int valid, vset, swap;
+	uint64_t frame;
+} pres_sub, pres_prev;
+static struct {
+	uint64_t frame;
+	int valid, swap;
+	uint16_t img[2][NDS_SCREEN_W * NDS_SCREEN_H];
+} pres_ring[4];
+static uint64_t pres_shown, pres_cross_live, pres_cross_kept, pres_missing;
+
+static void pres_submit(void *ctx, int vset, gpu2d_frame *f)
+{
+	const uint64_t frame = (uint64_t)(M.vid.frames - 1u); /* el último cuadro que cerró la línea 192 */
+
+	(void)ctx;
+	(void)f;
+	if (pres_sub.valid && pres_sub.vset == vset && pres_sub.frame == frame)
+		return; /* la A tras la B temprana: el mismo cuadro */
+	pres_sub.valid = 1;
+	pres_sub.vset = vset;
+	pres_sub.swap = (M.vid.set[vset].powcnt1 & 0x8000u) != 0;
+	pres_sub.frame = frame;
+}
+
+static void pres_wait3d(void *ctx, int set)
+{
+	(void)ctx;
+	(void)set; /* el host ya rasterizó el 3D en la línea 0 */
+}
+
+static void pres_write_ppm(uint64_t pass, uint64_t frame, int live, int ds)
+{
+	static uint8_t row[2 * NDS_SCREEN_W * 3];
+	char path[512];
+	FILE *f;
+	const unsigned k = (unsigned)(frame & 3u);
+
+	snprintf(path, sizeof path, "%s-%06llu.ppm", pres_ppm, (unsigned long long)pass);
+	f = fopen(path, "wb");
+	if (!f)
+		return;
+	fprintf(f, "P6\n%u %u\n255\n", 2 * NDS_SCREEN_W, 2 * NDS_SCREEN_H);
+	for (int scr = 0; scr < 2; scr++)
+		for (int y = 0; y < NDS_SCREEN_H; y++) {
+			for (int side = 0; side < 2; side++) {
+				const int sw = side ? ds : live;
+				const int eng = scr == 0 ? (sw ? 0 : 1) : (sw ? 1 : 0);
+				const uint16_t *src = &pres_ring[k].img[eng][y * NDS_SCREEN_W];
+
+				for (int x = 0; x < NDS_SCREEN_W; x++) {
+					const uint16_t v = src[x]; /* RGBA5551 */
+					uint8_t *p = &row[(side * NDS_SCREEN_W + x) * 3];
+
+					p[0] = (uint8_t)(((v >> 11) & 31u) * 255u / 31u);
+					p[1] = (uint8_t)(((v >> 6) & 31u) * 255u / 31u);
+					p[2] = (uint8_t)(((v >> 1) & 31u) * 255u / 31u);
+				}
+			}
+			fwrite(row, 1, sizeof row, f);
+		}
+	fclose(f);
+}
+
+/* Al terminar cada pasada: guarda la imagen del cuadro que acaba de cerrar y presenta el entregado en la pasada anterior. */
+static void pres_pass(uint64_t pass)
+{
+	struct nds_video *v = &M.vid;
+
+	if (v->last >= 0) {
+		const unsigned k = (unsigned)((v->frames - 1u) & 3u);
+
+		nds_video_render_host(&M);
+		memcpy(pres_ring[k].img, v->img, sizeof pres_ring[k].img);
+		pres_ring[k].frame = (uint64_t)(v->frames - 1u);
+		pres_ring[k].swap = (v->set[v->last].powcnt1 & 0x8000u) != 0;
+		pres_ring[k].valid = 1;
+	}
+	if (pres_prev.valid) {
+		const unsigned k = (unsigned)(pres_prev.frame & 3u);
+		const int live = (v->set[pres_prev.vset].powcnt1 & 0x8000u) != 0;
+
+		if (!pres_ring[k].valid || pres_ring[k].frame != pres_prev.frame) {
+			pres_missing++;
+		} else {
+			const int ds = pres_ring[k].swap;
+
+			pres_shown++;
+			pres_cross_live += live != ds;
+			pres_cross_kept += pres_prev.swap != ds;
+			fprintf(pres_file, "%llu,%llu,%d,%d,%d,%d,%d\n", (unsigned long long)pass, (unsigned long long)pres_prev.frame,
+				pres_prev.vset, ds, live, pres_prev.swap, live != ds);
+			if (pres_ppm && live != ds && pres_ppm_n < 64) {
+				pres_ppm_n++;
+				pres_write_ppm(pass, pres_prev.frame, live, ds);
+			}
+		}
+	}
+	pres_prev = pres_sub;
+	pres_sub.valid = 0;
 }
 
 /* Motor de geometría (Fase 3.1): resumen por cuadro y, con --gx-dump, el último cuadro entregado en texto. */
@@ -927,6 +1039,15 @@ int main(int argc, char **argv)
 			sscanf(argv[++i], "%u:%u", &M.vid.r3d_win0, &M.vid.r3d_win1); /* estadísticas solo de esos cuadros */
 		else if (!strcmp(argv[i], "--r3d-stats"))
 			r3d_stats_on = 1;
+		else if (!strcmp(argv[i], "--presentacion") && i + 1 < argc) {
+			pres_file = fopen(argv[++i], "w");
+			if (!pres_file) {
+				perror("--presentacion");
+				return 2;
+			}
+			fprintf(pres_file, "pasada,cuadro,instantanea,swap_ds,swap_vivo,swap_entregado,cruce_vivo\n");
+		} else if (!strcmp(argv[i], "--presentacion-ppm") && i + 1 < argc)
+			pres_ppm = argv[++i];
 		else if (!strcmp(argv[i], "--holes"))
 			holes_on = 1; /* cuenta los agujeros de la capa 3D en cada cuadro */
 		else if (!strcmp(argv[i], "--holes-dump") && i + 1 < argc)
@@ -1392,6 +1513,13 @@ int main(int argc, char **argv)
 		if (!video_trace) { perror("traza de video"); return 1; }
 		fprintf(video_trace, "cuadro,set,has3d,polys,dispcntA,dispcapcnt,capturas,dispcntB,powcnt1,vramcnt,bgcntA,bldcntA,bldalphaA,mbrightA\n");
 	}
+	if (pres_file) {
+		if (!frames) { fprintf(stderr, "--presentacion requiere --frames\n"); return 1; }
+		M.vid.ops.submit = pres_submit;
+		M.vid.ops.submit_early = pres_submit;
+		if (!M.vid.ops.wait3d)
+			M.vid.ops.wait3d = pres_wait3d; /* con el 3D en los SPE la entrega pasa a la línea 262 */
+	}
 	t0 = now();
 	if (frames) {
 		const char *who;
@@ -1411,6 +1539,8 @@ int main(int argc, char **argv)
 				gx_dump(path);
 			}
 			run_frame();
+			if (pres_file)
+				pres_pass(f);
 			if (video_trace && M.vid.last >= 0) {
 				const struct nds_vset *s = &M.vid.set[M.vid.last];
 				const gpu2d_engine *ea = &s->frame.eng[0], *eb = &s->frame.eng[1];
@@ -1493,6 +1623,13 @@ int main(int argc, char **argv)
 		}
 		t1 = now();
 		arec_prof_close();
+		if (pres_file) {
+			fclose(pres_file);
+			pres_file = NULL;
+			printf("PRESENTACIÓN: %llu cuadros presentados; pantallas cruzadas leyendo POWCNT1 al presentar %llu, con el de la "
+			       "entrega %llu; sin imagen %llu\n", (unsigned long long)pres_shown, (unsigned long long)pres_cross_live,
+			       (unsigned long long)pres_cross_kept, (unsigned long long)pres_missing);
+		}
 		printf("fin: ARM9 pc 0x%08x cpsr 0x%08x%s, ARM7 pc 0x%08x cpsr 0x%08x%s; cuadros %llu\n", acore_pc(&M.a9), M.a9.cpsr,
 		       M.a9.halted ? " (en HALT)" : "", acore_pc(&M.a7), M.a7.cpsr, M.a7.halted ? " (en HALT)" : "",
 		       (unsigned long long)M.frames);

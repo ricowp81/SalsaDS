@@ -104,6 +104,20 @@ check_demo() { # orden log
 		fail=1
 	fi
 }
+# Orden de la presentación de la consola con el 3D encendido (--presentacion): la demostración intercambia las pantallas con
+# Select; leer POWCNT1.15 al presentar (forma anterior) tiene que cruzar alguna y el bit guardado al entregar, ninguna.
+check_presentacion() { # orden log
+	line=$(grep '^PRESENTACIÓN:' "$2")
+	vivo=$(printf '%s\n' "$line" | sed -n 's/.*al presentar \([0-9]*\),.*/\1/p')
+	ent=$(printf '%s\n' "$line" | sed -n 's/.*de la entrega \([0-9]*\);.*/\1/p')
+	if [ -n "$vivo" ] && [ -n "$ent" ] && [ "$vivo" -gt 0 ] && [ "$ent" -eq 0 ]; then
+		printf '%-4s OK     presentación: %s cuadros cruzados leyendo POWCNT1 al presentar, 0 con el de la entrega\n' "$1" "$vivo"
+	else
+		printf '%-4s FALLO  presentación (ver %s)\n' "$1" "$2"
+		tail -n 4 "$2"
+		fail=1
+	fi
+}
 # La ROM save (chip de guardado por AUXSPI) con un archivo de cada tamaño: el tipo que detecta tiene que ser el
 # del tamaño (1 = EEPROM de 0,5 KB, 2 = EEPROM de 16 bits, 3 = FRAM, 4 = Flash) y todo debe dar OK.
 SAVE_SIZES="512:1 8192:2 32768:3 65536:2 262144:4 524288:4 1048576:4"
@@ -238,6 +252,8 @@ if tools/build.sh -C src/host >build/logs/build-host-run.log 2>&1; then
 	done
 	tools/build.sh --sh "build/host-run/salsads-cpurun --frames 120 --peek 0x023A0000 --peek 0x023A0004 tests/roms/homebrew/demo.nds" >build/logs/rom-demo-le.log 2>&1
 	check_demo LE build/logs/rom-demo-le.log
+	tools/build.sh --sh "build/host-run/salsads-cpurun --frames 120 --press 30:4 --press 32:0 --press 60:4 --press 62:0 --press 64:4 --press 66:0 --presentacion build/logs/presentacion-demo-le.csv tests/roms/homebrew/demo.nds" >build/logs/presentacion-demo-le.log 2>&1
+	check_presentacion LE build/logs/presentacion-demo-le.log
 	# las rutas cortas de la FIFO de geometría (rama gx-rapido): dos máquinas, con y sin ellas, con los mismos estímulos
 	tools/build.sh --sh "build/host-run/salsads-gxparidad --semillas 600" >build/logs/gxparidad-le.log 2>&1
 	check_gxparidad LE build/logs/gxparidad-le.log
