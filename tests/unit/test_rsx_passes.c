@@ -5,6 +5,9 @@
 #include "gpu3d/rsx_capacity.h"
 #include "gpu3d/rsx_modes.h"
 #include "gpu3d/r3d_px.h"
+#include "gpu3d/r3d_core.h"
+#include "gpu3d/rsx_edge.h"
+#include "gpu3d/rsx_edge_test.h"
 
 typedef struct sample {
     uint32_t color, depth, fogdepth, fog;
@@ -35,7 +38,13 @@ static sample execute_frag(sample s, const rsx_pass *p, unsigned attributes, uns
         return s;
     }
     if (p->blend!=RP_NONE) {
-        if (attributes) {
+        if (attributes==2) {
+            /* Atributos de bordes: RGB24 cambia con cada escritor de Z;
+             * el byte OID/arista solo se reemplaza con fragmentos opacos.
+             * f->fog transporta aquí ese byte, separado de la niebla. */
+            if (!p->pass || tdepth) s.fogdepth=depth;
+            if (!p->pass) s.fog=fog;
+        } else if (attributes) {
             if (!p->pass || tdepth) s.fogdepth=depth>>9;
             s.fog=p->pass ? (s.fog&fog) : fog;
         } else {
@@ -71,7 +80,7 @@ static sample execute(sample s, const rsx_pass_input *in, unsigned alpha,
 /* ---- Sombras: secuencias de polígonos sobre un píxel --------------------------------------------- */
 /* Referencia escalar de la DS para un píxel (r3d_draw_row en r3d_px.h, sin
  * textura): máscara, sombra, opaco y translúcido con sus atributos. */
-typedef struct dspx { uint32_t col; unsigned dep, oid, tid, trans, fog, stencil, back; } dspx;
+typedef struct dspx { uint32_t col; unsigned dep, oid, tid, trans, fog, stencil, back, edge; } dspx;
 typedef struct dspoly { unsigned shadow, id, alpha, front, tdepth, fog, d; uint32_t rgb; unsigned equal; } dspoly;
 static void ds_apply(dspx *x, const dspoly *p, unsigned blend, unsigned alpha_ref, unsigned w)
 {
@@ -86,6 +95,9 @@ static void ds_apply(dspx *x, const dspoly *p, unsigned blend, unsigned alpha_re
     if (a==31 && !p->shadow) {
         x->col=p->rgb|(a<<24); x->dep=p->d; x->oid=p->id; x->trans=0; x->tid=0;
         x->fog=p->fog; x->back=!p->front;
+        /* En el banco de atributos de bordes se usa la misma variante
+         * binaria para alternar candidatos geométricos de cada opaco. */
+        x->edge=p->fog;
         return;
     }
     if (x->trans && x->tid==p->id) return;
@@ -106,7 +118,7 @@ static void ds_apply(dspx *x, const dspoly *p, unsigned blend, unsigned alpha_re
 static gx_frame shadow_frame;
 static int shadow_scene_mode(const dspoly *polys, unsigned n, unsigned w, unsigned blend, unsigned alpha_ref,
                             unsigned clear_alpha, unsigned clear_fog, unsigned attributes, int general,
-                            unsigned capacity, unsigned *detail, const uint8_t *coverage)
+                            unsigned capacity, unsigned *detail, const uint8_t *coverage, sample *result)
 {
     gx_frame *f=&shadow_frame;
     memset(&f->regs,0,sizeof f->regs); f->npolys=n; f->nverts=0; f->swap_params=w ? 3 : 1;
@@ -134,9 +146,10 @@ static int shadow_scene_mode(const dspoly *polys, unsigned n, unsigned w, unsign
     }
     const unsigned ca=clear_alpha!=0;
     const unsigned occupied=(l.ids_mask&16) ? 0 : 16;
-    sample s={rs.clear_px,rs.clear_depth,rs.clear_depth>>9,clear_fog,
+    sample s={rs.clear_px,rs.clear_depth,attributes==2 ? rs.clear_depth : rs.clear_depth>>9,
+              attributes==2 ? clear_oid : clear_fog,
               l.extended ? ((ca ? occupied : 0u)|l.oid[clear_oid]) : ((ca ? 128u : 0u)|l.oid[clear_oid])};
-    dspx x={rs.clear_px,rs.clear_depth,clear_oid,0,0,clear_fog,0,0};
+    dspx x={rs.clear_px,rs.clear_depth,clear_oid,0,0,clear_fog,0,0,0};
     unsigned prior_back=0;
     for (unsigned i=0;i<n;i++) {
         const dspoly *q=&polys[i];
@@ -147,7 +160,10 @@ static int shadow_scene_mode(const dspoly *polys, unsigned n, unsigned w, unsign
         }
         if (coverage && !coverage[i]) continue;
         rsx_pass plan[12]; unsigned np;
-        frag fr={q->alpha,alpha_ref,q->d,q->fog,w,q->shadow,q->rgb};
+        /* OID6 del atributo DS: no es l.oid[], l.tid[] ni un código que
+         * pueda reciclar la planificación temporal del stencil. */
+        unsigned metadata=attributes==2 ? q->id|(q->fog ? 64u : 0u) : q->fog;
+        frag fr={q->alpha,alpha_ref,q->d,metadata,w,q->shadow,q->rgb};
         if (q->shadow || !l.extended) {
             rsx_shadow_input in={q->id,l.tid[q->id],l.oid[q->id],l.extended ? l.oid_test[q->id] : 255,
                 l.trans_mask,l.opaque_mask,q->front,q->tdepth,q->equal,blend,l.single,
@@ -162,6 +178,7 @@ static int shadow_scene_mode(const dspoly *polys, unsigned n, unsigned w, unsign
         prior_back|=!q->front && (q->alpha==31 || q->tdepth);
         for (unsigned k=0;k<np;k++) s=execute_frag(s,&plan[k],attributes,q->tdepth,&fr);
         ds_apply(&x,q,blend,alpha_ref,w);
+        if (attributes==2 && (s.fog!=(x.oid|(x.edge ? 64u : 0u)) || s.fogdepth!=x.dep)) return 0;
         if (capacity) {
             unsigned live=x.trans;
             if (capacity==2 && live) {
@@ -181,16 +198,18 @@ static int shadow_scene_mode(const dspoly *polys, unsigned n, unsigned w, unsign
         }
     }
     *detail=capacity ? l.ids_mask : l.extended ? 2 : l.single ? 0 : 1;
-    /* La pasada de atributos no escribe color: profundidad >>9 y bandera. */
+    /* La pasada de niebla usa profundidad >>9 y bandera; la de bordes,
+     * profundidad completa y OID/candidatura del último opaco aceptado. */
     if (s.depth!=x.dep) return 0;
     if (!attributes && s.color!=x.col) return 0;
-    if (attributes && (s.fog!=x.fog || s.fogdepth!=(x.dep>>9))) return 0;
+    if (attributes==1 && (s.fog!=x.fog || s.fogdepth!=(x.dep>>9))) return 0;
+    if (result) *result=s;
     return 1;
 }
 static int shadow_scene(const dspoly *polys, unsigned n, unsigned w, unsigned blend, unsigned alpha_ref,
                         unsigned clear_alpha, unsigned clear_fog, unsigned attributes, int general, unsigned *detail)
 {
-    return shadow_scene_mode(polys,n,w,blend,alpha_ref,clear_alpha,clear_fog,attributes,general,0,detail,NULL);
+    return shadow_scene_mode(polys,n,w,blend,alpha_ref,clear_alpha,clear_fog,attributes,general,0,detail,NULL,NULL);
 }
 
 static unsigned shadows_sweep(void)
@@ -422,7 +441,7 @@ static uint32_t capacity_random(uint32_t *state)
  * último TID y a limpiarlo con un opaco. La máscara de sombra, OID, cara,
  * ocupado y puerta se contrastan después de cada polígono, además de color,
  * profundidad y atributos. Los IDs altos no son relleno fuera del píxel. */
-static unsigned capacity_sequences(void)
+static unsigned capacity_sequences(unsigned edges)
 {
     static const struct { unsigned shadows, alpha, oid, tid, mask; } families[]={
         {0,0,0,31,47}, {0,19,0,63,63}, {1,19,0,31,31}, {1,19,1,15,31}, {1,19,3,7,31}
@@ -433,7 +452,7 @@ static unsigned capacity_sequences(void)
     for (unsigned flags=0;flags<128;flags++) for (unsigned seed=0;seed<8;seed++) {
         const unsigned shadow=families[family].shadows, oid=families[family].oid, tid=families[family].tid;
         const unsigned w=flags&1, blend=(flags>>1)&1, alpha_ref=(flags&4) ? 13 : 0;
-        const unsigned fog=(flags>>3)&1, attributes=(flags>>4)&1, general=(flags>>5)&1;
+        const unsigned fog=(flags>>3)&1, attributes=edges ? 2 : (flags>>4)&1, general=(flags>>5)&1;
         dspoly p[320]; unsigned n=0;
         if (shadow) p[n++]=(dspoly){0,0,31,!(flags&64),0,fog,10000,R3D_PX(63,63,63,0),0};
         for (unsigned id=1;id<=oid;id++)
@@ -457,15 +476,16 @@ static unsigned capacity_sequences(void)
                             !shadow && ((r2>>15)&1)};
         }
         unsigned detail=0;
-        int result=shadow_scene_mode(p,n,w,blend,alpha_ref,families[family].alpha,fog,attributes,general,1,&detail,NULL);
+        int result=shadow_scene_mode(p,n,w,blend,alpha_ref,families[family].alpha,fog,attributes,general,1,&detail,NULL,NULL);
         if (result!=1 || detail!=families[family].mask) {
-            printf("capacidad: familia %u flags %u semilla %u: resultado %d máscara %u/%u\n",
-                   family,flags,seed,result,detail,families[family].mask);
+            printf("capacidad: familia %u flags %u semilla %u atributos %u: resultado %d máscara %u/%u\n",
+                   family,flags,seed,attributes,result,detail,families[family].mask);
             CHECK(0); return cases;
         }
         cases++;
     }
-    printf("RSX capacidad: %u secuencias largas con 7/15/31/63 TID, máscaras 31/47/63, Z/W y niebla, 0 diferencias\n",cases);
+    printf("RSX capacidad: %u secuencias largas con 7/15/31/63 TID, máscaras 31/47/63, Z/W y %s, 0 diferencias\n",
+           cases,edges ? "OID/arista y Z24" : "niebla");
     return cases;
 }
 
@@ -501,11 +521,12 @@ static unsigned capacity_reset_passes(void)
 {
     unsigned cases=0;
     for (unsigned mask=1;mask<64;mask++) for (unsigned code=1;code<64;code++) if (!(code&~mask))
-    for (unsigned stencil=0;stencil<256;stencil++) {
+    for (unsigned stencil=0;stencil<256;stencil++) for (unsigned attributes=0;attributes<3;attributes++) {
         const rsx_pass reset={3,code,mask,code,1,RP_NONE,0,0,RP_MASK,0,0,0};
         const frag unused={0};
-        sample before={R3D_PX(17,29,41,19),12345,24,1,stencil};
-        sample after=execute_frag(before,&reset,0,0,&unused);
+        sample before={R3D_PX(17,29,41,19),0x123456,attributes==2 ? 0x123456 : 0x123456>>9,
+                       attributes==2 ? 117 : 1,stencil};
+        sample after=execute_frag(before,&reset,attributes,0,&unused);
         unsigned expected=(stencil&mask)==code ? stencil&~mask : stencil;
         if (after.stencil!=expected || after.color!=before.color || after.depth!=before.depth ||
             after.fogdepth!=before.fogdepth || after.fog!=before.fog) {
@@ -514,17 +535,17 @@ static unsigned capacity_reset_passes(void)
         }
         cases++;
     }
-    printf("RSX capacidad: %u estados de limpieza INVERT conservan OID, máscara, cara, ocupado, Z y color\n",cases);
+    printf("RSX capacidad: %u estados de limpieza INVERT conservan OID, máscara, cara, ocupado, Z, color y atributos de niebla/bordes\n",cases);
     return cases;
 }
 
-static unsigned capacity_recycled_sequences(void)
+static unsigned capacity_recycled_sequences(unsigned edges)
 {
     unsigned cases=0;
     for (unsigned shadows=0;shadows<2;shadows++) for (unsigned alpha=0;alpha<2;alpha++)
     for (unsigned flags=0;flags<64;flags++) for (unsigned pixel=0;pixel<8;pixel++) {
         dspoly p[1024]; uint8_t coverage[1024]; unsigned n=0;
-        const unsigned w=flags&1, blend=(flags>>1)&1, attributes=(flags>>2)&1, fog=(flags>>3)&1;
+        const unsigned w=flags&1, blend=(flags>>1)&1, attributes=edges ? 2 : (flags>>2)&1, fog=(flags>>3)&1;
         const unsigned alpha_ref=(flags&16) ? 13 : 0, back=!!(flags&32);
         const unsigned count=shadows ? 31 : 64;
         /* Dos OID consultables dejan solo tres códigos TID con alfa0.
@@ -552,19 +573,226 @@ static unsigned capacity_recycled_sequences(void)
             if (shadows && i<2) coverage[i]=1;
         }
         unsigned detail=0;
-        int result=shadow_scene_mode(p,n,w,blend,alpha_ref,alpha ? 19 : 0,fog,attributes,0,2,&detail,coverage);
+        int result=shadow_scene_mode(p,n,w,blend,alpha_ref,alpha ? 19 : 0,fog,attributes,0,2,&detail,coverage,NULL);
         if (result!=1) {
-            printf("capacidad temporal: sombras %u alfa %u flags %u píxel %u: resultado %d\n",shadows,alpha,flags,pixel,result);
+            printf("capacidad temporal: sombras %u alfa %u flags %u píxel %u atributos %u: resultado %d\n",
+                   shadows,alpha,flags,pixel,attributes,result);
             CHECK(0); return cases;
         }
         cases++;
     }
-    printf("RSX capacidad temporal: %u secuencias con 31/64 TID, códigos reciclados y primeros usos omitidos, 0 diferencias\n",cases);
+    printf("RSX capacidad temporal: %u secuencias con 31/64 TID, códigos reciclados, primeros usos omitidos y %s, 0 diferencias\n",
+           cases,edges ? "OID/arista y Z24" : "niebla");
     return cases;
+}
+
+/* Metadatos de bordes: vecinos, igualdad exacta de 24 bits y alfa intacta.
+ * La referencia recibe los atributos DS; la pasada recibe solo RGB24/OID6
+ * y la candidatura geométrica. Las banderas TID/niebla no son el OID. */
+static void edge_pixels(void)
+{
+    static uint32_t col[256], want[256], dep[3][256], att[3][256];
+    static const uint32_t depths[]={0,1,255,256,511,512,65535,65536,0x600000,0xfffffe,0xffffff};
+    r3d_rstate rs={0};
+    uint32_t seed=1;
+    unsigned different=0, marked=0, unchanged=0;
+    for (unsigned k=0;k<8;k++) rs.edge[k]=r3d_555((k*3967u)&0x7fff,31);
+    for (unsigned test=0;test<512;test++) {
+        rs.clear_attr=test&63; rs.clear_depth=depths[test%11]; rs.d3=(test&1) ? D3_AA : 0;
+        for (unsigned y=0;y<3;y++) for (unsigned x=0;x<256;x++) {
+            seed=seed*1664525u+1013904223u;
+            att[y][x]=(seed>>9)&0x1ffffu;
+            dep[y][x]=depths[(seed>>26)%11];
+            if (y==1) col[x]=R3D_PX((seed>>18)&63,(seed>>12)&63,(seed>>6)&63,seed&31);
+        }
+        memcpy(want,col,sizeof want);
+        const uint32_t *du=(test&2) ? NULL : dep[0], *au=(test&2) ? NULL : att[0];
+        const uint32_t *dd=(test&4) ? NULL : dep[2], *ad=(test&4) ? NULL : att[2];
+        r3d_edge_row(&rs,want,dep[1],att[1],du,au,dd,ad);
+        uint32_t clear=rsx_edge_encode(rs.clear_depth,rs.clear_attr);
+        for (unsigned x=0;x<256;x++) {
+            uint32_t center=rsx_edge_encode(dep[1][x],att[1][x]);
+            uint32_t neighbors[4]={x ? rsx_edge_encode(dep[1][x-1],att[1][x-1]) : clear,
+                x<255 ? rsx_edge_encode(dep[1][x+1],att[1][x+1]) : clear,
+                du ? rsx_edge_encode(du[x],au[x]) : clear,dd ? rsx_edge_encode(dd[x],ad[x]) : clear};
+            uint32_t got=rsx_edge_apply(&rs,col[x],center,neighbors);
+            different+=got!=want[x]; marked+=got!=col[x]; unchanged+=got==col[x];
+            CHECK_EQ(rsx_edge_depth(center),dep[1][x]);
+            CHECK_EQ(rsx_edge_meta_id(center),AT_OID(att[1][x]));
+            CHECK_EQ(R3D_PX_A(got),R3D_PX_A(col[x]));
+        }
+    }
+    CHECK_EQ(different,0); CHECK(marked>1000 && unchanged>1000);
+    /* Los nueve bits bajos cuentan: compartir z>>9 no es igualdad Z/W. */
+    for (unsigned id=0;id<64;id++) for (unsigned alpha=0;alpha<32;alpha++)
+    for (unsigned candidate=0;candidate<2;candidate++) for (unsigned direction=0;direction<4;direction++)
+    for (int delta=-1;delta<=1;delta++) {
+        uint32_t center=rsx_edge_encode(0x600100,id|(candidate ? AT_EDGE : 0));
+        uint32_t neighbors[4]={center,center,center,center};
+        neighbors[direction]=rsx_edge_encode(0x600100+delta,(id+1)&63);
+        uint32_t color=R3D_PX(2,4,6,alpha), got=rsx_edge_apply(&rs,color,center,neighbors);
+        uint32_t expected=candidate && delta>0 ? (rs.edge[id>>3]&0xffffffu)|(alpha<<24) : color;
+        CHECK_EQ(got,expected);
+    }
+    /* Un translúcido no publica su TID como OID, ni crea AT_EDGE. Su alfa
+     * auxiliar 255 con MIN conserva exactamente los siete bits del opaco;
+     * la niebla usa su propia pasada de atributos y no comparte este byte. */
+    for (unsigned oid=0;oid<64;oid++) for (unsigned edge=0;edge<2;edge++)
+    for (unsigned tid=0;tid<64;tid++) for (unsigned fog=0;fog<2;fog++) {
+        uint32_t a=oid|(edge ? AT_EDGE : 0)|AT_TRANS|(tid<<6)|(fog ? AT_FOG : 0);
+        uint32_t value=rsx_edge_encode(0x123456,a), byte=value>>24;
+        CHECK_EQ(byte,oid|(edge ? 64u : 0u));
+        CHECK_EQ(byte<255 ? byte : 255,byte);
+    }
+    printf("RSX bordes: 131072 píxeles contra r3d_edge_row, vecinos exteriores y 49152 fronteras de profundidad, 0 diferencias\n");
+}
+
+static void edge_attribute_passes(void)
+{
+    static const int delta[]={-513,-1,0,1,513};
+    static const unsigned alphas[]={0,15,31};
+    unsigned cases=0, different=0;
+    for (unsigned bits=0;bits<2048;bits++) for (unsigned ai=0;ai<3;ai++) for (unsigned zi=0;zi<5;zi++) {
+        unsigned front=bits&1, equal=(bits>>1)&1, tdepth=(bits>>2)&1, back=(bits>>3)&1;
+        unsigned repeat=(bits>>4)&1, trans=(bits>>5)&1, edge=(bits>>6)&1, oldedge=(bits>>7)&1;
+        unsigned alpha_ref=(bits&256) ? 15 : 0, w=(bits>>9)&1, blend=(bits>>10)&1, alpha=alphas[ai], depth=10000+delta[zi];
+        rsx_pass_input c={0};
+        c.id=repeat ? 2 : 3; c.tid=repeat ? 4 : 8; c.oid=1; c.trans_mask=12;
+        c.front=front; c.trans=1; c.opaque=1; c.tdepth=tdepth; c.equal=equal;
+        c.extended=1; c.blend=blend; c.occupied=1; c.attributes=2; c.prior_back=1;
+        sample s={R3D_PX(7,43,59,19),10000,10000,53|(oldedge ? 64u : 0u),32|16|2|(back ? 64u : 0u)|(trans ? 4u : 0u)};
+        unsigned metadata=c.id|(edge ? 64u : 0u);
+        sample got=execute(s,&c,alpha,alpha_ref,depth,metadata,w,1), want=s;
+        r3d_rstate rs={0}; rs.wbuf=w;
+        r3d_poly p={0}; p.front=front; p.attr=equal ? PA_DEQUAL : 0;
+        unsigned accepted=alpha>alpha_ref && r3d_depth_ok(&p,&rs,depth,s.depth,back ? AT_BACK : 0) &&
+            !(alpha<31 && trans && repeat);
+        if (accepted) {
+            if (alpha==31 || tdepth) want.depth=want.fogdepth=depth;
+            if (alpha==31) want.fog=metadata;
+        }
+        different+=got.depth!=want.depth || got.fogdepth!=want.fogdepth || got.fog!=want.fog;
+        cases++;
+    }
+    CHECK_EQ(different,0);
+    printf("RSX bordes: %u planes de atributos, TDEPTH, rechazo TID, opacos y empate frente/espalda Z/W, 0 diferencias\n",cases);
+}
+
+/* Sin lectores de sombras, dos OID reales comparten el código stencil 0.
+ * El borde debe distinguirlos aun después de reciclar un TID de 64 IDs;
+ * en el segundo píxel se omite el primer fragmento del código reciclado. */
+static void edge_capacity_aliases(void)
+{
+    for (unsigned oid=0;oid<64;oid++) for (unsigned w=0;w<2;w++) {
+        dspoly polys[130]; unsigned other=(oid+17)&63;
+        polys[0]=(dspoly){0,oid,31,1,0,1,10000,R3D_PX(63,63,63,0),0};
+        polys[1]=(dspoly){0,other,31,1,0,1,11000,R3D_PX(63,63,63,0),0};
+        for (unsigned id=0;id<64;id++) for (unsigned repeat=0;repeat<2;repeat++)
+            polys[2+id*2+repeat]=(dspoly){0,id,15,1,0,0,9000,R3D_PX(0,63,0,0),0};
+        sample pixels[2];
+        for (unsigned side=0;side<2;side++) {
+            uint8_t coverage[130]; memset(coverage,1,sizeof coverage);
+            coverage[0]=!side; coverage[1]=side; coverage[128]=!side;
+            unsigned detail=0;
+            CHECK_EQ(shadow_scene_mode(polys,130,w,1,0,19,0,2,1,2,&detail,coverage,&pixels[side]),1);
+            CHECK_EQ(detail,63);
+        }
+        r3d_rstate rs; r3d_rstate_init(&rs,&shadow_frame,0);
+        rsx_shadow_layout layout; rsx_shadow_layout_init(&layout,&shadow_frame,&rs,1);
+        uint8_t reset[GX_MAX_POLYS];
+        CHECK(rsx_capacity_schedule(&layout,&shadow_frame,&rs,0,NULL,reset)==NULL);
+        CHECK_EQ(layout.oid[oid],layout.oid[other]); CHECK(reset[128]!=0);
+        CHECK_EQ(pixels[0].fog,oid|64u); CHECK_EQ(pixels[1].fog,other|64u);
+        uint32_t center=rsx_edge_encode(pixels[0].fogdepth,oid|AT_EDGE);
+        uint32_t neighbor=rsx_edge_encode(pixels[1].fogdepth,other|AT_EDGE);
+        uint32_t adjacent[4]={center,neighbor,center,center};
+        uint32_t color=R3D_PX(63,63,63,19);
+        rs.edge[oid>>3]=R3D_PX(63,0,0,31);
+        CHECK_EQ(rsx_edge_apply(&rs,color,center,adjacent),R3D_PX(63,0,0,19));
+    }
+    printf("RSX capacidad+bordes: 128 pares Z/W con OID reales distintos, código stencil compartido y TID reciclado, 0 diferencias\n");
+}
+
+static void edge_spans(void)
+{
+    static gx_frame f;
+    unsigned different=0, covered=0, interior=0;
+    uint8_t spans[RSX_EDGE_ROW_BYTES];
+    for (unsigned shape=0;shape<12;shape++) {
+        rsx_edge_test_scene(&f,0);
+        gx_poly *gp=&f.poly[0];
+        if (shape&1) { f.vtx[0].sx=-23; f.vtx[1].sx=240; f.vtx[2].sx=180; f.vtx[3].sx=4; }
+        if (shape&2) { f.vtx[0].sy=-4; f.vtx[1].sy=53; f.vtx[2].sy=191; f.vtx[3].sy=150; }
+        if (shape&4) { gp->nverts=3; f.vtx[1].sx=255; f.vtx[2].sy=192; }
+        if (shape&8) f.vtx[1].z++;
+        const gx_vertex *vv[GX_POLY_MAXV];
+        for (unsigned k=0;k<gp->nverts;k++) vv[k]=&f.vtx[gp->vidx[k]];
+        r3d_rstate rs; r3d_rstate_init(&rs,&f,0);
+        r3d_poly p; CHECK(r3d_poly_setup(&p,gp,vv,&rs));
+        rsx_edge_spans(spans,&p);
+        CHECK_EQ(spans[RSX_EDGE_FLAT_TEXEL*4+3],!(shape&8));
+        for (int y=0;y<R3D_H;y++) {
+            r3d_row row; int active=r3d_row_at(&p,y,&row);
+            for (int x=0;x<R3D_W;x++) {
+                int expected=active && (row.alledge || x<row.xle || x>=row.xrs);
+                different+=rsx_edge_span_test(spans+y*4,x)!=expected;
+                if (active && x>=row.xl && x<row.xr) { covered++; interior+=!expected; }
+            }
+        }
+    }
+    CHECK_EQ(different,0); CHECK(covered>1000 && interior>1000);
+    printf("RSX bordes: 12 geometrías, 589824 candidatos de arista, incluidos recorte y pendientes, 0 diferencias\n");
+}
+
+static void edge_scenes(void)
+{
+    static gx_frame f;
+    static r3d_ctx ctx;
+    static uint8_t vram[R3D_VRAM_ZERO_OFF+128] __attribute__((aligned(128)));
+    static uint32_t ref[R3D_W*R3D_H] __attribute__((aligned(128)));
+    static uint32_t out[R3D_W*R3D_H] __attribute__((aligned(128)));
+    static uint32_t without[R3D_W*R3D_H];
+    uint32_t ts[4]={0}, ps[6]={0};
+    unsigned different=0, changed=0;
+    rsx_edge_test_vram(vram);
+    for (unsigned test=0;test<RSX_EDGE_TESTS;test++) {
+        rsx_edge_test_scene(&f,test);
+        CHECK_EQ(rsx_edge_group(&f,0),rsx_edge_test_group(test));
+        CHECK_EQ(rsx_edge_group(&f,R3D_F_NOFOG),rsx_edge_test_group(test)&3u);
+        r3d_render_ref(&f,vram,ts,ps,0,ref);
+        r3d_render_ref(&f,vram,ts,ps,R3D_F_NOEDGE,without);
+        for (unsigned k=0;k<R3D_W*R3D_H;k++) changed+=ref[k]!=without[k];
+        if (!test) {
+            CHECK_EQ(ref[8*R3D_W+8],R3D_PX(63,0,0,31));
+            CHECK_EQ(ref[9*R3D_W+9],R3D_PX(63,63,63,31));
+            CHECK_EQ(ref[104*R3D_W+200],R3D_PX(63,63,63,31)); /* ID63 contra fondo ID63 */
+        }
+        if (test==128) {
+            /* El texel visible junto al hueco es interior del polígono:
+             * no hereda color de borde por ver fondo en el vecino. */
+            CHECK_EQ(ref[96*R3D_W+101],R3D_PX(63,63,63,31));
+            CHECK_EQ(ref[96*R3D_W+128],0);
+        }
+        for (unsigned split=0;split<2;split++) {
+            r3d_job j={0};
+            j.frame_ea=(uint64_t)(uintptr_t)&f; j.vram_ea=(uint64_t)(uintptr_t)vram;
+            j.out_ea=(uint64_t)(uintptr_t)out; j.nunits=split ? 2 : 1; j.band=split ? 8 : 16;
+            memset(out,0xa5,sizeof out);
+            for (unsigned u=0;u<j.nunits;u++) { r3d_stats st; j.unit=u; CHECK_EQ(r3d_core_render(&ctx,&j,&st),0); }
+            if (memcmp(ref,out,sizeof ref)) { different++; printf("RSX bordes escena %u reparto %u difiere\n",test,split); }
+        }
+    }
+    CHECK_EQ(different,0); CHECK(changed>10000);
+    printf("RSX bordes: %u escenas Z/W, translúcidos, TDEPTH, sombras, niebla, AA, fondo, huecos y pendientes; referencia/bandas idénticas, %u píxeles marcados\n",RSX_EDGE_TESTS,changed);
 }
 
 void test_rsx_passes(void)
 {
+    edge_pixels();
+    edge_attribute_passes();
+    edge_capacity_aliases();
+    edge_spans();
+    edge_scenes();
     unsigned compact=sweep(1,12), previous=sweep(0,12), wide=sweep(1,15);
     CHECK(compact>100000 && previous==compact && wide==compact);
     unsigned lotes=batches();
@@ -572,9 +800,11 @@ void test_rsx_passes(void)
     CHECK(shadows_sweep()>100000);
     capacity_limits();
     capacity_intervals();
-    CHECK_EQ(capacity_reset_passes(),170240);
-    CHECK_EQ(capacity_sequences(),5120);
-    CHECK_EQ(capacity_recycled_sequences(),2048);
+    CHECK_EQ(capacity_reset_passes(),510720);
+    CHECK_EQ(capacity_sequences(0),5120);
+    CHECK_EQ(capacity_sequences(1),5120);
+    CHECK_EQ(capacity_recycled_sequences(0),2048);
+    CHECK_EQ(capacity_recycled_sequences(1),2048);
     unsigned recovered=sweep_mode(1,47,47)+sweep_mode(1,63,63)+sweep_mode(1,28,31);
     CHECK(recovered>1000000);
     printf("RSX capacidad: %u estados de fragmentos mixtos opacos/translúcidos con bits recuperados, 0 diferencias\n",recovered);

@@ -38,6 +38,10 @@ def run(program, name, w, shift, rounded):
               "fragment.color": [1, 1, 1, 1],
               "fragment.position": [0, 0, 0.5, 1 / w]}
     textures = {0: lambda uv: [1.0] * 4, 1: lambda uv: [0.5] * 4, 2: lambda uv: [0.5] * 4}
+    if name.startswith("edge_attr"):
+        inputs["fragment.texcoord[4]"][0] = 1  # escala de WPOS a píxel nativo
+        # xle=256 y xrs=0: toda la fila es arista; no interviene en DEPTH.
+        textures[1] = lambda uv: [1 / 255, 0, 0, 0]
     result = program.run(inputs, textures, with_depth=True)
     if result is None:
         sys.exit(f"wdepth: {name} descarta el fragmento de prueba")

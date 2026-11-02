@@ -2,6 +2,7 @@
 #include <string.h>
 #include "gpu3d/rsx_fog_test.h"
 #include "gpu3d/rsx_capacity_test.h"
+#include "gpu3d/rsx_edge_test.h"
 #include <malloc.h>
 #include <spukit/spukit.h>
 #include "spu_gpu2d_bin.h"
@@ -483,6 +484,65 @@ static unsigned reduced_sampling_tests(r3d_job *j)
     salsads_log("rsx3d reducción: %u imágenes completas contrastadas, %u fallos",checked,fail);
     return fail;
 }
+/* El borde exige igualdad RGB6/A5, incluida la candidatura de arista del
+ * último opaco bajo translúcidos y junto a huecos de textura. Una diferencia
+ * solo retira su grupo W/translúcidos/niebla, sin apagar otros grupos. */
+static unsigned edge_tests(r3d_job *j, int reduced)
+{
+    unsigned badgroups=0, failures=0, total=0, expected=0, checked=0;
+    rsx_edge_test_vram(vram);
+    for (unsigned test=0;test<RSX_EDGE_TESTS;test++) {
+        rsx_edge_test_scene(&frame,test);
+        unsigned group=rsx_edge_test_group(test);
+        int fallback=rsx3d_edge_spe(group) || ((group&4) && forced_spe("niebla"));
+        unsigned has_shadow=0, has_back=0;
+        for (unsigned p=0;p<frame.npolys;p++) {
+            const gx_poly *poly=&frame.poly[p];
+            has_shadow|=PA_MODE(poly->attr)==3;
+            has_back|=!(poly->flags & GX_POLY_FRONT) &&
+                      ((PA_MODE(poly->attr)!=3 && PA_ALPHA(poly->attr)==31) || (poly->attr & PA_TDEPTH));
+        }
+        fallback|=!rsx3d_fog_final() || (has_shadow && forced_spe("sombra")) ||
+                  (has_shadow && (group&4) && rsx3d_fog_shadow_spe()) ||
+                  (has_back && (forced_spe("sombra-trasera") || ((group&1) && rsx3d_shadow_back_w_spe())));
+        r3d_render_ref(&frame,vram,j->texslot,j->palslot,0,reference);
+        rsxkit_frame_begin(0); rsxkit_frame_end(); rsxkit_frame_begin(0);
+        memset(output,0xa5,sizeof output);
+        rsx3d_stats st; memset(&st,0,sizeof st);
+        int ok=render_view_test(j,reduced,&st);
+        /* Estos A/B conservan límites anteriores. Aceptar solo su motivo
+         * exacto con el interruptor activo, nunca un rechazo imprevisto. */
+        if (ok==0 &&
+            ((forced_spe("sombra-ids") && !strcmp(rsx3d_reason(),"sombras: capacidad de IDs excedida")) ||
+             (rsx3d_fog_constant() && !strcmp(rsx3d_reason(),"niebla Z/W interpolada: cuantización sin validar")))) fallback=1;
+        unsigned different=0, first=R3D_W*R3D_H;
+        for (unsigned k=0;k<R3D_W*R3D_H;k++) {
+            if (output[k]!=(fallback ? 0xa5a5a5a5u : reference[k])) {
+                different++; if (first==R3D_W*R3D_H) first=k;
+            }
+        }
+        int samplebad=0;
+        if (!fallback && ok==1 && reduced && st.reduced) {
+            samplebad=rsx3d_reduce_check(0,output); checked++;
+        }
+        unsigned bad=ok!=!fallback || different || samplebad;
+        if (bad) { badgroups|=1u<<group; failures++; }
+        total+=different; expected+=fallback;
+        salsads_log("rsx3d bordes prueba %u grupo %u: %s, estado %d, distintos %u, muestra HD %d, dibujos %u, reducida %u, %s",
+                    test,group,fallback ? "respaldo esperado" : "RSX",ok,different,samplebad,st.draws,st.reduced,rsx3d_reason());
+        if (bad && first<R3D_W*R3D_H)
+            salsads_log("rsx3d bordes primer distinto %u,%u: RSX %08x referencia %08x",first%R3D_W,first/R3D_W,output[first],reference[first]);
+        if (!fallback && ((bad && failures<=8) || (!reduced && (test==8 || test==143 || test==159 || test==167)))) {
+            char name[96];
+            snprintf(name,sizeof name,"rsx3d-bordes-%u%s-rsx",test,reduced ? "-reducida" : ""); save_pixels(name,output);
+            snprintf(name,sizeof name,"rsx3d-bordes-%u%s-ref",test,reduced ? "-reducida" : ""); save_pixels(name,reference);
+            snprintf(name,sizeof name,"rsx3d-bordes-%u%s-diff",test,reduced ? "-reducida" : ""); save_difference(name);
+        }
+    }
+    salsads_log("rsx3d bordes: %u escenas, %u respaldos esperados, %u fallos, %u píxeles distintos, %u muestras HD, grupos fallidos %02x, solicitud reducida %u",
+                RSX_EDGE_TESTS,expected,failures,total,checked,badgroups,reduced);
+    return badgroups;
+}
 /* Máscara por fallo Z, exclusión OID, consumo incluso con fallo y TID repetido.
  * Geometría rectangular constante para aislar el stencil de la interpolación. */
 static unsigned shadow_tests(r3d_job *j)
@@ -855,7 +915,7 @@ static unsigned equality_tests(r3d_job *j)
     }
     return fail;
 }
-static unsigned fallback_tests(r3d_job *j)
+static unsigned fallback_tests(r3d_job *j, unsigned *degraded)
 {
     unsigned fail = 0;
     for (unsigned test = 0; test < 10; test++) {
@@ -895,13 +955,16 @@ static unsigned fallback_tests(r3d_job *j)
         rsx3d_stats st; int ok = rsx3d_render(j, &st);
         unsigned modified = 0;
         for (unsigned k = 0; k < R3D_W*R3D_H; k++) modified += output[k] != 0xa5a5a5a5u;
-        /* 5 (niebla con sombra) y 8 (igualdad con cara trasera en W) ya se
+        /* 1 (bordes con sombra), 5 (niebla con sombra) y 8 (igualdad con cara trasera en W) ya se
          * admiten: exigir la imagen exacta de la referencia. */
-        if ((test == 5 && !rsx3d_fog_shadow_spe()) || (test == 8 && !rsx3d_shadow_back_w_spe())) {
+        if ((test == 1 && !rsx3d_edge_spe(2) && rsx3d_fog_final() && !forced_spe("sombra")) ||
+            (test == 5 && !rsx3d_fog_shadow_spe()) || (test == 8 && !rsx3d_shadow_back_w_spe())) {
             r3d_render_ref(&frame, vram, j->texslot, j->palslot, 0, reference);
             unsigned differ = 0;
             for (unsigned k = 0; k < R3D_W*R3D_H; k++) differ += output[k] != reference[k];
-            fail += ok != 1 || differ != 0;
+            unsigned bad=ok!=1 || differ!=0;
+            if (test==1 && bad) { rsx3d_edge_degrade(2); (*degraded)++; }
+            else fail+=bad;
             salsads_log("rsx3d respaldo prueba %u: estado %d (admitida), distintos %u, %s", test, ok, differ, rsx3d_reason());
             continue;
         }
@@ -1321,15 +1384,18 @@ int rsx3d_selftest(void)
     }
     if (fog_shadow_tests(&j)) { rsx3d_fog_degrade(0); degraded++; }
     if (fog_toon_tests(&j)) { rsx3d_fog_degrade(1); degraded++; }
+    unsigned edge_bad=edge_tests(&j,0);
     if (rsx3d_scale()>1) {
         fail += fog_tests(&j,1);
         fail += fog_translucent_tests(&j,1);
         fail += overlap_tests(&j,0,0,1);
         fail += reduced_sampling_tests(&j);
+        edge_bad|=edge_tests(&j,1);
     }
+    for (unsigned group=0;group<8;group++) if (edge_bad&(1u<<group)) { rsx3d_edge_degrade(group); degraded++; }
     /* Los respaldos 4/9 comprueban los límites históricos de IDs. */
     capacity_saved=rsx3d_capacity_set_previous(1);
-    fail += fallback_tests(&j);
+    fail += fallback_tests(&j,&degraded);
     rsx3d_capacity_set_previous(capacity_saved);
     fail += w_tests(&j);
     blend_probe(&j);
@@ -1358,7 +1424,7 @@ int rsx3d_selftest(void)
     if (rsx3d_scale()>1) fail += rsx3d_hd_line_test(j.out_ea,output[0]);
     fail += hd_spe_tests(&j);
     fail += replay_tests(1);
-    salsads_log("rsx3d autoprueba dirigida: %s, %u fallos, %u grupos de niebla y %u de capacidad degradados al SPE (la comparación de juegos y la mezcla RGBA8 son diagnósticos)",
+    salsads_log("rsx3d autoprueba dirigida: %s, %u fallos, %u grupos de niebla/bordes y %u de capacidad degradados al SPE (la comparación de juegos y la mezcla RGBA8 son diagnósticos)",
                 fail ? "FALLO" : degraded || capacity_degraded ? "OK con degradación" : "OK", fail, degraded,capacity_degraded);
     return fail ? -1 : 0;
 }

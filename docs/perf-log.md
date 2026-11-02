@@ -1,5 +1,11 @@
 # Registro de rendimiento
 
+## 2026-11-02 — Capacidad y bordes juntos: comprobaciones host, sin medición PS3
+
+- La unión conserva el orden de los polígonos y el OID original de bordes. Cada código TID reciclado añade un dibujo de limpieza por pasada y escala; los bordes mantienen su raster auxiliar y su quad, además de los de niebla cuando corresponde.
+- Censo sintético en Docker: 792 escenas, 10288 comprobaciones, cero fallos; 50 columnas sin duplicados. Las 224 escenas de capacidad conservan 192 admisiones y 32 rechazos con bordes encendidos o apagados. Se cubren además 168 escenas de bordes, sus variantes sin bordes y ocho cruces de espaldas/reciclado. Son conteos funcionales del host, no tiempos ni cuadros ejecutados por el RSX físico.
+- Validación host/qemu: `test-host` completo, salida 0 y 610 veredictos correctos; unitarias LE/ASan/UBSan 24713819 y BE 24717585 comprobaciones, cero fallos. Pasan los bancos RSX, 32 hashes y 16 lockstep. Compilan ambas variantes; verificadores fp40 de bordes/W/niebla correctos (7272/1060/15856 casos). Resultados y SHA-256 en `build/rsx-lotes/fusion.md`. No se atribuye una mejora de rendimiento sin medir en la PS3.
+
 ## 2026-10-31 — IDs del RSX: reparto y reciclado [host Docker; conteos, sin tiempos PS3]
 
 El censo usa el plan portable del renderer, en el orden estable real. Los
@@ -44,6 +50,19 @@ SPE−costo: ese log mezcla ventanas y no contiene IDs por cuadro.
 - Los recorridos medidos usan W; hay toon en MKDS y toon/resaltado en
   SM64DS. La niebla se mide en Bob-omb; Z queda cubierto por las pruebas
   dirigidas y la autoprueba, no por estas muestras de juego.
+
+## 2026-10-31 — Bordes del RSX [host Docker: conteos, sin tiempos de PS3]
+
+| Tramo HeartGold | Cuadros 3D | Rechazos SPE por modos antes → después | Dibujos color | Atributos bordes | Quads bordes |
+|---|---:|---:|---:|---:|---:|
+| Intro [0,3000), sin entrada | 1043 | 1031 → 0 | 296310 | 259581 | 1031 |
+| Torre Quemada [2150,2355) | 205 | 205 → 0 | 57729 | 49397 | 205 |
+
+- Fuente: `--rsx-censo`, con la preparación completa y los planes `rsx_passes.h`, resumido por `tools/rsx-censo.py`. Los 1031 cuadros con efecto llevan DISP3DCNT=0x3039: W, AA, translúcidos; sin niebla, sombra, igualdad ni escritores de espalda. Son candidatos por modos; no se ejecuta el RSX en el host ni se estima costo o disponibilidad de texturas.
+- 390059 polígonos dibujables, 248273 lotes; medianas por cuadro con bordes: 391 polígonos, 282 dibujos de color y 261 de atributos. Total 556922 dibujos y quads de bordes por escala, aparte 1043 quads de exportación. Antes, los cuadros con bordes iban al SPE: las columnas describen el trabajo nuevo admisible, no una reducción de dibujos RSX ya ejecutados. HD sin captura rasteriza una escala; captura y autoprueba 2×, dos.
+- Costo estructural: una tabla XDR de 1024 B por polígono (dos ranuras reservadas de 2 MiB), raster auxiliar de Z24/OID/arista y un quad de cuatro vecinos. Si hay niebla, también se rasterizan sus atributos y se ejecuta su quad final. Medir preparación PPE y raster/posproceso RSX en consola; no se atribuyen milisegundos ni ganancia a estos conteos.
+- Log previo de PS3, desde #4672: 18 ventanas suman 2160 cuadros 3D (352 RSX, 1808 SPE), 1773 con bordes. Las 17 ventanas de rutas suman 25 SPE por costo; no están alineadas exactamente con el censo. No son resultados del paquete nuevo.
+- Pueblo Primavera queda pendiente: el intento con la partida disponible de solo lectura no llegó al mapa. CSV, capturas y método en `build/rsx-bordes/censo/informe.md`. Paridad gráfica, autoprueba 1×/2× y medición A/B real pendientes.
 
 ## 2026-10-29 — Autoprueba en consola de rsx-sombras (2×) y niebla con toon [PS3: autoprueba; sin tiempos nuevos]
 
