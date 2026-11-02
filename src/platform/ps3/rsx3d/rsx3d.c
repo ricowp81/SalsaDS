@@ -22,6 +22,12 @@
 #include "fog_attr_shadow_fpo.h"
 #include "fog_attr_shadow_w_fpo.h"
 #include "fog_final_fpo.h"
+#include "edge_attr_fpo.h"
+#include "edge_attr_w_fpo.h"
+#include "edge_attr_shadow_fpo.h"
+#include "edge_attr_shadow_w_fpo.h"
+#include "edge_final_fpo.h"
+#include "gpu3d/rsx_edge.h"
 #include "fog_probe_fpo.h"
 #include "range_fpo.h"
 #include "range_w_fpo.h"
@@ -36,6 +42,7 @@
 #include "gpu3d/rsx_passes.h"
 #include "gpu3d/rsx_batch.h"
 #include "gpu3d/rsx_cost.h"
+#include "gpu3d/rsx_capacity.h"
 #include "spu/rsxprep/job.h"
 #include "spu/raster3d/job.h"
 #include <spukit/spukit.h>
@@ -56,8 +63,10 @@ _Static_assert((int)RP_OFF == (int)RSXKIT_BLEND_OFF && (int)RP_NONE == (int)RSXK
 #define TOON_OFF(slot) (20u * 1024u * 1024u + (slot) * 128u)
 /* Tabla de niebla aparte de la de toon: un cuadro puede llevar las dos. */
 #define FOG_OFF(slot) (20u * 1024u * 1024u + 256u + (slot) * 128u)
+#define EDGE_OFF(slot) (20u * 1024u * 1024u + 512u + (slot) * 128u)
+#define EDGE_ROWS_BYTES (GX_MAX_POLYS * 1024u)
 #define CACHE_N 256u
-_Static_assert(GX_MAX_POLYS * (GX_POLY_MAXV - 2u) * 3u * sizeof(rsxkit_vertex) <= 2u * 1024u * 1024u, "vértices por ranura");
+_Static_assert((GX_MAX_POLYS * (GX_POLY_MAXV - 2u) * 3u + 6u) * sizeof(rsxkit_vertex) <= 2u * 1024u * 1024u, "vértices por ranura");
 #define PAGE_SIZE 1024u
 #define PAGE_WORDS ((R3D_VRAM_ZERO_OFF / PAGE_SIZE + 31u) / 32u)
 _Static_assert(RSX_DECODE_PAGES == PAGE_WORDS, "máscara de páginas compartida");
@@ -178,7 +187,7 @@ static uint64_t hd_duration(unsigned first, unsigned last)
 /* Marcas 28..35: fin color / fin atributos, por escala y ranura. Se retiran
  * con la etiqueta de su escala, nunca esperando una etiqueta HD desde 1x. */
 static struct pass_sample {
-    unsigned fog, extended, polys, draws[2];
+    unsigned effects, extended, polys, draws[2];
     uint64_t issue_us[3], prepare_us;
 } pass_samples[2][2];
 static void pass_collect(unsigned slot, unsigned hd)
@@ -186,15 +195,15 @@ static void pass_collect(unsigned slot, unsigned hd)
     static struct pass_total {
         unsigned frames, polys;
         uint64_t draws[2], ns[3], issue_us[3], prepare_us;
-    } totals[2][2][2];
+    } totals[2][4][2];
     static unsigned windows[2];
     const struct pass_sample *p=&pass_samples[hd][slot];
     unsigned a=28+hd*4+slot*2;
     unsigned begin=hd ? 48+slot*2 : 56+slot*3;
     unsigned end=hd ? 49+slot*2 : 57+slot*3;
-    uint64_t ns[3]={hd_duration(begin,p->fog ? a : end),p->fog ? hd_duration(a,a+1) : 0,
-                   p->fog ? hd_duration(a+1,end) : 0};
-    unsigned f=p->fog, e=p->extended;
+    uint64_t ns[3]={hd_duration(begin,p->effects ? a : end),p->effects ? hd_duration(a,a+1) : 0,
+                   p->effects ? hd_duration(a+1,end) : 0};
+    unsigned f=p->effects, e=p->extended;
     totals[hd][f][e].frames++; totals[hd][f][e].polys+=p->polys;
     totals[hd][f][e].prepare_us+=p->prepare_us;
     for (unsigned i=0;i<3;i++) {
@@ -203,13 +212,13 @@ static void pass_collect(unsigned slot, unsigned hd)
         if (i<2) totals[hd][f][e].draws[i]+=p->draws[i];
     }
     if (++windows[hd]==120) {
-        for (unsigned kind=0;kind<4;kind++) {
+        for (unsigned kind=0;kind<8;kind++) {
             struct pass_total *s=&totals[hd][kind/2][kind%2];
             double n=s->frames;
             if (!s->frames) continue;
-            salsads_log("DATO rsx3d pasadas: %ux niebla %u ampliado %u; cuadros %u/120; polígonos %.1f; dibujos color %.1f atributos %.1f; GPU color %.3f auxiliar %.3f posproceso %.3f ms; PPE preparación %.3f envío color %.3f auxiliar %.3f posproceso %.3f ms",
-                hd ? hd_scale : 1,kind/2,kind%2,s->frames,s->polys/n,
-                s->draws[0]/n,s->draws[1]/n,s->ns[0]/(n*1e6),s->ns[1]/(n*1e6),
+            salsads_log("DATO rsx3d pasadas: %ux niebla %u bordes %u ampliado %u; cuadros %u/120; polígonos %.1f; dibujos color %.1f atributos %.1f; quads finales %u; GPU color %.3f auxiliar %.3f posproceso %.3f ms; PPE preparación %.3f envío color %.3f auxiliar %.3f posproceso %.3f ms",
+                hd ? hd_scale : 1,(kind/2)&1u,(kind/2)>>1,kind%2,s->frames,s->polys/n,
+                s->draws[0]/n,s->draws[1]/n,((kind/2)&1u)+((kind/2)>>1),s->ns[0]/(n*1e6),s->ns[1]/(n*1e6),
                 s->ns[2]/(n*1e6),s->prepare_us/(n*1e3),s->issue_us[0]/(n*1e3),
                 s->issue_us[1]/(n*1e3),s->issue_us[2]/(n*1e3));
         }
@@ -393,6 +402,13 @@ static int toon_spe, shadow_spe, fog_spe;
 static rsxkit_program *fog, *fog_w;
 static rsxkit_program *fog_attr, *fog_attr_w, *fog_final;
 static rsxkit_program *fog_attr_shadow, *fog_attr_shadow_w;
+static rsxkit_program *edge_attr, *edge_attr_w, *edge_attr_shadow, *edge_attr_shadow_w, *edge_final;
+static rsxkit_target *edge_color[2], *edge_attributes[2];
+static uint8_t *edge_rows;
+static uint32_t edge_offset;
+static unsigned edge_slot, edge_scale;
+static int edge_spe, edge_active, edge_attribute_pass;
+static unsigned edge_degraded;
 /* Niebla junto con toon o sombras, cara trasera con W y redondeo de la W
  * por fragmento: interruptores de respaldo (3d-rsx-niebla-combinada-spe,
  * 3d-rsx-sombra-trasera-w-spe, 3d-rsx-w-truncada). La niebla con toon o
@@ -410,6 +426,14 @@ static rsxkit_program *shadow, *shadow_w, *mask, *mask_w;
 static uint8_t oid[64], tid[64], oid_test[64];
 static int shadows, single_shadow, shadow_general, shadow_unbatched;
 static uint8_t trans_mask, opaque_mask;
+static unsigned ids_mask;
+static int capacity_previous, capacity_degraded;
+int rsx3d_capacity_previous(void) { return capacity_previous; }
+int rsx3d_capacity_set_previous(int previous)
+{
+    int old=capacity_previous; capacity_previous=previous; return old;
+}
+void rsx3d_capacity_degrade(void) { capacity_degraded=1; }
 static rsxkit_program *range_z, *range_w;
 static int equal_spe, textures_no_wait, fog_constant, textures_rescue, fog_translucent;
 static unsigned rescue_left, rescue_textures;
@@ -534,12 +558,34 @@ static void decode_plan(void)
 }
 static struct cache_entry *decoding;
 static struct command {
-    rsxkit_draw d; uint32_t first, count, id, tdepth, trans, mode, front, equal;
+    rsxkit_draw d; uint32_t first, count, id, tdepth, trans, mode, front, equal, edge_index;
+    uint64_t reset;        /* códigos muertos que se limpian antes del lote */
     rsx_batch_key key;      /* lo que fija el dibujo por polígono: decide los lotes */
 } command[GX_MAX_POLYS];
 static uint16_t order[GX_MAX_POLYS];
 static uint32_t keys[GX_MAX_POLYS];
 static uint16_t sorted[GX_MAX_POLYS];
+static uint8_t capacity_reset[GX_MAX_POLYS];
+static int frame_order(const gx_frame *f)
+{
+    for (uint32_t i=0;i<f->npolys;i++) {
+        const gx_poly *p=&f->poly[i];
+        if (p->nverts<3 || p->nverts>GX_POLY_MAXV || p->wshift>28) return 0;
+        for (unsigned k=0;k<p->nverts;k++) if (p->vidx[k]>=f->nverts) return 0;
+        uint32_t key=r3d_sort_key(p,f->swap_params&1u), k=i;
+        while (old_prepare && k && keys[k-1]>key) { keys[k]=keys[k-1]; order[k]=order[k-1]; k--; }
+        keys[k]=key; order[k]=i;
+    }
+    /* Radix estable: conserva los empates y el orden DS. */
+    if (!old_prepare) for (unsigned shift=0;shift<24;shift+=8) {
+        uint32_t count[256]={0}, sum=0;
+        for (uint32_t i=0;i<f->npolys;i++) count[(keys[order[i]]>>shift)&255u]++;
+        for (unsigned i=0;i<256;i++) { uint32_t n=count[i]; count[i]=sum; sum+=n; }
+        for (uint32_t i=0;i<f->npolys;i++) sorted[count[(keys[order[i]]>>shift)&255u]++]=order[i];
+        memcpy(order,sorted,f->npolys*sizeof *order);
+    }
+    return 1;
+}
 static rsxkit_draw last_draw;
 static int last_valid;
 
@@ -553,6 +599,13 @@ void rsx3d_fog_degrade(int toon)
     if (toon) fog_toon_degraded = 1; else fog_shadow_degraded = 1;
     salsads_log("rsx3d autoprueba: niebla con %s falla en el RSX; esos cuadros van al SPE (el resto del 3D sigue en el RSX)",
                 toon ? "toon o resaltado" : "sombras");
+}
+int rsx3d_edge_spe(unsigned group) { return edge_spe || !!(edge_degraded & (1u << (group & 7u))); }
+void rsx3d_edge_degrade(unsigned group)
+{
+    edge_degraded |= 1u << (group & 7u);
+    salsads_log("rsx3d autoprueba: bordes grupo %u (%s, %s, %s) sin paridad; solo ese grupo va al SPE",
+                group, group & 1 ? "W" : "Z", group & 2 ? "translúcidos" : "opacos", group & 4 ? "niebla" : "sin niebla");
 }
 int rsx3d_w_truncated(void) { return w_truncated; }
 int rsx3d_fog_constant(void) { return fog_constant; }
@@ -701,6 +754,8 @@ int rsx3d_init(void)
     coarse_cache = stat("/dev_hdd0/salsads/3d-rsx-cache-gruesa", &flag) == 0;
     profile = stat("/dev_hdd0/salsads/3d-rsx-prueba", &flag) == 0 ||
               stat("/dev_hdd0/salsads/3d-rsx-perfil", &flag) == 0;
+    edge_spe = stat("/dev_hdd0/salsads/3d-rsx-bordes-spe", &flag) == 0;
+    edge_degraded = 0;
     fog_spe = stat("/dev_hdd0/salsads/3d-rsx-niebla-spe", &flag) == 0;
     fog_constant = stat("/dev_hdd0/salsads/3d-rsx-niebla-constante", &flag) == 0; /* A/B: solo densidad constante por polígono */
     fog_previous = stat("/dev_hdd0/salsads/3d-rsx-niebla-anterior", &flag) == 0;
@@ -709,6 +764,8 @@ int rsx3d_init(void)
     cost_disabled = stat("/dev_hdd0/salsads/3d-rsx-sin-costo", &flag) == 0;
     cost_stale_ok = stat("/dev_hdd0/salsads/3d-rsx-referencia-vieja", &flag) == 0; /* A/B: bajar al SPE con una referencia de otra escena */
     tid_limit8 = stat("/dev_hdd0/salsads/3d-rsx-ids-translucidos-8", &flag) == 0; /* A/B: tope anterior de 8 IDs translúcidos */
+    capacity_previous = stat("/dev_hdd0/salsads/3d-rsx-capacidad-anterior", &flag) == 0;
+    capacity_degraded = 0;
     rsx3d_cost_reset();
     /* Solo con niebla-anterior: aproximación opcional por polígono en
      * translúcidos, sin profundidad final ni AND de bandera. Sin paridad. */
@@ -754,7 +811,16 @@ int rsx3d_init(void)
     fog_attr = rsxkit_program_create(fog_attr_fpo); fog_attr_w = rsxkit_program_create(fog_attr_w_fpo);
     fog_final = rsxkit_program_create(fog_final_fpo);
     fog_attr_shadow = rsxkit_program_create(fog_attr_shadow_fpo); fog_attr_shadow_w = rsxkit_program_create(fog_attr_shadow_w_fpo);
-    if (!fog_previous) {
+    edge_rows = memalign(1024u * 1024u, 2u * EDGE_ROWS_BYTES);
+    if (!edge_rows || rsxkit_map_main(edge_rows, 2u * EDGE_ROWS_BYTES, &edge_offset)) return -1;
+    edge_attr = rsxkit_program_create(edge_attr_fpo); edge_attr_w = rsxkit_program_create(edge_attr_w_fpo);
+    edge_attr_shadow = rsxkit_program_create(edge_attr_shadow_fpo); edge_attr_shadow_w = rsxkit_program_create(edge_attr_shadow_w_fpo);
+    edge_final = rsxkit_program_create(edge_final_fpo);
+    if (!edge_attr || !edge_attr_w || !edge_attr_shadow || !edge_attr_shadow_w || !edge_final) return -1;
+    edge_color[0] = rsxkit_target_create_rgba(R3D_W, R3D_H);
+    edge_attributes[0] = rsxkit_target_create_rgba(R3D_W, R3D_H);
+    if (!edge_color[0] || !edge_attributes[0]) return -1;
+    {
         fog_color[0] = rsxkit_target_create_rgba(R3D_W, R3D_H);
         fog_attributes[0] = rsxkit_target_create_rgba(R3D_W, R3D_H);
     }
@@ -763,7 +829,7 @@ int rsx3d_init(void)
     mask = rsxkit_program_create(mask_fpo); mask_w = rsxkit_program_create(mask_w_fpo);
     toon = rsxkit_program_create(toon_fpo); toon_w = rsxkit_program_create(toon_w_fpo);
     if (!range_z || !range_w || !target || !depth || !output[0] || !output[1] || !shade || !shade_w || !pack || !toon || !toon_w || !shadow || !shadow_w || !mask || !mask_w || !fog || !fog_w || !fog_attr || !fog_attr_w || !fog_final || !fog_attr_shadow || !fog_attr_shadow_w) return -1;
-    if (!fog_previous && (!fog_color[0] || !fog_attributes[0])) return -1;
+    if (!fog_color[0] || !fog_attributes[0]) return -1;
     if (stat("/dev_hdd0/salsads/3d-rsx-2x", &flag) == 0) hd_scale=2;
     if (stat("/dev_hdd0/salsads/3d-rsx-3x", &flag) == 0) hd_scale=3;
     if (stat("/dev_hdd0/salsads/3d-rsx-4x", &flag) == 0) hd_scale=4;
@@ -786,7 +852,10 @@ int rsx3d_init(void)
         if (rsxkit_depth_reserve(w,h)) return -1;
         hd_depth=rsxkit_depth_create(w,h);
         hd_program=rsxkit_program_create(compose_hd_fpo);
-        if (!fog_previous) {
+        edge_color[1] = rsxkit_target_create_rgba(w,h);
+        edge_attributes[1] = rsxkit_target_create_rgba(w,h);
+        if (!edge_color[1] || !edge_attributes[1]) return -1;
+        {
             fog_color[1] = rsxkit_target_create_rgba(w,h);
             fog_attributes[1] = rsxkit_target_create_rgba(w,h);
             if (!fog_color[1] || !fog_attributes[1]) return -1;
@@ -805,7 +874,10 @@ int rsx3d_init(void)
     salsads_log("rsx3d niebla: %s", fog_previous ? "por fragmento anterior" : "pasada final con profundidad y bandera por píxel");
     salsads_log("rsx3d selector: referencia SPE de otra escena %s; IDs translúcidos en 3D ampliado %s",
                 cost_stale_ok ? "vale para bajar (ronda 6)" : "recalibra antes de bajar (más vieja que 120 cuadros)",
-                tid_limit8 ? "hasta 8 (tope anterior)" : "hasta 15 sin sombras (4 bits de TID)");
+                tid_limit8 ? "hasta 8 (tope anterior)" : "remapeo por cuadro");
+    salsads_log("rsx3d capacidad: %s; bit de máscara libre sin sombras y bit de ocupado libre con borrado alfa",
+                capacity_previous ? "topes rc1" : "ampliada; respaldo por capacidad y autoprueba");
+    salsads_log("rsx3d bordes: %s; atributos OID6/arista y Z24; niebla independiente; tabla geométrica nativa", edge_spe ? "SPE (3d-rsx-bordes-spe)" : "RSX, degradación por grupo en autoprueba");
     salsads_log("rsx3d pasadas: %s", passes_previous ? "ronda 3" : "opacos directos y atributos compactos");
     salsads_log("rsx3d sombras y niebla: niebla con sombra %s; niebla con toon o resaltado %s; cara trasera con W %s; W por fragmento %s",
                 fog_combined_spe || fog_previous ? "al SPE" : "en el RSX (tabla aparte, atributos de sombra)",
@@ -833,6 +905,10 @@ void rsx3d_shutdown(void)
     rsxkit_program_destroy(fog_attr); rsxkit_program_destroy(fog_attr_w); rsxkit_program_destroy(fog_final);
     rsxkit_program_destroy(fog_attr_shadow); rsxkit_program_destroy(fog_attr_shadow_w);
     rsxkit_program_destroy(fog_probe);
+    rsxkit_program_destroy(edge_attr); rsxkit_program_destroy(edge_attr_w);
+    rsxkit_program_destroy(edge_attr_shadow); rsxkit_program_destroy(edge_attr_shadow_w);
+    rsxkit_program_destroy(edge_final);
+    for (unsigned i=0;i<2;i++) { rsxkit_target_destroy(edge_color[i]); rsxkit_target_destroy(edge_attributes[i]); }
     for (unsigned i=0;i<2;i++) { rsxkit_target_destroy(fog_color[i]); rsxkit_target_destroy(fog_attributes[i]); }
     rsxkit_program_destroy(range_z); rsxkit_program_destroy(range_w);
     rsxkit_program_destroy(shadow); rsxkit_program_destroy(shadow_w);
@@ -853,11 +929,13 @@ static void draw(struct command *c, uint8_t test, uint8_t ref, uint8_t compare, 
     d->stencil = test; d->stencil_ref = ref; d->stencil_compare_mask = compare;
     d->stencil_write_mask = write; d->stencil_op = op;
     d->blend = blend; d->depth = z; d->k[0][0][3] = pass;
-    /* Los destinos son A8R8G8B8 y el alfa es dato (IDs, RGB6/A5): sin mezcla
-     * queda el del fragmento, no 1 como deja rsxkit por omisión. */
+    /* Los destinos son A8R8G8B8: el color guarda A5 y el auxiliar de bordes
+     * OID6/arista originales. Los códigos remapeados solo viven en stencil;
+     * sin mezcla se conserva el alfa del fragmento, no 1. */
     d->dst_alpha = RSXKIT_DSTA_FRAG;
     rsxkit_program *program = d->program;
-    float saved_fc[2][4], saved_kz = d->k[0][0][2];
+    float saved_fc[2][4], saved_fp[2][4], saved_kz = d->k[0][0][2];
+    rsxkit_texture saved_tex = d->tex[1]; unsigned saved_ntex = d->ntex;
     const int toonlike = program == toon || program == toon_w;
     const int shadowlike = program == shadow || program == shadow_w;
     int attributes = fog_attribute_pass && (program == shade || program == shade_w || toonlike || shadowlike);
@@ -866,6 +944,17 @@ static void draw(struct command *c, uint8_t test, uint8_t ref, uint8_t compare, 
          * es el de modulación; k.z lleva el modo 2 solo para el color. */
         d->program = shadowlike ? (program == shadow_w ? fog_attr_shadow_w : fog_attr_shadow) :
                      (program == shade_w || program == toon_w) ? fog_attr_w : fog_attr;
+        if (edge_attribute_pass) {
+            d->program = shadowlike ? (program == shadow_w ? edge_attr_shadow_w : edge_attr_shadow) :
+                         (program == shade_w || program == toon_w) ? edge_attr_w : edge_attr;
+            memset(&d->tex[1], 0, sizeof d->tex[1]);
+            d->tex[1].offset = edge_offset + edge_slot * EDGE_ROWS_BYTES;
+            d->tex[1].pitch = 1024; d->tex[1].width = 256; d->tex[1].height = GX_MAX_POLYS;
+            d->tex[1].format = RSXKIT_RGBA8888; d->tex[1].location = RSXKIT_MEM_MAIN;
+            d->tex[1].filter = RSXKIT_FILTER_NEAREST;
+            d->tex[1].wrap_s = d->tex[1].wrap_t = RSXKIT_WRAP_CLAMP;
+            d->ntex = 2;
+        }
         if (toonlike) d->k[0][0][2] = 0;
         if (blend != RSXKIT_BLEND_NONE && pass != 0)
             d->blend = c->tdepth ? RSXKIT_BLEND_REPLACE_MIN_ALPHA : RSXKIT_BLEND_KEEP_MIN_ALPHA;
@@ -873,7 +962,12 @@ static void draw(struct command *c, uint8_t test, uint8_t ref, uint8_t compare, 
          * (un dibujo por polígono) o por vértice, desde la palabra auxiliar
          * del vértice escalada por 255 (lotes como los del color). */
         memcpy(saved_fc, d->k[2], sizeof saved_fc);
-        if (attr_const) {
+        memcpy(saved_fp, d->k[3], sizeof saved_fp);
+        if (edge_attribute_pass) {
+            memset(d->k[3], 0, sizeof d->k[3]); d->k[3][0][0] = (float)edge_scale;
+            memset(d->k[2], 0, sizeof d->k[2]);
+            d->k[2][1][0] = d->k[2][1][1] = d->k[2][1][2] = 255.0f;
+        } else if (attr_const || edge_active) {
             d->k[2][0][0] = (float)(c->key.flatz >> 8); d->k[2][0][1] = (float)(c->key.flatz & 255u);
             d->k[2][0][2] = (float)c->key.flat; d->k[2][0][3] = (float)c->key.fog;
             memset(d->k[2][1], 0, sizeof d->k[2][1]);
@@ -885,7 +979,10 @@ static void draw(struct command *c, uint8_t test, uint8_t ref, uint8_t compare, 
     if (!last_valid || memcmp(&last_draw, d, sizeof *d)) st->state_changes++;
     last_draw = *d; last_valid = 1;
     rsxkit_draw_triangles(d, c->first, c->count); st->draws++;
-    if (attributes) { memcpy(d->k[2], saved_fc, sizeof saved_fc); d->k[0][0][2] = saved_kz; }
+    if (attributes) {
+        memcpy(d->k[2], saved_fc, sizeof saved_fc); memcpy(d->k[3], saved_fp, sizeof saved_fp);
+        d->k[0][0][2] = saved_kz; d->tex[1] = saved_tex; d->ntex = saved_ntex;
+    }
     d->program = program;
 }
 /* Ejecuta un plan portable (rsx_passes.h): el color va con el programa del
@@ -910,7 +1007,7 @@ static void draw_color_compact(struct command *c, const r3d_rstate *rs,
     rsx_pass_input in = {c->id, tid[c->id], oid[c->id], trans_mask,
         c->front, c->trans, c->d.k[0][0][1] == 31, c->tdepth, c->equal,
         shadow_extended, !!(rs->d3 & D3_BLEND), R3D_PX_A(rs->clear_px) != 0,
-        fog_attribute_pass, prior_back};
+        fog_attribute_pass, prior_back, ids_mask};
     rsx_pass passes[9]; unsigned n=rsx_color_passes_mode(&in,passes,!gate_previous);
     draw_plan(c,rs,passes,n,st);
 }
@@ -922,7 +1019,7 @@ static void draw_shadow_plan(struct command *c, const r3d_rstate *rs, rsx3d_stat
     rsx_shadow_input in = {c->id, tid[c->id], oid[c->id], shadow_extended ? oid_test[c->id] : 255,
         trans_mask, opaque_mask, c->front, c->tdepth, c->equal, !!(rs->d3 & D3_BLEND),
         single_shadow, single_shadow && !shadow_unbatched && !c->d.k[0][0][0] && c->d.k[0][0][1] > c->d.k[1][0][0],
-        R3D_PX_A(rs->clear_px) != 0, shadow_extended};
+        R3D_PX_A(rs->clear_px) != 0, shadow_extended, ids_mask};
     rsx_pass passes[12]; unsigned n;
     if (c->mode != 3) n=rsx_shadow_color_passes(&in,c->trans,passes);
     else n=c->id ? rsx_shadow_passes(&in,passes) : rsx_mask_passes(&in,passes);
@@ -935,8 +1032,8 @@ static void draw_shadow_plan(struct command *c, const r3d_rstate *rs, rsx3d_stat
 static int color_batch_equal(const struct command *a, const struct command *b, unsigned attribute_pass)
 {
     unsigned flags = (shadow_extended ? RSX_BATCH_EXTENDED : 0) |
-                     (attribute_pass && attr_const ? RSX_BATCH_ATTR_CONST : 0);
-    return (a->d.program==shade || a->d.program==shade_w) && a->d.program==b->d.program &&
+                     (attribute_pass && (attr_const || (edge_active && !edge_attribute_pass)) ? RSX_BATCH_ATTR_CONST : 0);
+    return !b->reset && (a->d.program==shade || a->d.program==shade_w) && a->d.program==b->d.program &&
         rsx_batch_equal(&a->key,&b->key,flags);
 }
 /* Puerta por polígono: conserva Z y su cara mientras se consultan los IDs.
@@ -1000,13 +1097,31 @@ static void draw_shadow_extended(struct command *c, const r3d_rstate *rs, rsx3d_
     }
     c->d.program = color;
 }
+static void edge_pass(rsxkit_post_pass *p, const r3d_rstate *rs, unsigned slot, unsigned hd_pass, rsxkit_target *destination)
+{
+    memset(p, 0, sizeof *p);
+    p->program = edge_final; p->out_target = destination; p->inputs = 3;
+    unsigned scale = hd_pass ? hd_scale : 1;
+    rsxkit_texture tx;
+    rsxkit_target_texture(fog_color[hd_pass], 0, R3D_H*scale, &tx);
+    p->in[0] = rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
+    rsxkit_target_texture(edge_attributes[hd_pass], 0, R3D_H*scale, &tx);
+    p->in[1] = rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
+    memset(&tx, 0, sizeof tx);
+    tx.offset = offset + EDGE_OFF(slot); tx.pitch = 128; tx.width = 8; tx.height = 1;
+    tx.format = RSXKIT_RGBA8888; tx.location = RSXKIT_MEM_MAIN;
+    p->in[2] = rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
+    p->k[0][0] = R3D_W*scale; p->k[0][1] = R3D_H*scale; p->k[0][2] = scale;
+    p->k[1][0] = rs->clear_depth >> 16; p->k[1][1] = (rs->clear_depth >> 8) & 255u;
+    p->k[1][2] = rs->clear_depth & 255u; p->k[1][3] = AT_OID(rs->clear_attr);
+}
 /* Entradas y constantes compartidas por la pasada final y su sonda. */
 static void fog_pass(rsxkit_post_pass *p, const r3d_rstate *rs, unsigned slot, unsigned hd_pass, rsxkit_target *destination)
 {
     memset(p, 0, sizeof *p);
     p->program = fog_final; p->out_target = destination; p->inputs = 3;
     rsxkit_texture tx;
-    rsxkit_target_texture(fog_color[hd_pass], 0, R3D_H*(hd_pass ? hd_scale : 1), &tx);
+    rsxkit_target_texture((rs->d3 & D3_EDGE) ? edge_color[hd_pass] : fog_color[hd_pass], 0, R3D_H*(hd_pass ? hd_scale : 1), &tx);
     p->in[0] = rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
     rsxkit_target_texture(fog_attributes[hd_pass], 0, R3D_H*(hd_pass ? hd_scale : 1), &tx);
     p->in[1] = rsxkit_post_texture_input(&tx, RSXKIT_FILTER_NEAREST, RSXKIT_POST_CLAMP);
@@ -1024,7 +1139,7 @@ static void fog_pass(rsxkit_post_pass *p, const r3d_rstate *rs, unsigned slot, u
 /* El RSX no necesita pendientes, área ni atributos de aristas del raster por líneas. */
 static int prepare_poly(r3d_poly *p, const gx_poly *gp, const gx_vertex *const *vv, const r3d_rstate *rs)
 {
-    if (old_prepare) return r3d_poly_setup(p, gp, vv, rs);
+    if (old_prepare || (rs->d3 & D3_EDGE)) return r3d_poly_setup(p, gp, vv, rs);
     p->n = gp->nverts; p->attr = gp->attr;
     p->mode = PA_MODE(gp->attr); p->alpha = PA_ALPHA(gp->attr); p->id = PA_ID(gp->attr);
     p->wshift = gp->wshift;
@@ -1057,6 +1172,8 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
     const gx_frame *f = (const gx_frame *)(uintptr_t)j->frame_ea;
     r3d_rstate rs;
     uint32_t ncmd = 0, nv = 0;
+    int ordered=0;
+    memset(capacity_reset,0,sizeof capacity_reset);
     memset(st, 0, sizeof *st);
     last_valid = 0;
     if (!ready || decode_error) { reason = "sin recursos o fallo de RGBA8"; return -1; }
@@ -1101,7 +1218,7 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
         }
         if (!changes) { modes &= ~(1u << RSX_EDGE); rs.d3 &= ~D3_EDGE; }
     }
-    uint32_t supported = (1u << RSX_TOON) | (1u << RSX_HIGHLIGHT) |
+    uint32_t supported = (1u << RSX_EDGE) | (1u << RSX_TOON) | (1u << RSX_HIGHLIGHT) |
                          (1u << RSX_SHADOW_MASK) | (1u << RSX_SHADOW) | (1u << RSX_FOG);
     if (!equal_spe) supported |= 1u << RSX_EQUAL;
     if (fog_spe) supported &= ~(1u << RSX_FOG);
@@ -1114,6 +1231,21 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
         }
         return 0;
     }
+    if (modes & (1u << RSX_EDGE)) {
+        const unsigned group = rsx_edge_group(f, j->flags);
+        if (rsx3d_edge_spe(group)) {
+            static const char *const why[8] = {
+                "bordes Z opacos: degradado", "bordes W opacos: degradado",
+                "bordes Z translúcidos: degradado", "bordes W translúcidos: degradado",
+                "bordes Z opacos con niebla: degradado", "bordes W opacos con niebla: degradado",
+                "bordes Z translúcidos con niebla: degradado", "bordes W translúcidos con niebla: degradado"
+            };
+            reason = edge_spe ? "bordes (3d-rsx-bordes-spe)" : why[group];
+            return 0;
+        }
+        if (fog_previous) { reason = "bordes: atributos incompatibles con niebla anterior"; return 0; }
+    }
+    edge_active = !!(rs.d3 & D3_EDGE); edge_slot = slot;
     if (modes & (1u << RSX_FOG)) {
         /* La niebla final repite el raster en la pasada de atributos con los
          * programas de sombra y toon y lee su tabla aparte de la de toon; la
@@ -1151,30 +1283,53 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
     }
     shadows = !!(modes & ((1u << RSX_SHADOW_MASK) | (1u << RSX_SHADOW)));
     shadow_extended = 0;
+    ids_mask = 0;
     if (shadows && (modes & (1u<<RSX_EQUAL))) { reason = "igualdad con sombras"; return 0; }
-    if (shadows || (modes & (1u<<RSX_EQUAL))) {
+    unsigned edge_back = 0;
+    if (edge_active) for (unsigned i=0;i<f->npolys;i++) {
+        const gx_poly *p=&f->poly[i];
+        edge_back |= !(p->flags & GX_POLY_FRONT) &&
+                     ((PA_MODE(p->attr)!=3 && PA_ALPHA(p->attr)==31) || (p->attr & PA_TDEPTH));
+    }
+    if (shadows || edge_back || (modes & (1u<<RSX_EQUAL))) {
         /* Reparto portable (rsx_passes.h), el mismo que ejecuta el banco del
          * host: una sola sombra, varias, o ampliado con puerta y cara. */
         rsx_shadow_layout layout;
         rsx_shadow_layout_init(&layout, f, &rs, shadow_general);
+        const int previous=capacity_previous || capacity_degraded || passes_previous ||
+                           (fog_previous && (rs.d3&D3_FOG));
         /* El empate W (frente gana a espalda con LEQUAL) exige la misma W
          * entera en todos los programas: redondeo de 1/pos.w y escala
          * entera (wdepth.cgi). Con la W truncada anterior no hay paridad. */
         if (layout.needs_back && rs.wbuf && (w_truncated || shadow_back_w_spe)) { reason = "sombras: cara trasera W sin paridad"; return 0; }
         if (layout.needs_back && shadow_back_spe) { reason = "sombras: profundidad de cara trasera"; return 0; }
         if (layout.needs_ids && shadow_ids_spe) { reason = "sombras: capacidad de IDs excedida"; return 0; }
-        /* Sin sombras el reparto ampliado deja 4 bits de TID (15 IDs); el
-         * tope de 8 solo se conserva como A/B. Con sombras lo decide el
-         * reparto de abajo. */
-        if (layout.translucents > 8 && (tid_limit8 || shadows)) { reason = "3D ampliado: capacidad translúcida sin paridad"; return 0; }
+        /* rc1 limita antes de repartir cuando hay sombras. La capacidad
+         * nueva intenta primero el mismo reparto, luego los bits libres y
+         * por último reutiliza códigos después del último uso de un ID. */
+        if (layout.translucents > 8 && (tid_limit8 || (shadows && previous))) {
+            reason = capacity_degraded ? "capacidad ampliada: degradada por la autoprueba" :
+                                        "3D ampliado: capacidad translúcida sin paridad";
+            return 0;
+        }
         if (layout.needs_back || layout.needs_ids || (modes & (1u<<RSX_EQUAL))) {
-            const char *why = rsx_shadow_layout_extend(&layout, f, &rs, shadows);
-            if (why) { reason = why; return 0; }
+            const char *why = previous ? rsx_shadow_layout_extend(&layout, f, &rs, shadows) :
+                                        rsx_shadow_layout_capacity(&layout, f, &rs, shadows);
+            if (why && !previous) {
+                if (!frame_order(f)) return -1;
+                ordered=1;
+                why=rsx_capacity_schedule(&layout,f,&rs,shadows,order,capacity_reset);
+            }
+            if (why) {
+                reason = capacity_degraded ? "capacidad ampliada: degradada por la autoprueba" : why;
+                return 0;
+            }
         }
         memcpy(oid, layout.oid, sizeof oid); memcpy(tid, layout.tid, sizeof tid);
         memcpy(oid_test, layout.oid_test, sizeof oid_test);
         trans_mask = layout.trans_mask; opaque_mask = layout.opaque_mask;
         single_shadow = layout.single; shadow_extended = layout.extended;
+        ids_mask = layout.ids_mask;
     }
     /* Decidir después de la admisión: los respaldos de paridad conservan su
      * motivo. No preparar texturas ni vértices de un cuadro elegido para SPE. */
@@ -1209,6 +1364,16 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
             b[0] = (uint8_t)rs.fog_table[i]; b[1] = b[2] = b[3] = 0;
         }
     }
+    if (edge_active) {
+        for (unsigned i=0;i<8;i++) {
+            uint8_t *b=mem+EDGE_OFF(slot)+4*i;
+            b[0]=(uint8_t)(R3D_PX_R(rs.edge[i])+16); b[1]=(uint8_t)(R3D_PX_G(rs.edge[i])+16);
+            b[2]=(uint8_t)(R3D_PX_B(rs.edge[i])+16); b[3]=0;
+        }
+#ifdef __powerpc__
+        __asm__ volatile("dcbf 0,%0; sync" : : "r"(mem+EDGE_OFF(slot)) : "memory");
+#endif
+    }
     if ((modes & ((1u << RSX_TOON) | (1u << RSX_HIGHLIGHT))) || (rs.d3 & D3_FOG)) {
         /* Los 128 bytes de cada tabla caben en una línea de caché del PPE: con pocos vértices nada la desaloja y el RSX
          * leía la tabla del cuadro anterior (prueba de respaldo 6/7). Escribirlas a memoria antes de encolar. */
@@ -1218,22 +1383,7 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
         __sync_synchronize();
 #endif
     }
-    for (uint32_t i = 0; i < f->npolys; i++) {
-        const gx_poly *p = &f->poly[i];
-        if (p->nverts < 3 || p->nverts > GX_POLY_MAXV || p->wshift > 28) return -1;
-        for (uint32_t k = 0; k < p->nverts; k++) if (p->vidx[k] >= f->nverts) return -1;
-        uint32_t key = r3d_sort_key(p, f->swap_params & 1u), k = i;
-        while (old_prepare && k && keys[k-1] > key) { keys[k] = keys[k-1]; order[k] = order[k-1]; k--; }
-        keys[k] = key; order[k] = i;
-    }
-    /* Radix estable: conserva exactamente los empates y el orden DS. */
-    if (!old_prepare) for (unsigned shift = 0; shift < 24; shift += 8) {
-        uint32_t count[256] = {0}, sum = 0;
-        for (uint32_t i = 0; i < f->npolys; i++) count[(keys[order[i]] >> shift) & 255u]++;
-        for (unsigned i = 0; i < 256; i++) { uint32_t n = count[i]; count[i] = sum; sum += n; }
-        for (uint32_t i = 0; i < f->npolys; i++) sorted[count[(keys[order[i]] >> shift) & 255u]++] = order[i];
-        memcpy(order, sorted, f->npolys * sizeof *order);
-    }
+    if (!ordered && !frame_order(f)) return -1;
     uint64_t t0 = ticks();
     uint32_t slots[10]; memcpy(slots, j->texslot, 16); memcpy(slots + 4, j->palslot, 24);
     if (!snapshot_valid || memcmp(old_slots, slots, sizeof slots)) {
@@ -1264,14 +1414,21 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
     st->identity_us = ticks() - t0;
     cur = j;
     rsx3d_vertex *v = (rsx3d_vertex *)(void *)(mem + VERT_OFF(slot));
+    uint64_t pending_reset=0;
     for (uint32_t i = 0; i < f->npolys; i++) {
         t0 = ticks();
         const gx_poly *gp = &f->poly[order[i]];
+        if (capacity_reset[order[i]]) pending_reset|=UINT64_C(1)<<capacity_reset[order[i]];
         const gx_vertex *vv[GX_POLY_MAXV]; r3d_poly p;
         if (old_prepare) memset(&p, 0, sizeof p);
         for (uint32_t k = 0; k < gp->nverts; k++) vv[k] = &f->vtx[gp->vidx[k]];
         if (!prepare_poly(&p, gp, vv, &rs)) continue;
         struct command *c = &command[ncmd++]; memset(c, 0, sizeof *c);
+        /* Un polígono fuera de pantalla puede contener el primer uso de un
+         * ID. Conservar su limpieza hasta el siguiente comando dibujable. */
+        c->reset=pending_reset; pending_reset=0;
+        c->edge_index = ncmd-1;
+        if (edge_active) rsx_edge_spans(edge_rows + slot*EDGE_ROWS_BYTES + c->edge_index*1024u, &p);
         c->equal = !!(p.attr & PA_DEQUAL); c->front = !!(gp->flags & GX_POLY_FRONT); c->mode = p.mode; c->first = nv; c->count = (p.n - 2) * 3; c->trans = p.alpha < 31 || (p.mode != 1 && p.textured && (p.tex.fmt == 1 || p.tex.fmt == 6)); c->id = p.id; c->tdepth = !!(p.attr & PA_TDEPTH);
         rsxkit_draw *d = &c->d; d->program = rs.wbuf ? shade_w : shade; d->ntex = 1;
         d->scissor[2] = R3D_W; d->scissor[3] = R3D_H;
@@ -1336,13 +1493,19 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
         int count = old_prepare ? (p.n - 2) * 3 : p.n;
         /* Palabra auxiliar del vértice (segundo color para la pasada de
          * atributos): Z>>9 en dos bytes, bandera de plano y de niebla. */
-        const uint8_t aux[4] = { (uint8_t)(c->key.flatz >> 8), (uint8_t)c->key.flatz, c->key.flat, c->key.fog };
+        uint8_t aux[4] = { (uint8_t)(c->key.flatz >> 8), (uint8_t)c->key.flatz, c->key.flat, c->key.fog };
+        if (edge_active) {
+            aux[0]=(uint8_t)(c->edge_index >> 8); aux[1]=(uint8_t)c->edge_index;
+            /* El borde compara el OID original, nunca el código de stencil
+             * que capacidad puede compartir o reciclar durante el cuadro. */
+            aux[2]=(uint8_t)p.id; aux[3]=0;
+        }
         for (int a = 0; a < count; a++) {
             int ix = old_prepare ? (a % 3 ? a / 3 + a % 3 : 0) : a;
             const gx_vertex *g = vv[ix]; rsx3d_vertex *b = old_prepare ? &v[nv++] : &pv[ix];
             if (scalar_vertices || old_prepare) rsx3d_vertex_scalar(b, g, p.v[ix].w);
             else rsx3d_vertex_vector(b, g, p.v[ix].w);
-            if (rs.d3 & D3_FOG) memcpy(&b->pad, aux, 4);
+            if (rs.d3 & (D3_FOG | D3_EDGE)) memcpy(&b->pad, aux, 4);
         }
         if (!old_prepare) for (int k = 1; k + 1 < p.n; k++) {
             v[nv++] = pv[0]; v[nv++] = pv[k]; v[nv++] = pv[k+1];
@@ -1356,6 +1519,37 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
         return 0;
     }
     st->polys = ncmd;
+    const unsigned reset_first=nv;
+    unsigned has_resets=0;
+    for (unsigned i=0;i<ncmd;i++) has_resets|=command[i].reset!=0;
+    if (has_resets) {
+        static const unsigned xy[6][2]={{0,0},{R3D_W,0},{0,R3D_H},{0,R3D_H},{R3D_W,0},{R3D_W,R3D_H}};
+        for (unsigned i=0;i<6;i++) {
+            rsx3d_vertex *b=&v[nv++]; memset(b,0,sizeof *b);
+            b->pos[0]=xy[i][0]; b->pos[1]=xy[i][1]; b->pos[3]=1;
+        }
+        /* Estos últimos vértices pueden seguir en la caché del PPE:
+         * publicarlos antes de que el RSX lea el rectángulo de limpieza. */
+#ifdef __powerpc__
+        for (uintptr_t p=(uintptr_t)&v[reset_first]&~(uintptr_t)127;
+             p<(uintptr_t)&v[nv]; p+=128)
+            __asm__ volatile("dcbf 0,%0" : : "r"(p) : "memory");
+        __asm__ volatile("sync" : : : "memory");
+#else
+        __sync_synchronize();
+#endif
+    }
+    if (edge_active) {
+        /* El RSX lee las filas por textura en XDR. Publicar incluso tablas
+         * pequeñas que siguen en la caché del PPE. */
+#ifdef __powerpc__
+        for (unsigned a=0;a<ncmd*1024u;a+=128u)
+            __asm__ volatile("dcbf 0,%0" : : "r"(edge_rows+slot*EDGE_ROWS_BYTES+a) : "memory");
+        __asm__ volatile("sync" : : : "memory");
+#else
+        __sync_synchronize();
+#endif
+    }
     uint32_t batches = 0;
     for (uint32_t i = 0; i < ncmd; i++) {
         struct command *c = &command[i];
@@ -1365,8 +1559,8 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
         /* No mover primitivas: ni empates Z/W ni IDs repetidos cambian ganador.
          * Las cinco pasadas translúcidas permanecen juntas por polígono. */
         /* Con atributos por constantes, la Z plana vive en la clave (ya no en d): no unir polígonos con otra Z plana. */
-        if (!unbatched && !shadow_extended && prev &&
-            (!attr_const || !(rs.d3 & D3_FOG) || fog_previous ||
+        if (!unbatched && !shadow_extended && prev && !c->reset &&
+            (!(attr_const || edge_active) || !(rs.d3 & D3_FOG) || fog_previous ||
              (prev->key.flat == c->key.flat && prev->key.flatz == c->key.flatz && prev->key.fog == c->key.fog)) &&
             ((!prev->trans && !c->trans && prev->mode != 3 && c->mode != 3) ||
              (prev->mode == 3 && c->mode == 3 &&
@@ -1395,15 +1589,19 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
     for (unsigned render_pass=0;render_pass<(hd_scale>1 && !reduced ? 2u : 1u);render_pass++) {
     const unsigned hd_pass = reduced || (hd_scale>1 && render_pass==(hd_game ? 1u : 0u));
     const int final_fog = (rs.d3 & D3_FOG) && !fog_previous;
+    const int final_attrs = final_fog || edge_active;
+    edge_scale = hd_pass ? hd_scale : 1;
     struct pass_sample *sample=&pass_samples[hd_pass][slot];
-    memset(sample,0,sizeof *sample); sample->fog=final_fog;
+    memset(sample,0,sizeof *sample); sample->effects=(unsigned)final_fog | ((unsigned)edge_active<<1);
     sample->extended=shadow_extended; sample->polys=st->polys; sample->prepare_us=st->prepare_us;
     rsxkit_target *destination = hd_pass ? hd_target[slot] : native_target;
     rsxkit_stamp(hd_pass ? 48 + slot*2 : 56 + slot * 3);
-    for (unsigned attribute_pass=0;attribute_pass<(final_fog ? 2u : 1u);attribute_pass++) {
+    for (unsigned attribute_pass=0;attribute_pass<1u+(unsigned)edge_active+(unsigned)final_fog;attribute_pass++) {
     uint64_t issue_begin=sysGetSystemTime(); unsigned draw_begin=st->draws;
-    fog_attribute_pass = attribute_pass;
-    rsxkit_target *intermediate = !final_fog ? destination : attribute_pass ? fog_attributes[hd_pass] : fog_color[hd_pass];
+    fog_attribute_pass = attribute_pass != 0;
+    edge_attribute_pass = edge_active && attribute_pass == 1;
+    rsxkit_target *intermediate = !final_attrs ? destination : !attribute_pass ? fog_color[hd_pass] :
+                                edge_attribute_pass ? edge_attributes[hd_pass] : fog_attributes[hd_pass];
     if (rsxkit_bind(intermediate, hd_pass ? hd_depth : depth, R3D_W, R3D_H)) return -1;
     uint32_t clear = rs.clear_px;
     if (!final_fog && (rs.d3 & D3_FOG) && (rs.clear_attr & AT_FOG)) {
@@ -1421,19 +1619,31 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
         ((R3D_PX_G(clear) + 16u) << 8) | (R3D_PX_B(clear) + 16u);
     if (attribute_pass) encoded = ((rs.clear_attr & AT_FOG) ? 0xff000000u : 0u) |
         ((rs.clear_depth >> 17) << 16) | (((rs.clear_depth >> 9) & 255u) << 8);
+    if (edge_attribute_pass) encoded = rsx_edge_encode(rs.clear_depth, rs.clear_attr);
     rsxkit_clear(RSXKIT_CLEAR_COLOR | RSXKIT_CLEAR_DEPTH | RSXKIT_CLEAR_ALPHA, encoded, rs.clear_depth / 16777215.0f, NULL);
-    rsxkit_clear_stencil((shadows || shadow_extended) ? ((ca ? (shadow_extended ? 16 : 128) : 0) | oid[AT_OID(rs.clear_attr)]) : (ca ? 64 : 255));
+    rsxkit_clear_stencil((shadows || shadow_extended) ?
+        ((ca ? (shadow_extended ? ((ids_mask&16) ? 0 : 16) : 128) : 0) |
+         oid[AT_OID(rs.clear_attr)]) : (ca ? 64 : 255));
     rsxkit_vertices(offset + VERT_OFF(slot), RSXKIT_MEM_MAIN);
-    rsxkit_vertices_color_aux(attribute_pass && !attr_const);
+    rsxkit_vertices_color_aux(edge_attribute_pass || (attribute_pass && !edge_active && !attr_const));
     unsigned prior_back=0;
     for (uint32_t i = 0; i < ncmd; i++) {
         struct command *c = &command[i];
         struct command batch;
+        if (c->reset) {
+            struct command clear; memset(&clear,0,sizeof clear);
+            clear.first=reset_first; clear.count=6; clear.d.program=mask;
+            clear.d.scissor[2]=R3D_W; clear.d.scissor[3]=R3D_H;
+            /* INVERT solo los unos del código comparado lo convierte en
+             * cero sin tocar OID, máscara de sombra, cara ni ocupado. */
+            for (unsigned code=1;code<64;code++) if (c->reset&(UINT64_C(1)<<code))
+                draw(&clear,3,code,trans_mask,code,1,RSXKIT_BLEND_NONE,0,0,st);
+        }
         /* Lotes de opacos normales en color y atributos (clave portable);
          * también en 3D ampliado, donde el plan emite las dos pasadas
          * frontales por lote. Sin niebla ni ampliado ya los unió el bucle
          * previo con el estado completo. */
-        if ((final_fog || shadow_extended) && !passes_previous && !unbatched && !shadows &&
+        if ((final_attrs || shadow_extended) && !passes_previous && !unbatched && !shadows &&
             !(shadow_extended && extended_unbatched) && i+1<ncmd && color_batch_equal(c,&command[i+1],attribute_pass)) {
             batch=*c;
             while (i+1<ncmd && batch.first+batch.count==command[i+1].first &&
@@ -1458,15 +1668,24 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
         draw(c, 2, c->id, 127, 255, 0, RSXKIT_BLEND_OFF, z | (c->tdepth ? RSXKIT_DEPTH_WRITE : 0), 2, st);
         draw(c, 3, c->id, 127, 128, 0, RSXKIT_BLEND_NONE, 0, 2, st);
     }
-    if (final_fog) rsxkit_stamp(28+hd_pass*4+slot*2+attribute_pass);
-    sample->draws[attribute_pass]=st->draws-draw_begin;
-    sample->issue_us[attribute_pass]=sysGetSystemTime()-issue_begin;
+    if (final_attrs && (!attribute_pass || attribute_pass == (unsigned)edge_active+(unsigned)final_fog))
+        rsxkit_stamp(28+hd_pass*4+slot*2+!!attribute_pass);
+    sample->draws[!!attribute_pass]+=st->draws-draw_begin;
+    sample->issue_us[!!attribute_pass]+=sysGetSystemTime()-issue_begin;
     }
-    fog_attribute_pass = 0;
-    if (final_fog) {
+    fog_attribute_pass = edge_attribute_pass = 0;
+    if (final_attrs) {
         uint64_t issue_begin=sysGetSystemTime();
-        rsxkit_post_pass p; fog_pass(&p, &rs, slot, hd_pass, destination);
-        if (rsxkit_post_run(&p)) return -1;
+        rsxkit_post_pass p;
+        if (edge_active) {
+            edge_pass(&p, &rs, slot, hd_pass, final_fog ? edge_color[hd_pass] : destination);
+            if (rsxkit_post_run(&p)) return -1;
+            st->edge_posts++;
+        }
+        if (final_fog) {
+            fog_pass(&p, &rs, slot, hd_pass, destination);
+            if (rsxkit_post_run(&p)) return -1;
+        }
         sample->issue_us[2]=sysGetSystemTime()-issue_begin;
     }
     if (hd_pass) {

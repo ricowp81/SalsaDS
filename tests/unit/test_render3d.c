@@ -14,6 +14,7 @@
 #include "gpu3d/r3d_core.h"
 #include "gpu3d/r3d_scene.h"
 #include "gpu3d/rsx_fog_test.h"
+#include "gpu3d/rsx_capacity_test.h"
 
 #define R3D_GOLDEN_SEED7 0xddd8cb0323952357ull /* calculado en LE; BE tiene que dar lo mismo (cambia si cambian las reglas de r3d_px.h) */
 
@@ -175,6 +176,27 @@ static void test_fog_translucent(void)
 	printf("niebla final: %u escenas Z/W, AND, profundidad translúcida y solo alfa; referencia y bandas idénticas\n",RSX_FOG_TESTS);
 }
 
+static void test_rsx_capacity_reference(void)
+{
+	static gx_frame f;
+	uint32_t ts[R3D_TEX_SLOTS]={0}, ps[R3D_PAL_SLOTS]={0};
+	for (unsigned test=0;test<RSX_CAPACITY_TESTS;test++) {
+		rsx_capacity_test_scene(&f,test);
+		r3d_render_ref(&f,vram,ts,ps,0,ref);
+		for (unsigned k=0;k<2;k++) {
+			r3d_stats st;
+			use_bal=0;
+			CHECK_EQ(render_core(&f,ts,ps,k ? 8 : 16,k ? 2 : 1,0,&st),0);
+			int difference=first_diff();
+			if (difference>=0)
+				printf("capacidad referencia: escena %u, bandas %u, píxel (%d,%d): %08x/%08x\n",
+				       test,k ? 8 : 16,difference%R3D_W,difference/R3D_W,out[difference],ref[difference]);
+			CHECK(difference<0);
+		}
+	}
+	printf("capacidad RSX: %u escenas con hasta 64 IDs, Z/W, sombras, niebla y toon; referencia y bandas idénticas\n",RSX_CAPACITY_TESTS);
+}
+
 void test_render3d(void);
 void test_render3d(void)
 {
@@ -240,6 +262,7 @@ void test_render3d(void)
 	test_palette_jobs();
 	test_palette_pairs();
 	test_fog_translucent();
+	test_rsx_capacity_reference();
 #ifdef R3D_VERIFY_DECODE
 	CHECK_EQ(r3d_decode_errors, 0);
 #endif

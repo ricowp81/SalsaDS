@@ -27,7 +27,7 @@ class Program:
             self.constants[f"c[{index}]"] = (v + [0.0] * 4)[:4]
         self.code = []
         for line in text.splitlines():
-            m = re.fullmatch(r"(TEX|KIL|[A-Z]+R[CH]?(?:_SAT)?)[ ]+(.+);", line)
+            m = re.fullmatch(r"(TEX|KIL|[A-Z0-9]+R[CH]?(?:_SAT)?)[ ]+(.+);", line)
             if m:
                 self.code.append((m[1], m[2].split(", ")))
 
@@ -66,14 +66,18 @@ class Program:
                 a = [source(t) for t in operands]
                 saturate = op.endswith("_SAT")
                 op = op.removesuffix("_SAT")
-                fn = {
+                operations = {
                     "MOVR": lambda x: x[0], "ADDR": lambda x: x[0] + x[1],
                     "MULR": lambda x: x[0] * x[1], "MADR": lambda x: x[0] * x[1] + x[2],
                     "FLRR": lambda x: math.floor(x[0]), "RCPR": lambda x: 1.0 / x[0],
                     "MINR": lambda x: min(x), "MAXR": lambda x: max(x),
                     "SGER": lambda x: float(x[0] >= x[1]), "SLTR": lambda x: float(x[0] < x[1]),
-                }[op.removesuffix("C")]
-                value = [fp32(fn([v[c] for v in a])) for c in range(4)]
+                }
+                if op in ("DP3R", "DP4R"):
+                    value = [fp32(sum(a[0][c] * a[1][c] for c in range(int(op[2]))))] * 4
+                else:
+                    fn = operations[op.removesuffix("C")]
+                    value = [fp32(fn([v[c] for v in a])) for c in range(4)]
                 if saturate:
                     value = [min(1.0, max(0.0, v)) for v in value]
             if op.endswith("C"):

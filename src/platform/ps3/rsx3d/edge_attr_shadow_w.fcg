@@ -1,0 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+#define RSX3D_W
+#define RSX3D_SHADOW
+#include "edge_attr.fcg"
