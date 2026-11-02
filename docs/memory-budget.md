@@ -8,6 +8,12 @@ una caché de código) se descuentan de ahí (medido en Salsa64 con HEN:
 Cifras en MB. **Previsto** = estimación de diseño (todavía no hay núcleo);
 **Medido** se llena en la PS3 real. Se actualiza en cada fase.
 
+## Capacidad de IDs del RSX (2026-10-31)
+
+- PPE: un mapa de limpiezas de 64 bits por comando (16 KiB para 2048 polígonos) y 2048 bytes de códigos por polígono. Primer/último uso y asignación usan arreglos de 64 entradas en la pila; no hay reservas durante el cuadro.
+- El cuadrilátero de limpieza añade seis vértices (192 bytes) dentro de cada ranura existente de 2 MiB, con comprobación del máximo al compilar. El orden y el búfer de radix ya existían.
+- No se añade destino auxiliar, memoria por píxel ni código al SPE; color, profundidad y stencil conservan su tamaño.
+
 ## Prototipo XDR de celdas (2026-10-23; no empaquetado)
 - Reserva estática al arrancar de 8 388 608 B, alineada a 128 B, fuera de `struct nds`: 2 × 32 768 entradas de 128 B (clave 64 B + 16 píxeles de 32 bits); sin asignaciones durante el juego.
 - Cada SPE solo accede a su mitad, incluso con dos cuadros en vuelo: trabajos secuenciales por unidad. No hay reutilización cruzada entre SPE; puede duplicarse contenido.

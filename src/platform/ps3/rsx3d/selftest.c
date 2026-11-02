@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include <string.h>
 #include "gpu3d/rsx_fog_test.h"
+#include "gpu3d/rsx_capacity_test.h"
 #include <malloc.h>
 #include <spukit/spukit.h>
 #include "spu_gpu2d_bin.h"
@@ -293,6 +294,66 @@ static int render_view_test(r3d_job *j, int reduced, rsx3d_stats *st)
         rsx3d_decode_drain(); ok=rsx3d_submit_view(j,0,0,0,st);
     }
     return ok>0 ? rsx3d_wait(0,st) : ok;
+}
+static int capacity_option(const char *name)
+{
+    char path[128]; struct stat st;
+    snprintf(path,sizeof path,"/dev_hdd0/salsads/3d-rsx-%s",name);
+    return stat(path,&st)==0;
+}
+/* Las escenas nuevas exigen RGB6/A5 exactos; la ampliación no hereda la
+ * tolerancia de las pruebas generales de niebla. Con los topes rc1 deben
+ * devolver respaldo sin modificar la salida. Restaurar siempre la opción
+ * elegida al arrancar; si falla el grupo nuevo, solo se degrada ese grupo. */
+static unsigned capacity_tests(r3d_job *j, unsigned *control_fail)
+{
+    const int previous=rsx3d_capacity_previous();
+    unsigned fail=0, rendered=0, fallbacks=0, pixels=0, saved=0;
+    unsigned variants=previous ? 1 : rsx3d_scale()>1 ? 3 : 2;
+    for (unsigned route=0;route<variants;route++) {
+        rsx3d_capacity_set_previous(route==0 ? 1 : previous);
+        for (unsigned test=0;test<RSX_CAPACITY_TESTS;test++) {
+            const unsigned shadows=rsx_capacity_test_shadows(test);
+            const unsigned family=test>>4;
+            const unsigned fog=!!(test&2), toon=!!(test&4), back=family==7 || family==12 || !!(test&8), w=!!(test&1);
+            rsx_capacity_test_scene(&frame,test);
+            int fallback=!route || previous || !rsx_capacity_test_admitted(test) ||
+                capacity_option("pasadas-ronda3") ||
+                (rsx_capacity_test_ids(test)>7 && (capacity_option("ids-translucidos-8") || forced_spe("sombra-ids"))) ||
+                (!shadows && forced_spe("igualdad")) ||
+                (shadows && forced_spe("sombra")) || (toon && forced_spe("toon")) ||
+                (back && forced_spe("sombra-trasera")) ||
+                (back && w && rsx3d_shadow_back_w_spe()) ||
+                (fog && (forced_spe("niebla") || !rsx3d_fog_final() ||
+                         (shadows && rsx3d_fog_shadow_spe()) || (toon && rsx3d_fog_toon_spe())));
+            if (!fallback) r3d_render_ref(&frame,vram,j->texslot,j->palslot,0,reference);
+            rsxkit_frame_begin(0); rsxkit_frame_end(); rsxkit_frame_begin(0);
+            memset(output,0xa5,sizeof output);
+            rsx3d_stats st; memset(&st,0,sizeof st);
+            int ok=render_view_test(j,route==2,&st);
+            unsigned different=0;
+            for (unsigned k=0;k<R3D_W*R3D_H;k++) different+=output[k]!=(fallback ? 0xa5a5a5a5u : reference[k]);
+            unsigned bad=ok!=!fallback || different;
+            if (route) fail+=bad; else *control_fail+=bad;
+            rendered+=!fallback; fallbacks+=fallback; pixels+=different;
+            salsads_log("rsx3d capacidad %s prueba %u: %u IDs %s, %s%s%s, estado %d (%s), distintos exactos %u, dibujos %u, %s",
+                        route==0 ? "rc1" : route==1 ? "nativa" : "reducida",test,
+                        rsx_capacity_test_ids(test),shadows ? "con sombras" : "translúcidos",
+                        w ? "W" : "Z",fog ? "+niebla" : "",toon ? "+toon" : "",ok,
+                        fallback ? "respaldo esperado" : "RSX",different,st.draws,rsx3d_reason());
+            if (!fallback && bad && saved<8) {
+                char name[80]; saved++;
+                snprintf(name,sizeof name,"rsx3d-capacidad-%u-%u-rsx",route,test); save_pixels(name,output);
+                snprintf(name,sizeof name,"rsx3d-capacidad-%u-%u-ref",route,test); save_pixels(name,reference);
+                snprintf(name,sizeof name,"rsx3d-capacidad-%u-%u-diff",route,test); save_difference(name);
+                if (fog && ok==1 && route==1) fog_diagnose(j);
+            }
+        }
+    }
+    rsx3d_capacity_set_previous(previous);
+    salsads_log("rsx3d capacidad: %u escenas RSX, %u respaldos sin modificar salida, %u píxeles distintos exactos, %u fallos nuevos; topes de arranque restaurados %s",
+                rendered,fallbacks,pixels,fail,previous ? "rc1" : "ampliados");
+    return fail;
 }
 static unsigned fog_tests(r3d_job *j, int reduced)
 {
@@ -1242,7 +1303,10 @@ int rsx3d_selftest(void)
         }
     }
     fail += shade_tests(&j);
+    /* Las expectativas históricas 33/35 conservan expresamente sus topes. */
+    int capacity_saved=rsx3d_capacity_set_previous(1);
     fail += shadow_tests(&j);
+    rsx3d_capacity_set_previous(capacity_saved);
     fail += equality_tests(&j);
     fail += fog_tests(&j,0);
     fail += fog_translucent_tests(&j,0);
@@ -1250,6 +1314,11 @@ int rsx3d_selftest(void)
      * combinación a su respaldo SPE (como antes de admitirla) en vez de
      * apagar todo el 3D del RSX; el log lo anota y el veredicto lo cuenta. */
     unsigned degraded = 0;
+    unsigned capacity_degraded=0;
+    if (capacity_tests(&j,&fail)) {
+        rsx3d_capacity_degrade(); capacity_degraded=1;
+        salsads_log("rsx3d capacidad: ampliación degradada al SPE por diferencias exactas; se conservan los topes rc1");
+    }
     if (fog_shadow_tests(&j)) { rsx3d_fog_degrade(0); degraded++; }
     if (fog_toon_tests(&j)) { rsx3d_fog_degrade(1); degraded++; }
     if (rsx3d_scale()>1) {
@@ -1258,7 +1327,10 @@ int rsx3d_selftest(void)
         fail += overlap_tests(&j,0,0,1);
         fail += reduced_sampling_tests(&j);
     }
+    /* Los respaldos 4/9 comprueban los límites históricos de IDs. */
+    capacity_saved=rsx3d_capacity_set_previous(1);
     fail += fallback_tests(&j);
+    rsx3d_capacity_set_previous(capacity_saved);
     fail += w_tests(&j);
     blend_probe(&j);
     fail += cache_tests(&j);
@@ -1286,8 +1358,8 @@ int rsx3d_selftest(void)
     if (rsx3d_scale()>1) fail += rsx3d_hd_line_test(j.out_ea,output[0]);
     fail += hd_spe_tests(&j);
     fail += replay_tests(1);
-    salsads_log("rsx3d autoprueba dirigida: %s, %u fallos, %u grupos de niebla degradados al SPE (la comparación de juegos y la mezcla RGBA8 son diagnósticos)",
-                fail ? "FALLO" : degraded ? "OK con degradación" : "OK", fail, degraded);
+    salsads_log("rsx3d autoprueba dirigida: %s, %u fallos, %u grupos de niebla y %u de capacidad degradados al SPE (la comparación de juegos y la mezcla RGBA8 son diagnósticos)",
+                fail ? "FALLO" : degraded || capacity_degraded ? "OK con degradación" : "OK", fail, degraded,capacity_degraded);
     return fail ? -1 : 0;
 }
 

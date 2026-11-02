@@ -1,5 +1,50 @@
 # Registro de rendimiento
 
+## 2026-10-31 — IDs del RSX: reparto y reciclado [host Docker; conteos, sin tiempos PS3]
+
+El censo usa el plan portable del renderer, en el orden estable real. Los
+cuadros nuevos no se identifican con los 970 históricos de la resta
+SPE−costo: ese log mezcla ventanas y no contiene IDs por cuadro.
+
+| Recorrido reproducible | Filas con 3D | Máximo sombra/TID/OID relevante | Pico TID simultáneo | Rechazos rc1 → nuevos | Recuperados por bits / reciclado |
+|---|---:|---|---:|---:|---:|
+| MKDS, salida y vuelta propia (50cc, Figure-8 Circuit) | 4 573 | 1 / 9 / 1 | 5 | 13 → 0 | 0 / 13 |
+| SM64DS, introducción | 6 343 | 1 / 29 / 1 | 8 | 444 → 0 | 200 / 244 |
+| SM64DS, exterior del castillo | 13 940 | 1 / 23 / 1 | 8 | 1608 → 0 | 1454 / 154 |
+| SM64DS, interior del castillo | 3 376 | 1 / 9 / 1 | 1 | 24 → 0 | 24 / 0 |
+| SM64DS, Bob-omb | 1 550 | 1 / 16 / 1 | 12 | 256 → 0 | 254 / 2 |
+| SM64DS, recorrido completo, incluido título y transiciones | 29 397 | 1 / 29 / 1 | 12 | 2332 → 0 | 1932 / 400 |
+
+- SM64DS: 29 902 cuadros ejecutados; 11 capturas reproducidas byte por byte
+  con el corredor normal, desde el título hasta Bob-omb, pasando por la
+  llave y el castillo. En los 2332 cuadros recuperados, limpiezas por pasada
+  mediana/p95/máximo 0/9/14; dibujos efectivos 1060/3812/5064. En total,
+  2 800 278 dibujos, incluidos 2150 de limpieza, y 2588 pasadas de color o
+  atributos. Bob-omb usa niebla efectiva en sus 1550 cuadros: los dos
+  reciclados se repiten en color y atributos, para cuatro dibujos de limpieza.
+- MKDS tiene borrado transparente: recuperar el bit de ocupado no ayuda.
+  Los cuadros comunes admitidos por rc1 conservan sus conteos.
+- Los dibujos de los recuperados son exactos para sombras ampliadas, donde
+  no se agrupan polígonos. No incluyen exportación ni el quad final de
+  niebla; los cuadros no admitidos por rc1 tienen cero trabajo RSX, por lo
+  que no se inventa una reducción porcentual respecto a dibujos inexistentes.
+  Ninguno de estos recuperados activa imagen de borrado, bordes, alambre ni
+  igualdad; todavía puede caer por texturas, captura o costo real.
+- Vuelta propia: cuadros 3500–8072, Mario/B Dasher/50cc, final LAP 2/3;
+  cinco capturas reproducidas byte por byte con el corredor normal. La
+  salida (800 cuadros) no supera capacidad; después, 13 caídas (una por
+  veto translúcido, doce por reparto) pasan a ser admisibles. Añade 14
+  limpiezas, mediana/p95/máximo 1/2/2 por cuadro recuperado; dibujos
+  754/769/769. Son 9805 dibujos en esos 13 cuadros, sin atributos de niebla.
+- La demostración de MKDS se mantiene aparte: 9068 filas con 3D, máximos
+  2/17/2, pico simultáneo 5 y 881 → 0 rechazos, todos por reciclado.
+  No se suma al recorrido principal. CSV, guiones, capturas, unidad de
+  conteo y límites en `build/rsx-capacidad/censo.md`. Validación y tiempos
+  PS3 pendientes; el costo todavía puede devolver estos cuadros al SPE.
+- Los recorridos medidos usan W; hay toon en MKDS y toon/resaltado en
+  SM64DS. La niebla se mide en Bob-omb; Z queda cubierto por las pruebas
+  dirigidas y la autoprueba, no por estas muestras de juego.
+
 ## 2026-10-29 — Autoprueba en consola de rsx-sombras (2×) y niebla con toon [PS3: autoprueba; sin tiempos nuevos]
 
 - Paquete «SalsaDS sombras» a 2×: sombras 0–63 (36–51 con cara trasera en W y la W redondeada) 0 fallos; niebla+sombra 48/48 dentro de la tolerancia (24 576 distintos exactos de ±1); niebla final 512, reducción, composición HD y reproducciones OK. Niebla+toon/resaltado Z 27 840 y 27 744 fuera de tolerancia, W 48 960 y 48 768: TEXUNIT1 llevaba la tabla de niebla en los polígonos toon (ver `estado.md`).
