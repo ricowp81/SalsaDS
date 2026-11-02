@@ -15,7 +15,7 @@
 #include "gpu3d/r3d_scene.h"
 #include "gpu3d/rsx_fog_test.h"
 
-#define R3D_GOLDEN_SEED7 0x17867ed0209a5afbull /* calculado en LE; BE tiene que dar lo mismo (cambia si cambian las reglas de r3d_px.h) */
+#define R3D_GOLDEN_SEED7 0xddd8cb0323952357ull /* calculado en LE; BE tiene que dar lo mismo (cambia si cambian las reglas de r3d_px.h) */
 
 static gx_t G;
 static uint8_t vram[R3D_VRAM_ZERO_OFF + 128] __attribute__((aligned(128)));

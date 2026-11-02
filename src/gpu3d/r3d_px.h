@@ -31,6 +31,13 @@
 #include "gpu3d/r3d.h"
 
 #define R3D_INLINE static inline __attribute__((always_inline))
+/* En el SPE, fuera de línea (una sola copia en el local store: la pila del programa del render 3D va justa); en el host y el PPE,
+ * en línea. El resultado es el mismo. */
+#if defined(__SPU__)
+#define R3D_LS static __attribute__((noinline))
+#else
+#define R3D_LS R3D_INLINE
+#endif
 
 #ifndef R3D_PS
 #define R3D_PS 9 /* bits del factor de interpolación a lo largo de la línea (texturas y w) */
@@ -152,7 +159,7 @@ typedef struct r3d_poly {
 	uint32_t wire, translucent_sort;
 	uint32_t textured;
 	uint32_t front;      /* polígono frontal (GX_POLY_FRONT) */
-	uint32_t full;       /* tamaño completo: el borde derecho inclinado también dibuja su píxel (GBATEK, «Polygon Size») */
+	uint32_t full;       /* tamaño completo: el borde derecho inclinado también dibuja su píxel (GBATEK, «Polygon Size»); bit 1: R3D_F_FULLSTRETCH */
 	r3d_tex tex;
 } r3d_poly;
 
@@ -240,7 +247,8 @@ static inline int r3d_poly_setup(r3d_poly *p, const gx_poly *gp, const gx_vertex
 
 		p->textured = (rs->d3 & D3_TEXTURE) && fmt != 0;
 		p->translucent_sort = r3d_is_translucent(gp->attr, tp);
-		p->full = !(rs->flags & R3D_F_NOFULL) && ((rs->d3 & (D3_AA | D3_EDGE)) || ((rs->d3 & D3_BLEND) && p->translucent_sort)) ? 1u : 0u;
+		p->full = !(rs->flags & R3D_F_NOFULL) && ((rs->d3 & (D3_AA | D3_EDGE)) || ((rs->d3 & D3_BLEND) && p->translucent_sort)) ?
+			  ((rs->flags & R3D_F_FULLSTRETCH) ? 3u : 1u) : 0u;
 		if (p->textured) {
 			r3d_tex *t = &p->tex;
 
@@ -334,7 +342,7 @@ R3D_INLINE uint32_t r3d_lerpu16(uint32_t a, uint32_t b, uint32_t f, uint32_t P)
 
 /* a + piso((b - a)·pos / len), exacto, con |b - a|·pos < 2^31 y 0 < len (estimación en coma flotante y corrección
  * entera: no depende del redondeo de la coma flotante; sin divisiones enteras, que en el SPE son de software). */
-R3D_INLINE int32_t r3d_lin(int32_t a, int32_t b, uint32_t pos, uint32_t len)
+R3D_LS int32_t r3d_lin(int32_t a, int32_t b, uint32_t pos, uint32_t len)
 {
 	const int32_t num = (b - a) * (int32_t)pos, d = (int32_t)len;
 	int32_t q = (int32_t)((float)num / (float)d), r = num - q * d;
@@ -352,7 +360,7 @@ R3D_INLINE int32_t r3d_lin(int32_t a, int32_t b, uint32_t pos, uint32_t len)
 
 /* za + trunc((zb - za)·pos / len) con 0 <= pos < len, sin aritmética de 64 bits (en el SPE la división de 64 bits es de
  * software y cuesta cientos de ciclos): cociente y resto del salto entre len, piso(|zb - za|·pos / len) = q·pos + piso(r·pos / len). */
-R3D_INLINE uint32_t r3d_zlerp(uint32_t za, uint32_t zb, uint32_t pos, uint32_t len)
+R3D_LS uint32_t r3d_zlerp(uint32_t za, uint32_t zb, uint32_t pos, uint32_t len)
 {
 	const uint32_t adz = zb >= za ? zb - za : za - zb;
 	const uint32_t q = adz / len, r = adz - q * len;
@@ -396,21 +404,16 @@ static __attribute__((noinline)) void r3d_end_at(r3d_end *e, const r3d_v *a, con
 }
 
 /* w y z de la arista en la línea `ypos` (0..len) de su recorrido en y, con la corrección por w. Para las aristas x-mayores con
- * perspectiva: la línea siguiente (ypos = y + 1 - a.y), medido contra melonDS con las escenas 28 a 33 de gx3d. */
+ * perspectiva: la línea siguiente (ypos = y + 1 - a.y), medido contra melonDS con las escenas 28 a 33 de gx3d. Son las mismas cuentas
+ * que la w y la z de r3d_end_at con pos = ypos (len >= 1: las aristas de una cadena bajan al menos una línea), así que se toman de
+ * ahí: una sola copia del código en el local store del SPE. */
 static __attribute__((noinline)) void r3d_end_wz(r3d_end *e, const r3d_v *a, const r3d_v *b, uint32_t ypos, uint32_t len)
 {
-	uint32_t f;
+	r3d_end t;
 
-	if (ypos >= len) {
-		e->w = b->w;
-		e->z = b->z;
-		return;
-	}
-	f = r3d_pfac(ypos, len, a->w, b->w, 9);
-	e->w = (uint32_t)r3d_lerp((int32_t)a->w, (int32_t)b->w, f, 9);
-	if (e->w == 0)
-		e->w = 1;
-	e->z = r3d_zlerp(a->z, b->z, ypos, len);
+	r3d_end_at(&t, a, b, ypos, len);
+	e->w = t.w;
+	e->z = t.z;
 }
 
 static inline void r3d_end_of(r3d_end *e, const r3d_v *a)
@@ -535,13 +538,13 @@ static inline void r3d_edge_x(const r3d_v *a, const r3d_v *b, int32_t y, int rig
 	}
 }
 
-/* Tamaño completo en las aristas x-mayores que van hacia adentro (la izquierda hacia la derecha, la derecha hacia la izquierda): la
- * arista también dibuja los píxeles de su tramo en esta línea, no solo los de la línea siguiente. Sin esto, dos polígonos cuyas aristas
- * casi horizontales no coinciden (la Torre Quemada de la intro de HeartGold) dejan una fila de píxeles sin cubrir. Va aparte (sin
- * expandirse en la línea) para no agrandar la pila del SPE. */
-static __attribute__((noinline)) void r3d_row_full(const r3d_v *la, const r3d_v *lb, const r3d_v *ra, const r3d_v *rb, int32_t xfl, int32_t xfr, r3d_row *row)
+/* Tamaño completo, regla de la v0.0.5-rc1 (R3D_F_FULLSTRETCH): un píxel más a la derecha con cualquier arista derecha no vertical y, en las
+ * aristas x-mayores que van hacia adentro, el tramo de la línea con los atributos del final del tramo y la interpolación estirada. Se
+ * aplicaba después de juntar los tramos gordos. Va aparte (sin expandirse en la línea) para no agrandar la pila del SPE. */
+static __attribute__((noinline)) void r3d_row_full_rc1(const r3d_v *la, const r3d_v *lb, const r3d_v *ra, const r3d_v *rb, int32_t xfl, int32_t xfr,
+						       r3d_row *row)
 {
-	if (rb->x != ra->x) { /* un píxel más a la derecha (el de la arista) si la arista derecha no es vertical */
+	if (rb->x != ra->x) {
 		row->xrs++;
 		row->xr++;
 	}
@@ -559,9 +562,46 @@ static __attribute__((noinline)) void r3d_row_full(const r3d_v *la, const r3d_v 
 	if (!r3d_ymajor(rb->x - ra->x, rb->y - ra->y) && rb->x < ra->x) {
 		const int32_t xe = r3d_fx(xfr + (1 << 17)) + 1;
 
-		if (xe > row->xr) { /* la interpolación termina en el último píxel: sin extrapolar más allá de la arista */
+		if (xe > row->xr) {
 			row->den += xe - row->xr;
 			row->xr = xe;
+		}
+	}
+}
+
+/* Tamaño completo en las aristas x-mayores que van hacia adentro (la izquierda hacia la derecha, la derecha hacia la izquierda: las de
+ * abajo del polígono): la arista también dibuja su tramo en esta línea, de redondeo(X(y)) a la x de la línea siguiente, no solo los
+ * píxeles de la línea siguiente. Sin esto, dos polígonos cuyas aristas casi horizontales no coinciden (la Torre Quemada de la intro de
+ * HeartGold) dejan una fila sin cubrir. El extremo nuevo lleva los atributos de la arista en esa x (con perspectiva: s, t y color por la
+ * x, w y z por la línea como en r3d_edge_x; en la ortográfica ya están en la y de la línea, 3.7 y 3.8). Medido contra melonDS con las
+ * escenas 46 a 49 de gx3d (polígonos de la recta de salida de Mario Kart DS): la izquierda empieza en redondeo(X(y)) y la derecha
+ * termina, exclusiva, en redondeo(X(y)) (la mitad exacta hacia abajo). Se aplica antes de juntar los tramos gordos y de la regla de la
+ * línea vacía. */
+static __attribute__((noinline)) void r3d_row_full(int32_t y, const r3d_v *la, const r3d_v *lb, const r3d_v *ra, const r3d_v *rb, int32_t xfl,
+						   int32_t xfr, int32_t *xl, int32_t *xle, int32_t *xr, int32_t *xrs, r3d_row *row)
+{
+	if (!r3d_ymajor(lb->x - la->x, lb->y - la->y) && lb->x > la->x) {
+		const int32_t xs = r3d_fx(xfl + (1 << 17));
+
+		if (xs < *xl) {
+			if (la->w != lb->w) {
+				r3d_end_at(&row->l, la, lb, (uint32_t)(xs - la->x), (uint32_t)(lb->x - la->x));
+				r3d_end_wz(&row->l, la, lb, (uint32_t)(y - la->y), (uint32_t)(lb->y - la->y));
+			}
+			*xle = *xl + 1 < *xr ? *xl + 1 : *xr; /* el tramo es arista (sin alargar la línea al juntar los tramos gordos) */
+			*xl = xs;
+		}
+	}
+	if (!r3d_ymajor(rb->x - ra->x, rb->y - ra->y) && rb->x < ra->x) {
+		const int32_t xe = r3d_fx(xfr + (1 << 17) - 1); /* con la mitad exacta, hacia abajo (como xb de esta arista en r3d_edge_x) */
+
+		if (xe > *xr) {
+			if (ra->w != rb->w) {
+				r3d_end_at(&row->r, ra, rb, (uint32_t)(ra->x - xe), (uint32_t)(ra->x - rb->x));
+				r3d_end_wz(&row->r, ra, rb, (uint32_t)(y - ra->y), (uint32_t)(rb->y - ra->y));
+			}
+			*xrs = *xr - 1 > *xl ? *xr - 1 : *xl; /* ídem */
+			*xr = xe;
 		}
 	}
 }
@@ -570,7 +610,7 @@ static __attribute__((noinline)) void r3d_row_full(const r3d_v *la, const r3d_v 
 static inline int r3d_row_at(const r3d_poly *p, int32_t y, r3d_row *row)
 {
 	const r3d_v *la, *lb, *ra, *rb;
-	int32_t xl, xle, xr, xrs, xfl, xfr;
+	int32_t xl, xle, xr, xrs, xfl, xfr, xre;
 
 	if (p->ytop == p->ybot) { /* altura cero: una línea de la x mínima a la máxima [sin contrastar] */
 		int il = 0, ir = 0;
@@ -600,6 +640,9 @@ static inline int r3d_row_at(const r3d_poly *p, int32_t y, r3d_row *row)
 		return 0;
 	r3d_edge_x(la, lb, y, 0, &xl, &xle, &row->l, &xfl);
 	r3d_edge_x(ra, rb, y, 1, &xr, &xrs, &row->r, &xfr);
+	if (p->full == 1u)
+		r3d_row_full(y, la, lb, ra, rb, xfl, xfr, &xl, &xle, &xr, &xrs, row);
+	xre = xr;
 	/* los tramos gordos de las aristas x-mayores que van hacia afuera */
 	if (xle > xr)
 		xr = xle;
@@ -624,7 +667,7 @@ static inline int r3d_row_at(const r3d_poly *p, int32_t y, r3d_row *row)
 	/* Derecha x-mayor que va hacia la izquierda (ortográfica): la interpolación a lo largo de la línea cuenta hasta el extremo de afuera del tramo de la
 	 * arista (la x de esta línea, redondeada), no hasta donde acaba el tramo dibujado: sin esto, en los tallos inclinados de NSMB (aristas de pendiente 1/4)
 	 * la textura corría más rápido que en melonDS y salían dientes y huecos (3.7) */
-	if (ra->w == rb->w && !r3d_ymajor(rb->x - ra->x, rb->y - ra->y) && rb->x < ra->x) {
+	if (p->full != 1u && ra->w == rb->w && !r3d_ymajor(rb->x - ra->x, rb->y - ra->y) && rb->x < ra->x) { /* con el tamaño completo, ya en xr */
 		const int32_t xo = r3d_fx(xfr + (1 << 17));
 
 		if (xo > xr)
@@ -640,8 +683,15 @@ static inline int r3d_row_at(const r3d_poly *p, int32_t y, r3d_row *row)
 			row->den += xl - xs;
 		}
 	}
-	if (p->full)
-		r3d_row_full(la, lb, ra, rb, xfl, xfr, row);
+	/* Tamaño completo: la arista derecha y-mayor inclinada dibuja su píxel (GBATEK, «Polygon Size»), salvo que la línea ya termine más
+	 * a la derecha por el tramo gordo de la izquierda o por la regla de la línea vacía (la derecha x-mayor no: su tramo ya está; medido
+	 * contra melonDS, escena 46 de gx3d). */
+	if (p->full == 1u && xr == xre && rb->x != ra->x && r3d_ymajor(rb->x - ra->x, rb->y - ra->y)) {
+		row->xrs++;
+		row->xr++;
+	}
+	if (p->full == 3u)
+		r3d_row_full_rc1(la, lb, ra, rb, xfl, xfr, row);
 	return 1;
 }
 

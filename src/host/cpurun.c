@@ -1031,6 +1031,8 @@ int main(int argc, char **argv)
 			r3d_defer_sim = 1;
 		} else if (!strcmp(argv[i], "--r3d-sin-completo"))
 			M.vid.r3d_flags |= R3D_F_NOFULL; /* regla anterior del borde derecho (sin el tamaño completo) */
+		else if (!strcmp(argv[i], "--r3d-aristas-rc1"))
+			M.vid.r3d_flags |= R3D_F_FULLSTRETCH; /* tamaño completo con la regla de la v0.0.5-rc1 en las aristas x-mayores de abajo */
 		else if (!strcmp(argv[i], "--r3d-celdas"))
 			M.vid.r3d_texmode = 2; /* celdas de 4×4 siempre (si no, automático: bloques hasta que se desbordan) */
 		else if (!strcmp(argv[i], "--texturas-xdr"))
