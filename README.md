@@ -32,7 +32,11 @@ The day-to-day log, with what was measured and what is pending, is
 ## Basic usage
 
 1. Install the `.pkg` from the latest release on a PS3 with HEN (or CFW,
-   untested). The package is called "SalsaDS".
+   untested). The package is called "SalsaDS": the RSX draws the 3D (in HD
+   when a scene fits in the frame) and each scene that does not fit, or that
+   the RSX cannot draw exactly like the DS, goes to the SPEs on its own. A
+   second package, "SalsaDS SPE", draws all the 3D on the SPEs at the native
+   resolution; both can be installed side by side and share the same folder.
 2. Copy dumps of games you own (your own backups, never downloads) to the PS3
    into `/dev_hdd0/salsads/`, with any file name ending in `.nds`. The
    cartridge encryption is not emulated, so each dump has to be a decrypted
