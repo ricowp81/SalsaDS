@@ -4,6 +4,11 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-11-02 — rc3: la app RSX dibuja el 3D en el RSX y en HD 2× por omisión
+- Hasta la rc2, la app RSX solo usaba el RSX con el archivo `3d-rsx` y el HD con `3d-rsx-2x` y `3d-rsx-hd-juego`; sin ellos dibujaba el 3D en el SPE, igual que la normal. En la PS3, sin archivos, Sonic Rush Adventure va a 30 fps (ritmo 33,3 ms) y con el RSX a unos 50 (19,4 ms); Metroid pierde cuadros (p95 33,4 ms) sin el RSX y no con él (17,3 ms).
+- Ahora, en la app RSX (`NUCLEO_RSX`), el 3D va al RSX y en HD 2× por omisión: `3d-spe` lo devuelve al SPE, `3d-rsx-1x` lo deja nativo y `3d-rsx-3x`/`3d-rsx-4x` lo suben. La app normal no cambia. El selector sigue mandando al SPE cada escena que no cabe o que el RSX no dibuja igual.
+- Para la v0.0.5 la app RSX se publica como «SalsaDS» (SLDS00009) y la de solo SPE como «SalsaDS SPE» (SLDS00010).
+
 ## 2026-11-02 — rc2: bordes del RSX apagados por omisión
 - En la PS3, los bordes del RSX (rama `rsx-bordes`) llevan HeartGold al RSX, pero en HD faltan contornos y la segunda ronda (`5a68129`) dibuja una diagonal en el techo de la casa de Pueblo Primavera; la preparación del PPE sube a 6,6 ms (ronda 1) y 12,2 ms (ronda 2) por cuadro y el RSX tarda 26–27 ms contra 14,6–16,7 del SPE.
 - Por omisión, los cuadros con marcado de bordes van al SPE, como en la rc1; el archivo `3d-rsx-bordes` los lleva al RSX (sustituye a `3d-rsx-bordes-spe`). La rc2 lleva la ronda 1; la ronda 2 queda en su rama.

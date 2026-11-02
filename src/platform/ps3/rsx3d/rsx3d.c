@@ -834,12 +834,15 @@ int rsx3d_init(void)
     toon = rsxkit_program_create(toon_fpo); toon_w = rsxkit_program_create(toon_w_fpo);
     if (!range_z || !range_w || !target || !depth || !output[0] || !output[1] || !shade || !shade_w || !pack || !toon || !toon_w || !shadow || !shadow_w || !mask || !mask_w || !fog || !fog_w || !fog_attr || !fog_attr_w || !fog_final || !fog_attr_shadow || !fog_attr_shadow_w) return -1;
     if (!fog_color[0] || !fog_attributes[0]) return -1;
-    if (stat("/dev_hdd0/salsads/3d-rsx-2x", &flag) == 0) hd_scale=2;
+    /* Desde la v0.0.5 la app RSX es la principal: HD 2x en el juego por omisión;
+     * 3d-rsx-1x lo deja nativo y 3d-rsx-3x o 3d-rsx-4x lo suben. */
+    hd_scale = 2;
     if (stat("/dev_hdd0/salsads/3d-rsx-3x", &flag) == 0) hd_scale=3;
     if (stat("/dev_hdd0/salsads/3d-rsx-4x", &flag) == 0) hd_scale=4;
+    if (stat("/dev_hdd0/salsads/3d-rsx-1x", &flag) == 0) hd_scale = 1;
     hd_early_flip = stat("/dev_hdd0/salsads/3d-rsx-hd-flip-temprano", &flag) == 0;
     hd_scalar = stat("/dev_hdd0/salsads/3d-rsx-hd-metadatos-escalares", &flag) == 0;
-    hd_game = stat("/dev_hdd0/salsads/3d-rsx-hd-juego", &flag) == 0;
+    hd_game = 1;  /* antes pedía el archivo 3d-rsx-hd-juego */
     if (hd_scale > 1 && !decode_verify && !hd_game) {
         salsads_log("rsx3d escala solicitada %ux: presentación nativa 1x; HD limitado al reproductor; pendiente validar en consola",hd_scale);
         hd_scale = 1;

@@ -3557,7 +3557,9 @@ int main(void)
 #ifdef NUCLEO_RSX
 	{
 		struct stat st;
-		if (stat(SALSADS_DATA_DIR "/3d-rsx", &st) == 0 && stat(SALSADS_DATA_DIR "/3d-spe", &st) != 0) {
+		/* Desde la v0.0.5 esta app dibuja el 3D en el RSX por omisión (antes pedía el
+		 * archivo 3d-rsx); 3d-spe lo devuelve al SPE. */
+		if (stat(SALSADS_DATA_DIR "/3d-spe", &st) != 0) {
 			rsx3d_on = rsx3d_init() == 0;
 			const char *rsx3d_status = rsx3d_on ? "activo" : "sin recursos al inicializar";
 			hd_capture_keep = stat(SALSADS_DATA_DIR "/3d-rsx-hd-captura", &st) == 0;
@@ -3579,7 +3581,7 @@ int main(void)
 		}
 		/* Reproductor aislado: sin CPUs emuladas; prueba el SPE de RGBA8 y su respaldo raster. */
 		if (stat(SALSADS_DATA_DIR "/3d-rsx-prueba", &st) == 0) {
-			int requested = stat(SALSADS_DATA_DIR "/3d-rsx", &st) == 0 && stat(SALSADS_DATA_DIR "/3d-spe", &st) != 0;
+			int requested = stat(SALSADS_DATA_DIR "/3d-spe", &st) != 0;
 			int failed = requested ? !rsx3d_on : rsx3d_reference_test() != 0;
 			salsads_log("RESULTADO rsx3d aislado: %s, interruptor %s", failed ? "FALLO" : "OK", requested ? "encendido" : "apagado");
 			if (rsx3d_on) rsx3d_shutdown();
