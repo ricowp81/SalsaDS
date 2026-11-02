@@ -146,10 +146,15 @@ static void am_nocode(void *ctx, const struct acore *c, const struct arec_nocode
 	m->diag_calls++;
 	CHECK(c == &m->c);
 	CHECK(d->steps == AREC_NOCODE_LIMIT + 1);
-	CHECK(d->count == 16);
+	CHECK(d->count <= 16);
 	CHECK(error == 0);
-	for (unsigned k = 0; k < 16; k++)
-		CHECK(d->targets[k] == (AM_CODE | ((c->cpsr & ACORE_T) ? 1u : 0u)));
+	/* El destino fijo solo corresponde a la prueba que impide traducir el bucle.
+	 * Otros programas también pueden completar un episodio sin código. */
+	if (m->deny_code) {
+		CHECK(d->count == 16);
+		for (unsigned k = 0; k < 16; k++)
+			CHECK(d->targets[k] == (AM_CODE | ((c->cpsr & ACORE_T) ? 1u : 0u)));
+	}
 }
 
 static const uint8_t *am_code(void *ctx, uint32_t a, uint32_t *phys, uint32_t *avail)

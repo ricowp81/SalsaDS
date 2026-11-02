@@ -40,6 +40,7 @@ void test_save(void);
 void test_wifi(void);
 void test_video_capture(void);
 void test_vram7(void);
+void test_jit_overlay(void);
 void test_dma(void);
 
 void test_rsx_export(void);
@@ -119,6 +120,7 @@ int main(int argc, char **argv)
 	test_wifi();
 	test_video_capture();
 	test_vram7();
+	test_jit_overlay();
 	test_dma();
 	printf("total: %d comprobaciones, %d fallos\n", check_total, check_failed);
 	return check_failed ? 1 : 0;
