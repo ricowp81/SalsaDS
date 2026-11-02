@@ -4,6 +4,11 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-11-02 — rc2: bordes del RSX apagados por omisión
+- En la PS3, los bordes del RSX (rama `rsx-bordes`) llevan HeartGold al RSX, pero en HD faltan contornos y la segunda ronda (`5a68129`) dibuja una diagonal en el techo de la casa de Pueblo Primavera; la preparación del PPE sube a 6,6 ms (ronda 1) y 12,2 ms (ronda 2) por cuadro y el RSX tarda 26–27 ms contra 14,6–16,7 del SPE.
+- Por omisión, los cuadros con marcado de bordes van al SPE, como en la rc1; el archivo `3d-rsx-bordes` los lleva al RSX (sustituye a `3d-rsx-bordes-spe`). La rc2 lleva la ronda 1; la ronda 2 queda en su rama.
+- Siguiente: comparar en la consola el mismo cuadro por el RSX y por el SPE y guardar las diferencias, y una pasada final en la GPU con el ID y la profundidad, sin preparación por dibujo en el PPE.
+
 ## 2026-11-02 — Unión de capacidad y bordes del RSX (rsx-lotes)
 
 - Se conservan la capacidad ampliada y el marcado de bordes. Los códigos de OID/TID remapeados quedan en stencil; el alfa auxiliar de bordes mantiene el OID original y la arista geométrica. Las limpiezas por reciclado preceden a los lotes y se repiten en color, bordes, niebla y cada escala. Los interruptores `3d-rsx-capacidad-anterior` y `3d-rsx-bordes-spe` siguen siendo independientes.

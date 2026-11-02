@@ -754,7 +754,11 @@ int rsx3d_init(void)
     coarse_cache = stat("/dev_hdd0/salsads/3d-rsx-cache-gruesa", &flag) == 0;
     profile = stat("/dev_hdd0/salsads/3d-rsx-prueba", &flag) == 0 ||
               stat("/dev_hdd0/salsads/3d-rsx-perfil", &flag) == 0;
-    edge_spe = stat("/dev_hdd0/salsads/3d-rsx-bordes-spe", &flag) == 0;
+    /* Los bordes en el RSX todavía no igualan al SPE en la consola (contornos que
+     * faltan en HD y una diagonal en HeartGold) y su preparación en el PPE no
+     * cabe en el cuadro: por omisión los cuadros con marcado de bordes van al
+     * SPE, como en la rc1; 3d-rsx-bordes los lleva al RSX para probarlos. */
+    edge_spe = stat("/dev_hdd0/salsads/3d-rsx-bordes", &flag) != 0;
     edge_degraded = 0;
     fog_spe = stat("/dev_hdd0/salsads/3d-rsx-niebla-spe", &flag) == 0;
     fog_constant = stat("/dev_hdd0/salsads/3d-rsx-niebla-constante", &flag) == 0; /* A/B: solo densidad constante por polígono */
@@ -877,7 +881,7 @@ int rsx3d_init(void)
                 tid_limit8 ? "hasta 8 (tope anterior)" : "remapeo por cuadro");
     salsads_log("rsx3d capacidad: %s; bit de máscara libre sin sombras y bit de ocupado libre con borrado alfa",
                 capacity_previous ? "topes rc1" : "ampliada; respaldo por capacidad y autoprueba");
-    salsads_log("rsx3d bordes: %s; atributos OID6/arista y Z24; niebla independiente; tabla geométrica nativa", edge_spe ? "SPE (3d-rsx-bordes-spe)" : "RSX, degradación por grupo en autoprueba");
+    salsads_log("rsx3d bordes: %s; atributos OID6/arista y Z24; niebla independiente; tabla geométrica nativa", edge_spe ? "SPE por omisión (3d-rsx-bordes los lleva al RSX)" : "RSX (3d-rsx-bordes), degradación por grupo en autoprueba");
     salsads_log("rsx3d pasadas: %s", passes_previous ? "ronda 3" : "opacos directos y atributos compactos");
     salsads_log("rsx3d sombras y niebla: niebla con sombra %s; niebla con toon o resaltado %s; cara trasera con W %s; W por fragmento %s",
                 fog_combined_spe || fog_previous ? "al SPE" : "en el RSX (tabla aparte, atributos de sombra)",
@@ -1240,7 +1244,7 @@ static int render_frame(const r3d_job *j, unsigned slot, int exact, int adaptive
                 "bordes Z opacos con niebla: degradado", "bordes W opacos con niebla: degradado",
                 "bordes Z translúcidos con niebla: degradado", "bordes W translúcidos con niebla: degradado"
             };
-            reason = edge_spe ? "bordes (3d-rsx-bordes-spe)" : why[group];
+            reason = edge_spe ? "bordes (al SPE por omisión)" : why[group];
             return 0;
         }
         if (fog_previous) { reason = "bordes: atributos incompatibles con niebla anterior"; return 0; }
