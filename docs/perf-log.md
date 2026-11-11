@@ -1,6 +1,12 @@
 # Registro de rendimiento
 
-## 2026-11-02 — Ritmo con el 3D en el SPE [PS3 rc2: el antes; el después, pendiente]
+## 2026-11-10 — Ritmo con el 3D en el SPE: el después [PS3, paquetes «SalsaDS ritmo» y «SalsaDS ritmo RSX»]
+
+- Sonic Rush Adventure en juego, sin `flip-temprano` (el antes son los logs de la rc2 de la entrada de abajo). App normal (3D en el SPE): ventanas pesadas con emulación mediana 22,9–23,0 ms → intervalo 24,0–24,2, `DATO ritmo` media 1,44–1,49 VBlanks (41–42 cuadros/s; con la espera antes de emular habrían sido 2,0 y 30); ventanas con 14,6–14,9 ms → 16,7, todos a 1 VBlank (59,9).
+- App RSX con HD 2×: emulación 16,9–19,4 ms → 50,6–56 cuadros/s (media 1,06–1,18); un tramo más pesado con 23,6–30,7 ms → 33–40. Igual que con la rc2: esta app ya esperaba el flip después de emular.
+- La ronda con `flip-temprano` no se repitió: reproduce la rc2, que ya está medida.
+
+## 2026-11-02 — Ritmo con el 3D en el SPE [PS3 rc2: el antes; el después, arriba]
 
 - Sonic Rush Adventure, mismas ventanas (mismas instrucciones por cuadro) en los logs de la rc2. App normal: emulación sin reloj de perfil 17,4–18,1 ms (mediana), intervalo 33,3; `frame_begin` 13,8–15,2. App RSX sin archivos (3D en el SPE): emulación 16,3–17,1, intervalo 33,3; `frame_begin` 15,1–16,1. App RSX con HD (flip esperado después de emular): emulación 18,5–20,4, intervalo 19,1–21,0, `frame_begin` 0,00; con 112 de 120 cuadros por el SPE, 19,8.
 - Metroid, app normal: con 14–16 ms de emulación (mediana) ya hay ventanas con intervalo mediano 33,2–33,4; con la espera antes de emular, el trabajo que cabe en un refresco queda en unos 14–15 ms.
