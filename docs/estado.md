@@ -4,6 +4,9 @@ Bitácora de lo hecho, lo que quedó a medias y lo decidido. Lo más reciente
 arriba. Las mediciones van en `perf-log.md`; los resultados de la Fase 0, en
 `fase0.md`.
 
+## 2026-11-10 — rc5: el paquete principal vuelve a dibujar el 3D en los SPE
+- Decidido con el autor: para la v0.0.5 el paquete principal «SalsaDS» (SLDS00009) es la app de los SPE, como en la v0.0.4, ahora con el ritmo nuevo; la app del RSX se publica aparte como «SalsaDS RSX» (SLDS00030), con el 3D en el RSX y HD 2× por omisión. Cambia la decisión de la rc3 (entrada de abajo); el código es el de la rc4, solo cambian los paquetes y el README. La rc4 no llegó a probarse.
+
 ## 2026-11-10 — rc4: la rc3 con el ritmo nuevo
 - El ritmo con el 3D en el SPE (rama `ritmo-spe`, entrada de abajo) quedó confirmado en la PS3 con Sonic Rush Adventure: en la app normal las escenas pesadas pasan de 30 a 41–42 cuadros por segundo y las ligeras quedan en 60; la app RSX con HD no cambia (50–56 en juego). Números en `perf-log.md`.
 - La v0.0.5-rc4 es la rc3 (la app RSX dibuja el 3D en el RSX y en HD 2× por omisión) más ese ritmo. La rc3 no llegó a probarse en la consola; la rc4 la sustituye. Paquetes «SalsaDS» (SLDS00009, la app RSX) y «SalsaDS SPE» (SLDS00010).
